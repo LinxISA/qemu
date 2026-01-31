@@ -1,0 +1,44 @@
+#
+# LinxISA 16-bit instruction decoding (minimal subset)
+#
+# This file is intentionally minimal: it includes only the instruction forms
+# currently implemented by target/linx/translate.c.
+#
+
+# Fields
+%BlockType 6:5
+%BrType 11:3
+%RegDst 11:5
+%SrcL 6:5
+%SrcR 11:5
+%payload 14:2
+%simm12 4:s12
+%simm5_11_s5 11:s5
+%simm5_6_s5 6:s5
+%uimm5 6:5
+
+# Block headers / terminators
+c_bstart        .... .... ..00 0000 %BlockType %BrType %payload
+c_bstart_direct .... .... .... 0010 %simm12
+c_bstart_cond   .... .... .... 0100 %simm12
+c_bstop         0000 0000 0000 0000
+
+# Call/return support
+c_setret        0101 0... ..01 0110 %uimm5
+c_setc_tgt      0000 0... ..01 1100 %SrcL
+
+# Predicate/compare
+c_setc_eq       .... .... ..10 0110 %SrcL %SrcR
+c_setc_ne       .... .... ..11 0110 %SrcL %SrcR
+
+# Register moves / ALU
+c_movr          .... .... ..00 0110 %RegDst %SrcL
+c_movi          .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
+c_sub           .... .... ..01 1000 %SrcL %SrcR
+
+# Loads / stores (stack and small offsets)
+c_lwi           .... .... ..00 1010 %SrcL simm5=%simm5_11_s5
+c_ldi           .... .... ..01 1010 %SrcL simm5=%simm5_11_s5
+c_swi           .... .... ..10 1010 %SrcL simm5=%simm5_11_s5
+c_sdi           .... .... ..11 1010 %SrcL simm5=%simm5_11_s5
+

@@ -1,0 +1,136 @@
+#
+# LinxISA 32-bit instruction decoding (minimal subset)
+#
+# This file is intentionally minimal: it includes only the instruction forms
+# currently implemented by target/linx/translate.c.
+#
+
+# Fields
+%RegDst 7:5
+%SrcL 15:5
+%SrcR 20:5
+%SrcRType 25:2
+%SrcD 27:5
+%SrcP 27:5
+%imm4 24:4
+%imm20 12:20
+%simm17 15:s17
+%uimm12 20:12
+%simm12_20_s12 20:s12
+%simm12_7_s5_25_7 7:s5 25:7
+%shamt_27_5 27:5
+%shamt_20_6 20:6
+%shamt_20_5 20:5
+
+# Block headers
+bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
+bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
+bstart_call   .... .... .... .... .100 0000 0000 0001 %simm17
+
+# Call/return support
+setret        .... .... .... .... .... 0101 0000 0111 %imm20
+setc_tgt      0000 0000 0000 .... .100 0000 0011 1011 %SrcL
+
+# Predicate/compare
+setc_lt       0000 0... .... .... .100 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_ltu      0000 0... .... .... .110 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_ge       0000 0... .... .... .101 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_geu      0000 0... .... .... .111 0000 0110 0101 %SrcL %SrcR %SrcRType
+
+cmp_eq        0000 0... .... .... .000 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ne        0000 0... .... .... .001 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_lt        0000 0... .... .... .010 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ltu       0000 0... .... .... .100 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ge        0000 0... .... .... .011 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_geu       0000 0... .... .... .101 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+
+csel          .... .... .... .... .000 .... .111 0111 %RegDst %SrcL %SrcP %SrcR %SrcRType
+
+# ALU (register)
+add           .... .... .... .... .000 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+sub           .... .... .... .... .001 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+and           .... .... .... .... .010 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+or            .... .... .... .... .011 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+xor           .... .... .... .... .100 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+addw          .... .... .... .... .000 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+subw          .... .... .... .... .001 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+andw          .... .... .... .... .010 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+orw           .... .... .... .... .011 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+xorw          .... .... .... .... .100 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+# ALU (immediate)
+addi          .... .... .... .... .000 .... .001 0101 %RegDst %SrcL %uimm12
+subi          .... .... .... .... .001 .... .001 0101 %RegDst %SrcL %uimm12
+andi          .... .... .... .... .010 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+ori           .... .... .... .... .011 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+xori          .... .... .... .... .100 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+
+addiw         .... .... .... .... .000 .... .011 0101 %RegDst %SrcL %uimm12
+andiw         .... .... .... .... .010 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+oriw          .... .... .... .... .011 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+xoriw         .... .... .... .... .100 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+
+# Mul/Div/Rem
+mul           0000 000. .... .... .000 .... .100 0111 %RegDst %SrcL %SrcR
+mulw          0000 000. .... .... .010 .... .100 0111 %RegDst %SrcL %SrcR
+
+div           0000 000. .... .... .000 .... .101 0111 %RegDst %SrcL %SrcR
+divu          0000 000. .... .... .001 .... .101 0111 %RegDst %SrcL %SrcR
+divw          0000 000. .... .... .010 .... .101 0111 %RegDst %SrcL %SrcR
+divuw         0000 000. .... .... .011 .... .101 0111 %RegDst %SrcL %SrcR
+
+rem           0000 000. .... .... .100 .... .101 0111 %RegDst %SrcL %SrcR
+remu          0000 000. .... .... .101 .... .101 0111 %RegDst %SrcL %SrcR
+remw          0000 000. .... .... .110 .... .101 0111 %RegDst %SrcL %SrcR
+remuw         0000 000. .... .... .111 .... .101 0111 %RegDst %SrcL %SrcR
+
+# LUI / constant materialization
+lui           .... .... .... .... .... .... .001 0111 %RegDst %imm20
+
+# Shifts (register)
+sll           0000 000. .... .... .111 .... .000 0101 %RegDst %SrcL %SrcR
+srl           0000 000. .... .... .101 .... .000 0101 %RegDst %SrcL %SrcR
+sra           0000 000. .... .... .110 .... .000 0101 %RegDst %SrcL %SrcR
+
+sllw          0000 000. .... .... .111 .... .010 0101 %RegDst %SrcL %SrcR
+srlw          0000 000. .... .... .101 .... .010 0101 %RegDst %SrcL %SrcR
+sraw          0000 000. .... .... .110 .... .010 0101 %RegDst %SrcL %SrcR
+
+# Shifts (immediate)
+slli          0000 00.. .... .... .111 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+srli          0000 00.. .... .... .101 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+srai          0000 00.. .... .... .110 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+
+slliw         0000 000. .... .... .111 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+srliw         0000 000. .... .... .101 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+sraiw         0000 000. .... .... .110 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+
+# Loads (immediate offset)
+lbi           .... .... .... .... .000 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lbui          .... .... .... .... .100 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhi           .... .... .... .... .001 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhui          .... .... .... .... .101 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwi           .... .... .... .... .010 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwui          .... .... .... .... .110 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+ldi           .... .... .... .... .011 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+
+# Loads (indexed)
+lb            .... .... .... .... .000 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lw            .... .... .... .... .010 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+ld            .... .... .... .... .011 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+# Stores (immediate offset)
+sbi           .... .... .... .... .000 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+shi           .... .... .... .... .001 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+swi           .... .... .... .... .010 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+sdi           .... .... .... .... .011 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+
+# Stores (indexed)
+sb            .... .... .... .... .000 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sw            .... .... .... .... .010 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sd            .... .... .... .... .011 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+
+# System / debug
+ebreak        0000 .... 0001 0000 0001 0000 0010 1011 %imm4
+

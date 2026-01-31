@@ -5,6 +5,7 @@ subdir('avr')
 subdir('hppa')
 subdir('xenpv') # i386 uses it
 subdir('i386')
+subdir('linx')
 subdir('loongarch')
 subdir('m68k')
 subdir('microblaze')

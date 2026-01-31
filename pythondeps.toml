@@ -21,6 +21,7 @@
 # The install key should match the version in python/wheels/
 meson = { accepted = ">=1.5.0", installed = "1.10.0", canary = "meson" }
 pycotap = { accepted = ">=1.1.0", installed = "1.3.1" }
+ninja = { accepted = ">=1.10.0", installed = "1.13.0", canary = "ninja" }
 
 [meson-rust]
 # The install key should match the version in python/wheels/
