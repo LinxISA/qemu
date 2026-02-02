@@ -12,10 +12,23 @@
 #include "exec/cpu-defs.h"
 #include "exec/cpu-interrupt.h"
 #include "exec/mmu-access-type.h"
+#include "hw/core/resettable.h"
 
 #ifdef CONFIG_USER_ONLY
 #error "LinxISA does not support user mode emulation"
 #endif
+
+/* Exception types
+ * Note: We start from 1, not 0, because exception_index = 0 would
+ * trigger do_interrupt via replay_exception() even when there's no exception.
+ */
+enum {
+    LINX_EXCP_BREAKPOINT = 1,  /* EBREAK instruction */
+    LINX_EXCP_ILLEGAL_INST = 2, /* Illegal instruction */
+    LINX_EXCP_INST_ACCESS_FAULT = 3, /* Instruction access fault */
+    LINX_EXCP_LOAD_ACCESS_FAULT = 4, /* Load access fault */
+    LINX_EXCP_STORE_ACCESS_FAULT = 5, /* Store access fault */
+};
 
 enum {
     LINX_REG_ZERO = 0,
@@ -40,6 +53,8 @@ typedef struct CPUArchState {
 
     uint64_t tgt;
     uint32_t cond;
+    uint32_t carg;  /* Commit argument flag (set by SETC.COND) */
+    uint32_t brtype;
 
     uint64_t pc;
 
@@ -59,6 +74,9 @@ struct ArchCPU {
 
 struct LinxCPUClass {
     CPUClass parent_class;
+
+    DeviceRealize parent_realize;
+    ResettablePhases parent_phases;
 };
 
 void linx_translate_init(void);
@@ -66,4 +84,3 @@ void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
 
 #endif
-

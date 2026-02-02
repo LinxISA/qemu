@@ -2,3 +2,4 @@ config LINX_VIRT
     bool
     default y
     depends on LINX
+    select SERIAL

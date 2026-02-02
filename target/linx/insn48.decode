@@ -1,5 +1,5 @@
 #
-# LinxISA 48-bit instruction decoding (minimal subset)
+# LinxISA 48-bit instruction decoding
 #
 # QEMU's decodetree supports instruction widths of 16/32/64. LinxISA "48-bit"
 # instructions are packed into the low 48 bits of a uint64_t, with the top
@@ -8,8 +8,37 @@
 
 # Fields (positions refer to the packed low 48 bits)
 %RegDst 23:5
-%imm 4:12 28:20
+%SrcL 31:5
+%imm32 4:12 28:20
+%simm32 4:s12 28:20
+%uimm24 4:12 36:12
+%simm24 4:s12 36:12
+%simm_4_s12_31_17 4:s12 31:17
 
-# HL.LUI | hl.lui imm, ->{t, u, Rd}
-hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst %imm
+# HL.LUI | hl.lui imm, ->{t, u, Rd} (load upper immediate, 32-bit)
+hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
+
+# HL.ADDTPC | hl.addtpc imm, ->{t, u, Rd} (PC-relative, 32-bit immediate)
+hl_addtpc 0000 0000 0000 0000 .... .... .... .... .... .... .000 0111 .... .... .... 1110 %RegDst imm=%imm32
+
+# HL.ADDI | hl.addi SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate)
+hl_addi 0000 0000 0000 0000 .... .... .... .... .000 .... .001 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
+
+# HL.SUBI | hl.subi SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate)
+hl_subi 0000 0000 0000 0000 .... .... .... .... .001 .... .001 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
+
+# HL.ANDI | hl.andi SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
+hl_andi 0000 0000 0000 0000 .... .... .... .... .010 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.ORI | hl.ori SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
+hl_ori 0000 0000 0000 0000 .... .... .... .... .011 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.XORI | hl.xori SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
+hl_xori 0000 0000 0000 0000 .... .... .... .... .100 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.BSTART.STD variants (29-bit PC-relative)
+hl_bstart_std_fall   0000 0000 0000 0000 .... .... .... .... .001 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
+hl_bstart_std_direct 0000 0000 0000 0000 .... .... .... .... .010 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
+hl_bstart_std_cond   0000 0000 0000 0000 .... .... .... .... .011 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
+hl_bstart_std_call   0000 0000 0000 0000 .... .... .... .... .100 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 

@@ -1,8 +1,8 @@
 #
-# LinxISA 32-bit instruction decoding (minimal subset)
+# LinxISA 32-bit instruction decoding
 #
-# This file is intentionally minimal: it includes only the instruction forms
-# currently implemented by target/linx/translate.c.
+# This file contains the 32-bit instruction forms implemented by
+# target/linx/translate.c.
 #
 
 # Fields
@@ -12,23 +12,64 @@
 %SrcRType 25:2
 %SrcD 27:5
 %SrcP 27:5
+%SrcA 27:5
 %imm4 24:4
 %imm20 12:20
 %simm17 15:s17
+%simm22 7:s5 15:17
+%simm25 7:s25
 %uimm12 20:12
 %simm12_20_s12 20:s12
 %simm12_7_s5_25_7 7:s5 25:7
 %shamt_27_5 27:5
 %shamt_20_6 20:6
 %shamt_20_5 20:5
+%imml 20:6
+%imms 26:6
+%immr 26:6
 
 # Block headers
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
 bstart_call   .... .... .... .... .100 0000 0000 0001 %simm17
 
+# Function entry/exit macro instructions (LinxISA spec)
+# These encode register range [SrcBegin ~ SrcEnd] and stack size (uimm)
+#
+# Encoding:
+#   bits [6:0] = 0x41 (opcode)
+#   bits [11:7] = uimm[14:10] (high 5 bits of stack size / 8)
+#   bits [14:12] = type (000=FENTRY, 001=FEXIT, 010=FRET.RA, 011=FRET.STK)
+#   bits [19:15] = SrcBegin/DstBegin (start register index)
+#   bits [24:20] = SrcEnd/DstEnd (end register index)
+#   bits [31:25] = uimm[9:3] (low 7 bits of stack size / 8)
+#
+# Stack size = uimm (8-byte aligned, uimm[2:0] implicit 0)
+# Register range: R[Begin] to R[End], can wrap around R23->R2
+%fentry_uimm_hi 7:5
+%fentry_uimm_lo 25:7
+%fentry_begin 15:5
+%fentry_end 20:5
+
+# FENTRY: Function entry - save registers, adjust SP
+fentry        .... .... .... .... .000 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FEXIT: Function exit - restore registers, adjust SP (returns via setc.tgt)
+fexit         .... .... .... .... .001 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FRET.RA: Function return via RA - restore registers, adjust SP, return
+fret_ra       .... .... .... .... .010 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FRET.STK: Function return via stack - restore registers, adjust SP, return
+fret_stk      .... .... .... .... .011 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# PC-relative address instructions (overlap group - setret is specialized addtpc with RegDst=RA)
+{
+  setret        .... .... .... .... .... 0101 0000 0111 %imm20
+  addtpc        .... .... .... .... .... .... .000 0111 %RegDst %imm20
+}
+
 # Call/return support
-setret        .... .... .... .... .... 0101 0000 0111 %imm20
 setc_tgt      0000 0000 0000 .... .100 0000 0011 1011 %SrcL
 
 # Predicate/compare
@@ -130,6 +171,38 @@ sdi           .... .... .... .... .011 .... .101 1001 %SrcL %SrcR simm12=%simm12
 sb            .... .... .... .... .000 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
 sw            .... .... .... .... .010 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
 sd            .... .... .... .... .011 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+
+# Min/Max
+max           0000 000. .... .... .100 .... .101 1011 %RegDst %SrcL %SrcR
+maxu          0000 100. .... .... .100 .... .101 1011 %RegDst %SrcL %SrcR
+min           0000 000. .... .... .101 .... .101 1011 %RegDst %SrcL %SrcR
+minu          0000 100. .... .... .101 .... .101 1011 %RegDst %SrcL %SrcR
+
+# Bit manipulation
+clz           .... .... .... .... .101 .... .110 0111 %RegDst %SrcL %imml %imms
+ctz           .... .... .... .... .100 .... .110 0111 %RegDst %SrcL %imml %imms
+bcnt          .... .... .... .... .110 .... .110 0111 %RegDst %SrcL %imml %imms
+rev           .... .... .... .... .111 .... .110 0111 %RegDst %SrcL %imml %immr
+
+# Bit extract/insert
+bxs           .... .... .... .... .000 .... .110 0111 %RegDst %SrcL %imml %imms
+bxu           .... .... .... .... .001 .... .110 0111 %RegDst %SrcL %imml %imms
+bic           .... .... .... .... .010 .... .110 0111 %RegDst %SrcL %imml %imms
+bis           .... .... .... .... .011 .... .110 0111 %RegDst %SrcL %imml %imms
+
+# Compare with immediate
+cmp_eqi       .... .... .... .... .000 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_nei       .... .... .... .... .001 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_andi      .... .... .... .... .010 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_ori       .... .... .... .... .011 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_lti       .... .... .... .... .100 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_gei       .... .... .... .... .101 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_ltui      .... .... .... .... .110 .... .101 0101 %RegDst %SrcL %uimm12
+cmp_geui      .... .... .... .... .111 .... .101 0101 %RegDst %SrcL %uimm12
+
+# Branch instructions (set condition, not direct branches)
+b_z           .... .... .... .... .001 .... .011 0111 %simm22
+b_nz          .... .... .... .... .010 .... .011 0111 %simm22
 
 # System / debug
 ebreak        0000 .... 0001 0000 0001 0000 0010 1011 %imm4

@@ -18,13 +18,18 @@
 %uimm5 6:5
 
 # Block headers / terminators
-c_bstart        .... .... ..00 0000 %BlockType %BrType %payload
+# Note: c_bstop is all zeros - check it first before other block instructions
+c_bstop         0000 0000 0000 0000
+# C.BSTART.STD: mask=0xc7ff, match=0x0000, BrType in bits [13:11]
+# Pattern: bits [15,14,10:0] must be 0, bits [13:11] contain BrType
+# BrType values: 1=FALL, 2=DIRECT, 3=COND, 4=CALL, 5=IND, 6=ICALL, 7=RET
+# Note: BrType=0 matches c_bstop, so c_bstart is handled explicitly in translate.c
+# to avoid overlap with c_bstop
 c_bstart_direct .... .... .... 0010 %simm12
 c_bstart_cond   .... .... .... 0100 %simm12
-c_bstop         0000 0000 0000 0000
 
 # Call/return support
-c_setret        0101 0... ..01 0110 %uimm5
+# Note: c_setc_tgt comes after c_bstop to avoid conflict (c_setc_tgt has bits [3:0]=1100, so doesn't match 0x0000)
 c_setc_tgt      0000 0... ..01 1100 %SrcL
 
 # Predicate/compare
@@ -32,9 +37,14 @@ c_setc_eq       .... .... ..10 0110 %SrcL %SrcR
 c_setc_ne       .... .... ..11 0110 %SrcL %SrcR
 
 # Register moves / ALU
+# C.MOVR and C.MOVI have different opcodes ([5:0])
+# NOTE: C.SETRET is handled inside trans_c_movi when RegDst==RA
 c_movr          .... .... ..00 0110 %RegDst %SrcL
-c_movi          .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
+c_add           .... .... ..00 1000 %SrcL %SrcR
 c_sub           .... .... ..01 1000 %SrcL %SrcR
+c_and           .... .... ..10 1000 %SrcL %SrcR
+c_or            .... .... ..11 1000 %SrcL %SrcR
+c_movi          .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
 
 # Loads / stores (stack and small offsets)
 c_lwi           .... .... ..00 1010 %SrcL simm5=%simm5_11_s5
@@ -42,3 +52,17 @@ c_ldi           .... .... ..01 1010 %SrcL simm5=%simm5_11_s5
 c_swi           .... .... ..10 1010 %SrcL simm5=%simm5_11_s5
 c_sdi           .... .... ..11 1010 %SrcL simm5=%simm5_11_s5
 
+# Sign/zero extension (output to T-hand)
+c_sext_b        0100 0... ..01 1100 %SrcL
+c_sext_h        0100 1... ..01 1100 %SrcL
+c_sext_w        0101 0... ..01 1100 %SrcL
+c_zext_b        0101 1... ..01 1100 %SrcL
+c_zext_h        0110 0... ..01 1100 %SrcL
+c_zext_w        0110 1... ..01 1100 %SrcL
+
+# Add immediate to register (output to T-hand)
+c_addi          .... .... ..00 1100 %SrcL simm5=%simm5_11_s5
+
+# Shift left/right immediate (T-hand = T-hand op imm)
+c_slli          0001 0... ..10 1100 %uimm5
+c_srli          0001 1... ..10 1100 %uimm5

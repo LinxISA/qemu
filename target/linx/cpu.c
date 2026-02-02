@@ -13,8 +13,16 @@
 #include "exec/page-protection.h"
 #include "exec/translation-block.h"
 #include "exec/target_page.h"
+#include "exec/log.h"
 #include "tcg/debug-assert.h"
 #include "accel/tcg/cpu-ops.h"
+#include "system/runstate.h"
+
+static hwaddr linx_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
+{
+    /* Linx currently uses simple identity mapping. */
+    return (hwaddr)addr;
+}
 
 static void linx_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -53,8 +61,108 @@ static void linx_restore_state_to_opc(CPUState *cs,
 
 static bool linx_cpu_has_work(CPUState *cs)
 {
+    /*
+     * Linx currently has no WFI/idle instruction: if the CPU is not halted,
+     * it always has work. If it is halted, only interrupts/reset should wake it.
+     */
+    if (!cs->halted) {
+        return true;
+    }
+    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD | CPU_INTERRUPT_RESET);
+}
+
+static bool linx_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+{
+    /* No interrupts implemented yet */
     return false;
 }
+
+static void linx_cpu_do_interrupt(CPUState *cs)
+{
+    CPULinxState *env = cpu_env(cs);
+    int exception = cs->exception_index;
+    uint64_t last_pc = env->pc;
+
+    qemu_log_mask(CPU_LOG_INT, "Linx: exception %d at PC=0x%" PRIx64 "\n",
+                  exception, last_pc);
+
+    switch (exception) {
+    case 0:
+        /* exception_index = 0 shouldn't happen - treat as invalid */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: BUG: exception_index is 0 (invalid) at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        cs->exception_index = -1;
+        cpu_abort(cs, "Linx: BUG: exception_index is 0");
+        return;
+
+    case LINX_EXCP_BREAKPOINT:
+        /* EBREAK - used for program exit in virt machine */
+        qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK - program exit at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        cs->exception_index = -1;
+        /* Request graceful shutdown of the VM */
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        cpu_loop_exit(cs);
+        return;
+
+    case LINX_EXCP_ILLEGAL_INST:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        cs->exception_index = -1;
+        cpu_abort(cs, "Linx: Illegal instruction");
+        return;
+
+    case LINX_EXCP_INST_ACCESS_FAULT:
+    case LINX_EXCP_LOAD_ACCESS_FAULT:
+    case LINX_EXCP_STORE_ACCESS_FAULT:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: memory access fault at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        cs->exception_index = -1;
+        cpu_abort(cs, "Linx: Memory access fault");
+        return;
+
+    case EXCP_INTERRUPT:
+        /* Hardware interrupt - not implemented yet */
+        qemu_log_mask(CPU_LOG_INT, "Linx: hardware interrupt (ignored)\n");
+        cs->exception_index = -1;
+        cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
+        return;
+
+    default:
+        /* Check if it's a generic QEMU exception that we should handle */
+        if (exception >= 0 && exception < 0x100) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: unhandled exception %d at PC=0x%" PRIx64 "\n",
+                          exception, last_pc);
+            cs->exception_index = -1;
+            cpu_abort(cs, "Linx: Unhandled exception");
+            return;
+        } else if (exception < 0) {
+            /* Negative exception_index means no exception */
+            cs->exception_index = -1;
+            return;
+        } else {
+            /* Unknown exception >= 0x100 */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: unknown exception %d at PC=0x%" PRIx64 "\n",
+                          exception, last_pc);
+            cs->exception_index = -1;
+            cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
+            return;
+        }
+    }
+}
+
+#if TARGET_LONG_BITS == 64
+static vaddr linx_pointer_wrap(CPUState *cs, int mmu_idx, vaddr result, vaddr base)
+{
+    /* 64-bit addresses don't wrap */
+    return result;
+}
+#endif
 
 static int linx_cpu_mmu_index(CPUState *cs, bool ifunc)
 {
@@ -65,10 +173,13 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                               MMUAccessType access_type, int mmu_idx,
                               bool probe, uintptr_t retaddr)
 {
+    /* Simple identity mapping: virtual address = physical address */
+    hwaddr phys_addr = addr;
     vaddr page = addr & TARGET_PAGE_MASK;
+    hwaddr phys_page = phys_addr & TARGET_PAGE_MASK;
     int prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
 
-    tlb_set_page(cs, page, page, prot, mmu_idx, TARGET_PAGE_SIZE);
+    tlb_set_page(cs, page, phys_page, prot, mmu_idx, TARGET_PAGE_SIZE);
     return true;
 }
 
@@ -97,12 +208,21 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
 
     env->gpr[LINX_REG_ZERO] = 0;
     env->pc = 0;
+    cs->exception_index = -1;
+    cs->halted = 0;
 }
 
 static void linx_cpu_realize(DeviceState *dev, Error **errp)
 {
     CPUState *cs = CPU(dev);
+    LinxCPUClass *lcc = LINX_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
+
+    lcc->parent_realize(dev, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
 
     cpu_exec_realizefn(cs, &local_err);
     if (local_err) {
@@ -130,7 +250,7 @@ static void linx_cpu_init(Object *obj)
 
 static const struct SysemuCPUOps linx_sysemu_ops = {
     .has_work = linx_cpu_has_work,
-    .get_phys_page_debug = cpu_get_phys_page_debug,
+    .get_phys_page_debug = linx_cpu_get_phys_page_debug,
 };
 
 static const TCGCPUOps linx_tcg_ops = {
@@ -146,7 +266,13 @@ static const TCGCPUOps linx_tcg_ops = {
     .tlb_fill = linx_cpu_tlb_fill,
 #if TARGET_LONG_BITS == 32
     .pointer_wrap = cpu_pointer_wrap_uint32,
+#else
+    .pointer_wrap = linx_pointer_wrap,
 #endif
+    .cpu_exec_interrupt = linx_cpu_exec_interrupt,
+    .cpu_exec_halt = linx_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
+    .do_interrupt = linx_cpu_do_interrupt,
 };
 
 static const VMStateDescription vmstate_linx_cpu = {
@@ -164,17 +290,20 @@ static const VMStateDescription vmstate_linx_cpu = {
     },
 };
 
+
 static void linx_cpu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     CPUClass *cc = CPU_CLASS(klass);
+    LinxCPUClass *lcc = LINX_CPU_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->realize = linx_cpu_realize;
+    device_class_set_parent_realize(dc, linx_cpu_realize,
+                                    &lcc->parent_realize);
     dc->vmsd = &vmstate_linx_cpu;
 
     resettable_class_set_parent_phases(rc, NULL, linx_cpu_reset_hold, NULL,
-                                       NULL);
+                                       &lcc->parent_phases);
 
     cc->class_by_name = linx_cpu_class_by_name;
     cc->dump_state = linx_cpu_dump_state;
@@ -184,20 +313,20 @@ static void linx_cpu_class_init(ObjectClass *klass, const void *data)
     cc->tcg_ops = &linx_tcg_ops;
 }
 
-static const TypeInfo linx_cpu_type_info = {
-    .name = TYPE_LINX_CPU_LINX,
-    .parent = TYPE_LINX_CPU,
-    .instance_size = sizeof(LinxCPU),
-    .instance_init = linx_cpu_init,
-    .class_size = sizeof(LinxCPUClass),
-    .class_init = linx_cpu_class_init,
-};
-
 static const TypeInfo linx_cpu_base_type_info = {
     .name = TYPE_LINX_CPU,
     .parent = TYPE_CPU,
     .instance_size = sizeof(LinxCPU),
+    .instance_align = __alignof__(LinxCPU),
+    .instance_init = linx_cpu_init,
     .abstract = true,
+    .class_size = sizeof(LinxCPUClass),
+    .class_init = linx_cpu_class_init,
+};
+
+static const TypeInfo linx_cpu_type_info = {
+    .name = TYPE_LINX_CPU_LINX,
+    .parent = TYPE_LINX_CPU,
 };
 
 static void linx_cpu_register_types(void)

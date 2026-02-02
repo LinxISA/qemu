@@ -3658,6 +3658,7 @@ if have_system or have_user
     'target/hppa',
     'target/i386',
     'target/i386/kvm',
+    'target/linx',
     'target/loongarch',
     'target/mips/tcg',
     'target/ppc',
