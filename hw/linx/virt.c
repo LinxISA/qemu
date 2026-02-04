@@ -25,12 +25,54 @@ static bool linx_virt_debug_enabled(void)
     return v && v[0] && strcmp(v, "0") != 0;
 }
 
+#if TARGET_LONG_BITS == 32
+static const char *linx_elf32_sym_name(const uint8_t *buf, size_t len,
+                                       const Elf32_Shdr *strtab_sh,
+                                       const Elf32_Sym *sym)
+{
+    if (!strtab_sh) {
+        return "<no-strtab>";
+    }
+    if ((size_t)strtab_sh->sh_offset + strtab_sh->sh_size > len) {
+        return "<bad-strtab>";
+    }
+    if (sym->st_name >= strtab_sh->sh_size) {
+        return "<bad-name>";
+    }
+    return (const char *)(buf + strtab_sh->sh_offset + sym->st_name);
+}
+#endif
+
+#if TARGET_LONG_BITS != 32
+static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
+                                       const Elf64_Shdr *strtab_sh,
+                                       const Elf64_Sym *sym)
+{
+    if (!strtab_sh) {
+        return "<no-strtab>";
+    }
+    if ((size_t)strtab_sh->sh_offset + strtab_sh->sh_size > len) {
+        return "<bad-strtab>";
+    }
+    if (sym->st_name >= strtab_sh->sh_size) {
+        return "<bad-name>";
+    }
+    return (const char *)(buf + strtab_sh->sh_offset + sym->st_name);
+}
+#endif
+
 /* UART base address */
 #define LINX_UART_BASE 0x10000000
 #define LINX_UART_SIZE 0x100
 
 /* Exit register address */
 #define LINX_EXIT_REG 0x10000004
+
+/* ELF relocation types (must match toolchain definitions). */
+#define R_LINX_NONE 0
+#define R_LINX_B17_PCREL 4
+#define R_LINX_64 10
+#define R_LINX_32 11
 
 /* Simple UART state */
 typedef struct LinxUARTState {
@@ -134,7 +176,12 @@ static hwaddr linx_align_up(hwaddr v, hwaddr align)
     return (v + align - 1) & ~(align - 1);
 }
 
-/* Check if an address points to a BSTART instruction (C.BSTART or BSTART) */
+/* Check if an address points to a block-start instruction.
+ *
+ * In addition to explicit BSTART encodings, the bring-up toolchain emits
+ * standalone frame macro blocks (FENTRY/FEXIT/FRET.*) that should also be
+ * treated as valid code targets.
+ */
 static bool linx_is_bstart(const uint8_t *ram, size_t ram_size, hwaddr addr)
 {
     uint16_t hw;
@@ -180,6 +227,11 @@ static bool linx_is_bstart(const uint8_t *ram, size_t ram_size, hwaddr addr)
     
     /* BSTART.STD CALL: 0x4001 */
     if ((insn & 0x7fff) == 0x4001) {
+        return true;
+    }
+
+    /* Frame macro instructions (FENTRY/FEXIT/FRET.*): opcode 0x41 in bits [6:0]. */
+    if ((insn & 0x7f) == 0x41) {
         return true;
     }
     
@@ -280,9 +332,14 @@ static bool linx_patch_bstart_call_pcrel(uint8_t *ram, size_t ram_size,
     return true;
 }
 
-/* Patch an ADDTPC instruction with a PC-relative offset.
- * ADDTPC: opcode = 0x07 (bits [6:0]), imm20 in bits [31:12], RegDst in bits [11:7]
- * Semantics: rd = PC + sext(imm20)
+/* Patch an ADDTPC instruction with a PC-relative page offset.
+ *
+ * ADDTPC encodes a signed imm20 in bits [31:12] which is scaled by 4KiB
+ * (imm20 << 12) and added to the current PC page base.
+ *
+ * Relocation value:
+ *   (S + A) page - (P) page
+ * where page(x) = x & ~0xFFF.
  */
 static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
                                     hwaddr patch_addr, hwaddr target_addr,
@@ -290,7 +347,7 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
 {
     uint32_t insn;
     int64_t delta;
-    int32_t simm20;
+    int64_t simm20;
     uint32_t imm_bits;
 
     if (patch_addr + 4 > ram_size) {
@@ -309,13 +366,15 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /* Calculate PC-relative offset (byte offset, not halfword scaled) */
-    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
-    
-    simm20 = (int32_t)delta;
-    if (simm20 < -(1 << 19) || simm20 >= (1 << 19)) {
+    /* Calculate page delta in bytes: page(S+A) - page(P) */
+    hwaddr target_page = (target_addr + addend) & ~(hwaddr)0xfff;
+    hwaddr patch_page = patch_addr & ~(hwaddr)0xfff;
+    delta = (int64_t)target_page - (int64_t)patch_page;
+
+    simm20 = delta >> 12;
+    if (simm20 < -(1LL << 19) || simm20 >= (1LL << 19)) {
         error_setg(errp,
-                   "ADDTPC target out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   "ADDTPC page delta out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
                    patch_addr, target_addr, delta);
         return false;
     }
@@ -323,6 +382,42 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
     /* Encode imm20 in bits [31:12] */
     imm_bits = (uint32_t)(simm20 & 0xfffff);
     insn = (insn & 0xfff) | (imm_bits << 12);
+    stl_le_p(ram + patch_addr, insn);
+    return true;
+}
+
+/* Patch an ADDI/ADDIW uimm12 immediate with the low 12 bits of S+A.
+ * imm12 goes in bits [31:20].
+ */
+static bool linx_patch_lo12_uimm12(uint8_t *ram, size_t ram_size,
+                                   hwaddr patch_addr, hwaddr target_addr,
+                                   int64_t addend, Error **errp)
+{
+    uint32_t insn;
+    uint32_t imm12;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "LO12 relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+
+    /* ADDI opcode is 0x15, ADDIW opcode is 0x35 (bits [6:0]). */
+    switch (insn & 0x7f) {
+    case 0x15:
+    case 0x35:
+        break;
+    default:
+        error_setg(errp,
+                   "expected ADDI/ADDIW instruction for LO12 (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   insn, patch_addr);
+        return false;
+    }
+
+    imm12 = (uint32_t)((target_addr + addend) & 0xFFFu);
+    insn = (insn & 0x000FFFFFu) | (imm12 << 20);
     stl_le_p(ram + patch_addr, insn);
     return true;
 }
@@ -444,6 +539,10 @@ static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
         /* ADDTPC instruction - PC-relative data address */
         return linx_patch_addtpc_pcrel(ram, ram_size, patch_addr, target_addr,
                                        addend, errp);
+    } else if (opcode == 0x15 || opcode == 0x35) {
+        /* ADDI/ADDIW low 12-bit absolute immediate */
+        return linx_patch_lo12_uimm12(ram, ram_size, patch_addr, target_addr,
+                                      addend, errp);
     } else if (opcode == 0x39) {
         /* LD.PCR family - PC-relative loads */
         return linx_patch_ld_pcr(ram, ram_size, patch_addr, target_addr,
@@ -464,6 +563,7 @@ static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
     }
 }
 
+#if TARGET_LONG_BITS == 32
 static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
                                 hwaddr load_base,
@@ -482,6 +582,7 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
     const Elf32_Sym *syms = NULL;
     size_t nsyms = 0;
     hwaddr *sym_addr = NULL;
+    bool found_start = false;
 
     size_t i;
 
@@ -591,6 +692,34 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
     nsyms = symtab_sh->sh_size / sizeof(Elf32_Sym);
     sym_addr = g_new0(hwaddr, nsyms);
 
+    /* Allocate SHN_COMMON symbols after loaded sections. */
+    for (i = 0; i < nsyms; i++) {
+        const Elf32_Sym *sym = &syms[i];
+        hwaddr align;
+
+        if (sym->st_shndx != SHN_COMMON || sym->st_size == 0) {
+            continue;
+        }
+
+        align = sym->st_value ? sym->st_value : 1;
+        if ((align & (align - 1)) != 0) {
+            error_setg(errp, "invalid common symbol alignment for %s",
+                       linx_elf32_sym_name(buf, len, strtab_sh, sym));
+            goto fail;
+        }
+
+        end = linx_align_up(end, align);
+        if ((size_t)end + sym->st_size > ram_size) {
+            error_setg(errp, "common symbol %s does not fit in RAM",
+                       linx_elf32_sym_name(buf, len, strtab_sh, sym));
+            goto fail;
+        }
+
+        sym_addr[i] = end;
+        memset(ram + end, 0, sym->st_size);
+        end += sym->st_size;
+    }
+
     for (i = 0; i < nsyms; i++) {
         const Elf32_Sym *sym = &syms[i];
         if (sym->st_shndx == SHN_UNDEF) {
@@ -627,10 +756,11 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                 error_setg(errp, "entry symbol _start does not point to BSTART instruction");
                 goto fail;
             }
+            found_start = true;
             break;
         }
     }
-    if (*entry == 0) {
+    if (!found_start) {
         error_setg(errp, "entry symbol _start not found");
         goto fail;
     }
@@ -656,18 +786,43 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
 
         for (j = 0; j < nrela; j++) {
             unsigned symidx = ELF32_R_SYM(rela[j].r_info);
+            unsigned rtype = ELF32_R_TYPE(rela[j].r_info);
             hwaddr target;
             hwaddr patch_addr;
             uint32_t patch_insn;
+            const Elf32_Sym *target_sym = NULL;
             bool target_is_code;
 
-            if (symidx >= nsyms || sym_addr[symidx] == 0) {
-                error_setg(errp, "invalid relocation symbol index %u", symidx);
+            if (symidx >= nsyms) {
+                error_setg(errp, "invalid relocation symbol index %u (nsyms=%zu)",
+                           symidx, nsyms);
+                goto fail;
+            }
+            target_sym = &syms[symidx];
+            if (target_sym->st_shndx == SHN_UNDEF) {
+                error_setg(errp, "undefined symbol %s (index %u) in relocation",
+                           linx_elf32_sym_name(buf, len, strtab_sh, target_sym), symidx);
+                goto fail;
+            }
+            if (target_sym->st_shndx < eh->e_shnum && sec_addr[target_sym->st_shndx] == 0) {
+                error_setg(errp, "symbol %s refers to non-alloc section #%u",
+                           linx_elf32_sym_name(buf, len, strtab_sh, target_sym),
+                           target_sym->st_shndx);
                 goto fail;
             }
 
             target = sym_addr[symidx];
             patch_addr = base + rela[j].r_offset;
+
+            if (rtype == R_LINX_32) {
+                if (patch_addr + 4 > ram_size) {
+                    error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                               patch_addr);
+                    goto fail;
+                }
+                stl_le_p(ram + patch_addr, (uint32_t)(target + (int64_t)rela[j].r_addend));
+                continue;
+            }
             
             /* Check what instruction is at the patch site */
             if (patch_addr + 4 > ram_size) {
@@ -683,11 +838,8 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
             if (target_is_code) {
                 /* For code relocations, ensure target points to a BSTART instruction */
                 hwaddr section_start = load_base;
-                if (symidx < nsyms) {
-                    const Elf32_Sym *target_sym = &syms[symidx];
-                    if (target_sym->st_shndx < eh->e_shnum) {
-                        section_start = sec_addr[target_sym->st_shndx];
-                    }
+                if (target_sym->st_shndx < eh->e_shnum) {
+                    section_start = sec_addr[target_sym->st_shndx];
                 }
                 target = linx_ensure_bstart(ram, ram_size, target, section_start);
                 if (!linx_is_bstart(ram, ram_size, target)) {
@@ -717,6 +869,9 @@ fail:
     return false;
 }
 
+#endif
+
+#if TARGET_LONG_BITS != 32
 static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
                                 hwaddr load_base,
@@ -735,6 +890,7 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
     const Elf64_Sym *syms = NULL;
     size_t nsyms = 0;
     hwaddr *sym_addr = NULL;
+    bool found_start = false;
 
     size_t i;
 
@@ -845,6 +1001,34 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
     nsyms = symtab_sh->sh_size / sizeof(Elf64_Sym);
     sym_addr = g_new0(hwaddr, nsyms);
 
+    /* Allocate SHN_COMMON symbols after loaded sections. */
+    for (i = 0; i < nsyms; i++) {
+        const Elf64_Sym *sym = &syms[i];
+        hwaddr align;
+
+        if (sym->st_shndx != SHN_COMMON || sym->st_size == 0) {
+            continue;
+        }
+
+        align = sym->st_value ? sym->st_value : 1;
+        if ((align & (align - 1)) != 0) {
+            error_setg(errp, "invalid common symbol alignment for %s",
+                       linx_elf64_sym_name(buf, len, strtab_sh, sym));
+            goto fail;
+        }
+
+        end = linx_align_up(end, align);
+        if ((size_t)end + sym->st_size > ram_size) {
+            error_setg(errp, "common symbol %s does not fit in RAM",
+                       linx_elf64_sym_name(buf, len, strtab_sh, sym));
+            goto fail;
+        }
+
+        sym_addr[i] = end;
+        memset(ram + end, 0, sym->st_size);
+        end += sym->st_size;
+    }
+
     for (i = 0; i < nsyms; i++) {
         const Elf64_Sym *sym = &syms[i];
         if (sym->st_shndx == SHN_UNDEF) {
@@ -881,10 +1065,11 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 error_setg(errp, "entry symbol _start does not point to BSTART instruction");
                 goto fail;
             }
+            found_start = true;
             break;
         }
     }
-    if (*entry == 0) {
+    if (!found_start) {
         error_setg(errp, "entry symbol _start not found");
         goto fail;
     }
@@ -910,18 +1095,51 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
 
         for (j = 0; j < nrela; j++) {
             unsigned symidx = ELF64_R_SYM(rela[j].r_info);
+            unsigned rtype = ELF64_R_TYPE(rela[j].r_info);
             hwaddr target;
             hwaddr patch_addr;
             uint32_t patch_insn;
+            const Elf64_Sym *target_sym = NULL;
             bool target_is_code;
 
-            if (symidx >= nsyms || sym_addr[symidx] == 0) {
-                error_setg(errp, "invalid relocation symbol index %u", symidx);
+            if (symidx >= nsyms) {
+                error_setg(errp, "invalid relocation symbol index %u (nsyms=%zu)",
+                           symidx, nsyms);
+                goto fail;
+            }
+            target_sym = &syms[symidx];
+            if (target_sym->st_shndx == SHN_UNDEF) {
+                error_setg(errp, "undefined symbol %s (index %u) in relocation",
+                           linx_elf64_sym_name(buf, len, strtab_sh, target_sym), symidx);
+                goto fail;
+            }
+            if (target_sym->st_shndx < eh->e_shnum && sec_addr[target_sym->st_shndx] == 0) {
+                error_setg(errp, "symbol %s refers to non-alloc section #%u",
+                           linx_elf64_sym_name(buf, len, strtab_sh, target_sym),
+                           target_sym->st_shndx);
                 goto fail;
             }
 
             target = sym_addr[symidx];
             patch_addr = base + rela[j].r_offset;
+
+            if (rtype == R_LINX_64) {
+                if (patch_addr + 8 > ram_size) {
+                    error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                               patch_addr);
+                    goto fail;
+                }
+                stq_le_p(ram + patch_addr, (uint64_t)(target + rela[j].r_addend));
+                continue;
+            } else if (rtype == R_LINX_32) {
+                if (patch_addr + 4 > ram_size) {
+                    error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                               patch_addr);
+                    goto fail;
+                }
+                stl_le_p(ram + patch_addr, (uint32_t)(target + rela[j].r_addend));
+                continue;
+            }
             
             /* Check what instruction is at the patch site */
             if (patch_addr + 4 > ram_size) {
@@ -937,11 +1155,8 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
             if (target_is_code) {
                 /* For code relocations, ensure target points to a BSTART instruction */
                 hwaddr section_start = load_base;
-                if (symidx < nsyms) {
-                    const Elf64_Sym *target_sym = &syms[symidx];
-                    if (target_sym->st_shndx < eh->e_shnum) {
-                        section_start = sec_addr[target_sym->st_shndx];
-                    }
+                if (target_sym->st_shndx < eh->e_shnum) {
+                    section_start = sec_addr[target_sym->st_shndx];
                 }
                 target = linx_ensure_bstart(ram, ram_size, target, section_start);
                 if (!linx_is_bstart(ram, ram_size, target)) {
@@ -970,6 +1185,8 @@ fail:
     g_free(sec_addr);
     return false;
 }
+
+#endif
 
 static bool linx_load_elf_rel(const char *filename,
                               uint8_t *ram, size_t ram_size,

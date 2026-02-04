@@ -80,10 +80,12 @@ setc_geu      0000 0... .... .... .111 0000 0110 0101 %SrcL %SrcR %SrcRType
 
 cmp_eq        0000 0... .... .... .000 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
 cmp_ne        0000 0... .... .... .001 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
-cmp_lt        0000 0... .... .... .010 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
-cmp_ltu       0000 0... .... .... .100 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
-cmp_ge        0000 0... .... .... .011 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
-cmp_geu       0000 0... .... .... .101 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_and       0000 0... .... .... .010 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_or        0000 0... .... .... .011 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_lt        0000 0... .... .... .100 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ge        0000 0... .... .... .101 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ltu       0000 0... .... .... .110 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_geu       0000 0... .... .... .111 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
 
 csel          .... .... .... .... .000 .... .111 0111 %RegDst %SrcL %SrcP %SrcR %SrcRType
 
@@ -108,6 +110,7 @@ ori           .... .... .... .... .011 .... .001 0101 %RegDst %SrcL simm12=%simm
 xori          .... .... .... .... .100 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
 
 addiw         .... .... .... .... .000 .... .011 0101 %RegDst %SrcL %uimm12
+subiw         .... .... .... .... .001 .... .011 0101 %RegDst %SrcL %uimm12
 andiw         .... .... .... .... .010 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
 oriw          .... .... .... .... .011 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
 xoriw         .... .... .... .... .100 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
@@ -158,7 +161,11 @@ ldi           .... .... .... .... .011 .... .001 1001 %RegDst %SrcL simm12=%simm
 
 # Loads (indexed)
 lb            .... .... .... .... .000 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lbu           .... .... .... .... .100 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lh            .... .... .... .... .001 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lhu           .... .... .... .... .101 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
 lw            .... .... .... .... .010 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lwu           .... .... .... .... .110 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
 ld            .... .... .... .... .011 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
 
 # Stores (immediate offset)
@@ -206,4 +213,3 @@ b_nz          .... .... .... .... .010 .... .011 0111 %simm22
 
 # System / debug
 ebreak        0000 .... 0001 0000 0001 0000 0010 1011 %imm4
-

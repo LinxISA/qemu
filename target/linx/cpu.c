@@ -106,6 +106,14 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         cpu_loop_exit(cs);
         return;
 
+    case LINX_EXCP_BAD_BRANCH_TARGET:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: branch target violation at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        cs->exception_index = -1;
+        cpu_abort(cs, "Linx: Bad branch target");
+        return;
+
     case LINX_EXCP_ILLEGAL_INST:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
@@ -145,9 +153,9 @@ static void linx_cpu_do_interrupt(CPUState *cs)
             cs->exception_index = -1;
             return;
         } else {
-            /* Unknown exception >= 0x100 */
+            /* Unrecognized exception >= 0x100 */
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "Linx: unknown exception %d at PC=0x%" PRIx64 "\n",
+                          "Linx: unrecognized exception %d at PC=0x%" PRIx64 "\n",
                           exception, last_pc);
             cs->exception_index = -1;
             cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
@@ -188,8 +196,8 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     CPULinxState *env = cpu_env(cs);
     int i;
 
-    qemu_fprintf(f, "pc=0x%016" PRIx64 " cond=%u tgt=0x%016" PRIx64 "\n",
-                 env->pc, env->cond, env->tgt);
+    qemu_fprintf(f, "pc=0x%016" PRIx64 " brtype=%u carg=0x%08x cond=%u tgt=0x%016" PRIx64 "\n",
+                 env->pc, env->brtype, env->carg, env->cond, env->tgt);
     for (i = 0; i < LINX_GPR_COUNT; i += 4) {
         qemu_fprintf(f,
                      "r%-2d=0x%016" PRIx64 " r%-2d=0x%016" PRIx64
@@ -283,6 +291,8 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64(env.pc, LinxCPU),
         VMSTATE_UINT32(env.cond, LinxCPU),
         VMSTATE_UINT64(env.tgt, LinxCPU),
+        VMSTATE_UINT32(env.carg, LinxCPU),
+        VMSTATE_UINT32(env.brtype, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.gpr, LinxCPU, LINX_GPR_COUNT),
         VMSTATE_UINT64_ARRAY(env.tq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.uq, LinxCPU, 4),

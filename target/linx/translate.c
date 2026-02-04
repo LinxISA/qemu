@@ -27,6 +27,7 @@ typedef struct DisasContext {
     uint8_t brtype;
     vaddr brtarget;
     uint32_t cur_insn_len;
+    bool tgt_modified;
 } DisasContext;
 
 enum {
@@ -47,6 +48,8 @@ static TCGv_i32 cpu_cond;
 static TCGv_i32 cpu_carg;  /* Commit argument flag */
 static TCGv_i32 cpu_brtype;
 static TCGv_i64 cpu_pc;
+
+static unsigned linx_insn_len(uint16_t hw);
 
 static inline MemOp linx_mo_endian(void)
 {
@@ -111,6 +114,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_cond, 0);
     tcg_gen_movi_i32(cpu_carg, 0);
     tcg_gen_movi_i32(cpu_brtype, brtype);
+    ctx->tgt_modified = false;
     
     /* For COND blocks: set diverted target in bpc (cpu_tgt) */
     /* For DIRECT/CALL blocks: set target in bpc (cpu_tgt) */
@@ -125,70 +129,105 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     ctx->brtarget = initial_target; /* Keep for fallback/fallthrough calculation */
 }
 
-/* Helper to check if an address points to a BSTART instruction */
+/* Helper to check if an address points to a block-start instruction.
+ *
+ * In addition to explicit BSTART encodings, LinxISA uses certain macro
+ * instructions (FENTRY/FEXIT/FRET.*) as standalone blocks in the bring-up
+ * toolchain.
+ */
 static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
 {
-    uint16_t hw;
-    uint32_t insn;
     CPUState *cs = env_cpu(env);
-    
-    /* Try to read 16-bit instruction */
-    if (cpu_memory_rw_debug(cs, pc, (uint8_t *)&hw, 2, 0) != 0) {
+    uint8_t buf[8];
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
         return false;
     }
-    hw = le16_to_cpu(hw);
-    
-    /* C.BSTART.STD: mask=0xc7ff, match=0x0000 */
-    if ((hw & 0xc7ff) == 0x0000) {
-        return true;
+
+    const uint16_t hw = lduw_le_p(buf);
+    const unsigned len = linx_insn_len(hw);
+
+    if (len == 2) {
+        /* C.BSTART.STD / C.BSTART.FP: mask=0xc7ff, BrType in bits [13:11]. */
+        if ((hw & 0xc7ff) == 0x0000 || (hw & 0xc7ff) == 0x0080) {
+            const uint8_t brtype = (hw >> 11) & 0x7;
+            if (brtype != 0) {
+                return true;
+            }
+        }
+
+        /* C.BSTART DIRECT/COND: check low nibble. */
+        if ((hw & 0x000f) == 0x0002 || (hw & 0x000f) == 0x0004) {
+            return true;
+        }
+
+        /* Common fixed fall-through markers for non-STD block types. */
+        switch (hw) {
+        case 0x0840: /* C.BSTART.SYS FALL */
+        case 0x08c0: /* C.BSTART.MPAR FALL */
+        case 0x48c0: /* C.BSTART.MSEQ FALL */
+        case 0x88c0: /* C.BSTART.VPAR FALL */
+        case 0xc8c0: /* C.BSTART.VSEQ FALL */
+            return true;
+        default:
+            return false;
+        }
     }
-    
-    /* C.BSTART DIRECT/COND: check opcode bits */
-    if ((hw & 0x000f) == 0x0002 || (hw & 0x000f) == 0x0004) {
-        return true;
-    }
-    
-    /* Check for 32-bit BSTART instructions */
-    if (cpu_memory_rw_debug(cs, pc, (uint8_t *)&insn, 4, 0) != 0) {
+
+    if (len == 4) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        const uint32_t insn = ldl_le_p(buf);
+
+        /* BSTART.*: low byte 0x01, branch kind in bits [14:12] is non-zero. */
+        if ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) != 0) {
+            return true;
+        }
+
+        /* Template blocks: FENTRY/FEXIT/FRET.* share opcode bits[6:0]=0x41. */
+        if ((insn & 0x7f) == 0x41 && ((insn >> 12) & 0x7) <= 3) {
+            return true;
+        }
+
         return false;
     }
-    insn = le32_to_cpu(insn);
-    
-    /* BSTART.STD variants: check opcode bits */
-    if ((insn & 0x7fff) == 0x1001 || /* FALL */
-        (insn & 0x7fff) == 0x2001 || /* DIRECT */
-        (insn & 0x7fff) == 0x3001 || /* COND */
-        (insn & 0x7fff) == 0x4001) { /* CALL */
-        return true;
+
+    if (len == 6) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+
+        const uint16_t prefix = lduw_le_p(buf);
+        const uint32_t main32 = ldl_le_p(buf + 2);
+        if ((prefix & 0xf) != 0xe) {
+            return false;
+        }
+
+        /* HL.BSTART.*: encoded as 16-bit prefix + 32-bit BSTART main part. */
+        if ((main32 & 0xff) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
+            return true;
+        }
+        return false;
     }
-    
+
     return false;
 }
 
+
 static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
 {
-    /* Ensure destination points to a BSTART instruction */
     if (!linx_is_bstart_at_pc(ctx->env, dest)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                     "Linx: jump target 0x%" VADDR_PRIx " does not point to BSTART\n",
-                     dest);
-        /* Try to find BSTART backward (within 64 bytes) */
-        vaddr search_start = dest > 64 ? dest - 64 : 0;
-        bool found = false;
-        for (vaddr cur = dest; cur >= search_start && cur + 2 <= dest + 64; cur -= 2) {
-            if (linx_is_bstart_at_pc(ctx->env, cur)) {
-                dest = cur;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "Linx: could not find BSTART near 0x%" VADDR_PRIx "\n",
-                         dest);
-        }
+                      "Linx: jump target 0x%" VADDR_PRIx " is not a block start marker\n",
+                      dest);
+        tcg_gen_movi_i64(cpu_pc, dest);
+        gen_helper_raise_exception(tcg_env,
+                                  tcg_constant_i32(LINX_EXCP_BAD_BRANCH_TARGET));
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return;
     }
-    
+
     if (translator_use_goto_tb(&ctx->base, dest)) {
         tcg_gen_goto_tb(slot);
         tcg_gen_movi_i64(cpu_pc, dest);
@@ -200,6 +239,7 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
     ctx->base.is_jmp = DISAS_NORETURN;
 }
 
+
 static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
 {
     switch (ctx->brtype & 0x7) {
@@ -209,11 +249,19 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     case LINX_BR_DIRECT:
     case LINX_BR_CALL:
-        /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT) */
-        /* Note: cpu_tgt should already point to a BSTART (set by BSTART or SETC.TGT) */
-        tcg_gen_mov_i64(cpu_pc, cpu_tgt);
-        tcg_gen_lookup_and_goto_ptr();
-        ctx->base.is_jmp = DISAS_NORETURN;
+        if (!ctx->tgt_modified && ctx->brtarget != 0) {
+            /*
+             * Fast path: direct/call blocks with a fixed PC-relative target and no
+             * SETC.TGT override can be emitted as a direct TB branch.
+             */
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget);
+        } else {
+            /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT). */
+            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            tcg_gen_mov_i64(cpu_pc, cpu_tgt);
+            tcg_gen_lookup_and_goto_ptr();
+            ctx->base.is_jmp = DISAS_NORETURN;
+        }
         break;
     case LINX_BR_COND: {
         /* Conditional jump: 
@@ -227,10 +275,15 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         linx_gen_goto_tb(ctx, 1, fallthrough);
         gen_set_label(taken);
         /* Condition set: jump to diverted/set target */
-        /* Note: cpu_tgt should already point to a BSTART (set by BSTART COND or SETC.TGT) */
-        tcg_gen_mov_i64(cpu_pc, cpu_tgt);
-        tcg_gen_lookup_and_goto_ptr();
-        ctx->base.is_jmp = DISAS_NORETURN;
+        if (!ctx->tgt_modified && ctx->brtarget != 0) {
+            /* Fixed target: enable TB chaining for the taken edge. */
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget);
+        } else {
+            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            tcg_gen_mov_i64(cpu_pc, cpu_tgt);
+            tcg_gen_lookup_and_goto_ptr();
+            ctx->base.is_jmp = DISAS_NORETURN;
+        }
         break;
     }
     case LINX_BR_RET: {
@@ -239,6 +292,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         tcg_gen_brcondi_i32(TCG_COND_NE, cpu_cond, 0, taken);
         linx_gen_goto_tb(ctx, 1, fallthrough);
         gen_set_label(taken);
+        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         tcg_gen_mov_i64(cpu_pc, cpu_tgt);
         tcg_gen_lookup_and_goto_ptr();
         ctx->base.is_jmp = DISAS_NORETURN;
@@ -247,23 +301,24 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
     case LINX_BR_IND:
     case LINX_BR_ICALL:
         /* Indirect jump/call: jump to cpu_tgt (must be set by SETC.TGT) */
+        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         tcg_gen_mov_i64(cpu_pc, cpu_tgt);
         tcg_gen_lookup_and_goto_ptr();
         ctx->base.is_jmp = DISAS_NORETURN;
         break;
     default:
-        /* Unknown block kind: fall through. */
+        /* Unhandled block kind: fall through. */
         linx_gen_goto_tb(ctx, 0, fallthrough);
         break;
     }
 }
 
-static inline uint64_t linx_zext32(uint64_t x)
+static inline uint64_t G_GNUC_UNUSED linx_zext32(uint64_t x)
 {
     return (uint32_t)x;
 }
 
-static inline uint64_t linx_sext32(uint64_t x)
+static inline uint64_t G_GNUC_UNUSED linx_sext32(uint64_t x)
 {
     return (int64_t)(int32_t)x;
 }
@@ -429,69 +484,60 @@ static bool trans_setret(DisasContext *ctx, arg_setret *a)
 
 static bool trans_c_setc_tgt(DisasContext *ctx, arg_c_setc_tgt *a)
 {
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
     TCGv_i64 v = linx_get_reg(a->SrcL);
     tcg_gen_mov_i64(cpu_tgt, v);
     tcg_gen_movi_i32(cpu_cond, 1);
+    ctx->tgt_modified = true;
     return true;
 }
 
 static bool trans_setc_tgt(DisasContext *ctx, arg_setc_tgt *a)
 {
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
     TCGv_i64 v = linx_get_reg(a->SrcL);
     tcg_gen_mov_i64(cpu_tgt, v);
     tcg_gen_movi_i32(cpu_cond, 1);
+    ctx->tgt_modified = true;
     return true;
 }
 
+static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r);
+
 static bool trans_c_setc_eq(DisasContext *ctx, arg_c_setc_eq *a)
 {
-    TCGLabel *t = gen_new_label();
-    TCGLabel *done = gen_new_label();
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 r = linx_get_reg(a->SrcR);
-
-    tcg_gen_movi_i32(cpu_cond, 0);
-    tcg_gen_movi_i32(cpu_carg, 0);
-    tcg_gen_brcond_i64(TCG_COND_EQ, l, r, t);
-    tcg_gen_br(done);
-    gen_set_label(t);
-    tcg_gen_movi_i32(cpu_cond, 1);
-    tcg_gen_movi_i32(cpu_carg, 1);  /* Set CARG (commit argument) flag */
-    gen_set_label(done);
-    return true;
+    return trans_setc_cmp(ctx, TCG_COND_EQ, l, r);
 }
 
 static bool trans_c_setc_ne(DisasContext *ctx, arg_c_setc_ne *a)
 {
-    TCGLabel *t = gen_new_label();
-    TCGLabel *done = gen_new_label();
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 r = linx_get_reg(a->SrcR);
-
-    tcg_gen_movi_i32(cpu_cond, 0);
-    tcg_gen_movi_i32(cpu_carg, 0);
-    tcg_gen_brcond_i64(TCG_COND_NE, l, r, t);
-    tcg_gen_br(done);
-    gen_set_label(t);
-    tcg_gen_movi_i32(cpu_cond, 1);
-    tcg_gen_movi_i32(cpu_carg, 1);  /* Set CARG (commit argument) flag */
-    gen_set_label(done);
-    return true;
+    return trans_setc_cmp(ctx, TCG_COND_NE, l, r);
 }
 
 static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r)
 {
-    TCGLabel *t = gen_new_label();
-    TCGLabel *done = gen_new_label();
-
-    tcg_gen_movi_i32(cpu_cond, 0);
-    tcg_gen_movi_i32(cpu_carg, 0);
-    tcg_gen_brcond_i64(c, l, r, t);
-    tcg_gen_br(done);
-    gen_set_label(t);
-    tcg_gen_movi_i32(cpu_cond, 1);
-    tcg_gen_movi_i32(cpu_carg, 1);  /* Set CARG (commit argument) flag */
-    gen_set_label(done);
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
+    /*
+     * SETC updates block commit arguments and is frequently used to drive
+     * BSTART COND and predicate-controlled commits. Lower it branchlessly so
+     * common compare patterns don't force extra host control-flow.
+     */
+    TCGv_i64 cond64 = tcg_temp_new_i64();
+    TCGv_i32 cond32 = tcg_temp_new_i32();
+    tcg_gen_setcond_i64(c, cond64, l, r);
+    tcg_gen_extrl_i64_i32(cond32, cond64);
+    tcg_gen_mov_i32(cpu_cond, cond32);
+    tcg_gen_mov_i32(cpu_carg, cond32);
     return true;
 }
 
@@ -675,6 +721,14 @@ static bool trans_addiw(DisasContext *ctx, arg_addiw *a)
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
+static bool trans_subiw(DisasContext *ctx, arg_subiw *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_subi_i64(out, l, (uint64_t)a->uimm12);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
 static bool trans_andiw(DisasContext *ctx, arg_andiw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
@@ -853,6 +907,24 @@ static bool trans_cmp_ne(DisasContext *ctx, arg_cmp_ne *a)
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, l, r);
 }
 
+static bool trans_cmp_and(DisasContext *ctx, arg_cmp_and *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    tcg_gen_and_i64(tmp, l, r);
+    return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, tmp, tcg_constant_i64(0));
+}
+
+static bool trans_cmp_or(DisasContext *ctx, arg_cmp_or *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    tcg_gen_or_i64(tmp, l, r);
+    return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, tmp, tcg_constant_i64(0));
+}
+
 static bool trans_cmp_lt(DisasContext *ctx, arg_cmp_lt *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
@@ -884,18 +956,18 @@ static bool trans_cmp_geu(DisasContext *ctx, arg_cmp_geu *a)
 static bool trans_csel(DisasContext *ctx, arg_csel *a)
 {
     /* LinxISA csel: csel SrcP, SrcL, SrcR<.modifier>, ->{t, u, Rd}
-     * Semantics: if SrcP != 0 (true), output = SrcL; else output = SrcR
+     * Semantics: if SrcP != 0 (true), output = SrcR; else output = SrcL
      * The SrcRType modifier applies to SrcR (e.g., .sw = sign-extend word)
      */
     TCGv_i64 pred = linx_get_reg(a->SrcP);
-    TCGv_i64 tval = linx_get_reg(a->SrcL);
-    TCGv_i64 fval = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 fval = linx_get_reg(a->SrcL);
+    TCGv_i64 tval = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
     TCGv_i64 out = tcg_temp_new_i64();
     TCGLabel *done = gen_new_label();
 
-    tcg_gen_mov_i64(out, fval);               /* default to false case (SrcR) */
+    tcg_gen_mov_i64(out, fval);               /* default to false case (SrcL) */
     tcg_gen_brcondi_i64(TCG_COND_EQ, pred, 0, done);  /* if pred == 0, done */
-    tcg_gen_mov_i64(out, tval);               /* else use true case (SrcL) */
+    tcg_gen_mov_i64(out, tval);               /* else use true case (SrcR) */
     gen_set_label(done);
 
     linx_set_dest(a->RegDst, out);
@@ -973,10 +1045,18 @@ static bool trans_srai(DisasContext *ctx, arg_srai *a)
 
 static bool trans_sllw(DisasContext *ctx, arg_sllw *a)
 {
+    /* Word shifts operate on the low 32 bits only, regardless of the upper
+     * bits in the source register (which are often undefined for 32-bit C
+     * values). Mask the shift amount to 0..31.
+     */
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 l32 = tcg_temp_new_i64();
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shl_i64(out, l, sh);
+    tcg_gen_ext32u_i64(l32, l);
+    tcg_gen_andi_i64(shamt, sh, 0x1f);
+    tcg_gen_shl_i64(out, l32, shamt);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
@@ -984,8 +1064,12 @@ static bool trans_srlw(DisasContext *ctx, arg_srlw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 l32 = tcg_temp_new_i64();
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shr_i64(out, l, sh);
+    tcg_gen_ext32u_i64(l32, l);
+    tcg_gen_andi_i64(shamt, sh, 0x1f);
+    tcg_gen_shr_i64(out, l32, shamt);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
@@ -993,32 +1077,42 @@ static bool trans_sraw(DisasContext *ctx, arg_sraw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 l32 = tcg_temp_new_i64();
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_sar_i64(out, l, sh);
+    tcg_gen_ext32s_i64(l32, l);
+    tcg_gen_andi_i64(shamt, sh, 0x1f);
+    tcg_gen_sar_i64(out, l32, shamt);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
 static bool trans_slliw(DisasContext *ctx, arg_slliw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 l32 = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shli_i64(out, l, a->shamt & 0x1f);
+    tcg_gen_ext32u_i64(l32, l);
+    tcg_gen_shli_i64(out, l32, a->shamt & 0x1f);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
 static bool trans_srliw(DisasContext *ctx, arg_srliw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 l32 = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shri_i64(out, l, a->shamt & 0x1f);
+    tcg_gen_ext32u_i64(l32, l);
+    tcg_gen_shri_i64(out, l32, a->shamt & 0x1f);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
 static bool trans_sraiw(DisasContext *ctx, arg_sraiw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 l32 = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_sari_i64(out, l, a->shamt & 0x1f);
+    tcg_gen_ext32s_i64(l32, l);
+    tcg_gen_sari_i64(out, l32, a->shamt & 0x1f);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
@@ -1205,10 +1299,34 @@ static bool trans_lb(DisasContext *ctx, arg_lb *a)
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SB);
 }
 
+static bool trans_lbu(DisasContext *ctx, arg_lbu *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UB);
+}
+
+static bool trans_lh(DisasContext *ctx, arg_lh *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SW);
+}
+
+static bool trans_lhu(DisasContext *ctx, arg_lhu *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UW);
+}
+
 static bool trans_lw(DisasContext *ctx, arg_lw *a)
 {
     TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
+}
+
+static bool trans_lwu(DisasContext *ctx, arg_lwu *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UL);
 }
 
 static bool trans_ld(DisasContext *ctx, arg_ld *a)
@@ -1302,12 +1420,14 @@ static bool trans_c_sdi(DisasContext *ctx, arg_c_sdi *a)
 
 static bool trans_addtpc(DisasContext *ctx, arg_addtpc *a)
 {
-    /* ADDTPC: Add to PC - PC-relative address computation
-     * rd = PC + sext(imm20) - the immediate is a byte offset, NOT shifted */
+    /* ADDTPC: PC-relative page base
+     * rd = (PC & ~0xFFF) + (sext(imm20) << 12) */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12; /* Sign-extend imm20 */
+    vaddr pc_page = current_pc & ~(vaddr)0xfff;
+    int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12; /* sign-extend 20-bit */
+    imm <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, current_pc + imm);
+    tcg_gen_movi_i64(out, pc_page + imm);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -1357,9 +1477,86 @@ static inline int linx_fentry_reg_count(int begin, int end)
     }
 }
 
+static void linx_fentry_save_regs(DisasContext *ctx, int begin, int end,
+                                  int64_t stacksize)
+{
+    /* Save registers into the current frame:
+     *   [sp + stacksize - 8]  = reg_begin
+     *   [sp + stacksize - 16] = next reg
+     *   ...
+     *
+     * This matches the bring-up toolchain convention and keeps low offsets
+     * available for locals.
+     */
+    if (stacksize <= 0) {
+        return;
+    }
+
+    const int count = linx_fentry_reg_count(begin, end);
+    int reg = begin;
+    for (int i = 0; i < count; i++) {
+        const int64_t off = stacksize - ((int64_t)(i + 1) * 8);
+        if (off < 0) {
+            break;
+        }
+
+        if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+            TCGv_i64 addr64 = tcg_temp_new_i64();
+            tcg_gen_addi_i64(addr64, cpu_gpr[LINX_REG_SP], off);
+            linx_store_from_reg(ctx, linx_addr_from_i64(addr64),
+                                cpu_gpr[reg], MO_UQ);
+        }
+
+        if (reg == end) {
+            break;
+        }
+        reg = linx_next_fentry_reg(reg, end);
+    }
+}
+
+static void linx_fentry_restore_regs(DisasContext *ctx, int begin, int end,
+                                     int64_t stacksize)
+{
+    if (stacksize <= 0) {
+        return;
+    }
+
+    const int count = linx_fentry_reg_count(begin, end);
+    int reg = begin;
+    for (int i = 0; i < count; i++) {
+        const int64_t off = stacksize - ((int64_t)(i + 1) * 8);
+        if (off < 0) {
+            break;
+        }
+
+        if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+            TCGv_i64 addr64 = tcg_temp_new_i64();
+            TCGv_i64 val = tcg_temp_new_i64();
+            tcg_gen_addi_i64(addr64, cpu_gpr[LINX_REG_SP], off);
+            tcg_gen_qemu_ld_i64(val, linx_addr_from_i64(addr64), 0,
+                                MO_UQ | linx_mo_endian());
+            tcg_gen_mov_i64(cpu_gpr[reg], val);
+        }
+
+        if (reg == end) {
+            break;
+        }
+        reg = linx_next_fentry_reg(reg, end);
+    }
+}
+
 /* FENTRY: Function entry - save registers [Begin ~ End], adjust SP */
 static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
 {
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    /* Standalone frame macro blocks start execution without an explicit BSTART. */
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     
@@ -1367,14 +1564,25 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
     if (stacksize > 0) {
         tcg_gen_subi_i64(sp, sp, stacksize);
     }
+    linx_fentry_save_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     return true;
 }
 
 /* FEXIT: Function exit - restore registers, adjust SP (used with IND block for indirect return) */
 static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
 {
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
+
+    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
     /* SP = SP + stacksize */
     if (stacksize > 0) {
@@ -1388,9 +1596,19 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
 /* FRET.RA: Function return via RA - restore registers, adjust SP, return to RA */
 static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
 {
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
+
+    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
     /* SP = SP + stacksize */
     if (stacksize > 0) {
@@ -1398,6 +1616,7 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
     }
     
     /* Return via RA */
+    gen_helper_linx_check_bstart_target(tcg_env, ra);
     tcg_gen_mov_i64(cpu_pc, ra);
     tcg_gen_lookup_and_goto_ptr();
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -1407,9 +1626,19 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
 /* FRET.STK: Function return via stack - restore registers, adjust SP, return */
 static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
 {
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
+
+    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
     /* SP = SP + stacksize */
     if (stacksize > 0) {
@@ -1417,6 +1646,7 @@ static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
     }
     
     /* Return via RA (which was restored from stack) */
+    gen_helper_linx_check_bstart_target(tcg_env, ra);
     tcg_gen_mov_i64(cpu_pc, ra);
     tcg_gen_lookup_and_goto_ptr();
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -1669,6 +1899,7 @@ static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
     tcg_gen_br(done);
     
     gen_set_label(taken);
+    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     
@@ -1688,6 +1919,7 @@ static bool trans_b_nz(DisasContext *ctx, arg_b_nz *a)
     tcg_gen_br(done);
     
     gen_set_label(taken);
+    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     
@@ -1785,9 +2017,11 @@ static bool trans_hl_addtpc(DisasContext *ctx, arg_hl_addtpc *a)
 {
     /* HL.ADDTPC: PC-relative with 32-bit offset */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr pc_page = current_pc & ~(vaddr)0xfff;
     int64_t offset = (int64_t)(int32_t)a->imm;
+    offset <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, current_pc + offset);
+    tcg_gen_movi_i64(out, pc_page + offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -1919,9 +2153,10 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     CPULinxState *env = cpu_env(cpu);
 
     ctx->env = env;
-    ctx->brtype = env->brtype ? (uint8_t)env->brtype : LINX_BR_FALL;
+    ctx->brtype = (uint8_t)env->brtype;
     ctx->brtarget = 0;
     ctx->cur_insn_len = 0;
+    ctx->tgt_modified = false;
 }
 
 static void linx_tr_tb_start(DisasContextBase *db, CPUState *cpu)

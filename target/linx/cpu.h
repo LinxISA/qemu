@@ -28,8 +28,8 @@ enum {
     LINX_EXCP_INST_ACCESS_FAULT = 3, /* Instruction access fault */
     LINX_EXCP_LOAD_ACCESS_FAULT = 4, /* Load access fault */
     LINX_EXCP_STORE_ACCESS_FAULT = 5, /* Store access fault */
+    LINX_EXCP_BAD_BRANCH_TARGET = 6, /* Branch target not at block start marker */
 };
-
 enum {
     LINX_REG_ZERO = 0,
     LINX_REG_SP   = 1,
@@ -57,6 +57,10 @@ typedef struct CPUArchState {
     uint32_t brtype;
 
     uint64_t pc;
+
+    /* Small hot-path cache for bstart target validation. */
+    uint64_t bstart_cache[4];
+    uint32_t bstart_cache_next;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

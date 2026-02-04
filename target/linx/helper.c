@@ -74,9 +74,9 @@ void HELPER(linx_ebreak)(CPULinxState *env, uint32_t imm)
     }
         
     default:
-        /* Unknown semihosting operation - treat as breakpoint */
+        /* Unhandled semihosting operation - treat as breakpoint */
         qemu_log_mask(LOG_GUEST_ERROR, 
-                      "Linx: Unknown EBREAK imm=%d at PC=0x%lx\n",
+                      "Linx: Unhandled EBREAK imm=%d at PC=0x%lx\n",
                       imm, (unsigned long)env->pc);
         cs->exception_index = LINX_EXCP_BREAKPOINT;
         cpu_loop_exit_restore(cs, GETPC());
@@ -88,6 +88,128 @@ void HELPER(raise_exception)(CPULinxState *env, uint32_t exception)
 {
     CPUState *cs = env_cpu(env);
     cs->exception_index = exception;
+    cpu_loop_exit_restore(cs, GETPC());
+}
+
+
+static unsigned linx_insn_len(uint16_t hw)
+{
+    if ((hw & 0x1) == 0) {
+        return ((hw & 0xf) == 0xe) ? 6 : 2;
+    }
+    return ((hw & 0xf) == 0xf) ? 8 : 4;
+}
+
+static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+    const unsigned len = linx_insn_len(hw);
+
+    if (len == 2) {
+        /* C.BSTART.STD / C.BSTART.FP: mask=0xc7ff, BrType in bits [13:11] */
+        if ((hw & 0xc7ff) == 0x0000 || (hw & 0xc7ff) == 0x0080) {
+            const uint8_t brtype = (hw >> 11) & 0x7;
+            if (brtype != 0) {
+                return true;
+            }
+        }
+
+        /* C.BSTART DIRECT/COND: distinguish by low nibble */
+        if ((hw & 0x000f) == 0x0002 || (hw & 0x000f) == 0x0004) {
+            return true;
+        }
+
+        /* Common fixed fall-through markers for non-STD block types. */
+        switch (hw) {
+        case 0x0840: /* C.BSTART.SYS FALL */
+        case 0x08c0: /* C.BSTART.MPAR FALL */
+        case 0x48c0: /* C.BSTART.MSEQ FALL */
+        case 0x88c0: /* C.BSTART.VPAR FALL */
+        case 0xc8c0: /* C.BSTART.VSEQ FALL */
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    if (len == 4) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                              ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+
+        /* BSTART.*: low byte 0x01, branch kind in bits [14:12] is non-zero. */
+        if ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) != 0) {
+            return true;
+        }
+
+        /* Template blocks: FENTRY/FEXIT/FRET.* share opcode bits[6:0]=0x41. */
+        if ((insn & 0x7f) == 0x41 && ((insn >> 12) & 0x7) <= 3) {
+            return true;
+        }
+
+        return false;
+    }
+
+    if (len == 6) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+
+        const uint16_t prefix = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+        const uint32_t main32 = (uint32_t)buf[2] | ((uint32_t)buf[3] << 8) |
+                                ((uint32_t)buf[4] << 16) | ((uint32_t)buf[5] << 24);
+        if ((prefix & 0xf) != 0xe) {
+            return false;
+        }
+
+        /* HL.BSTART.*: encoded as a 16-bit prefix + 32-bit BSTART main part. */
+        if ((main32 & 0xff) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
+{
+    /*
+     * This helper is on the hot path for indirect control flow (RET/IND/ICALL
+     * and template returns). Cache the most recently-validated targets to avoid
+     * re-reading guest memory for tight call/return loops.
+     *
+     * Note: This cache is conservative for typical bare-metal workloads (code
+     * is not self-modifying). If guest code changes, TB invalidation will
+     * naturally trigger re-translation, but this cache may still accept a
+     * previously-validated address until reset.
+     */
+    for (size_t i = 0; i < ARRAY_SIZE(env->bstart_cache); i++) {
+        if (env->bstart_cache[i] == target) {
+            return;
+        }
+    }
+
+    if (linx_is_bstart_at_addr(env, target)) {
+        env->bstart_cache[env->bstart_cache_next & (ARRAY_SIZE(env->bstart_cache) - 1)] = target;
+        env->bstart_cache_next++;
+        return;
+    }
+
+    CPUState *cs = env_cpu(env);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: invalid branch target 0x%" PRIx64 " (not a block start marker)\n",
+                  target);
+    cs->exception_index = LINX_EXCP_BAD_BRANCH_TARGET;
     cpu_loop_exit_restore(cs, GETPC());
 }
 
