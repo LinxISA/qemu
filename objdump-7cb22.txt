@@ -1,0 +1,112 @@
+
+/Users/zhoubot/linux/build-linx-fixed/vmlinux:	file format elf64-linx
+
+Disassembly of section .text:
+
+000000000007ca78 <.LBB126_197>:
+   7ca80: b5 2f 1c 00  andiw	t#1, 1,	->t
+   7ca84: 1c 56        c.sext.w	t#1,	->t
+   7ca86: 26 66        c.setc.eq	t#1, s1
+   7ca88: d4 04        C.BSTART	COND, 0x7cb22
+   7ca8a: 19 31 37 00  ldi	[s3, 24],	->a0
+   7ca8e: a6 60        c.setc.eq	a0, s1
+   7ca90: 54 04        C.BSTART	COND, 0x7cb1a
+   7ca92: 19 32 01 00  ldi	[a0, 0],	->a2
+   7ca96: 26 61        c.setc.eq	a2, s1
+   7ca98: 06 13        c.movr	s1,	->a0
+   7ca9a: 94 00        C.BSTART	COND, 0x7caac
+   7ca9c: 99 4f d2 03  lbui	[a2, 61],	->t
+   7caa0: b5 2f 0c 02  andiw	t#1, 32,	->t
+   7caa4: 1c 56        c.sext.w	t#1,	->t
+   7caa6: 36 66        c.setc.ne	t#1, s1
+   7caa8: 92 03        C.BSTART	DIRECT, 0x7cb1a
+   7caaa: 06 11        c.movr	a2,	->a0
+
+000000000007caac <.LBB126_202>:
+   7caac: 74 03        C.BSTART	COND, 0x7cb1a
+   7caae: 99 37 22 00  ldi	[a2, 16],	->s4
+   7cab2: e6 63        c.setc.eq	s4, s1
+   7cab4: 06 11        c.movr	a2,	->a0
+   7cab6: 92 00        C.BSTART	DIRECT, 0x7cac8
+   7cab8: c6 13        c.movr	s4,	->a0
+
+000000000007caba <.LBB126_208>:
+   7caba: 1e 00 01 40 b5 be 56 50      HL.BSTART.STD	CALL, 0xec58e, ra=.LBB126_204
+
+000000000007cac2 <.LBB126_204>:
+   7cac2: 84 02        C.BSTART	COND, 0x7cb12
+   7cac4: 06 14        c.movr	s5,	->a0
+   7cac6: 26 7c        c.setc.eq	s5, s4
+
+000000000007cac8 <.LBB126_205>:
+   7cac8: d4 01        C.BSTART	COND, 0x7cb02
+   7caca: 19 38 01 00  ldi	[a0, 0],	->s5
+   7cace: 3b 0f 00 02  ssrget	CSTATE,	->u
+   7cad2: bb 0f 00 02  ssrget	CSTATE,	->t
+   7cad6: 95 2f fc fe  andi	t#1, -17,	->t
+   7cada: 3b 10 0c 02  ssrset	t#1, CSTATE
+   7cade: 8a 10        c.lwi	[a0, 8],	->t
+   7cae0: 25 02 dc 06  addw	t#1, s2,	->a2
+   7cae4: 59 20 22 04  swi	a2, [a0, 8]
+   7cae8: bb 02 00 02  ssrget	CSTATE,	->a3
+   7caec: 95 2f 0e 01  andi	u#1, 16,	->t
+   7caf0: 36 66        c.setc.ne	t#1, s1
+   7caf2: 84 fe        C.BSTART	COND, 0x7cac2
+   7caf4: 95 af f2 fe  andi	a3, -17,	->t
+   7caf8: 3b 10 0c 02  ssrset	t#1, CSTATE
+   7cafc: 1c 51        c.sext.w	a2,	->t
+   7cafe: 36 66        c.setc.ne	t#1, s1
+   7cb00: d2 fd        C.BSTART	DIRECT, 0x7caba
+
+000000000007cb02 <.LBB126_207>:
+   7cb02: 04 fe        C.BSTART	COND, 0x7cac2
+   7cb04: 95 bf 02 01  ori	a3, 16,	->t
+   7cb08: 3b 10 0c 02  ssrset	t#1, CSTATE
+   7cb0c: 1c 51        c.sext.w	a2,	->t
+   7cb0e: 36 66        c.setc.ne	t#1, s1
+   7cb10: 52 fd        C.BSTART	DIRECT, 0x7caba
+
+000000000007cb12 <.LBB126_209>:
+   7cb12: 00 08        C.BSTART
+   7cb14: 9a 1b        c.ldi	[s3, 24],	->t
+   7cb16: 19 31 0c 00  ldi	[t#1, 0],	->a0
+
+000000000007cb1a <.LBB126_210>:
+   7cb1a: 1e 00 01 40 9d be 56 50      HL.BSTART.STD	CALL, 0xec58e, ra=.LBB126_211
+
+000000000007cb22 <.LBB126_211>:
+   7cb22: a4 00        C.BSTART	COND, 0x7cb36
+   7cb24: 19 31 47 00  ldi	[s3, 32],	->a0
+   7cb28: a6 60        c.setc.eq	a0, s1
+   7cb2a: 1e 00 01 40 99 be d6 50      HL.BSTART.STD	CALL, 0xec58e, ra=.LBB126_213
+   7cb32: 19 31 01 00  ldi	[a0, 0],	->a0
+
+000000000007cb36 <.LBB126_213>:
+   7cb36: a4 00        C.BSTART	COND, 0x7cb4a
+   7cb38: 19 31 57 00  ldi	[s3, 40],	->a0
+   7cb3c: a6 60        c.setc.eq	a0, s1
+   7cb3e: 1e 00 01 40 94 be d6 50      HL.BSTART.STD	CALL, 0xec58e, ra=.LBB126_215
+   7cb46: 19 31 01 00  ldi	[a0, 0],	->a0
+
+000000000007cb4a <.LBB126_215>:
+   7cb4a: 24 f7        C.BSTART	COND, 0x7ca2e
+   7cb4c: 19 31 67 00  ldi	[s3, 48],	->a0
+   7cb50: a6 60        c.setc.eq	a0, s1
+   7cb52: 1e 00 01 40 8f be d6 50      HL.BSTART.STD	CALL, 0xec58e, ra=.LBB126_224
+   7cb5a: 19 31 01 00  ldi	[a0, 0],	->a0
+
+000000000007cb5e <.LBB126_224>:
+   7cb5e: 82 f6        C.BSTART	DIRECT, 0x7ca2e
+
+000000000007cb60 <.LBB126_217>:
+   7cb60: 00 08        C.BSTART
+   7cb62: 46 14        c.movr	s6,	->a0
+   7cb64: 41 30 35 3d  FRET.STK	[ra ~ s8], sp!, 240
+
+000000000007cb68 <.LBB126_218>:
+   7cb68: 0e 00 01 40 e3 0d 16 53      HL.BSTART.STD	CALL, 0x802f4, ra=.LBB126_223
+   7cb70: 59 b0 15 04  sdi	s0, [sp, 16]
+   7cb74: 56 10        c.movi	1,	->a0
+   7cb76: 59 20 11 04  swi	a0, [sp, 8]
+   7cb7a: 07 c1 29 00  addtpc	668,	->a0
+   7cb7e: 15 01 e1 29  addi	a0, 670,	->a0

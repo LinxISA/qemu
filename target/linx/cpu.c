@@ -14,15 +14,90 @@
 #include "exec/translation-block.h"
 #include "exec/target_page.h"
 #include "exec/log.h"
+#include "fpu/softfloat-helpers.h"
 #include "tcg/debug-assert.h"
 #include "accel/tcg/cpu-ops.h"
 #include "system/runstate.h"
+#include "qemu/timer.h"
+
+/* Managing-ACR SSR indices (low 12 bits). */
+enum {
+    LINX_SSR_ECSTATE  = 0xF00,
+    LINX_SSR_EVBASE   = 0xF01,
+    LINX_SSR_TRAPNO   = 0xF02,
+    LINX_SSR_TRAPARG0 = 0xF03,
+    LINX_SSR_IPENDING = 0xF08,
+    LINX_SSR_EOIEI    = 0xF0A,
+    LINX_SSR_EBPC     = 0xF0B,
+    LINX_SSR_ETPC     = 0xF0D,
+    LINX_SSR_EBPCN    = 0xF0E,
+    LINX_SSR_TIMECMP  = 0xF21,
+};
+
+/* Common (non-banked) SSR indices. */
+enum {
+    LINX_SSR_CSTATE = 0x0020,
+};
+
+/* CSTATE bits (keep in sync with target/linx/helper.c). */
+#define LINX_CSTATE_ACR_MASK 0xFULL
+#define LINX_CSTATE_I_BIT    (1ULL << 4)
+
+/* Simple timer interrupt ID (bring-up). */
+enum {
+    LINX_IRQ_TIMER0 = 0,
+};
+
+static inline uint64_t linx_cstate_set_acr(uint64_t cstate, uint32_t acr)
+{
+    return (cstate & ~LINX_CSTATE_ACR_MASK) | ((uint64_t)acr & LINX_CSTATE_ACR_MASK);
+}
+
+static inline bool linx_irq_allowed(const CPULinxState *env, uint32_t dst_acr)
+{
+    const uint32_t cur_acr = env->acr & 0xF;
+    const uint64_t cstate = env->ssr[LINX_SSR_CSTATE];
+    const bool ie = (cstate & LINX_CSTATE_I_BIT) != 0;
+
+    if (dst_acr < cur_acr) {
+        return true;
+    }
+    if (dst_acr == cur_acr) {
+        return ie;
+    }
+    return ie;
+}
+
+static inline void linx_irq_kick_if_allowed(CPUState *cs, CPULinxState *env,
+                                            uint32_t dst_acr)
+{
+    if (!linx_irq_allowed(env, dst_acr)) {
+        return;
+    }
+    if (env->ssr_acr[dst_acr][LINX_SSR_IPENDING] == 0) {
+        return;
+    }
+    cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+}
+
+static void linx_timer_cb(void *opaque)
+{
+    CPUState *cs = opaque;
+    LinxCPU *cpu = LINX_CPU(cs);
+    CPULinxState *env = &cpu->env;
+
+    /* Set pending bit and raise a hard interrupt. */
+    env->ssr_acr[0][LINX_SSR_IPENDING] |= (1ull << LINX_IRQ_TIMER0);
+    linx_irq_kick_if_allowed(cs, env, 0);
+}
 
 static hwaddr linx_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
     /* Linx currently uses simple identity mapping. */
     return (hwaddr)addr;
 }
+
+static void linx_cpu_do_interrupt(CPUState *cs);
 
 static void linx_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -73,7 +148,17 @@ static bool linx_cpu_has_work(CPUState *cs)
 
 static bool linx_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
-    /* No interrupts implemented yet */
+    if (interrupt_request & CPU_INTERRUPT_HARD) {
+        /* Route all external interrupts to EXCP_INTERRUPT for now. */
+        cs->exception_index = EXCP_INTERRUPT;
+        if (!linx_irq_allowed(cpu_env(cs), 0)) {
+            /* Leave the interrupt request pending until it becomes allowed. */
+            cs->exception_index = -1;
+            return false;
+        }
+        linx_cpu_do_interrupt(cs);
+        return true;
+    }
     return false;
 }
 
@@ -133,10 +218,31 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case EXCP_INTERRUPT:
-        /* Hardware interrupt - not implemented yet */
-        qemu_log_mask(CPU_LOG_INT, "Linx: hardware interrupt (ignored)\n");
+        /*
+         * Hardware interrupt (bring-up).
+         *
+         * Model this as an asynchronous SERVICE_REQUEST routed to ACR0:
+         * save minimal trap state into ACR0's managing SSR bank and vector
+         * to EVBASE_ACR0.
+         */
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+
+        const uint64_t evbase = env->ssr_acr[0][LINX_SSR_EVBASE];
+
+        /* Save trap source state into ACR0 bank. */
+        env->ssr_acr[0][LINX_SSR_ECSTATE] = env->ssr[LINX_SSR_CSTATE];
+        env->ssr_acr[0][LINX_SSR_EBPC] = last_pc;
+        env->ssr_acr[0][LINX_SSR_ETPC] = last_pc;
+        env->ssr_acr[0][LINX_SSR_EBPCN] = last_pc;
+        env->ssr_acr[0][LINX_SSR_TRAPNO] = 0; /* profile-defined */
+        env->ssr_acr[0][LINX_SSR_TRAPARG0] = LINX_IRQ_TIMER0;
+
+        /* Switch to ACR0 and vector. */
+        env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
+        env->acr = 0;
+        env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], 0);
+        env->pc = evbase ? evbase : last_pc;
         cs->exception_index = -1;
-        cpu_set_interrupt(cs, CPU_INTERRUPT_EXITTB);
         return;
 
     default:
@@ -196,8 +302,10 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     CPULinxState *env = cpu_env(cs);
     int i;
 
-    qemu_fprintf(f, "pc=0x%016" PRIx64 " brtype=%u carg=0x%08x cond=%u tgt=0x%016" PRIx64 "\n",
-                 env->pc, env->brtype, env->carg, env->cond, env->tgt);
+    qemu_fprintf(f,
+                 "pc=0x%016" PRIx64 " brtype=%u carg=0x%08x cond=%u tgt=0x%016" PRIx64
+                 " fcsr=0x%08x\n",
+                 env->pc, env->brtype, env->carg, env->cond, env->tgt, env->fcsr);
     for (i = 0; i < LINX_GPR_COUNT; i += 4) {
         qemu_fprintf(f,
                      "r%-2d=0x%016" PRIx64 " r%-2d=0x%016" PRIx64
@@ -216,8 +324,19 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
 
     env->gpr[LINX_REG_ZERO] = 0;
     env->pc = 0;
+    env->fcsr = 0;
+    env->acr = 0;
+    set_float_exception_flags(0, &env->fp_status);
+    set_float_rounding_mode(float_round_nearest_even, &env->fp_status);
+    set_default_nan_mode(true, &env->fp_status);
+    set_float_default_nan_pattern(0b01000000, &env->fp_status);
     cs->exception_index = -1;
     cs->halted = 0;
+
+    /* Cancel any pending timer interrupt. */
+    if (env->timer) {
+        timer_del(env->timer);
+    }
 }
 
 static void linx_cpu_realize(DeviceState *dev, Error **errp)
@@ -240,6 +359,14 @@ static void linx_cpu_realize(DeviceState *dev, Error **errp)
 
     qemu_init_vcpu(cs);
     cpu_reset(cs);
+
+    /* Create the per-CPU virtual timer after reset initialization. */
+    {
+        CPULinxState *env = cpu_env(cs);
+        if (!env->timer) {
+            env->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, linx_timer_cb, cs);
+        }
+    }
 }
 
 static ObjectClass *linx_cpu_class_by_name(const char *cpu_model)
@@ -285,17 +412,26 @@ static const TCGCPUOps linx_tcg_ops = {
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(env.pc, LinxCPU),
         VMSTATE_UINT32(env.cond, LinxCPU),
         VMSTATE_UINT64(env.tgt, LinxCPU),
         VMSTATE_UINT32(env.carg, LinxCPU),
         VMSTATE_UINT32(env.brtype, LinxCPU),
+        VMSTATE_UINT32(env.blocktype, LinxCPU),
+        VMSTATE_UINT32(env.fcsr, LinxCPU),
+        VMSTATE_UINT32(env.acr, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.gpr, LinxCPU, LINX_GPR_COUNT),
         VMSTATE_UINT64_ARRAY(env.tq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.uq, LinxCPU, 4),
+        VMSTATE_UINT64_ARRAY(env.lb, LinxCPU, 3),
+        VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
+        VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),
+        VMSTATE_UINT64(env.lr_addr, LinxCPU),
+        VMSTATE_UINT32(env.lr_size, LinxCPU),
+        VMSTATE_UINT32(env.lr_valid, LinxCPU),
         VMSTATE_END_OF_LIST(),
     },
 };

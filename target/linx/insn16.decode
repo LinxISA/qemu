@@ -66,3 +66,7 @@ c_addi          .... .... ..00 1100 %SrcL simm5=%simm5_11_s5
 # Shift left/right immediate (T-hand = T-hand op imm)
 c_slli          0001 0... ..10 1100 %uimm5
 c_srli          0001 1... ..10 1100 %uimm5
+
+# Compare immediate (T-hand == imm ? 1 : 0, result to T-hand)
+c_cmp_eqi       0000 0... ..10 1100 simm5=%simm5_6_s5
+c_cmp_nei       0000 1... ..10 1100 simm5=%simm5_6_s5

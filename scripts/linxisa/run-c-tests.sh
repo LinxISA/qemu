@@ -6,12 +6,32 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LINXISA_DIR="${LINXISA_DIR:-$HOME/linxisa}"
 LLVM_BUILD="${LLVM_BUILD:-$HOME/llvm-project/build-linxisa-clang}"
 CLANG="${CLANG:-$LLVM_BUILD/bin/clang}"
-QEMU_BUILD="${QEMU_BUILD:-$ROOT/build-linx}"
+QEMU_BUILD="${QEMU_BUILD:-$ROOT/build}"
 
 SRC_DIR="$LINXISA_DIR/compiler/llvm/tests/c"
 
-QEMU_LINX64="$QEMU_BUILD/qemu-system-linx64"
-QEMU_LINX32="$QEMU_BUILD/qemu-system-linx32"
+find_qemu() {
+  local name="$1"
+  local cand
+  for cand in \
+    "$QEMU_BUILD/$name" \
+    "$QEMU_BUILD/${name}-unsigned" \
+    "$ROOT/build/$name" \
+    "$ROOT/build/${name}-unsigned" \
+    "$ROOT/build-tci/$name" \
+    "$ROOT/build-tci/${name}-unsigned" \
+    "$ROOT/build-linx/$name" \
+    "$ROOT/build-linx/${name}-unsigned"; do
+    if [[ -x "$cand" ]]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+QEMU_LINX64="$(find_qemu qemu-system-linx64 || true)"
+QEMU_LINX32="$(find_qemu qemu-system-linx32 || true)"
 
 if [[ ! -x "$CLANG" ]]; then
   echo "error: clang not found/executable: $CLANG" >&2
@@ -22,12 +42,11 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 if [[ ! -x "$QEMU_LINX64" ]]; then
-  echo "error: qemu-system-linx64 not found: $QEMU_LINX64" >&2
+  echo "error: qemu-system-linx64 not found (set QEMU_BUILD=... or build it)." >&2
   exit 1
 fi
-if [[ ! -x "$QEMU_LINX32" ]]; then
-  echo "error: qemu-system-linx32 not found: $QEMU_LINX32" >&2
-  exit 1
+if [[ -z "$QEMU_LINX32" ]]; then
+  echo "warning: qemu-system-linx32 not found; skipping linx32 tests." >&2
 fi
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/linxisa-qemu-tests.XXXXXX")"
@@ -295,10 +314,12 @@ run_one() {
   "$CLANG" -target "$triple" "${COMMON_FLAGS[@]}" -I "$SRC_DIR" -c "$TMP/runner.c" -o "$out_o"
 
   echo "[run] $qemu_bin -kernel $out_o"
-  "$qemu_bin" -nographic -machine virt -kernel "$out_o"
+  "$qemu_bin" -nographic -monitor none -machine virt -kernel "$out_o"
 }
 
 run_one linx64-unknown-elf "$QEMU_LINX64"
-run_one linx32-unknown-elf "$QEMU_LINX32"
+if [[ -n "$QEMU_LINX32" ]]; then
+  run_one linx32-unknown-elf "$QEMU_LINX32"
+fi
 
 echo "ok"

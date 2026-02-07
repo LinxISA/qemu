@@ -13,7 +13,9 @@
 %simm32 4:s12 28:20
 %uimm24 4:12 36:12
 %simm24 4:s12 36:12
+%ssr_id 4:12 36:12
 %simm_4_s12_31_17 4:s12 31:17
+%simm_4_s12_23_5_36_12 4:s12 23:5 36:12
 
 # HL.LUI | hl.lui imm, ->{t, u, Rd} (load upper immediate, 32-bit)
 hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
@@ -21,20 +23,51 @@ hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... ...
 # HL.ADDTPC | hl.addtpc imm, ->{t, u, Rd} (PC-relative, 32-bit immediate)
 hl_addtpc 0000 0000 0000 0000 .... .... .... .... .... .... .000 0111 .... .... .... 1110 %RegDst imm=%imm32
 
+# HL.SSRGET | hl.ssrget SSR_ID, ->{t, u, Rd}
+hl_ssrget 0000 0000 0000 0000 .... .... .... 0000 0000 .... .011 1011 .... .... .... 1110 %RegDst ssrid=%ssr_id
+
+# HL.SSRSET | hl.ssrset SrcL, SSR_ID
+hl_ssrset 0000 0000 0000 0000 .... .... .... .... .001 0000 0011 1011 .... .... .... 1110 ssrid=%ssr_id %SrcL
+
 # HL.ADDI | hl.addi SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate)
 hl_addi 0000 0000 0000 0000 .... .... .... .... .000 .... .001 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
+
+# HL.ADDIW | hl.addiw SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate, word)
+hl_addiw 0000 0000 0000 0000 .... .... .... .... .000 .... .011 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
 
 # HL.SUBI | hl.subi SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate)
 hl_subi 0000 0000 0000 0000 .... .... .... .... .001 .... .001 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
 
+# HL.SUBIW | hl.subiw SrcL, uimm, ->{t, u, Rd} (24-bit unsigned immediate, word)
+hl_subiw 0000 0000 0000 0000 .... .... .... .... .001 .... .011 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
+
 # HL.ANDI | hl.andi SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
 hl_andi 0000 0000 0000 0000 .... .... .... .... .010 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.ANDIW | hl.andiw SrcL, simm, ->{t, u, Rd} (24-bit signed immediate, word)
+hl_andiw 0000 0000 0000 0000 .... .... .... .... .010 .... .011 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
 
 # HL.ORI | hl.ori SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
 hl_ori 0000 0000 0000 0000 .... .... .... .... .011 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
 
+# HL.ORIW | hl.oriw SrcL, simm, ->{t, u, Rd} (24-bit signed immediate, word)
+hl_oriw 0000 0000 0000 0000 .... .... .... .... .011 .... .011 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
 # HL.XORI | hl.xori SrcL, simm, ->{t, u, Rd} (24-bit signed immediate)
 hl_xori 0000 0000 0000 0000 .... .... .... .... .100 .... .001 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.XORIW | hl.xoriw SrcL, simm, ->{t, u, Rd} (24-bit signed immediate, word)
+hl_xoriw 0000 0000 0000 0000 .... .... .... .... .100 .... .011 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+
+# HL.CMP.*I | hl.cmp.*i SrcL, imm, ->{t, u, Rd} (24-bit immediate)
+hl_cmp_eqi  0000 0000 0000 0000 .... .... .... .... .000 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_nei  0000 0000 0000 0000 .... .... .... .... .001 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_andi 0000 0000 0000 0000 .... .... .... .... .010 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_ori  0000 0000 0000 0000 .... .... .... .... .011 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_lti  0000 0000 0000 0000 .... .... .... .... .100 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_gei  0000 0000 0000 0000 .... .... .... .... .101 .... .101 0101 .... .... .... 1110 %RegDst %SrcL simm=%simm24
+hl_cmp_ltui 0000 0000 0000 0000 .... .... .... .... .110 .... .101 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
+hl_cmp_geui 0000 0000 0000 0000 .... .... .... .... .111 .... .101 0101 .... .... .... 1110 %RegDst %SrcL %uimm24
 
 # HL.BSTART.STD variants (29-bit PC-relative)
 hl_bstart_std_fall   0000 0000 0000 0000 .... .... .... .... .001 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
@@ -42,3 +75,16 @@ hl_bstart_std_direct 0000 0000 0000 0000 .... .... .... .... .010 0000 0000 0001
 hl_bstart_std_cond   0000 0000 0000 0000 .... .... .... .... .011 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 hl_bstart_std_call   0000 0000 0000 0000 .... .... .... .... .100 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 
+# HL.*.PCR long-range PC-relative loads/stores (29-bit byte offset)
+hl_lb_pcr    0000 0000 0000 0000 .... .... .... .... .000 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_lbu_pcr   0000 0000 0000 0000 .... .... .... .... .100 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_lh_pcr    0000 0000 0000 0000 .... .... .... .... .001 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_lhu_pcr   0000 0000 0000 0000 .... .... .... .... .101 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_lw_pcr    0000 0000 0000 0000 .... .... .... .... .010 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_lwu_pcr   0000 0000 0000 0000 .... .... .... .... .110 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+hl_ld_pcr    0000 0000 0000 0000 .... .... .... .... .011 .... .011 1001 .... .... .... 1110 %RegDst simm=%simm_4_s12_31_17
+
+hl_sb_pcr    0000 0000 0000 0000 .... .... .... .... .000 .... .110 1001 .... .... .... 1110 %SrcL simm=%simm_4_s12_23_5_36_12
+hl_sh_pcr    0000 0000 0000 0000 .... .... .... .... .001 .... .110 1001 .... .... .... 1110 %SrcL simm=%simm_4_s12_23_5_36_12
+hl_sw_pcr    0000 0000 0000 0000 .... .... .... .... .010 .... .110 1001 .... .... .... 1110 %SrcL simm=%simm_4_s12_23_5_36_12
+hl_sd_pcr    0000 0000 0000 0000 .... .... .... .... .011 .... .110 1001 .... .... .... 1110 %SrcL simm=%simm_4_s12_23_5_36_12

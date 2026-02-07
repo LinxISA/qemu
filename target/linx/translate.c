@@ -47,13 +47,80 @@ static TCGv_i64 cpu_tgt;
 static TCGv_i32 cpu_cond;
 static TCGv_i32 cpu_carg;  /* Commit argument flag */
 static TCGv_i32 cpu_brtype;
+static TCGv_i32 cpu_blocktype;
+static TCGv_i32 cpu_tile_func;
+static TCGv_i32 cpu_tile_dtype;
+static TCGv_i32 cpu_tile_iot_valid;
+static TCGv_i32 cpu_tile_iot_flags;
+static TCGv_i32 cpu_tile_iot_dst;
+static TCGv_i32 cpu_tile_iot_grp;
+static TCGv_i32 cpu_tile_iot_src0;
+static TCGv_i32 cpu_tile_iot_src1;
+static TCGv_i32 cpu_tile_iot_reg;
+static TCGv_i32 cpu_tile_iot_size;
+static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
+static TCGv_i64 cpu_insn_count;
 
 static unsigned linx_insn_len(uint16_t hw);
+
+static bool linx_watch_store_enabled;
+static uint64_t linx_watch_store_lo;
+static uint64_t linx_watch_store_hi;
+static bool linx_watch_store_pc_filter_enabled;
+static uint64_t linx_watch_store_pc_lo;
+static uint64_t linx_watch_store_pc_hi;
+
+static bool linx_watch_load_enabled;
+static uint64_t linx_watch_load_lo;
+static uint64_t linx_watch_load_hi;
+static bool linx_watch_load_pc_filter_enabled;
+static uint64_t linx_watch_load_pc_lo;
+static uint64_t linx_watch_load_pc_hi;
+
+static bool linx_trace_ra_enabled;
+static bool linx_trace_ra_pc_enabled;
+static uint64_t linx_trace_ra_pc;
+
+static bool linx_trace_reg_enabled;
+static uint32_t linx_trace_reg;
+static bool linx_trace_reg_pc_filter_enabled;
+static uint64_t linx_trace_reg_pc_lo;
+static uint64_t linx_trace_reg_pc_hi;
+
+/*
+ * LinxISA bring-up ABI: reserve a fixed outgoing argument/home area above the
+ * function's local stack frame.
+ *
+ * The LLVM backend generates stack references to (stacksize + offset) to access
+ * this area (e.g. to spill/canonicalize argument registers around calls). The
+ * frame template blocks therefore adjust SP by (stacksize + callframe_size),
+ * while saving/restoring callee-saved registers within the local stacksize
+ * region.
+ */
+static uint64_t linx_callframe_size;
+
+static inline bool linx_trace_ra_pc_match(vaddr pc)
+{
+    return !linx_trace_ra_pc_enabled || (uint64_t)pc == linx_trace_ra_pc;
+}
+
+static inline bool linx_trace_reg_pc_match(vaddr pc)
+{
+    return !linx_trace_reg_pc_filter_enabled ||
+           ((uint64_t)pc >= linx_trace_reg_pc_lo &&
+            (uint64_t)pc <= linx_trace_reg_pc_hi);
+}
 
 static inline MemOp linx_mo_endian(void)
 {
     return MO_LE;
+}
+
+static inline void linx_lr_invalidate(void)
+{
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, lr_valid));
 }
 
 static TCGv_i64 linx_get_reg(unsigned code)
@@ -114,6 +181,20 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_cond, 0);
     tcg_gen_movi_i32(cpu_carg, 0);
     tcg_gen_movi_i32(cpu_brtype, brtype);
+    tcg_gen_movi_i32(cpu_blocktype, 0);
+    tcg_gen_movi_i32(cpu_tile_func, 0);
+    tcg_gen_movi_i32(cpu_tile_dtype, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_size, 0);
+    tcg_gen_movi_i64(cpu_lb[0], 0);
+    tcg_gen_movi_i64(cpu_lb[1], 0);
+    tcg_gen_movi_i64(cpu_lb[2], 0);
     ctx->tgt_modified = false;
     
     /* For COND blocks: set diverted target in bpc (cpu_tgt) */
@@ -180,8 +261,8 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
         }
         const uint32_t insn = ldl_le_p(buf);
 
-        /* BSTART.*: low byte 0x01, branch kind in bits [14:12] is non-zero. */
-        if ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) != 0) {
+        /* BSTART.*: bits[6:0]=0x01, branch kind in bits [14:12] is non-zero. */
+        if ((insn & 0x7f) == 0x01 && ((insn >> 12) & 0x7) != 0) {
             return true;
         }
 
@@ -242,13 +323,15 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
 
 static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
 {
+    /* Commit any tile-block side effects before control-flow commit. */
+    gen_helper_linx_tile_commit(tcg_env);
+
     switch (ctx->brtype & 0x7) {
     case LINX_BR_FALL:
         /* Always fall through */
         linx_gen_goto_tb(ctx, 0, fallthrough);
         break;
     case LINX_BR_DIRECT:
-    case LINX_BR_CALL:
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             /*
              * Fast path: direct/call blocks with a fixed PC-relative target and no
@@ -257,6 +340,21 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             linx_gen_goto_tb(ctx, 0, ctx->brtarget);
         } else {
             /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT). */
+            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            tcg_gen_mov_i64(cpu_pc, cpu_tgt);
+            tcg_gen_lookup_and_goto_ptr();
+            ctx->base.is_jmp = DISAS_NORETURN;
+        }
+        break;
+    case LINX_BR_CALL:
+        /*
+         * Call blocks branch to their target like DIRECT, but also set RA to the
+         * fall-through block start marker so the callee can return.
+         */
+        tcg_gen_movi_i64(cpu_gpr[LINX_REG_RA], fallthrough);
+        if (!ctx->tgt_modified && ctx->brtarget != 0) {
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget);
+        } else {
             gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
             tcg_gen_mov_i64(cpu_pc, cpu_tgt);
             tcg_gen_lookup_and_goto_ptr();
@@ -299,7 +397,18 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     }
     case LINX_BR_IND:
+        /* Indirect jump: jump to cpu_tgt (must be set by SETC.TGT) */
+        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+        tcg_gen_mov_i64(cpu_pc, cpu_tgt);
+        tcg_gen_lookup_and_goto_ptr();
+        ctx->base.is_jmp = DISAS_NORETURN;
+        break;
     case LINX_BR_ICALL:
+        /*
+         * Indirect call: like IND, but set RA to the fall-through block start
+         * marker for return.
+         */
+        tcg_gen_movi_i64(cpu_gpr[LINX_REG_RA], fallthrough);
         /* Indirect jump/call: jump to cpu_tgt (must be set by SETC.TGT) */
         gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         tcg_gen_mov_i64(cpu_pc, cpu_tgt);
@@ -474,6 +583,133 @@ static bool trans_bstart_cond(DisasContext *ctx, arg_bstart_cond *a)
     return true;
 }
 
+static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    return true;
+}
+
+static bool trans_bstart_vseq(DisasContext *ctx, arg_bstart_vseq *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    return true;
+}
+
+static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    return true;
+}
+
+static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    return true;
+}
+
+static bool trans_b_dim(DisasContext *ctx, arg_b_dim *a)
+{
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
+    if (a->lb > 2) {
+        return linx_illegal(ctx);
+    }
+
+    TCGv_i64 src = linx_get_reg(a->reg);
+    const int64_t imm = (int64_t)(a->uimm & 0x1ffffu);
+    tcg_gen_addi_i64(cpu_lb[a->lb], src, imm);
+    return true;
+}
+
+static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
+{
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
+
+    uint32_t flags = 0;
+    if (a->s0v) {
+        flags |= 1u << 0;
+    }
+    if (a->s1v) {
+        flags |= 1u << 1;
+    }
+    if (a->s0r) {
+        flags |= 1u << 2;
+    }
+    if (a->s1r) {
+        flags |= 1u << 3;
+    }
+
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, a->dst & 0x7);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, a->grp & 0x1);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_reg, a->reg & 0x1f);
+    return true;
+}
+
+static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
+{
+    if (ctx->brtype == 0) {
+        return linx_illegal(ctx);
+    }
+
+    uint32_t flags = 0;
+    if (a->s0v) {
+        flags |= 1u << 0;
+    }
+    if (a->s1v) {
+        flags |= 1u << 1;
+    }
+    if (a->s0r) {
+        flags |= 1u << 2;
+    }
+    if (a->s1r) {
+        flags |= 1u << 3;
+    }
+
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, a->dst & 0x7);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, a->grp & 0x1);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_size, a->size & 0x1f);
+    return true;
+}
+
 static bool trans_setret(DisasContext *ctx, arg_setret *a)
 {
     vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -508,6 +744,13 @@ static bool trans_setc_tgt(DisasContext *ctx, arg_setc_tgt *a)
 
 static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r);
 
+static bool trans_setc_cmp_imm(DisasContext *ctx, TCGCond c, TCGv_i64 l, int64_t imm)
+{
+    TCGv_i64 r = tcg_temp_new_i64();
+    tcg_gen_movi_i64(r, (uint64_t)imm);
+    return trans_setc_cmp(ctx, c, l, r);
+}
+
 static bool trans_c_setc_eq(DisasContext *ctx, arg_c_setc_eq *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
@@ -520,6 +763,70 @@ static bool trans_c_setc_ne(DisasContext *ctx, arg_c_setc_ne *a)
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 r = linx_get_reg(a->SrcR);
     return trans_setc_cmp(ctx, TCG_COND_NE, l, r);
+}
+
+static bool trans_setc_eq(DisasContext *ctx, arg_setc_eq *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    return trans_setc_cmp(ctx, TCG_COND_EQ, l, r);
+}
+
+static bool trans_setc_eqi(DisasContext *ctx, arg_setc_eqi *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    return trans_setc_cmp_imm(ctx, TCG_COND_EQ, l, simm);
+}
+
+static bool trans_setc_ne(DisasContext *ctx, arg_setc_ne *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    return trans_setc_cmp(ctx, TCG_COND_NE, l, r);
+}
+
+static bool trans_setc_nei(DisasContext *ctx, arg_setc_nei *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, l, simm);
+}
+
+static bool trans_setc_and(DisasContext *ctx, arg_setc_and *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_and_i64(out, l, r);
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
+}
+
+static bool trans_setc_andi(DisasContext *ctx, arg_setc_andi *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    tcg_gen_andi_i64(out, l, simm);
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
+}
+
+static bool trans_setc_or(DisasContext *ctx, arg_setc_or *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_or_i64(out, l, r);
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
+}
+
+static bool trans_setc_ori(DisasContext *ctx, arg_setc_ori *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    tcg_gen_ori_i64(out, l, simm);
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
 }
 
 static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r)
@@ -548,11 +855,25 @@ static bool trans_setc_lt(DisasContext *ctx, arg_setc_lt *a)
     return trans_setc_cmp(ctx, TCG_COND_LT, l, r);
 }
 
+static bool trans_setc_lti(DisasContext *ctx, arg_setc_lti *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    return trans_setc_cmp_imm(ctx, TCG_COND_LT, l, simm);
+}
+
 static bool trans_setc_ltu(DisasContext *ctx, arg_setc_ltu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
     return trans_setc_cmp(ctx, TCG_COND_LTU, l, r);
+}
+
+static bool trans_setc_ltui(DisasContext *ctx, arg_setc_ltui *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    uint64_t uimm = (uint64_t)a->uimm12 << a->shamt;
+    return trans_setc_cmp_imm(ctx, TCG_COND_LTU, l, (int64_t)uimm);
 }
 
 static bool trans_setc_ge(DisasContext *ctx, arg_setc_ge *a)
@@ -562,11 +883,25 @@ static bool trans_setc_ge(DisasContext *ctx, arg_setc_ge *a)
     return trans_setc_cmp(ctx, TCG_COND_GE, l, r);
 }
 
+static bool trans_setc_gei(DisasContext *ctx, arg_setc_gei *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    int64_t simm = (int64_t)((uint64_t)(int64_t)a->simm12 << a->shamt);
+    return trans_setc_cmp_imm(ctx, TCG_COND_GE, l, simm);
+}
+
 static bool trans_setc_geu(DisasContext *ctx, arg_setc_geu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
     return trans_setc_cmp(ctx, TCG_COND_GEU, l, r);
+}
+
+static bool trans_setc_geui(DisasContext *ctx, arg_setc_geui *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    uint64_t uimm = (uint64_t)a->uimm12 << a->shamt;
+    return trans_setc_cmp_imm(ctx, TCG_COND_GEU, l, (int64_t)uimm);
 }
 
 static bool trans_alu_binop(DisasContext *ctx, unsigned dst, TCGv_i64 res)
@@ -762,6 +1097,19 @@ static bool trans_mul(DisasContext *ctx, arg_mul *a)
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
+static bool trans_madd(DisasContext *ctx, arg_madd *a)
+{
+    TCGv_i64 acc = linx_get_reg(a->SrcD);
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 prod = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+
+    tcg_gen_mul_i64(prod, l, r);
+    tcg_gen_add_i64(out, acc, prod);
+    return trans_alu_binop(ctx, a->RegDst, out);
+}
+
 static bool trans_div_like(DisasContext *ctx, unsigned dst,
                            TCGv_i64 l, TCGv_i64 r, bool is_div, bool is_signed,
                            bool is_word)
@@ -866,6 +1214,125 @@ static bool trans_remuw(DisasContext *ctx, arg_remuw *a)
                           false, false, true);
 }
 
+static bool trans_fabs(DisasContext *ctx, arg_fabs *a)
+{
+    TCGv_i64 v = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fabs(out, tcg_env, v, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fadd(DisasContext *ctx, arg_fadd *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fadd(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fsub(DisasContext *ctx, arg_fsub *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fsub(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fmul(DisasContext *ctx, arg_fmul *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fmul(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fdiv(DisasContext *ctx, arg_fdiv *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fdiv(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_feq(DisasContext *ctx, arg_feq *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_feq(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_flt(DisasContext *ctx, arg_flt *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_flt(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fge(DisasContext *ctx, arg_fge *a)
+{
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fge(out, tcg_env, l, r, tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fcvt(DisasContext *ctx, arg_fcvt *a)
+{
+    TCGv_i64 v = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fcvt(out, tcg_env, v, tcg_constant_i32(a->DstType),
+                         tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_fcvtz(DisasContext *ctx, arg_fcvtz *a)
+{
+    TCGv_i64 v = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_fcvtz(out, tcg_env, v, tcg_constant_i32(a->DstType),
+                          tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_scvtf(DisasContext *ctx, arg_scvtf *a)
+{
+    TCGv_i64 v = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_scvtf(out, tcg_env, v, tcg_constant_i32(a->DstType),
+                          tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_ucvtf(DisasContext *ctx, arg_ucvtf *a)
+{
+    TCGv_i64 v = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    gen_helper_linx_ucvtf(out, tcg_env, v, tcg_constant_i32(a->DstType),
+                          tcg_constant_i32(a->SrcType));
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
 static bool trans_mulw(DisasContext *ctx, arg_mulw *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
@@ -873,6 +1340,19 @@ static bool trans_mulw(DisasContext *ctx, arg_mulw *a)
     TCGv_i64 out = tcg_temp_new_i64();
 
     tcg_gen_mul_i64(out, l, r);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
+static bool trans_maddw(DisasContext *ctx, arg_maddw *a)
+{
+    TCGv_i64 acc = linx_get_reg(a->SrcD);
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 r = linx_get_reg(a->SrcR);
+    TCGv_i64 prod = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+
+    tcg_gen_mul_i64(prod, l, r);
+    tcg_gen_add_i64(out, acc, prod);
     return linx_binop_w(ctx, a->RegDst, out);
 }
 
@@ -996,8 +1476,10 @@ static bool trans_sll(DisasContext *ctx, arg_sll *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shl_i64(out, l, sh);
+    tcg_gen_andi_i64(shamt, sh, 0x3f);
+    tcg_gen_shl_i64(out, l, shamt);
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
@@ -1005,8 +1487,10 @@ static bool trans_srl(DisasContext *ctx, arg_srl *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_shr_i64(out, l, sh);
+    tcg_gen_andi_i64(shamt, sh, 0x3f);
+    tcg_gen_shr_i64(out, l, shamt);
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
@@ -1014,8 +1498,10 @@ static bool trans_sra(DisasContext *ctx, arg_sra *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 sh = linx_get_reg(a->SrcR);
+    TCGv_i64 shamt = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_sar_i64(out, l, sh);
+    tcg_gen_andi_i64(shamt, sh, 0x3f);
+    tcg_gen_sar_i64(out, l, shamt);
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
@@ -1131,7 +1617,16 @@ static bool trans_c_movi(DisasContext *ctx, arg_c_movi *a)
          * Note: simm5 field is reinterpreted as uimm5 for SETRET */
         vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
         vaddr tgt = pc + ((vaddr)(a->simm5 & 0x1F) << 1);
-        tcg_gen_movi_i64(cpu_gpr[LINX_REG_RA], tgt);
+        if (linx_trace_ra_enabled && linx_trace_ra_pc_match(pc)) {
+            TCGv_i64 old = tcg_temp_new_i64();
+            tcg_gen_mov_i64(old, cpu_gpr[LINX_REG_RA]);
+            tcg_gen_movi_i64(cpu_gpr[LINX_REG_RA], tgt);
+            gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(pc),
+                                     tcg_constant_i32(1), old,
+                                     tcg_constant_i64(tgt));
+        } else {
+            tcg_gen_movi_i64(cpu_gpr[LINX_REG_RA], tgt);
+        }
         return true;
     }
 
@@ -1238,8 +1733,45 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
 static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
                               MemOp mop)
 {
+    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     TCGv_i64 out = tcg_temp_new_i64();
     tcg_gen_qemu_ld_i64(out, addr, 0, mop | linx_mo_endian());
+
+    if (linx_watch_load_enabled) {
+        if (!linx_watch_load_pc_filter_enabled ||
+            ((uint64_t)pc >= linx_watch_load_pc_lo &&
+             (uint64_t)pc <= linx_watch_load_pc_hi)) {
+            const unsigned size = memop_size(mop);
+            TCGLabel *skip = gen_new_label();
+            TCGv_i64 addr64;
+            TCGv_i64 end64;
+
+#if TARGET_LONG_BITS == 32
+            addr64 = tcg_temp_new_i64();
+            tcg_gen_extu_tl_i64(addr64, addr);
+#else
+            addr64 = (TCGv_i64)addr;
+#endif
+
+            tcg_gen_brcondi_i64(TCG_COND_GTU, addr64,
+                                (int64_t)linx_watch_load_hi, skip);
+            if (size > 1) {
+                end64 = tcg_temp_new_i64();
+                tcg_gen_addi_i64(end64, addr64, (int64_t)size - 1);
+                tcg_gen_brcondi_i64(TCG_COND_LTU, end64,
+                                    (int64_t)linx_watch_load_lo, skip);
+            } else {
+                tcg_gen_brcondi_i64(TCG_COND_LTU, addr64,
+                                    (int64_t)linx_watch_load_lo, skip);
+            }
+
+            gen_helper_linx_watch_load(tcg_env, tcg_constant_i64(pc), addr64,
+                                       out,
+                                       tcg_constant_i32((int32_t)size));
+            gen_set_label(skip);
+        }
+    }
+
     linx_set_dest(dst, out);
     return true;
 }
@@ -1277,6 +1809,78 @@ static bool trans_lwi(DisasContext *ctx, arg_lwi *a)
     int64_t off = (int64_t)a->simm12 * 4;
     TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, off);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
+}
+
+static bool trans_lw_pcr(DisasContext *ctx, arg_lw_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + ((int64_t)a->simm17 << 1));
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
+}
+
+static bool trans_hl_lb_pcr(DisasContext *ctx, arg_hl_lb_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SB);
+}
+
+static bool trans_hl_lbu_pcr(DisasContext *ctx, arg_hl_lbu_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UB);
+}
+
+static bool trans_hl_lh_pcr(DisasContext *ctx, arg_hl_lh_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SW);
+}
+
+static bool trans_hl_lhu_pcr(DisasContext *ctx, arg_hl_lhu_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UW);
+}
+
+static bool trans_hl_lw_pcr(DisasContext *ctx, arg_hl_lw_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
+}
+
+static bool trans_hl_lwu_pcr(DisasContext *ctx, arg_hl_lwu_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UL);
+}
+
+static bool trans_hl_ld_pcr(DisasContext *ctx, arg_hl_ld_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UQ);
 }
 
 static bool trans_lwui(DisasContext *ctx, arg_lwui *a)
@@ -1338,6 +1942,41 @@ static bool trans_ld(DisasContext *ctx, arg_ld *a)
 static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
                                 MemOp mop)
 {
+    if (linx_watch_store_enabled) {
+        const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+        if (!linx_watch_store_pc_filter_enabled ||
+            ((uint64_t)pc >= linx_watch_store_pc_lo &&
+             (uint64_t)pc <= linx_watch_store_pc_hi)) {
+            const unsigned size = memop_size(mop);
+            TCGLabel *skip = gen_new_label();
+            TCGv_i64 addr64;
+            TCGv_i64 end64;
+
+#if TARGET_LONG_BITS == 32
+            addr64 = tcg_temp_new_i64();
+            tcg_gen_extu_tl_i64(addr64, addr);
+#else
+            addr64 = (TCGv_i64)addr;
+#endif
+
+            tcg_gen_brcondi_i64(TCG_COND_GTU, addr64, (int64_t)linx_watch_store_hi, skip);
+            if (size > 1) {
+                end64 = tcg_temp_new_i64();
+                tcg_gen_addi_i64(end64, addr64, (int64_t)size - 1);
+                tcg_gen_brcondi_i64(TCG_COND_LTU, end64,
+                                    (int64_t)linx_watch_store_lo, skip);
+            } else {
+                tcg_gen_brcondi_i64(TCG_COND_LTU, addr64,
+                                    (int64_t)linx_watch_store_lo, skip);
+            }
+
+            gen_helper_linx_watch_store(tcg_env, tcg_constant_i64(pc), addr64, val,
+                                        tcg_constant_i32((int32_t)size));
+            gen_set_label(skip);
+        }
+    }
+
+    linx_lr_invalidate();
     tcg_gen_qemu_st_i64(val, addr, 0, mop | linx_mo_endian());
     return true;
 }
@@ -1363,6 +2002,52 @@ static bool trans_swi(DisasContext *ctx, arg_swi *a)
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
 }
 
+static bool trans_sw_pcr(DisasContext *ctx, arg_sw_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    const int32_t simm17 = (int32_t)(a->imm << 15) >> 15;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)simm17);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
+}
+
+static bool trans_hl_sb_pcr(DisasContext *ctx, arg_hl_sb_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UB);
+}
+
+static bool trans_hl_sh_pcr(DisasContext *ctx, arg_hl_sh_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UW);
+}
+
+static bool trans_hl_sw_pcr(DisasContext *ctx, arg_hl_sw_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
+}
+
+static bool trans_hl_sd_pcr(DisasContext *ctx, arg_hl_sd_pcr *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    TCGv_i64 addr64 = tcg_temp_new_i64();
+    tcg_gen_movi_i64(addr64, addr);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UQ);
+}
+
 static bool trans_sdi(DisasContext *ctx, arg_sdi *a)
 {
     int64_t off = (int64_t)a->simm12 * 8;
@@ -1376,6 +2061,12 @@ static bool trans_sb(DisasContext *ctx, arg_sb *a)
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UB);
 }
 
+static bool trans_sh(DisasContext *ctx, arg_sh *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 1);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UW);
+}
+
 static bool trans_sw(DisasContext *ctx, arg_sw *a)
 {
     TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 2);
@@ -1385,6 +2076,24 @@ static bool trans_sw(DisasContext *ctx, arg_sw *a)
 static bool trans_sd(DisasContext *ctx, arg_sd *a)
 {
     TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 3);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UQ);
+}
+
+static bool trans_sh_u(DisasContext *ctx, arg_sh_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 0);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UW);
+}
+
+static bool trans_sw_u(DisasContext *ctx, arg_sw_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 0);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UL);
+}
+
+static bool trans_sd_u(DisasContext *ctx, arg_sd_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, 0);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcD), MO_UQ);
 }
 
@@ -1492,6 +2201,7 @@ static void linx_fentry_save_regs(DisasContext *ctx, int begin, int end,
         return;
     }
 
+    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int count = linx_fentry_reg_count(begin, end);
     int reg = begin;
     for (int i = 0; i < count; i++) {
@@ -1503,6 +2213,19 @@ static void linx_fentry_save_regs(DisasContext *ctx, int begin, int end,
         if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
             TCGv_i64 addr64 = tcg_temp_new_i64();
             tcg_gen_addi_i64(addr64, cpu_gpr[LINX_REG_SP], off);
+            if (linx_trace_ra_enabled && reg == LINX_REG_RA &&
+                linx_trace_ra_pc_match(pc)) {
+                gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(pc),
+                                         tcg_constant_i32(2), addr64,
+                                         cpu_gpr[LINX_REG_RA]);
+            }
+            if (linx_trace_reg_enabled && (uint32_t)reg == linx_trace_reg &&
+                linx_trace_reg_pc_match(pc)) {
+                gen_helper_linx_trace_reg(tcg_env, tcg_constant_i64(pc),
+                                          tcg_constant_i32(2),
+                                          tcg_constant_i32(reg), addr64,
+                                          cpu_gpr[reg]);
+            }
             linx_store_from_reg(ctx, linx_addr_from_i64(addr64),
                                 cpu_gpr[reg], MO_UQ);
         }
@@ -1521,6 +2244,7 @@ static void linx_fentry_restore_regs(DisasContext *ctx, int begin, int end,
         return;
     }
 
+    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int count = linx_fentry_reg_count(begin, end);
     int reg = begin;
     for (int i = 0; i < count; i++) {
@@ -1536,6 +2260,17 @@ static void linx_fentry_restore_regs(DisasContext *ctx, int begin, int end,
             tcg_gen_qemu_ld_i64(val, linx_addr_from_i64(addr64), 0,
                                 MO_UQ | linx_mo_endian());
             tcg_gen_mov_i64(cpu_gpr[reg], val);
+            if (linx_trace_ra_enabled && reg == LINX_REG_RA &&
+                linx_trace_ra_pc_match(pc)) {
+                gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(pc),
+                                         tcg_constant_i32(3), addr64, val);
+            }
+            if (linx_trace_reg_enabled && (uint32_t)reg == linx_trace_reg &&
+                linx_trace_reg_pc_match(pc)) {
+                gen_helper_linx_trace_reg(tcg_env, tcg_constant_i64(pc),
+                                          tcg_constant_i32(3),
+                                          tcg_constant_i32(reg), addr64, val);
+            }
         }
 
         if (reg == end) {
@@ -1558,11 +2293,12 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
     linx_block_begin(ctx, LINX_BR_FALL, 0);
 
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
+    int64_t adj = stacksize + (int64_t)linx_callframe_size;
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     
-    /* SP = SP - stacksize */
-    if (stacksize > 0) {
-        tcg_gen_subi_i64(sp, sp, stacksize);
+    /* SP = SP - (stacksize + callframe_size) */
+    if (adj > 0) {
+        tcg_gen_subi_i64(sp, sp, adj);
     }
     linx_fentry_save_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     return true;
@@ -1580,13 +2316,14 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
     linx_block_begin(ctx, LINX_BR_FALL, 0);
 
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
+    int64_t adj = stacksize + (int64_t)linx_callframe_size;
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
 
     linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
-    /* SP = SP + stacksize */
-    if (stacksize > 0) {
-        tcg_gen_addi_i64(sp, sp, stacksize);
+    /* SP = SP + (stacksize + callframe_size) */
+    if (adj > 0) {
+        tcg_gen_addi_i64(sp, sp, adj);
     }
     
     /* FEXIT does NOT return directly - it's followed by an IND block with setc.tgt */
@@ -1605,14 +2342,15 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
     linx_block_begin(ctx, LINX_BR_FALL, 0);
 
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
+    int64_t adj = stacksize + (int64_t)linx_callframe_size;
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
 
     linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
-    /* SP = SP + stacksize */
-    if (stacksize > 0) {
-        tcg_gen_addi_i64(sp, sp, stacksize);
+    /* SP = SP + (stacksize + callframe_size) */
+    if (adj > 0) {
+        tcg_gen_addi_i64(sp, sp, adj);
     }
     
     /* Return via RA */
@@ -1635,14 +2373,15 @@ static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
     linx_block_begin(ctx, LINX_BR_FALL, 0);
 
     int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
+    int64_t adj = stacksize + (int64_t)linx_callframe_size;
     TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
     TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
 
     linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
     
-    /* SP = SP + stacksize */
-    if (stacksize > 0) {
-        tcg_gen_addi_i64(sp, sp, stacksize);
+    /* SP = SP + (stacksize + callframe_size) */
+    if (adj > 0) {
+        tcg_gen_addi_i64(sp, sp, adj);
     }
     
     /* Return via RA (which was restored from stack) */
@@ -1699,30 +2438,99 @@ static bool trans_minu(DisasContext *ctx, arg_minu *a)
 
 static bool trans_clz(DisasContext *ctx, arg_clz *a)
 {
-    /* CLZ: Count leading zeros */
+    /* CLZ: Count leading zeros in the N-bit field starting at bit M in SrcL.
+     * Encoding notes: M=imms, N=imml+1 (ISA manual).
+     */
     TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i64 field = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_clzi_i64(out, src, 64);
+
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (width == 0 || lsb >= 64 || lsb + width > 64) {
+        tcg_gen_movi_i64(out, 0);
+        linx_set_dest(a->RegDst, out);
+        return true;
+    }
+
+    if (lsb) {
+        tcg_gen_shri_i64(field, src, lsb);
+    } else {
+        tcg_gen_mov_i64(field, src);
+    }
+
+    if (width != 64) {
+        uint64_t mask = (1ULL << width) - 1ULL;
+        tcg_gen_andi_i64(field, field, mask);
+    }
+
+    tcg_gen_clzi_i64(out, field, width);
     linx_set_dest(a->RegDst, out);
     return true;
 }
 
 static bool trans_ctz(DisasContext *ctx, arg_ctz *a)
 {
-    /* CTZ: Count trailing zeros */
+    /* CTZ: Count trailing zeros in the N-bit field starting at bit M in SrcL.
+     * Encoding notes: M=imms, N=imml+1 (ISA manual).
+     */
     TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i64 field = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_ctzi_i64(out, src, 64);
+
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (width == 0 || lsb >= 64 || lsb + width > 64) {
+        tcg_gen_movi_i64(out, 0);
+        linx_set_dest(a->RegDst, out);
+        return true;
+    }
+
+    if (lsb) {
+        tcg_gen_shri_i64(field, src, lsb);
+    } else {
+        tcg_gen_mov_i64(field, src);
+    }
+
+    if (width != 64) {
+        uint64_t mask = (1ULL << width) - 1ULL;
+        tcg_gen_andi_i64(field, field, mask);
+    }
+
+    tcg_gen_ctzi_i64(out, field, width);
     linx_set_dest(a->RegDst, out);
     return true;
 }
 
 static bool trans_bcnt(DisasContext *ctx, arg_bcnt *a)
 {
-    /* BCNT: Population count (count 1 bits) */
+    /* BCNT: Count set bits in the N-bit field starting at bit M in SrcL.
+     * Encoding notes: M=imms, N=imml+1 (ISA manual).
+     */
     TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i64 field = tcg_temp_new_i64();
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_ctpop_i64(out, src);
+
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (width == 0 || lsb >= 64 || lsb + width > 64) {
+        tcg_gen_movi_i64(out, 0);
+        linx_set_dest(a->RegDst, out);
+        return true;
+    }
+
+    if (lsb) {
+        tcg_gen_shri_i64(field, src, lsb);
+    } else {
+        tcg_gen_mov_i64(field, src);
+    }
+
+    if (width != 64) {
+        uint64_t mask = (1ULL << width) - 1ULL;
+        tcg_gen_andi_i64(field, field, mask);
+    }
+
+    tcg_gen_ctpop_i64(out, field);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -1746,10 +2554,15 @@ static bool trans_bxs(DisasContext *ctx, arg_bxs *a)
     /* BXS: Bit extract signed - extract bit field and sign-extend */
     TCGv_i64 src = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
-    unsigned lsb = a->imml;
-    unsigned width = a->imms + 1;
-    if (width > 0 && lsb + width <= 64) {
+    /* Encoding notes: M=imms, N=imml+1 (ISA manual). */
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (lsb < 64 && lsb + width <= 64) {
+        if (lsb == 0 && width == 64) {
+            tcg_gen_mov_i64(out, src);
+        } else {
         tcg_gen_sextract_i64(out, src, lsb, width);
+        }
     } else {
         tcg_gen_movi_i64(out, 0);
     }
@@ -1762,10 +2575,15 @@ static bool trans_bxu(DisasContext *ctx, arg_bxu *a)
     /* BXU: Bit extract unsigned - extract bit field, zero-extend */
     TCGv_i64 src = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
-    unsigned lsb = a->imml;
-    unsigned width = a->imms + 1;
-    if (width > 0 && lsb + width <= 64) {
-        tcg_gen_extract_i64(out, src, lsb, width);
+    /* Encoding notes: M=imms, N=imml+1 (ISA manual). */
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (lsb < 64 && lsb + width <= 64) {
+        if (lsb == 0 && width == 64) {
+            tcg_gen_mov_i64(out, src);
+        } else {
+            tcg_gen_extract_i64(out, src, lsb, width);
+        }
     } else {
         tcg_gen_movi_i64(out, 0);
     }
@@ -1778,11 +2596,16 @@ static bool trans_bic(DisasContext *ctx, arg_bic *a)
     /* BIC: Bit clear - clear bits in range [lsb, lsb+width) */
     TCGv_i64 src = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
-    unsigned lsb = a->imml;
-    unsigned width = a->imms + 1;
-    if (width > 0 && lsb + width <= 64) {
-        uint64_t mask = ~(((1ULL << width) - 1) << lsb);
-        tcg_gen_andi_i64(out, src, mask);
+    /* Encoding notes: M=imms, N=imml+1 (ISA manual). */
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (lsb < 64 && lsb + width <= 64) {
+        if (lsb == 0 && width == 64) {
+            tcg_gen_movi_i64(out, 0);
+        } else {
+            uint64_t mask = ~(((1ULL << width) - 1) << lsb);
+            tcg_gen_andi_i64(out, src, mask);
+        }
     } else {
         tcg_gen_mov_i64(out, src);
     }
@@ -1795,11 +2618,16 @@ static bool trans_bis(DisasContext *ctx, arg_bis *a)
     /* BIS: Bit set - set bits in range [lsb, lsb+width) */
     TCGv_i64 src = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
-    unsigned lsb = a->imml;
-    unsigned width = a->imms + 1;
-    if (width > 0 && lsb + width <= 64) {
-        uint64_t mask = ((1ULL << width) - 1) << lsb;
-        tcg_gen_ori_i64(out, src, mask);
+    /* Encoding notes: M=imms, N=imml+1 (ISA manual). */
+    unsigned lsb = a->imms;
+    unsigned width = a->imml + 1;
+    if (lsb < 64 && lsb + width <= 64) {
+        if (lsb == 0 && width == 64) {
+            tcg_gen_movi_i64(out, -1);
+        } else {
+            uint64_t mask = ((1ULL << width) - 1) << lsb;
+            tcg_gen_ori_i64(out, src, mask);
+        }
     } else {
         tcg_gen_mov_i64(out, src);
     }
@@ -1991,6 +2819,26 @@ static bool trans_c_zext_w(DisasContext *ctx, arg_c_zext_w *a)
 
 /* ===================== 16-bit Shift Instructions ===================== */
 
+static bool trans_c_cmp_eqi(DisasContext *ctx, arg_c_cmp_eqi *a)
+{
+    /* C.CMP.EQI: (T-hand == imm) -> T-hand */
+    TCGv_i64 src = cpu_tq[0];
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_EQ, out, src, (int64_t)a->simm5);
+    linx_set_dest(31, out);  /* Output to T-hand */
+    return true;
+}
+
+static bool trans_c_cmp_nei(DisasContext *ctx, arg_c_cmp_nei *a)
+{
+    /* C.CMP.NEI: (T-hand != imm) -> T-hand */
+    TCGv_i64 src = cpu_tq[0];
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_NE, out, src, (int64_t)a->simm5);
+    linx_set_dest(31, out);  /* Output to T-hand */
+    return true;
+}
+
 static bool trans_c_slli(DisasContext *ctx, arg_c_slli *a)
 {
     /* C.SLLI: Shift T-hand left by immediate, result to T-hand */
@@ -2036,6 +2884,15 @@ static bool trans_hl_addi(DisasContext *ctx, arg_hl_addi *a)
     return true;
 }
 
+static bool trans_hl_addiw(DisasContext *ctx, arg_hl_addiw *a)
+{
+    /* HL.ADDIW: Add with 24-bit unsigned immediate (word) */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_addi_i64(out, l, (uint64_t)a->uimm24);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
 static bool trans_hl_subi(DisasContext *ctx, arg_hl_subi *a)
 {
     /* HL.SUBI: Subtract with 24-bit unsigned immediate */
@@ -2044,6 +2901,15 @@ static bool trans_hl_subi(DisasContext *ctx, arg_hl_subi *a)
     tcg_gen_subi_i64(out, l, (uint64_t)a->uimm24);
     linx_set_dest(a->RegDst, out);
     return true;
+}
+
+static bool trans_hl_subiw(DisasContext *ctx, arg_hl_subiw *a)
+{
+    /* HL.SUBIW: Subtract with 24-bit unsigned immediate (word) */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_subi_i64(out, l, (uint64_t)a->uimm24);
+    return linx_binop_w(ctx, a->RegDst, out);
 }
 
 static bool trans_hl_andi(DisasContext *ctx, arg_hl_andi *a)
@@ -2056,6 +2922,15 @@ static bool trans_hl_andi(DisasContext *ctx, arg_hl_andi *a)
     return true;
 }
 
+static bool trans_hl_andiw(DisasContext *ctx, arg_hl_andiw *a)
+{
+    /* HL.ANDIW: AND with 24-bit signed immediate (word) */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_andi_i64(out, l, (int64_t)a->simm);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
 static bool trans_hl_ori(DisasContext *ctx, arg_hl_ori *a)
 {
     /* HL.ORI: OR with 24-bit signed immediate */
@@ -2066,12 +2941,114 @@ static bool trans_hl_ori(DisasContext *ctx, arg_hl_ori *a)
     return true;
 }
 
+static bool trans_hl_oriw(DisasContext *ctx, arg_hl_oriw *a)
+{
+    /* HL.ORIW: OR with 24-bit signed immediate (word) */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_ori_i64(out, l, (int64_t)a->simm);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
 static bool trans_hl_xori(DisasContext *ctx, arg_hl_xori *a)
 {
     /* HL.XORI: XOR with 24-bit signed immediate */
     TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
     tcg_gen_xori_i64(out, l, (int64_t)a->simm);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_xoriw(DisasContext *ctx, arg_hl_xoriw *a)
+{
+    /* HL.XORIW: XOR with 24-bit signed immediate (word) */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_xori_i64(out, l, (int64_t)a->simm);
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
+static bool trans_hl_cmp_eqi(DisasContext *ctx, arg_hl_cmp_eqi *a)
+{
+    /* HL.CMP.EQI: (SrcL == simm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_EQ, out, l, (int64_t)a->simm);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_nei(DisasContext *ctx, arg_hl_cmp_nei *a)
+{
+    /* HL.CMP.NEI: (SrcL != simm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_NE, out, l, (int64_t)a->simm);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_andi(DisasContext *ctx, arg_hl_cmp_andi *a)
+{
+    /* HL.CMP.ANDI: ((SrcL & simm24) != 0) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_andi_i64(tmp, l, (int64_t)a->simm);
+    tcg_gen_setcondi_i64(TCG_COND_NE, out, tmp, 0);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_ori(DisasContext *ctx, arg_hl_cmp_ori *a)
+{
+    /* HL.CMP.ORI: ((SrcL | simm24) != 0) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_ori_i64(tmp, l, (int64_t)a->simm);
+    tcg_gen_setcondi_i64(TCG_COND_NE, out, tmp, 0);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_lti(DisasContext *ctx, arg_hl_cmp_lti *a)
+{
+    /* HL.CMP.LTI: (SrcL < simm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_LT, out, l, (int64_t)a->simm);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_gei(DisasContext *ctx, arg_hl_cmp_gei *a)
+{
+    /* HL.CMP.GEI: (SrcL >= simm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_GE, out, l, (int64_t)a->simm);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_ltui(DisasContext *ctx, arg_hl_cmp_ltui *a)
+{
+    /* HL.CMP.LTUI: (SrcL < uimm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_LTU, out, l, (uint64_t)a->uimm24);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_cmp_geui(DisasContext *ctx, arg_hl_cmp_geui *a)
+{
+    /* HL.CMP.GEUI: (SrcL >= uimm24) -> {t,u,Rd} */
+    TCGv_i64 l = linx_get_reg(a->SrcL);
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_setcondi_i64(TCG_COND_GEU, out, l, (uint64_t)a->uimm24);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -2126,6 +3103,182 @@ static bool trans_hl_bstart_std_call(DisasContext *ctx, arg_hl_bstart_std_call *
 
 /* ===================== System Instructions ===================== */
 
+static bool trans_ssrget(DisasContext *ctx, arg_ssrget *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    TCGv_i32 ssrid = tcg_constant_i32(a->ssrid);
+
+    gen_helper_linx_ssr_read(val, tcg_env, ssrid);
+    linx_set_dest(a->RegDst, val);
+
+    return true;
+}
+
+static bool trans_hl_ssrget(DisasContext *ctx, arg_hl_ssrget *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    TCGv_i32 ssrid = tcg_constant_i32(a->ssrid);
+
+    gen_helper_linx_ssr_read(val, tcg_env, ssrid);
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_acrc(DisasContext *ctx, arg_acrc *a)
+{
+    /*
+     * ACRC: request a service request (trap) at block commit.
+     *
+     * Bring-up model: perform a v0.1-style SERVICE_REQUEST immediately and
+     * vector to the managing ACR's EVBASE.
+     */
+    vaddr tpc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr bpc = ctx->base.pc_first;
+
+    gen_helper_linx_service_request(
+        tcg_env,
+        tcg_constant_i32(a->rst),
+        tcg_constant_i64(bpc),
+        tcg_constant_i64(tpc),
+        tcg_constant_i64(ctx->base.pc_next));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool trans_acre(DisasContext *ctx, arg_acre *a)
+{
+    /* ACRE: request an ACR_ENTER (trap return / handoff) at block commit. */
+    gen_helper_linx_acr_enter(tcg_env, tcg_constant_i32(a->rra));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool trans_lr_w(DisasContext *ctx, arg_lr_w *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_lr_w(val, tcg_env, addr);
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_lr_d(DisasContext *ctx, arg_lr_d *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_lr_d(val, tcg_env, addr);
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_sc_w(DisasContext *ctx, arg_sc_w *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcR);
+    TCGv_i64 val64 = linx_get_reg(a->SrcL);
+    TCGv_i64 res = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, val64);
+    gen_helper_linx_sc_w(res, tcg_env, addr, val32);
+    linx_set_dest(a->RegDst, res);
+    return true;
+}
+
+static bool trans_sc_d(DisasContext *ctx, arg_sc_d *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcR);
+    TCGv_i64 val = linx_get_reg(a->SrcL);
+    TCGv_i64 res = tcg_temp_new_i64();
+    gen_helper_linx_sc_d(res, tcg_env, addr, val);
+    linx_set_dest(a->RegDst, res);
+    return true;
+}
+
+static bool trans_swapw(DisasContext *ctx, arg_swapw *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val64 = linx_get_reg(a->SrcR);
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, val64);
+    gen_helper_linx_swapw(old, tcg_env, addr, val32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_swapd(DisasContext *ctx, arg_swapd *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val = linx_get_reg(a->SrcR);
+    TCGv_i64 old = tcg_temp_new_i64();
+    gen_helper_linx_swapd(old, tcg_env, addr, val);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_lw_add(DisasContext *ctx, arg_lw_add *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val64 = linx_get_reg(a->SrcR);
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, val64);
+    gen_helper_linx_lw_add(old, tcg_env, addr, val32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_ld_add(DisasContext *ctx, arg_ld_add *a)
+{
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 val = linx_get_reg(a->SrcR);
+    TCGv_i64 old = tcg_temp_new_i64();
+    gen_helper_linx_ld_add(old, tcg_env, addr, val);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_fence_d(DisasContext *ctx, arg_fence_d *a)
+{
+    (void)a;
+    tcg_gen_mb(TCG_MO_ALL);
+    return true;
+}
+
+static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
+{
+    (void)a;
+    tcg_gen_mb(TCG_MO_ALL);
+    return true;
+}
+
+static bool trans_ssrset(DisasContext *ctx, arg_ssrset *a)
+{
+    TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i32 ssrid = tcg_constant_i32(a->ssrid);
+
+    gen_helper_linx_ssr_write(tcg_env, ssrid, src);
+    return true;
+}
+
+static bool trans_hl_ssrset(DisasContext *ctx, arg_hl_ssrset *a)
+{
+    TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i32 ssrid = tcg_constant_i32(a->ssrid);
+    gen_helper_linx_ssr_write(tcg_env, ssrid, src);
+    return true;
+}
+
+static bool trans_ssrswap(DisasContext *ctx, arg_ssrswap *a)
+{
+    TCGv_i64 src = linx_get_reg(a->SrcL);
+    TCGv_i32 ssrid = tcg_constant_i32(a->ssrid);
+    TCGv_i64 old = tcg_temp_new_i64();
+
+    gen_helper_linx_ssr_swap(old, tcg_env, ssrid, src);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
 static bool trans_ebreak(DisasContext *ctx, arg_ebreak *a)
 {
     tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
@@ -2142,8 +3295,15 @@ static bool trans_ebreak(DisasContext *ctx, arg_ebreak *a)
     
     /* For other EBREAK operations (semihosting), call the helper */
     gen_helper_linx_ebreak(tcg_env, tcg_constant_i32(a->imm4));
-    /* End TB since we don't know if helper will return for some cases */
-    ctx->base.is_jmp = DISAS_NORETURN;
+    /*
+     * Most semihosting operations return to the guest. Only exit/breakpoint
+     * paths should terminate the TB.
+     */
+    if (a->imm4 != 1 && /* PUTCHAR */
+        a->imm4 != 2 && /* WRITE */
+        a->imm4 != 3 /* READ */) {
+        ctx->base.is_jmp = DISAS_NORETURN;
+    }
     return true;
 }
 
@@ -2167,6 +3327,7 @@ static void linx_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     tcg_gen_insn_start(ctx->base.pc_next);
+    tcg_gen_addi_i64(cpu_insn_count, cpu_insn_count, 1);
 }
 
 static unsigned linx_insn_len(uint16_t hw)
@@ -2227,6 +3388,12 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                            trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                        }
                    }
+               } else if (hw == 0x88c0 || hw == 0xc8c0) {
+                   /* C.BSTART.VPAR/VSEQ: fixed fall-through vector block headers. */
+                   decoded = trans_c_bstart_std(ctx, LINX_BR_FALL);
+                   if (decoded) {
+                       trace_linx_insn_exec(pc, insn_val, len, "16-bit");
+                   }
                } else {
                    decoded = decode_insn16(ctx, hw);
                    if (decoded) {
@@ -2244,6 +3411,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         insn_val = (uint32_t)hw | ((uint32_t)hw2 << 16);
         decoded = decode_insn32(ctx, insn_val);
         if (!decoded) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: decode32 failed @ PC=0x%" VADDR_PRIx " insn=0x%08x\n",
+                          pc, insn_val);
             linx_illegal(ctx);
         } else {
             trace_linx_insn_exec(pc, insn_val, len, "32-bit");
@@ -2315,6 +3485,15 @@ void linx_translate_code(CPUState *cs, TranslationBlock *tb,
 void linx_translate_init(void)
 {
     int i;
+    const char *watch = getenv("LINX_WATCH_STORE");
+    const char *watch_pc = getenv("LINX_WATCH_STORE_PC");
+    const char *watch_load = getenv("LINX_WATCH_LOAD");
+    const char *watch_load_pc = getenv("LINX_WATCH_LOAD_PC");
+    const char *trace_ra = getenv("LINX_TRACE_RA");
+    const char *trace_ra_pc = getenv("LINX_TRACE_RA_PC");
+    const char *trace_reg = getenv("LINX_TRACE_REG");
+    const char *trace_reg_pc = getenv("LINX_TRACE_REG_PC");
+    const char *callframe = getenv("LINX_CALLFRAME_SIZE");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -2340,5 +3519,198 @@ void linx_translate_init(void)
     cpu_cond = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, cond), "cond");
     cpu_carg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, carg), "carg");
     cpu_brtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, brtype), "brtype");
+    cpu_blocktype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, blocktype), "blocktype");
+    cpu_tile_func = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_func), "tile_func");
+    cpu_tile_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_dtype), "tile_dtype");
+    cpu_tile_iot_valid = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_valid), "tile_iot_valid");
+    cpu_tile_iot_flags = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_flags), "tile_iot_flags");
+    cpu_tile_iot_dst = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_dst), "tile_iot_dst");
+    cpu_tile_iot_grp = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_grp), "tile_iot_grp");
+    cpu_tile_iot_src0 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src0), "tile_iot_src0");
+    cpu_tile_iot_src1 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src1), "tile_iot_src1");
+    cpu_tile_iot_reg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_reg), "tile_iot_reg");
+    cpu_tile_iot_size = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_size), "tile_iot_size");
+    cpu_lb[0] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[0]), "lb0");
+    cpu_lb[1] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[1]), "lb1");
+    cpu_lb[2] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[2]), "lb2");
     cpu_pc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, pc), "pc");
+    cpu_insn_count = tcg_global_mem_new_i64(tcg_env,
+                                            offsetof(CPULinxState, insn_count),
+                                            "insn_count");
+
+    if (callframe && callframe[0]) {
+        char *endp = NULL;
+        uint64_t v;
+
+        errno = 0;
+        v = strtoull(callframe, &endp, 0);
+        if (errno == 0 && endp && endp != callframe && *endp == '\0') {
+            if ((v & 7u) == 0) {
+                linx_callframe_size = v;
+            }
+        }
+    }
+
+    if (trace_reg && trace_reg[0] && strcmp(trace_reg, "0") != 0) {
+        char *endp = NULL;
+        unsigned long v;
+
+        errno = 0;
+        v = strtoul(trace_reg, &endp, 0);
+        if (errno == 0 && endp && endp != trace_reg && *endp == '\0') {
+            if (v < LINX_GPR_COUNT) {
+                linx_trace_reg = (uint32_t)v;
+                linx_trace_reg_enabled = true;
+            }
+        }
+    }
+
+    if (linx_trace_reg_enabled && trace_reg_pc && trace_reg_pc[0] &&
+        strcmp(trace_reg_pc, "0") != 0) {
+        char *endp = NULL;
+        char *endp2 = NULL;
+        uint64_t lo;
+        uint64_t hi;
+
+        errno = 0;
+        lo = strtoull(trace_reg_pc, &endp, 0);
+        if (errno == 0 && endp && endp != trace_reg_pc) {
+            if (*endp == '-' || *endp == ':') {
+                errno = 0;
+                hi = strtoull(endp + 1, &endp2, 0);
+                if (errno == 0 && endp2 && endp2 != endp + 1 &&
+                    *endp2 == '\0') {
+                    linx_trace_reg_pc_lo = MIN(lo, hi);
+                    linx_trace_reg_pc_hi = MAX(lo, hi);
+                    linx_trace_reg_pc_filter_enabled = true;
+                }
+            } else if (*endp == '\0') {
+                linx_trace_reg_pc_lo = lo;
+                linx_trace_reg_pc_hi = lo;
+                linx_trace_reg_pc_filter_enabled = true;
+            }
+        }
+    }
+
+    if (trace_ra && trace_ra[0] && strcmp(trace_ra, "0") != 0) {
+        linx_trace_ra_enabled = true;
+        if (trace_ra_pc && trace_ra_pc[0] && strcmp(trace_ra_pc, "0") != 0) {
+            char *endp = NULL;
+            uint64_t pc;
+
+            errno = 0;
+            pc = strtoull(trace_ra_pc, &endp, 0);
+            if (errno == 0 && endp && endp != trace_ra_pc && *endp == '\0') {
+                linx_trace_ra_pc = pc;
+                linx_trace_ra_pc_enabled = true;
+            }
+        }
+    }
+
+    if (watch_pc && watch_pc[0] && strcmp(watch_pc, "0") != 0) {
+        char *endp = NULL;
+        char *endp2 = NULL;
+        uint64_t lo;
+        uint64_t hi;
+
+        errno = 0;
+        lo = strtoull(watch_pc, &endp, 0);
+        if (errno == 0 && endp && endp != watch_pc) {
+            if (*endp == '-' || *endp == ':') {
+                errno = 0;
+                hi = strtoull(endp + 1, &endp2, 0);
+                if (errno == 0 && endp2 && endp2 != endp + 1 && *endp2 == '\0') {
+                    linx_watch_store_pc_lo = MIN(lo, hi);
+                    linx_watch_store_pc_hi = MAX(lo, hi);
+                    linx_watch_store_pc_filter_enabled = true;
+                }
+            } else if (*endp == '\0') {
+                linx_watch_store_pc_lo = lo;
+                linx_watch_store_pc_hi = lo;
+                linx_watch_store_pc_filter_enabled = true;
+            }
+        }
+    }
+
+    if (watch_load_pc && watch_load_pc[0] && strcmp(watch_load_pc, "0") != 0) {
+        char *endp = NULL;
+        char *endp2 = NULL;
+        uint64_t lo;
+        uint64_t hi;
+
+        errno = 0;
+        lo = strtoull(watch_load_pc, &endp, 0);
+        if (errno == 0 && endp && endp != watch_load_pc) {
+            if (*endp == '-' || *endp == ':') {
+                errno = 0;
+                hi = strtoull(endp + 1, &endp2, 0);
+                if (errno == 0 && endp2 && endp2 != endp + 1 &&
+                    *endp2 == '\0') {
+                    linx_watch_load_pc_lo = MIN(lo, hi);
+                    linx_watch_load_pc_hi = MAX(lo, hi);
+                    linx_watch_load_pc_filter_enabled = true;
+                }
+            } else if (*endp == '\0') {
+                linx_watch_load_pc_lo = lo;
+                linx_watch_load_pc_hi = lo;
+                linx_watch_load_pc_filter_enabled = true;
+            }
+        }
+    }
+
+    if (watch && watch[0] && strcmp(watch, "0") != 0) {
+        char *endp = NULL;
+        uint64_t addr;
+        unsigned long len = 1;
+
+        errno = 0;
+        addr = strtoull(watch, &endp, 0);
+        if (errno == 0 && endp && endp != watch) {
+            if (*endp == ':') {
+                errno = 0;
+                len = strtoul(endp + 1, NULL, 0);
+                if (errno != 0 || len == 0) {
+                    len = 1;
+                }
+            } else if (*endp != '\0') {
+                len = 0;
+            }
+        } else {
+            len = 0;
+        }
+
+        if (len) {
+            linx_watch_store_lo = addr;
+            linx_watch_store_hi = addr + (uint64_t)len - 1;
+            linx_watch_store_enabled = true;
+        }
+    }
+
+    if (watch_load && watch_load[0] && strcmp(watch_load, "0") != 0) {
+        char *endp = NULL;
+        uint64_t addr;
+        unsigned long len = 1;
+
+        errno = 0;
+        addr = strtoull(watch_load, &endp, 0);
+        if (errno == 0 && endp && endp != watch_load) {
+            if (*endp == ':') {
+                errno = 0;
+                len = strtoul(endp + 1, NULL, 0);
+                if (errno != 0 || len == 0) {
+                    len = 1;
+                }
+            } else if (*endp != '\0') {
+                len = 0;
+            }
+        } else {
+            len = 0;
+        }
+
+        if (len) {
+            linx_watch_load_lo = addr;
+            linx_watch_load_hi = addr + (uint64_t)len - 1;
+            linx_watch_load_enabled = true;
+        }
+    }
 }
