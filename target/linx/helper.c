@@ -93,6 +93,97 @@ static inline uint64_t linx_trapno_sync(uint8_t trapnum, uint8_t cause)
     return LINX_TRAPNO_E_BIT | ((uint64_t)cause << LINX_TRAPNO_CAUSE_SHIFT) | (uint64_t)trapnum;
 }
 
+static void linx_commit_trace_init(CPULinxState *env)
+{
+    if (env->commit_trace.inited) {
+        return;
+    }
+    env->commit_trace.inited = 1;
+
+    const char *path = getenv("LINX_COMMIT_TRACE");
+    if (!path || !path[0] || strcmp(path, "0") == 0) {
+        env->commit_trace.enabled = 0;
+        return;
+    }
+
+    env->commit_trace.fp = fopen(path, "w");
+    if (!env->commit_trace.fp) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: failed to open LINX_COMMIT_TRACE='%s'\n",
+                      path);
+        env->commit_trace.enabled = 0;
+        return;
+    }
+
+    env->commit_trace.enabled = 1;
+    env->commit_trace.cycle = 0;
+
+    const char *lo_s = getenv("LINX_COMMIT_TRACE_FILTER_PC_LO");
+    if (lo_s && lo_s[0] && strcmp(lo_s, "0") != 0) {
+        char *endp = NULL;
+        errno = 0;
+        uint64_t lo = strtoull(lo_s, &endp, 0);
+        if (errno == 0 && endp && endp != lo_s && *endp == '\0') {
+            uint64_t hi = lo;
+            const char *hi_s = getenv("LINX_COMMIT_TRACE_FILTER_PC_HI");
+            if (hi_s && hi_s[0] && strcmp(hi_s, "0") != 0) {
+                char *endp2 = NULL;
+                errno = 0;
+                uint64_t parsed = strtoull(hi_s, &endp2, 0);
+                if (errno == 0 && endp2 && endp2 != hi_s && *endp2 == '\0') {
+                    hi = parsed;
+                }
+            }
+            env->commit_trace.pc_lo = MIN(lo, hi);
+            env->commit_trace.pc_hi = MAX(lo, hi);
+            env->commit_trace.pc_filter_enabled = 1;
+        }
+    }
+}
+
+void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
+{
+    linx_commit_trace_init(env);
+    if (!env->commit_trace.enabled || !env->commit_trace.fp) {
+        return;
+    }
+
+    const uint64_t pc = env->trace_pc;
+    if (env->commit_trace.pc_filter_enabled &&
+        (pc < env->commit_trace.pc_lo || pc > env->commit_trace.pc_hi)) {
+        return;
+    }
+
+    const uint64_t cycle = env->commit_trace.cycle++;
+    const uint32_t trap_valid = env->trace_trap_valid;
+    const uint32_t trap_cause = env->trace_trap_cause;
+    const uint8_t trapnum = (uint8_t)(trap_cause & 0xffu);
+    const uint8_t cause = (uint8_t)((trap_cause >> 8) & 0xffu);
+    const uint64_t trapno_full = trap_valid ? linx_trapno_sync(trapnum, cause) : 0;
+
+    /* Mandatory schema fields (see linxisa/docs/bringup/contracts/trace_schema.md). */
+    fprintf(env->commit_trace.fp,
+            "{\"cycle\":%" PRIu64
+            ",\"pc\":%" PRIu64
+            ",\"insn\":%" PRIu64
+            ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
+            ",\"mem_valid\":%u,\"mem_addr\":%" PRIu64
+            ",\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
+            ",\"trap_valid\":%u,\"trap_cause\":%u"
+            ",\"trapno_full\":%" PRIu64 ",\"traparg0\":%" PRIu64
+            ",\"next_pc\":%" PRIu64 "}\n",
+            cycle,
+            pc,
+            env->trace_insn,
+            env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
+            env->trace_mem_valid, env->trace_mem_addr,
+            env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
+            trap_valid, trap_cause,
+            trapno_full, env->trace_traparg0,
+            next_pc);
+    fflush(env->commit_trace.fp);
+}
+
 /*
  * CSTATE (bring-up encoding).
  *

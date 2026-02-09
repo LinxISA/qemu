@@ -22,6 +22,7 @@ DEF_HELPER_5(linx_watch_store, void, env, i64, i64, i64, i32)
 DEF_HELPER_5(linx_watch_load, void, env, i64, i64, i64, i32)
 DEF_HELPER_5(linx_trace_ra, void, env, i64, i32, i64, i64)
 DEF_HELPER_6(linx_trace_reg, void, env, i64, i32, i32, i64, i64)
+DEF_HELPER_2(linx_commit_trace, void, env, i64)
 DEF_HELPER_1(linx_exit, void, env)
 DEF_HELPER_1(linx_tile_commit, void, env)
 

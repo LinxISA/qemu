@@ -7,6 +7,8 @@
 #ifndef LINX_CPU_H
 #define LINX_CPU_H
 
+#include <stdio.h>
+
 #include "cpu-qom.h"
 #include "exec/cpu-common.h"
 #include "exec/cpu-defs.h"
@@ -221,6 +223,22 @@ typedef struct CPUArchState {
     uint64_t pending_trap_arg0;
     uint32_t pending_trap_cause;
 
+    /* Commit trace scratch (written by TCG, consumed by helper). */
+    uint64_t trace_pc;
+    uint64_t trace_insn;
+    uint32_t trace_len;
+    uint32_t trace_wb_valid;
+    uint32_t trace_wb_rd;
+    uint64_t trace_wb_data;
+    uint32_t trace_mem_valid;
+    uint64_t trace_mem_addr;
+    uint64_t trace_mem_wdata;
+    uint64_t trace_mem_rdata;
+    uint32_t trace_mem_size;
+    uint32_t trace_trap_valid;
+    uint32_t trace_trap_cause; /* low16: (cause<<8)|trapnum */
+    uint64_t trace_traparg0;
+
     /* LR/SC reservation state (bring-up model). */
     uint64_t lr_addr;
     uint32_t lr_size;
@@ -232,6 +250,18 @@ typedef struct CPUArchState {
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
+
+    /* JSONL commit tracing (bring-up difftest). Not reset-cleared. */
+    struct {
+        uint8_t inited;
+        uint8_t enabled;
+        uint8_t pc_filter_enabled;
+        uint8_t _pad0;
+        uint64_t pc_lo;
+        uint64_t pc_hi;
+        uint64_t cycle;
+        FILE *fp;
+    } commit_trace;
 
     /* Per-CPU virtual timer for TIMER_TIMECMP (bring-up). */
     struct QEMUTimer *timer;
