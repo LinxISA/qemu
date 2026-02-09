@@ -40,6 +40,26 @@
 %succ_imm 20:4
 %Mode 25:2
 
+# Block attribute (B.ATTR) fields
+%BA_C 25:1
+%BA_DR 26:1
+%BA_DataLayout 7:5
+%BA_DataType 20:5
+%BA_PadValue 27:5
+%BA_T 19:1
+%BA_aq 16:1
+%BA_atom 17:1
+%BA_far 18:1
+%BA_rl 15:1
+
+# Block hint (B.HINT) fields
+%HINT_L_UL 16:1
+%HINT_V 15:1
+%HINT_temp 17:2
+%HINT_prefetch_size 20:12
+%HINT_B_E 15:1
+%HINT_reserve_16_16 16:16
+
 # Tile block fields
 %TileDataType 27:5
 %TileFunc 20:5
@@ -73,6 +93,19 @@ bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=
 b_iot          .... .... .... .... .10. .... .001 0011 grp=%TileGroup s1r=%S1R s0r=%S0R s1v=%S1V s0v=%S0V dst=%TileDst src1=%TileSrc1 src0=%TileSrc0 reg=%TileRegSrc
 b_ioti         .... .... .... .... .11. .... .001 0011 grp=%TileGroup s1r=%S1R s0r=%S0R s1v=%S1V s0v=%S0V dst=%TileDst src1=%TileSrc1 src0=%TileSrc0 size=%TileSize
 
+# Decoupled-body pointer (decoupled block headers).
+b_text         .... .... .... .... .... .... .000 0011 %simm25
+
+# GPR I/O dependency (decoupled block headers).
+b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
+
+# Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
+b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl
+
+# Block hints; treated as no-ops in bring-up.
+b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp
+b_hint_trace   .... .... .... .... .001 0000 0011 0011 b_e=%HINT_B_E reserve=%HINT_reserve_16_16
+
 # Block argument registers (LB0/LB1/LB2): LBx = RegSrc + uimm17
 b_dim          .... .... .... .... .... .... .100 0011 lb=%lb_dst reg=%SrcL uimm=%uimm17_20_12_7_5
 
@@ -104,6 +137,9 @@ ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
 
+# TLB flush (bring-up).
+tlb_iall 0000 0000 0011 0000 0111 0000 0010 1011
+
 # Function entry/exit macro instructions (LinxISA spec)
 # These encode register range [SrcBegin ~ SrcEnd] and stack size (uimm)
 #
@@ -133,6 +169,14 @@ fret_ra       .... .... .... .... .010 .... .100 0001 uimm_hi=%fentry_uimm_hi ui
 
 # FRET.STK: Function return via stack - restore registers, adjust SP, return
 fret_stk      .... .... .... .... .011 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# Bulk memory template blocks (restartable).
+# Encoding per spec:
+#   MCOPY: RegSrc0=DstAddr (bits 19..15), RegSrc1=SrcAddr (24..20), RegSrc2=Size (31..27)
+#   MSET:  RegSrc0=DstAddr (bits 19..15), RegSrc1=Value   (24..20), RegSrc2=Size (31..27)
+# These are standalone template blocks (must not appear inside BSTART..BSTOP).
+mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
+mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD
 
 # PC-relative address instructions (overlap group - setret is specialized addtpc with RegDst=RA)
 {

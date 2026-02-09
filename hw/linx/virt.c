@@ -338,9 +338,37 @@ static void *linx_virt_build_fdt(MachineState *machine,
 
     qemu_fdt_add_subnode(fdt, "/memory@0");
     qemu_fdt_setprop_string(fdt, "/memory@0", "device_type", "memory");
-    qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
-                           0x0, 0x0,
-                           (uint32_t)(mem_size >> 32), (uint32_t)mem_size);
+    /*
+     * Keep the DT memory description consistent with the Linx `virt` physical
+     * memory map.
+     *
+     * The `virt` machine places the UART/exit MMIO window at LINX_UART_BASE.
+     * When RAM is large enough to cover that address (e.g. -m 512M), the MMIO
+     * region overlaps the RAM window. Split the DT "reg" ranges to exclude the
+     * MMIO hole so Linux does not allocate normal pages from it.
+     */
+    if (mem_size <= (hwaddr)LINX_UART_BASE) {
+        qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
+                               0x0, 0x0,
+                               (uint32_t)(mem_size >> 32), (uint32_t)mem_size);
+    } else {
+        const hwaddr mem0_base = 0;
+        const hwaddr mem0_size = (hwaddr)LINX_UART_BASE;
+        const hwaddr mem1_base = (hwaddr)LINX_UART_BASE + (hwaddr)LINX_UART_SIZE;
+        const hwaddr mem1_size = (mem_size > mem1_base) ? (mem_size - mem1_base) : 0;
+
+        if (mem1_size) {
+            qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
+                                   (uint32_t)(mem0_base >> 32), (uint32_t)mem0_base,
+                                   (uint32_t)(mem0_size >> 32), (uint32_t)mem0_size,
+                                   (uint32_t)(mem1_base >> 32), (uint32_t)mem1_base,
+                                   (uint32_t)(mem1_size >> 32), (uint32_t)mem1_size);
+        } else {
+            qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
+                                   (uint32_t)(mem0_base >> 32), (uint32_t)mem0_base,
+                                   (uint32_t)(mem0_size >> 32), (uint32_t)mem0_size);
+        }
+    }
 
     qemu_fdt_add_subnode(fdt, "/cpus");
     qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 0x1);

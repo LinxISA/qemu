@@ -27,6 +27,8 @@ typedef struct DisasContext {
     uint8_t brtype;
     vaddr brtarget;
     uint32_t cur_insn_len;
+    bool in_body;
+    bool decoupled_header;
     bool tgt_modified;
 } DisasContext;
 
@@ -43,11 +45,15 @@ enum {
 static TCGv_i64 cpu_gpr[LINX_GPR_COUNT];
 static TCGv_i64 cpu_tq[4];
 static TCGv_i64 cpu_uq[4];
+static TCGv_i64 cpu_bpc;
 static TCGv_i64 cpu_tgt;
 static TCGv_i32 cpu_cond;
 static TCGv_i32 cpu_carg;  /* Commit argument flag */
 static TCGv_i32 cpu_brtype;
 static TCGv_i32 cpu_blocktype;
+static TCGv_i64 cpu_body_tpc;
+static TCGv_i64 cpu_return_pc;
+static TCGv_i32 cpu_in_body;
 static TCGv_i32 cpu_tile_func;
 static TCGv_i32 cpu_tile_dtype;
 static TCGv_i32 cpu_tile_iot_valid;
@@ -61,6 +67,8 @@ static TCGv_i32 cpu_tile_iot_size;
 static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
 static TCGv_i64 cpu_insn_count;
+static TCGv_i64 cpu_pending_trap_arg0;
+static TCGv_i32 cpu_pending_trap_cause;
 
 static unsigned linx_insn_len(uint16_t hw);
 
@@ -98,18 +106,11 @@ static uint64_t linx_trace_reg_pc_hi;
  * while saving/restoring callee-saved registers within the local stacksize
  * region.
  */
-static uint64_t linx_callframe_size;
+uint64_t linx_callframe_size = 64;
 
 static inline bool linx_trace_ra_pc_match(vaddr pc)
 {
     return !linx_trace_ra_pc_enabled || (uint64_t)pc == linx_trace_ra_pc;
-}
-
-static inline bool linx_trace_reg_pc_match(vaddr pc)
-{
-    return !linx_trace_reg_pc_filter_enabled ||
-           ((uint64_t)pc >= linx_trace_reg_pc_lo &&
-            (uint64_t)pc <= linx_trace_reg_pc_hi);
 }
 
 static inline MemOp linx_mo_endian(void)
@@ -174,6 +175,7 @@ static void linx_set_dest(unsigned dst, TCGv_i64 v)
 static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_target)
 {
     int i;
+    tcg_gen_movi_i64(cpu_bpc, ctx->base.pc_first);
     for (i = 0; i < 4; i++) {
         tcg_gen_movi_i64(cpu_tq[i], 0);
         tcg_gen_movi_i64(cpu_uq[i], 0);
@@ -182,6 +184,9 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_carg, 0);
     tcg_gen_movi_i32(cpu_brtype, brtype);
     tcg_gen_movi_i32(cpu_blocktype, 0);
+    tcg_gen_movi_i64(cpu_body_tpc, 0);
+    tcg_gen_movi_i64(cpu_return_pc, 0);
+    tcg_gen_movi_i32(cpu_in_body, 0);
     tcg_gen_movi_i32(cpu_tile_func, 0);
     tcg_gen_movi_i32(cpu_tile_dtype, 0);
     tcg_gen_movi_i32(cpu_tile_iot_valid, 0);
@@ -196,6 +201,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
     ctx->tgt_modified = false;
+    ctx->decoupled_header = false;
     
     /* For COND blocks: set diverted target in bpc (cpu_tgt) */
     /* For DIRECT/CALL blocks: set target in bpc (cpu_tgt) */
@@ -266,8 +272,12 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
             return true;
         }
 
-        /* Template blocks: FENTRY/FEXIT/FRET.* share opcode bits[6:0]=0x41. */
+        /* Template blocks: frame templates (0x41) and memory templates (0x31). */
         if ((insn & 0x7f) == 0x41 && ((insn >> 12) & 0x7) <= 3) {
+            return true;
+        }
+        if ((insn & 0x7f) == 0x31 && ((insn >> 7) & 0x1f) == 0 &&
+            ((insn >> 12) & 0x7) <= 1) {
             return true;
         }
 
@@ -302,7 +312,10 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: jump target 0x%" VADDR_PRIx " is not a block start marker\n",
                       dest);
-        tcg_gen_movi_i64(cpu_pc, dest);
+        tcg_gen_movi_i64(cpu_pending_trap_arg0, dest);
+        tcg_gen_movi_i32(cpu_pending_trap_cause, LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET);
+        /* Block target checks conceptually trap at the current block start marker. */
+        tcg_gen_mov_i64(cpu_pc, cpu_bpc);
         gen_helper_raise_exception(tcg_env,
                                   tcg_constant_i32(LINX_EXCP_BAD_BRANCH_TARGET));
         ctx->base.is_jmp = DISAS_NORETURN;
@@ -323,7 +336,43 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
 
 static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
 {
-    /* Commit any tile-block side effects before control-flow commit. */
+    if (ctx->in_body) {
+        /*
+         * Decoupled body terminator: commit tile effects and return to the
+         * header continuation (return_pc).
+         */
+        gen_helper_linx_tile_commit(tcg_env);
+        tcg_gen_movi_i32(cpu_in_body, 0);
+        gen_helper_linx_check_bstart_target(tcg_env, cpu_return_pc);
+        tcg_gen_mov_i64(cpu_pc, cpu_return_pc);
+        tcg_gen_lookup_and_goto_ptr();
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return;
+    }
+
+    if (ctx->decoupled_header) {
+        /*
+         * Decoupled header terminator: jump to the out-of-line body specified
+         * by B.TEXT, then resume at the header continuation (fallthrough).
+         */
+        TCGLabel *have_body = gen_new_label();
+        tcg_gen_brcondi_i64(TCG_COND_NE, cpu_body_tpc, 0, have_body);
+        tcg_gen_movi_i64(cpu_pending_trap_arg0, fallthrough);
+        tcg_gen_movi_i32(cpu_pending_trap_cause, LINX_EBLOCK_CAUSE_MISSING_BODY_TPC);
+        tcg_gen_mov_i64(cpu_pc, cpu_bpc);
+        gen_helper_raise_exception(tcg_env, tcg_constant_i32(LINX_EXCP_BLOCK_FAULT));
+        tcg_gen_exit_tb(NULL, 0);
+        gen_set_label(have_body);
+
+        tcg_gen_movi_i64(cpu_return_pc, fallthrough);
+        tcg_gen_movi_i32(cpu_in_body, 1);
+        tcg_gen_mov_i64(cpu_pc, cpu_body_tpc);
+        tcg_gen_lookup_and_goto_ptr();
+        ctx->base.is_jmp = DISAS_NORETURN;
+        return;
+    }
+
+    /* Coupled block: commit any tile-block side effects before control-flow commit. */
     gen_helper_linx_tile_commit(tcg_env);
 
     switch (ctx->brtype & 0x7) {
@@ -495,8 +544,24 @@ static bool linx_illegal(DisasContext *ctx)
     qemu_log_mask(LOG_GUEST_ERROR, "Linx: illegal instruction @ 0x%" VADDR_PRIx " (insn_len=%u)\n",
                   pc, ctx->cur_insn_len);
     trace_linx_insn_decode_fail(ctx->base.pc_next, 0, ctx->cur_insn_len);
-    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    tcg_gen_movi_i64(cpu_pending_trap_arg0, 0);
+    tcg_gen_movi_i32(cpu_pending_trap_cause, 0);
+    tcg_gen_movi_i64(cpu_pc, pc);
     gen_helper_raise_exception(tcg_env, tcg_constant_i32(LINX_EXCP_ILLEGAL_INST));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool linx_block_fault(DisasContext *ctx, uint32_t cause, uint64_t arg0)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: block-format fault @ 0x%" VADDR_PRIx " cause=%u\n",
+                  pc, cause);
+    tcg_gen_movi_i64(cpu_pending_trap_arg0, arg0);
+    tcg_gen_movi_i32(cpu_pending_trap_cause, cause);
+    tcg_gen_movi_i64(cpu_pc, pc);
+    gen_helper_raise_exception(tcg_env, tcg_constant_i32(LINX_EXCP_BLOCK_FAULT));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -512,6 +577,9 @@ static bool trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
     /* pc_next has already been advanced past the current insn, so we need to
      * check if the CURRENT instruction (pc_next - cur_insn_len) is at pc_first */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         /* BSTART in the middle of a translation block - end the previous block */
         linx_gen_block_end(ctx, current_pc);
@@ -524,6 +592,9 @@ static bool trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
 static bool trans_c_bstart_direct(DisasContext *ctx, arg_c_bstart_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -535,6 +606,9 @@ static bool trans_c_bstart_direct(DisasContext *ctx, arg_c_bstart_direct *a)
 static bool trans_c_bstart_cond(DisasContext *ctx, arg_c_bstart_cond *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -553,6 +627,9 @@ static bool trans_c_bstop(DisasContext *ctx, arg_c_bstop *a)
 static bool trans_bstart_call(DisasContext *ctx, arg_bstart_call *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -564,6 +641,9 @@ static bool trans_bstart_call(DisasContext *ctx, arg_bstart_call *a)
 static bool trans_bstart_direct(DisasContext *ctx, arg_bstart_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -575,6 +655,9 @@ static bool trans_bstart_direct(DisasContext *ctx, arg_bstart_direct *a)
 static bool trans_bstart_cond(DisasContext *ctx, arg_bstart_cond *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -587,11 +670,16 @@ static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
     linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 4); /* VPAR */
+    ctx->decoupled_header = true;
     return true;
 }
 
@@ -599,17 +687,25 @@ static bool trans_bstart_vseq(DisasContext *ctx, arg_bstart_vseq *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
     linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 5); /* VSEQ */
+    ctx->decoupled_header = true;
     return true;
 }
 
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -618,12 +714,16 @@ static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
     tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
     tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
     tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    ctx->decoupled_header = true;
     return true;
 }
 
 static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
@@ -632,13 +732,17 @@ static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
     tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
     tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
     tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    ctx->decoupled_header = true;
     return true;
 }
 
 static bool trans_b_dim(DisasContext *ctx, arg_b_dim *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
     if (a->lb > 2) {
         return linx_illegal(ctx);
@@ -652,8 +756,11 @@ static bool trans_b_dim(DisasContext *ctx, arg_b_dim *a)
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
 
     uint32_t flags = 0;
@@ -682,8 +789,11 @@ static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 
 static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
 
     uint32_t flags = 0;
@@ -710,6 +820,70 @@ static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
     return true;
 }
 
+static bool trans_b_text(DisasContext *ctx, arg_b_text *a)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr body_tpc = linx_pcrel_target(pc, a->simm25);
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+
+    tcg_gen_movi_i64(cpu_body_tpc, body_tpc);
+    return true;
+}
+
+static bool trans_b_ior(DisasContext *ctx, arg_b_ior *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    (void)a;
+    return true;
+}
+
+static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    (void)a;
+    return true;
+}
+
+static bool trans_b_hint(DisasContext *ctx, arg_b_hint *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    (void)a;
+    return true;
+}
+
+static bool trans_b_hint_trace(DisasContext *ctx, arg_b_hint_trace *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    (void)a;
+    return true;
+}
+
 static bool trans_setret(DisasContext *ctx, arg_setret *a)
 {
     vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -720,8 +894,11 @@ static bool trans_setret(DisasContext *ctx, arg_setret *a)
 
 static bool trans_c_setc_tgt(DisasContext *ctx, arg_c_setc_tgt *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
     TCGv_i64 v = linx_get_reg(a->SrcL);
     tcg_gen_mov_i64(cpu_tgt, v);
@@ -732,8 +909,11 @@ static bool trans_c_setc_tgt(DisasContext *ctx, arg_c_setc_tgt *a)
 
 static bool trans_setc_tgt(DisasContext *ctx, arg_setc_tgt *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
     TCGv_i64 v = linx_get_reg(a->SrcL);
     tcg_gen_mov_i64(cpu_tgt, v);
@@ -832,7 +1012,7 @@ static bool trans_setc_ori(DisasContext *ctx, arg_setc_ori *a)
 static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r)
 {
     if (ctx->brtype == 0) {
-        return linx_illegal(ctx);
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
     /*
      * SETC updates block commit arguments and is frequently used to drive
@@ -2157,150 +2337,28 @@ static bool trans_addtpc(DisasContext *ctx, arg_addtpc *a)
  *   Actual stack size = (uimm_hi << 10) | (uimm_lo << 3)
  */
 
-/* Helper to decode the split uimm field into actual byte size */
-static inline int64_t linx_decode_fentry_uimm(uint32_t uimm_hi, uint32_t uimm_lo)
-{
-    /* uimm_hi contains bits [14:10], uimm_lo contains bits [9:3] */
-    /* Reconstruct: (uimm_hi << 10) | (uimm_lo << 3) */
-    return ((int64_t)uimm_hi << 10) | ((int64_t)uimm_lo << 3);
-}
-
-/* Helper to get next register in FENTRY range (incrementing with wraparound) */
-static inline int linx_next_fentry_reg(int current, int end_adjusted)
-{
-    current++;
-    if (current > 23) {
-        current = 2;  /* Wrap from R23 to R2 */
-    }
-    return current;
-}
-
-/* Calculate how many registers to save/restore given [begin, end] range */
-static inline int linx_fentry_reg_count(int begin, int end)
-{
-    if (begin <= end) {
-        return end - begin + 1;
-    } else {
-        /* Wraparound: begin to R23, then R2 to end */
-        return (23 - begin + 1) + (end - 2 + 1);
-    }
-}
-
-static void linx_fentry_save_regs(DisasContext *ctx, int begin, int end,
-                                  int64_t stacksize)
-{
-    /* Save registers into the current frame:
-     *   [sp + stacksize - 8]  = reg_begin
-     *   [sp + stacksize - 16] = next reg
-     *   ...
-     *
-     * This matches the bring-up toolchain convention and keeps low offsets
-     * available for locals.
-     */
-    if (stacksize <= 0) {
-        return;
-    }
-
-    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    const int count = linx_fentry_reg_count(begin, end);
-    int reg = begin;
-    for (int i = 0; i < count; i++) {
-        const int64_t off = stacksize - ((int64_t)(i + 1) * 8);
-        if (off < 0) {
-            break;
-        }
-
-        if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
-            TCGv_i64 addr64 = tcg_temp_new_i64();
-            tcg_gen_addi_i64(addr64, cpu_gpr[LINX_REG_SP], off);
-            if (linx_trace_ra_enabled && reg == LINX_REG_RA &&
-                linx_trace_ra_pc_match(pc)) {
-                gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(pc),
-                                         tcg_constant_i32(2), addr64,
-                                         cpu_gpr[LINX_REG_RA]);
-            }
-            if (linx_trace_reg_enabled && (uint32_t)reg == linx_trace_reg &&
-                linx_trace_reg_pc_match(pc)) {
-                gen_helper_linx_trace_reg(tcg_env, tcg_constant_i64(pc),
-                                          tcg_constant_i32(2),
-                                          tcg_constant_i32(reg), addr64,
-                                          cpu_gpr[reg]);
-            }
-            linx_store_from_reg(ctx, linx_addr_from_i64(addr64),
-                                cpu_gpr[reg], MO_UQ);
-        }
-
-        if (reg == end) {
-            break;
-        }
-        reg = linx_next_fentry_reg(reg, end);
-    }
-}
-
-static void linx_fentry_restore_regs(DisasContext *ctx, int begin, int end,
-                                     int64_t stacksize)
-{
-    if (stacksize <= 0) {
-        return;
-    }
-
-    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    const int count = linx_fentry_reg_count(begin, end);
-    int reg = begin;
-    for (int i = 0; i < count; i++) {
-        const int64_t off = stacksize - ((int64_t)(i + 1) * 8);
-        if (off < 0) {
-            break;
-        }
-
-        if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
-            TCGv_i64 addr64 = tcg_temp_new_i64();
-            TCGv_i64 val = tcg_temp_new_i64();
-            tcg_gen_addi_i64(addr64, cpu_gpr[LINX_REG_SP], off);
-            tcg_gen_qemu_ld_i64(val, linx_addr_from_i64(addr64), 0,
-                                MO_UQ | linx_mo_endian());
-            tcg_gen_mov_i64(cpu_gpr[reg], val);
-            if (linx_trace_ra_enabled && reg == LINX_REG_RA &&
-                linx_trace_ra_pc_match(pc)) {
-                gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(pc),
-                                         tcg_constant_i32(3), addr64, val);
-            }
-            if (linx_trace_reg_enabled && (uint32_t)reg == linx_trace_reg &&
-                linx_trace_reg_pc_match(pc)) {
-                gen_helper_linx_trace_reg(tcg_env, tcg_constant_i64(pc),
-                                          tcg_constant_i32(3),
-                                          tcg_constant_i32(reg), addr64, val);
-            }
-        }
-
-        if (reg == end) {
-            break;
-        }
-        reg = linx_next_fentry_reg(reg, end);
-    }
-}
-
 /* FENTRY: Function entry - save registers [Begin ~ End], adjust SP */
 static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    const uint64_t stacksize = ((uint64_t)a->uimm_hi << 10) | ((uint64_t)a->uimm_lo << 3);
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
 
-    /* Standalone frame macro blocks start execution without an explicit BSTART. */
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-
-    int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
-    int64_t adj = stacksize + (int64_t)linx_callframe_size;
-    TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
-    
-    /* SP = SP - (stacksize + callframe_size) */
-    if (adj > 0) {
-        tcg_gen_subi_i64(sp, sp, adj);
-    }
-    linx_fentry_save_regs(ctx, a->reg_begin, a->reg_end, stacksize);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(0), /* FENTRY */
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->reg_begin),
+                                  tcg_constant_i32(a->reg_end),
+                                  tcg_constant_i64(stacksize));
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
@@ -2308,25 +2366,24 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
 static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    const uint64_t stacksize = ((uint64_t)a->uimm_hi << 10) | ((uint64_t)a->uimm_lo << 3);
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-
-    int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
-    int64_t adj = stacksize + (int64_t)linx_callframe_size;
-    TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
-
-    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
-    
-    /* SP = SP + (stacksize + callframe_size) */
-    if (adj > 0) {
-        tcg_gen_addi_i64(sp, sp, adj);
-    }
-    
-    /* FEXIT does NOT return directly - it's followed by an IND block with setc.tgt */
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(1), /* FEXIT */
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->reg_begin),
+                                  tcg_constant_i32(a->reg_end),
+                                  tcg_constant_i64(stacksize));
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
@@ -2334,29 +2391,23 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
 static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    const uint64_t stacksize = ((uint64_t)a->uimm_hi << 10) | ((uint64_t)a->uimm_lo << 3);
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-
-    int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
-    int64_t adj = stacksize + (int64_t)linx_callframe_size;
-    TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
-    TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
-
-    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
-    
-    /* SP = SP + (stacksize + callframe_size) */
-    if (adj > 0) {
-        tcg_gen_addi_i64(sp, sp, adj);
-    }
-    
-    /* Return via RA */
-    gen_helper_linx_check_bstart_target(tcg_env, ra);
-    tcg_gen_mov_i64(cpu_pc, ra);
-    tcg_gen_lookup_and_goto_ptr();
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(2), /* FRET.RA */
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->reg_begin),
+                                  tcg_constant_i32(a->reg_end),
+                                  tcg_constant_i64(stacksize));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -2365,29 +2416,71 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
 static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    const uint64_t stacksize = ((uint64_t)a->uimm_hi << 10) | ((uint64_t)a->uimm_lo << 3);
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(3), /* FRET.STK */
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->reg_begin),
+                                  tcg_constant_i32(a->reg_end),
+                                  tcg_constant_i64(stacksize));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
 
-    int64_t stacksize = linx_decode_fentry_uimm(a->uimm_hi, a->uimm_lo);
-    int64_t adj = stacksize + (int64_t)linx_callframe_size;
-    TCGv_i64 sp = cpu_gpr[LINX_REG_SP];
-    TCGv_i64 ra = cpu_gpr[LINX_REG_RA];
-
-    linx_fentry_restore_regs(ctx, a->reg_begin, a->reg_end, stacksize);
-    
-    /* SP = SP + (stacksize + callframe_size) */
-    if (adj > 0) {
-        tcg_gen_addi_i64(sp, sp, adj);
+/* MCOPY: restartable bulk memory copy template (standalone block). */
+static bool trans_mcopy(DisasContext *ctx, arg_mcopy *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
     }
-    
-    /* Return via RA (which was restored from stack) */
-    gen_helper_linx_check_bstart_target(tcg_env, ra);
-    tcg_gen_mov_i64(cpu_pc, ra);
-    tcg_gen_lookup_and_goto_ptr();
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(LINX_TEMPLATE_MCOPY),
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->SrcL),
+                                  tcg_constant_i32(a->SrcR),
+                                  tcg_constant_i64(a->SrcD));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+/* MSET: restartable bulk memory set template (standalone block). */
+static bool trans_mset(DisasContext *ctx, arg_mset *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(LINX_TEMPLATE_MSET),
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->SrcL),
+                                  tcg_constant_i32(a->SrcR),
+                                  tcg_constant_i64(a->SrcD));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -2717,6 +2810,9 @@ static bool trans_cmp_geui(DisasContext *ctx, arg_cmp_geui *a)
 
 static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     /* B.Z: Branch if condition flag is zero */
     TCGLabel *taken = gen_new_label();
     TCGLabel *done = gen_new_label();
@@ -2737,6 +2833,9 @@ static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
 
 static bool trans_b_nz(DisasContext *ctx, arg_b_nz *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
     /* B.NZ: Branch if condition flag is non-zero */
     TCGLabel *taken = gen_new_label();
     TCGLabel *done = gen_new_label();
@@ -3251,6 +3350,14 @@ static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
     return true;
 }
 
+static bool trans_tlb_iall(DisasContext *ctx, arg_tlb_iall *a)
+{
+    (void)ctx;
+    (void)a;
+    gen_helper_linx_tlb_iall(tcg_env);
+    return true;
+}
+
 static bool trans_ssrset(DisasContext *ctx, arg_ssrset *a)
 {
     TCGv_i64 src = linx_get_reg(a->SrcL);
@@ -3316,6 +3423,8 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     ctx->brtype = (uint8_t)env->brtype;
     ctx->brtarget = 0;
     ctx->cur_insn_len = 0;
+    ctx->in_body = env->in_body != 0;
+    ctx->decoupled_header = false;
     ctx->tgt_modified = false;
 }
 
@@ -3515,11 +3624,15 @@ void linx_translate_init(void)
                                            offsetof(CPULinxState, uq[i]),
                                            uq_names[i]);
     }
+    cpu_bpc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, bpc), "bpc");
     cpu_tgt = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, tgt), "tgt");
     cpu_cond = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, cond), "cond");
     cpu_carg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, carg), "carg");
     cpu_brtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, brtype), "brtype");
     cpu_blocktype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, blocktype), "blocktype");
+    cpu_body_tpc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, body_tpc), "body_tpc");
+    cpu_return_pc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, return_pc), "return_pc");
+    cpu_in_body = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, in_body), "in_body");
     cpu_tile_func = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_func), "tile_func");
     cpu_tile_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_dtype), "tile_dtype");
     cpu_tile_iot_valid = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_valid), "tile_iot_valid");
@@ -3537,6 +3650,12 @@ void linx_translate_init(void)
     cpu_insn_count = tcg_global_mem_new_i64(tcg_env,
                                             offsetof(CPULinxState, insn_count),
                                             "insn_count");
+    cpu_pending_trap_arg0 =
+        tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, pending_trap_arg0),
+                               "pending_trap_arg0");
+    cpu_pending_trap_cause =
+        tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, pending_trap_cause),
+                               "pending_trap_cause");
 
     if (callframe && callframe[0]) {
         char *endp = NULL;
