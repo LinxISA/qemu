@@ -42,6 +42,8 @@ static bool linx_trace_ra_inited;
 static bool linx_trace_ra_enabled;
 static bool linx_trace_ra_pc_filter_enabled;
 static uint64_t linx_trace_ra_pc;
+static bool linx_print_insn_count_inited;
+static bool linx_print_insn_count_enabled;
 
 static inline bool linx_trace_ra_match(uint64_t pc)
 {
@@ -67,6 +69,16 @@ static inline bool linx_trace_ra_match(uint64_t pc)
         return false;
     }
     return !linx_trace_ra_pc_filter_enabled || pc == linx_trace_ra_pc;
+}
+
+static inline bool linx_print_insn_count(void)
+{
+    if (!linx_print_insn_count_inited) {
+        const char *v = getenv("LINX_PRINT_INSN_COUNT");
+        linx_print_insn_count_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_print_insn_count_inited = true;
+    }
+    return linx_print_insn_count_enabled;
 }
 
 /* Semihosting operations via EBREAK immediate */
@@ -2791,9 +2803,10 @@ void HELPER(linx_exit)(CPULinxState *env)
     qemu_log_mask(CPU_LOG_INT, "Linx: EXIT request at PC=0x%lx\n",
                   (unsigned long)env->pc);
 
-    /* Always print dynamic instruction count for benchmark runs. */
-    fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
-    fflush(stderr);
+    if (linx_print_insn_count()) {
+        fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
+        fflush(stderr);
+    }
     
     /* Request graceful shutdown of the VM */
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);

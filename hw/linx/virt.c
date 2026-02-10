@@ -34,6 +34,12 @@ static bool linx_virt_debug_enabled(void)
     return v && v[0] && strcmp(v, "0") != 0;
 }
 
+static bool linx_virt_print_insn_count_enabled(void)
+{
+    const char *v = getenv("LINX_PRINT_INSN_COUNT");
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
 #if TARGET_LONG_BITS == 32
 static const char *linx_elf32_sym_name(const uint8_t *buf, size_t len,
                                        const Elf32_Shdr *strtab_sh,
@@ -206,8 +212,10 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
     if (addr == LINX_EXIT_REG - LINX_UART_BASE) {
         if (s->cpu) {
             CPULinxState *env = &s->cpu->env;
-            fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
-            fflush(stderr);
+            if (linx_virt_print_insn_count_enabled()) {
+                fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
+                fflush(stderr);
+            }
             /* Stop commit tracing after the exit store commits (difftest). */
             env->commit_trace.stop_after_commit = 1;
         }
