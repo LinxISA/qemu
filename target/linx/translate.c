@@ -66,6 +66,7 @@ static TCGv_i32 cpu_tile_iot_reg;
 static TCGv_i32 cpu_tile_iot_size;
 static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
+static TCGv_i64 cpu_insn_pc_next;
 static TCGv_i64 cpu_insn_count;
 static TCGv_i64 cpu_pending_trap_arg0;
 static TCGv_i32 cpu_pending_trap_cause;
@@ -363,9 +364,9 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
         tcg_gen_movi_i64(cpu_pending_trap_arg0, dest);
         tcg_gen_movi_i32(cpu_pending_trap_cause, LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET);
         if (linx_commit_trace_enabled) {
-            /* Trapnum=E_BLOCK(3), cause=BAD_BRANCH_TARGET. */
+            /* Trapnum=BLOCK_TRAP(5), cause=BAD_BRANCH_TARGET. */
             tcg_gen_movi_i32(cpu_trace_trap_valid, 1);
-            tcg_gen_movi_i32(cpu_trace_trap_cause, (int32_t)((LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET << 8) | 3));
+            tcg_gen_movi_i32(cpu_trace_trap_cause, (int32_t)((LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET << 8) | 5));
             tcg_gen_movi_i64(cpu_trace_traparg0, dest);
             gen_helper_linx_commit_trace(tcg_env, cpu_bpc);
         }
@@ -424,7 +425,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (linx_commit_trace_enabled) {
             tcg_gen_movi_i32(cpu_trace_trap_valid, 1);
             tcg_gen_movi_i32(cpu_trace_trap_cause,
-                             (int32_t)((LINX_EBLOCK_CAUSE_MISSING_BODY_TPC << 8) | 3));
+                             (int32_t)((LINX_EBLOCK_CAUSE_MISSING_BODY_TPC << 8) | 5));
             tcg_gen_movi_i64(cpu_trace_traparg0, fallthrough);
             gen_helper_linx_commit_trace(tcg_env, cpu_bpc);
         }
@@ -637,9 +638,9 @@ static bool linx_illegal(DisasContext *ctx)
     tcg_gen_movi_i64(cpu_pending_trap_arg0, 0);
     tcg_gen_movi_i32(cpu_pending_trap_cause, 0);
     if (linx_commit_trace_enabled) {
-        /* Trapnum=E_INST(1), cause=0. */
+        /* Trapnum=ILLEGAL_INST(4), cause=0. */
         tcg_gen_movi_i32(cpu_trace_trap_valid, 1);
-        tcg_gen_movi_i32(cpu_trace_trap_cause, 1);
+        tcg_gen_movi_i32(cpu_trace_trap_cause, 4);
         tcg_gen_movi_i64(cpu_trace_traparg0, 0);
         gen_helper_linx_commit_trace(tcg_env, tcg_constant_i64(pc));
     }
@@ -658,10 +659,10 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t cause, uint64_t arg0)
     tcg_gen_movi_i64(cpu_pending_trap_arg0, arg0);
     tcg_gen_movi_i32(cpu_pending_trap_cause, cause);
     if (linx_commit_trace_enabled) {
-        /* Trapnum=E_BLOCK(3), cause=block-format cause. */
+        /* Trapnum=BLOCK_TRAP(5), cause=block-format cause. */
         tcg_gen_movi_i32(cpu_trace_trap_valid, 1);
         tcg_gen_movi_i32(cpu_trace_trap_cause,
-                         (int32_t)(((cause & 0xffu) << 8) | 3));
+                         (int32_t)(((cause & 0xffu) << 8) | 5));
         tcg_gen_movi_i64(cpu_trace_traparg0, arg0);
         gen_helper_linx_commit_trace(tcg_env, tcg_constant_i64(pc));
     }
@@ -2020,6 +2021,19 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
 {
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     TCGv_i64 out = tcg_temp_new_i64();
+
+    {
+        const unsigned size = memop_size(mop);
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_dbg_check_load(tcg_env, tcg_constant_i64(pc), addr64,
+                                       tcg_constant_i32((int32_t)size));
+    }
     tcg_gen_qemu_ld_i64(out, addr, 0, mop | linx_mo_endian());
 
     if (linx_commit_trace_enabled) {
@@ -2242,8 +2256,21 @@ static bool trans_ld(DisasContext *ctx, arg_ld *a)
 static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
                                 MemOp mop)
 {
+    const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+    {
+        const unsigned size = memop_size(mop);
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_dbg_check_store(tcg_env, tcg_constant_i64(pc), addr64,
+                                        tcg_constant_i32((int32_t)size));
+    }
+
     if (linx_watch_store_enabled) {
-        const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
         if (!linx_watch_store_pc_filter_enabled ||
             ((uint64_t)pc >= linx_watch_store_pc_lo &&
              (uint64_t)pc <= linx_watch_store_pc_hi)) {
@@ -2611,6 +2638,54 @@ static bool trans_mset(DisasContext *ctx, arg_mset *a)
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     gen_helper_linx_template_step(tcg_env,
                                   tcg_constant_i32(LINX_TEMPLATE_MSET),
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->SrcL),
+                                  tcg_constant_i32(a->SrcR),
+                                  tcg_constant_i64(a->SrcD));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+/* ESAVE: restartable extended-state save template (standalone block). */
+static bool trans_esave(DisasContext *ctx, arg_esave *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(LINX_TEMPLATE_ESAVE),
+                                  tcg_constant_i64(current_pc),
+                                  tcg_constant_i64(ctx->base.pc_next),
+                                  tcg_constant_i32(a->SrcL),
+                                  tcg_constant_i32(a->SrcR),
+                                  tcg_constant_i64(a->SrcD));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+/* ERCOV: restartable extended-state restore template (standalone block). */
+static bool trans_ercov(DisasContext *ctx, arg_ercov *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_template_step(tcg_env,
+                                  tcg_constant_i32(LINX_TEMPLATE_ERCOV),
                                   tcg_constant_i64(current_pc),
                                   tcg_constant_i64(ctx->base.pc_next),
                                   tcg_constant_i32(a->SrcL),
@@ -3361,13 +3436,22 @@ static bool trans_hl_ssrget(DisasContext *ctx, arg_hl_ssrget *a)
 static bool trans_acrc(DisasContext *ctx, arg_acrc *a)
 {
     /*
-     * ACRC: request a service request (trap) at block commit.
+     * ACRC: request a synchronous system-call trap.
      *
-     * Bring-up model: perform a v0.1-style SERVICE_REQUEST immediately and
-     * vector to the managing ACR's EVBASE.
+     * v0.2 bring-up rule: ACRC MUST be followed by an explicit BSTOP/C.BSTOP in
+     * the same block. The trap resume PC is the instruction after ACRC (bring-up:
+     * the explicit terminator).
      */
     vaddr tpc = ctx->base.pc_next - ctx->cur_insn_len;
     vaddr bpc = ctx->base.pc_first;
+
+    /* Enforce "ACRC followed by (C.)BSTOP" (bring-up). */
+    {
+        uint16_t hw_next = translator_lduw_end(ctx->env, &ctx->base, ctx->base.pc_next, MO_LE);
+        if (hw_next != 0x0000) {
+            return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ACRC_MISSING_BSTOP, ctx->base.pc_next);
+        }
+    }
 
     gen_helper_linx_service_request(
         tcg_env,
@@ -3600,6 +3684,8 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     ctx->cur_insn_len = len;
     /* Always update pc_next to ensure tb->size is non-zero even if exception occurs */
     ctx->base.pc_next = pc + len;
+    tcg_gen_movi_i64(cpu_insn_pc_next, ctx->base.pc_next);
+    gen_helper_linx_dbg_check_pc(tcg_env, tcg_constant_i64(pc));
 
     switch (len) {
            case 2:
@@ -3671,10 +3757,24 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         uint16_t hw3 = translator_lduw_end(env, &ctx->base, pc + 4, MO_LE);
         uint32_t hi = (uint32_t)hw2 | ((uint32_t)hw3 << 16);
         uint64_t insn48 = (uint64_t)hw | ((uint64_t)hi << 16);
+        if (getenv("LINX_TRACE_DECODE48")) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: insn48 pc=0x%" VADDR_PRIx " insn48=0x%012" PRIx64
+                          " key=0x%016" PRIx64 "\n",
+                          pc, insn48, (uint64_t)(insn48 & 0xffff0000007f000full));
+        }
         insn_val = (uint32_t)(insn48 & 0xFFFFFFFF);
         linx_trace_begin(pc, insn48, len);
         decoded = decode_insn48(ctx, insn48);
         if (!decoded) {
+            if (getenv("LINX_TRACE_DECODE_FAIL")) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Linx: decode48 failed pc=0x%" VADDR_PRIx
+                              " hw=0x%04x hw2=0x%04x hw3=0x%04x insn48=0x%012" PRIx64
+                              " key=0x%016" PRIx64 "\n",
+                              pc, hw, hw2, hw3, insn48,
+                              (uint64_t)(insn48 & 0xffff0000007f000full));
+            }
             linx_illegal(ctx);
         } else {
             trace_linx_insn_exec(pc, insn_val, len, "48-bit");
@@ -3793,6 +3893,7 @@ void linx_translate_init(void)
     cpu_lb[1] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[1]), "lb1");
     cpu_lb[2] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[2]), "lb2");
     cpu_pc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, pc), "pc");
+    cpu_insn_pc_next = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, insn_pc_next), "insn_pc_next");
     cpu_insn_count = tcg_global_mem_new_i64(tcg_env,
                                             offsetof(CPULinxState, insn_count),
                                             "insn_count");

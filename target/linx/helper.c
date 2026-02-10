@@ -38,6 +38,37 @@ static inline bool linx_trace_mmu(void)
     return linx_trace_mmu_enabled;
 }
 
+static bool linx_trace_ra_inited;
+static bool linx_trace_ra_enabled;
+static bool linx_trace_ra_pc_filter_enabled;
+static uint64_t linx_trace_ra_pc;
+
+static inline bool linx_trace_ra_match(uint64_t pc)
+{
+    if (!linx_trace_ra_inited) {
+        const char *v = getenv("LINX_TRACE_RA");
+        linx_trace_ra_enabled = v && v[0] && strcmp(v, "0") != 0;
+
+        const char *pc_s = getenv("LINX_TRACE_RA_PC");
+        if (pc_s && pc_s[0] && strcmp(pc_s, "0") != 0) {
+            char *endp = NULL;
+            errno = 0;
+            uint64_t parsed = strtoull(pc_s, &endp, 0);
+            if (errno == 0 && endp && endp != pc_s && *endp == '\0') {
+                linx_trace_ra_pc = parsed;
+                linx_trace_ra_pc_filter_enabled = true;
+            }
+        }
+
+        linx_trace_ra_inited = true;
+    }
+
+    if (!linx_trace_ra_enabled) {
+        return false;
+    }
+    return !linx_trace_ra_pc_filter_enabled || pc == linx_trace_ra_pc;
+}
+
 /* Semihosting operations via EBREAK immediate */
 #define LINX_SEMIHOST_EXIT      0  /* Exit program */
 #define LINX_SEMIHOST_PUTCHAR   1  /* a0 = character to output */
@@ -63,12 +94,10 @@ enum {
     LINX_SSR_EVBASE   = 0xF01,
     LINX_SSR_TRAPNO   = 0xF02,
     LINX_SSR_TRAPARG0 = 0xF03,
+    LINX_SSR_ETEMP    = 0xF05,
+    LINX_SSR_ETEMP0   = 0xF06,
     LINX_SSR_IPENDING = 0xF08,
     LINX_SSR_EOIEI    = 0xF0A,
-    LINX_SSR_EBPC     = 0xF0B,
-    LINX_SSR_EBARG    = 0xF0C,
-    LINX_SSR_ETPC     = 0xF0D,
-    LINX_SSR_EBPCN    = 0xF0E,
     LINX_SSR_TTBR0    = 0xF10,
     LINX_SSR_TTBR1    = 0xF11,
     LINX_SSR_TCR      = 0xF12,
@@ -78,19 +107,53 @@ enum {
     LINX_SSR_IOMAIR   = 0xF16,
     LINX_SSR_TIMER_TIME   = 0xF20,
     LINX_SSR_TIMER_TIMECMP = 0xF21,
+
+    /* EBARG register group (v0.2). */
+    LINX_SSR_EBARG0          = 0xF40,
+    LINX_SSR_EBARG_BPC_CUR   = 0xF41,
+    LINX_SSR_EBARG_BPC_TGT   = 0xF42,
+    LINX_SSR_EBARG_TPC       = 0xF43,
+    LINX_SSR_EBARG_LRA       = 0xF44,
+    LINX_SSR_EBARG_TQ0       = 0xF45,
+    LINX_SSR_EBARG_TQ1       = 0xF46,
+    LINX_SSR_EBARG_TQ2       = 0xF47,
+    LINX_SSR_EBARG_TQ3       = 0xF48,
+    LINX_SSR_EBARG_UQ0       = 0xF49,
+    LINX_SSR_EBARG_UQ1       = 0xF4A,
+    LINX_SSR_EBARG_UQ2       = 0xF4B,
+    LINX_SSR_EBARG_UQ3       = 0xF4C,
+    LINX_SSR_EBARG_LB        = 0xF4D,
+    LINX_SSR_EBARG_LC        = 0xF4E,
+    LINX_SSR_EBARG_EXT_PTR   = 0xF4F,
+    LINX_SSR_EBARG_EXT_META  = 0xF50,
+
+    /* Debug SSR bank (v0.2). */
+    LINX_SSR_DBGID           = 0xF80,
+    LINX_SSR_DBCR0           = 0xF90,
+    LINX_SSR_DBVR0           = 0xF91,
+    LINX_SSR_DCCR0           = 0xFA0,
+    LINX_SSR_DCVR0           = 0xFA1,
+    LINX_SSR_DWCR0           = 0xFB0,
+    LINX_SSR_DWVR0           = 0xFB1,
 };
 
-/* Trap number encoding (bring-up profile; keep in sync with target/linx/cpu.c). */
-#define LINX_TRAPNO_E_BIT       (1ULL << 63)
-#define LINX_TRAPNO_CAUSE_SHIFT 8u
+/* ECSTATE bits (v0.2 bring-up profile; mirrors key CSTATE fields). */
+#define LINX_ECSTATE_BI_BIT        (1ULL << 62)
 
-enum {
-    LINX_TRAPNUM_E_SCALL = 16,
-};
+/* TRAPNO encoding (v0.2 bring-up profile; keep in sync with target/linx/cpu.c). */
+#define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=async interrupt */
+#define LINX_TRAPNO_ARGV_BIT       (1ULL << 62)
+#define LINX_TRAPNO_CAUSE_SHIFT    24u
+#define LINX_TRAPNO_CAUSE_MASK     0xFFFFFFu
+#define LINX_TRAPNO_TRAPNUM_MASK   0x3Fu
 
-static inline uint64_t linx_trapno_sync(uint8_t trapnum, uint8_t cause)
+static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, uint8_t trapnum)
 {
-    return LINX_TRAPNO_E_BIT | ((uint64_t)cause << LINX_TRAPNO_CAUSE_SHIFT) | (uint64_t)trapnum;
+    const uint64_t e = async ? LINX_TRAPNO_E_BIT : 0;
+    const uint64_t a = argv ? LINX_TRAPNO_ARGV_BIT : 0;
+    const uint64_t c = ((uint64_t)(cause & LINX_TRAPNO_CAUSE_MASK)) << LINX_TRAPNO_CAUSE_SHIFT;
+    const uint64_t t = (uint64_t)(trapnum & LINX_TRAPNO_TRAPNUM_MASK);
+    return e | a | c | t;
 }
 
 static void linx_commit_trace_init(CPULinxState *env)
@@ -99,6 +162,7 @@ static void linx_commit_trace_init(CPULinxState *env)
         return;
     }
     env->commit_trace.inited = 1;
+    env->commit_trace.stop_after_commit = 0;
 
     const char *path = getenv("LINX_COMMIT_TRACE");
     if (!path || !path[0] || strcmp(path, "0") == 0) {
@@ -141,6 +205,46 @@ static void linx_commit_trace_init(CPULinxState *env)
     }
 }
 
+static inline bool linx_commit_trace_active(CPULinxState *env)
+{
+    linx_commit_trace_init(env);
+    return env->commit_trace.enabled && env->commit_trace.fp;
+}
+
+static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
+{
+    if (!linx_commit_trace_active(env)) {
+        return;
+    }
+    env->trace_wb_valid = 1;
+    env->trace_wb_rd = rd;
+    env->trace_wb_data = data;
+}
+
+static inline void linx_trace_mem(CPULinxState *env, bool is_store,
+                                  uint64_t addr, uint64_t wdata,
+                                  uint64_t rdata, uint32_t size)
+{
+    if (!linx_commit_trace_active(env)) {
+        return;
+    }
+    env->trace_mem_valid = 1;
+    env->trace_mem_addr = addr;
+    env->trace_mem_size = size;
+    env->trace_mem_wdata = is_store ? wdata : 0;
+    env->trace_mem_rdata = is_store ? 0 : rdata;
+}
+
+static inline void linx_template_commit_and_exit(CPULinxState *env,
+                                                 CPUState *cs,
+                                                 uint64_t next_pc)
+{
+    if (linx_commit_trace_active(env)) {
+        HELPER(linx_commit_trace)(env, next_pc);
+    }
+    cpu_loop_exit_noexc(cs);
+}
+
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 {
     linx_commit_trace_init(env);
@@ -158,8 +262,9 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
     const uint32_t trap_valid = env->trace_trap_valid;
     const uint32_t trap_cause = env->trace_trap_cause;
     const uint8_t trapnum = (uint8_t)(trap_cause & 0xffu);
-    const uint8_t cause = (uint8_t)((trap_cause >> 8) & 0xffu);
-    const uint64_t trapno_full = trap_valid ? linx_trapno_sync(trapnum, cause) : 0;
+    const uint32_t cause = (uint32_t)((trap_cause >> 8) & 0xffu);
+    const bool argv = trap_valid != 0; /* commit-trace: treat TRAPARG0 as present when trap_valid */
+    const uint64_t trapno_full = trap_valid ? linx_trapno_make(false, argv, cause, trapnum) : 0;
 
     /* Mandatory schema fields (see linxisa/docs/bringup/contracts/trace_schema.md). */
     fprintf(env->commit_trace.fp,
@@ -182,6 +287,13 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
             trapno_full, env->trace_traparg0,
             next_pc);
     fflush(env->commit_trace.fp);
+
+    if (env->commit_trace.stop_after_commit) {
+        fclose(env->commit_trace.fp);
+        env->commit_trace.fp = NULL;
+        env->commit_trace.enabled = 0;
+        env->commit_trace.stop_after_commit = 0;
+    }
 }
 
 /*
@@ -214,7 +326,7 @@ static inline bool linx_irq_allowed(const CPULinxState *env, uint32_t dst_acr)
     const bool ie = (cstate & LINX_CSTATE_I_BIT) != 0;
 
     /*
-     * v0.1 draft: if an interrupt routes to a more privileged ACR, it may
+     * v0.2 bring-up profile: if an interrupt routes to a more privileged ACR, it may
      * preempt regardless of the current ring's I bit. If it routes to the
      * current ACR, it is gated by CSTATE.I.
      */
@@ -231,21 +343,20 @@ static inline bool linx_irq_allowed(const CPULinxState *env, uint32_t dst_acr)
 static inline void linx_irq_kick_if_allowed(CPULinxState *env, uint32_t dst_acr)
 {
     CPUState *cs = env_cpu(env);
-
-    if (!linx_irq_allowed(env, dst_acr)) {
-        return;
-    }
     if (env->ssr_acr[dst_acr][LINX_SSR_IPENDING] == 0) {
         return;
     }
     /*
-     * Service requests/SSR-side interrupt injection can happen while the vCPU
-     * thread is executing without the BQL. Use the lock-free helper.
+     * Latch CPU_INTERRUPT_HARD whenever a source is pending.
+     *
+     * Delivery permission (CSTATE.I / ring checks) is enforced later in
+     * cpu_exec_interrupt(). Keeping the request latched avoids losing pending
+     * IRQs across ACR transitions where permission flips after trap return.
      */
     generic_handle_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 
-/* ACRC request_type values (v0.1 draft). */
+/* ACRC request_type values (v0.2 bring-up profile). */
 enum {
     LINX_SCT_MAC = 0,
     LINX_SCT_SYS = 1,
@@ -260,6 +371,13 @@ static inline uint32_t linx_ssr_low12(uint32_t ssrid)
 static inline bool linx_ssr_is_manager_idx(uint32_t idx)
 {
     return (idx & 0xf00u) == 0xf00u;
+}
+
+static inline void linx_raise_illegal_inst(CPULinxState *env)
+{
+    env->pending_trap_arg0 = 0;
+    env->pending_trap_cause = 0;
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
 }
 
 uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
@@ -277,8 +395,21 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
         return (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     default:
         if (is_manager) {
+            /* v0.2: legacy trap-save SSRs are illegal. */
+            if (idx == 0xF0B || idx == 0xF0C || idx == 0xF0D || idx == 0xF0E) {
+                env->pending_trap_arg0 = 0;
+                env->pending_trap_cause = 0;
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return 0;
+            }
             if (idx == LINX_SSR_TIMER_TIME) {
                 return (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            }
+            if (idx == LINX_SSR_DBGID) {
+                const uint64_t cps_minus1 = 0; /* CPs=1 */
+                const uint64_t bps_minus1 = 3; /* BPs=4 */
+                const uint64_t wps_minus1 = 3; /* WPs=4 */
+                return (cps_minus1 << 0) | (bps_minus1 << 4) | (wps_minus1 << 8);
             }
             if (bank < LINX_ACR_COUNT) {
                 return env->ssr_acr[bank][idx];
@@ -303,16 +434,31 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
     case LINX_SSR_CSTATE:
         /*
          * Track ACR in both env->acr and CSTATE.ACR. If software enables
-         * interrupts and there is a pending interrupt for the current ring,
+         * interrupts and there is a pending interrupt for the external
+         * interrupt routing ring (ACR1),
          * kick the CPU so it can be taken.
          */
         env->ssr[idx] = value;
         env->acr = linx_cstate_get_acr(value);
-        linx_irq_kick_if_allowed(env, env->acr & 0xF);
+        linx_irq_kick_if_allowed(env, 1);
         return;
     default:
         if (is_manager) {
             if (bank >= LINX_ACR_COUNT) {
+                return;
+            }
+
+            /* v0.2: legacy trap-save SSRs are illegal. */
+            if (idx == 0xF0B || idx == 0xF0C || idx == 0xF0D || idx == 0xF0E) {
+                env->pending_trap_arg0 = 0;
+                env->pending_trap_cause = 0;
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+            if (idx == LINX_SSR_DBGID) {
+                env->pending_trap_arg0 = 0;
+                env->pending_trap_cause = 0;
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 return;
             }
 
@@ -348,7 +494,7 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
             if (bank == 1) {
                 /*
                  * ACR1 privileged MMU/IOMMU programming registers: validate the
-                 * v0.1 bring-up subset and flush translations on updates.
+                 * v0.2 bring-up subset and flush translations on updates.
                  */
                 if (idx == LINX_SSR_TCR) {
                     const uint64_t allowed =
@@ -387,14 +533,31 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
 
             if (idx == LINX_SSR_EOIEI) {
                 /*
-                 * End of interrupt (v0.1 draft): clear the pending bit for the
+                 * End of interrupt (v0.2 bring-up profile): clear the pending bit for the
                  * given interrupt ID.
                  *
-                 * Bring-up: model a simple bit-per-interrupt IPENDING bitmap,
-                 * and treat EOIEI's write value as the interrupt ID.
+                 * Keep line level and pending latch separate:
+                 * - IPENDING is software-cleared via EOIEI.
+                 * - irq_level_acr[] reflects current external line level.
+                 *
+                 * If a level source is still asserted when EOIEI executes,
+                 * immediately re-pend it so completion interrupts cannot be
+                 * lost due to short deassert/reassert windows.
                  */
+                CPUState *cs = env_cpu(env);
                 const uint32_t irq_id = (uint32_t)value & 63u;
-                env->ssr_acr[bank][LINX_SSR_IPENDING] &= ~(1ull << irq_id);
+                const uint64_t bit = (1ull << irq_id);
+
+                env->ssr_acr[bank][LINX_SSR_IPENDING] &= ~bit;
+                if (env->irq_level_acr[bank] & bit) {
+                    env->ssr_acr[bank][LINX_SSR_IPENDING] |= bit;
+                }
+
+                if (env->ssr_acr[bank][LINX_SSR_IPENDING] == 0) {
+                    cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+                } else {
+                    linx_irq_kick_if_allowed(env, bank);
+                }
                 return;
             }
 
@@ -427,6 +590,71 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                 return;
             }
 
+            /* Debug SSR validation (v0.2 bring-up subset). */
+            if ((idx >= 0xF90 && idx <= 0xF97) || /* DBCR/DBVR[0..3] */
+                (idx >= 0xFA0 && idx <= 0xFA1) || /* DCCR/DCVR[0] */
+                (idx >= 0xFB0 && idx <= 0xFB7)    /* DWCR/DWVR[0..3] */
+                ) {
+                const bool is_ctrl = ((idx & 1u) == 0);
+                if (is_ctrl) {
+                    const uint64_t E = (value >> 0) & 1u;
+                    const uint64_t MT = (value >> 1) & 1u;
+                    const uint64_t ML = (value >> 2) & 1u;
+                    const uint64_t LE_or_LT = (value >> 3) & 1u;
+                    const uint64_t ls = (value >> 4) & 3u;
+                    const uint64_t mln = (value >> 51) & 0xFu;
+                    const uint64_t mask = (value >> 55) & 0x1Fu;
+
+                    (void)E;
+                    (void)mask;
+
+                    /* Only Address Match / Context Match is implemented: MT must be 0. */
+                    if (MT != 0) {
+                        linx_raise_illegal_inst(env);
+                    }
+
+                    if (idx >= 0xF90 && idx <= 0xF97) {
+                        /* DBCR<n>: allow only defined bits; ML implies MLN in range (CP0 only). */
+                        const uint64_t allowed =
+                            (1ull << 0) | (1ull << 1) | (1ull << 2) | (1ull << 3) |
+                            (0xFull << 51) | (0x1Full << 55);
+                        if ((value & ~allowed) != 0) {
+                            linx_raise_illegal_inst(env);
+                        }
+                        if (ML && mln != 0) {
+                            linx_raise_illegal_inst(env);
+                        }
+                    } else if (idx >= 0xFA0 && idx <= 0xFA1) {
+                        /* DCCR0: only support LC match profile (MC=0, CT=0). */
+                        const uint64_t allowed =
+                            (0x3ull << 6) | (0x3ull << 4) | (1ull << 3) | (1ull << 1) | (1ull << 0);
+                        if ((value & ~allowed) != 0) {
+                            linx_raise_illegal_inst(env);
+                        }
+                        if (((value >> 6) & 0x3u) != 0 || ((value >> 4) & 0x3u) != 0) {
+                            linx_raise_illegal_inst(env);
+                        }
+                    } else {
+                        /* DWCR<n>: require context linking only when ML=1; validate reserved bits. */
+                        const uint64_t allowed =
+                            (1ull << 0) | (1ull << 1) | (1ull << 2) | (1ull << 3) |
+                            (0x3ull << 4) |
+                            (0xFull << 51) | (0x1Full << 55);
+                        if ((value & ~allowed) != 0) {
+                            linx_raise_illegal_inst(env);
+                        }
+                        if (ML) {
+                            const uint64_t LT = LE_or_LT;
+                            if (LT != 1 || mln != 0) {
+                                linx_raise_illegal_inst(env);
+                            }
+                        }
+                        /* LS is only advisory in bring-up; accept any encoding (including 0). */
+                        (void)ls;
+                    }
+                }
+            }
+
             env->ssr_acr[bank][idx] = value;
             return;
         }
@@ -448,6 +676,143 @@ void HELPER(linx_tlb_iall)(CPULinxState *env)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Debug helpers (v0.2 bring-up subset)                                      */
+/* ------------------------------------------------------------------------- */
+
+static inline bool linx_dbg_addr_match(uint64_t a, uint64_t b, uint32_t mask_bits)
+{
+    if (mask_bits >= 63) {
+        return true;
+    }
+    const uint64_t m = (mask_bits == 0) ? 0 : ((1ull << mask_bits) - 1ull);
+    return (a & ~m) == (b & ~m);
+}
+
+static inline bool linx_dbg_ctx_match(CPULinxState *env, uint32_t acr, uint32_t cp_idx)
+{
+    if (cp_idx != 0) {
+        return false;
+    }
+    const uint64_t dccr = env->ssr_acr[acr][LINX_SSR_DCCR0];
+    const uint64_t dcvr = env->ssr_acr[acr][LINX_SSR_DCVR0];
+    const uint64_t E = (dccr >> 0) & 1u;
+    const uint64_t MT = (dccr >> 1) & 1u;
+    if (!E || MT != 0) {
+        return false;
+    }
+    const uint64_t lc0 = (dcvr >> 0) & 0xffffu;
+    const uint64_t lc1 = (dcvr >> 16) & 0xffffu;
+    const uint64_t lc2 = (dcvr >> 32) & 0xffffu;
+    return ((env->lc[0] & 0xffffu) == lc0) &&
+           ((env->lc[1] & 0xffffu) == lc1) &&
+           ((env->lc[2] & 0xffffu) == lc2);
+}
+
+void HELPER(linx_dbg_check_pc)(CPULinxState *env, uint64_t pc)
+{
+    CPUState *cs = env_cpu(env);
+    const uint32_t acr = env->acr & 0xFu;
+
+    for (uint32_t n = 0; n < 4; n++) {
+        const uint32_t cr_idx = LINX_SSR_DBCR0 + 2u * n;
+        const uint32_t vr_idx = LINX_SSR_DBVR0 + 2u * n;
+        const uint64_t cr = env->ssr_acr[acr][cr_idx];
+        const uint64_t E = (cr >> 0) & 1u;
+        if (!E) {
+            continue;
+        }
+        const uint64_t MT = (cr >> 1) & 1u;
+        if (MT != 0) {
+            continue;
+        }
+        const uint64_t ML = (cr >> 2) & 1u;
+        const uint64_t LE = (cr >> 3) & 1u;
+        const uint32_t mln = (uint32_t)((cr >> 51) & 0xFu);
+        const uint32_t mask = (uint32_t)((cr >> 55) & 0x1Fu);
+        (void)LE;
+
+        const uint64_t vr = env->ssr_acr[acr][vr_idx];
+        if (!linx_dbg_addr_match(pc, vr, mask)) {
+            continue;
+        }
+
+        if (ML) {
+            if (!linx_dbg_ctx_match(env, acr, mln)) {
+                continue;
+            }
+        }
+
+        env->pending_trap_arg0 = pc;
+        env->pending_trap_cause = n & 0xFu;
+        cs->exception_index = LINX_EXCP_HW_BREAKPOINT;
+        cpu_loop_exit_restore(cs, GETPC());
+    }
+}
+
+static inline void linx_dbg_check_mem(CPULinxState *env, uint64_t addr, uint32_t size,
+                                      bool is_store)
+{
+    CPUState *cs = env_cpu(env);
+    const uint32_t acr = env->acr & 0xFu;
+    (void)size;
+
+    for (uint32_t n = 0; n < 4; n++) {
+        const uint32_t cr_idx = LINX_SSR_DWCR0 + 2u * n;
+        const uint32_t vr_idx = LINX_SSR_DWVR0 + 2u * n;
+        const uint64_t cr = env->ssr_acr[acr][cr_idx];
+        const uint64_t E = (cr >> 0) & 1u;
+        if (!E) {
+            continue;
+        }
+        const uint64_t MT = (cr >> 1) & 1u;
+        if (MT != 0) {
+            continue;
+        }
+        const uint64_t ML = (cr >> 2) & 1u;
+        const uint64_t LT = (cr >> 3) & 1u;
+        const uint32_t ls = (uint32_t)((cr >> 4) & 0x3u);
+        const uint32_t mln = (uint32_t)((cr >> 51) & 0xFu);
+        const uint32_t mask = (uint32_t)((cr >> 55) & 0x1Fu);
+
+        const bool allow = (ls == 0) ? true :
+                           (ls == 1) ? !is_store :
+                           (ls == 2) ? is_store :
+                           true;
+        if (!allow) {
+            continue;
+        }
+
+        const uint64_t vr = env->ssr_acr[acr][vr_idx];
+        if (!linx_dbg_addr_match(addr, vr, mask)) {
+            continue;
+        }
+
+        if (ML) {
+            if (LT != 1 || !linx_dbg_ctx_match(env, acr, mln)) {
+                continue;
+            }
+        }
+
+        env->pending_trap_arg0 = addr;
+        env->pending_trap_cause = n & 0xFu;
+        cs->exception_index = LINX_EXCP_HW_WATCHPOINT;
+        cpu_loop_exit_restore(cs, GETPC());
+    }
+}
+
+void HELPER(linx_dbg_check_load)(CPULinxState *env, uint64_t pc, uint64_t addr, uint32_t size)
+{
+    (void)pc;
+    linx_dbg_check_mem(env, addr, size, false);
+}
+
+void HELPER(linx_dbg_check_store)(CPULinxState *env, uint64_t pc, uint64_t addr, uint32_t size)
+{
+    (void)pc;
+    linx_dbg_check_mem(env, addr, size, true);
+}
+
+/* ------------------------------------------------------------------------- */
 /* Privilege transitions (bring-up)                                          */
 /* ------------------------------------------------------------------------- */
 
@@ -457,13 +822,16 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     CPUState *cs = env_cpu(env);
     const uint32_t src_acr = env->acr & 0xFu;
     uint32_t dst_acr = 0;
+    uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], src_acr);
+    /* v0.2: ACRC traps are always reported as block-body traps. */
+    src_cstate |= LINX_ECSTATE_BI_BIT;
 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: SERVICE_REQUEST src_acr=%u req=%u bpc=0x%" PRIx64 " tpc=0x%" PRIx64
                   " pc_next=0x%" PRIx64 "\n",
                   src_acr, request_type, bpc, tpc, pc_next);
 
-    /* ACRC request_type validity + routing (v0.1 draft; see manual). */
+    /* ACRC request_type validity + routing (bring-up profile; see linxisa manual). */
     if (src_acr == 1) {
         if (request_type != LINX_SCT_MAC && request_type != LINX_SCT_SEC) {
             cs->exception_index = LINX_EXCP_ILLEGAL_INST;
@@ -475,7 +843,7 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
             cs->exception_index = LINX_EXCP_ILLEGAL_INST;
             cpu_loop_exit(cs);
         }
-        /* v0.1: ACR2 + SCT_SYS routes to ACR1; others route to ACR0. */
+        /* v0.2 bring-up: ACR2 + SCT_SYS routes to ACR1; others route to ACR0. */
         dst_acr = (request_type == LINX_SCT_SYS) ? 1 : 0;
     } else {
         cs->exception_index = LINX_EXCP_ILLEGAL_INST;
@@ -492,16 +860,33 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     linx_acr_save_block_state(env, src_acr);
     linx_acr_restore_block_state(env, dst_acr);
 
-    /* Save trap state into the managing ACR bank. */
-    env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = env->ssr[LINX_SSR_CSTATE];
-    env->ssr_acr[dst_acr][LINX_SSR_EBPC] = bpc;
-    env->ssr_acr[dst_acr][LINX_SSR_ETPC] = tpc;
-    env->ssr_acr[dst_acr][LINX_SSR_EBPCN] = pc_next;
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG] = 0;
+    /* Save trap state into the managing ACR bank (v0.2: EBARG + TRAPNO). */
+    env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(env->blocktype & 0x1fu);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = bpc;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = pc_next;
+    /* v0.2: ACRC resume PC is the following instruction (bring-up: explicit BSTOP). */
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = pc_next;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] =
+        ((env->lb[0] & 0xffffu) << 0) | ((env->lb[1] & 0xffffu) << 16) | ((env->lb[2] & 0xffffu) << 32);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] =
+        ((env->lc[0] & 0xffffu) << 0) | ((env->lc[1] & 0xffffu) << 16) | ((env->lc[2] & 0xffffu) << 32);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
-    /* Trap reporting (minimal bring-up encoding). */
-    env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] = linx_trapno_sync(LINX_TRAPNUM_E_SCALL, 0);
-    env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = request_type;
+    /* Trap reporting (v0.2 bring-up encoding). */
+    env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
+        linx_trapno_make(false, true, (uint32_t)request_type, 6 /* SYSCALL */);
+    env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)request_type;
 
     /* Disable interrupts and switch to managing ring, then vector to EVBASE. */
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
@@ -516,23 +901,40 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
 
 void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
 {
-    (void)rra_type;
     CPUState *cs = env_cpu(env);
     const uint32_t mgr = env->acr & 0xFu;
     const uint64_t ecstate = env->ssr_acr[mgr][LINX_SSR_ECSTATE];
     const uint32_t target = linx_cstate_get_acr(ecstate);
-    const uint64_t resume_pc = env->ssr_acr[mgr][LINX_SSR_EBPC];
+    const bool bi = (ecstate & LINX_ECSTATE_BI_BIT) != 0;
+    const uint64_t resume_bpc = env->ssr_acr[mgr][LINX_SSR_EBARG_BPC_CUR];
+    const uint64_t resume_tpc = env->ssr_acr[mgr][LINX_SSR_EBARG_TPC];
+    const uint64_t resume_pc = bi ? resume_tpc : resume_bpc;
 
     if (getenv("LINX_TRACE_ACR_ENTER")) {
-        static int count;
-        if (count++ < 64) {
+        if (mgr != target || getenv("LINX_TRACE_ACR_ENTER_VERBOSE")) {
             fprintf(stderr,
-                    "Linx: ACR_ENTER mgr=%u -> target=%u pc=0x%016" PRIx64
-                    " a0=0x%016" PRIx64 " ecstate=0x%016" PRIx64 "\n",
-                    mgr, target, resume_pc,
+                    "Linx: ACR_ENTER mgr=%u -> target=%u rra=%u bi=%u"
+                    " resume_pc=0x%016" PRIx64
+                    " resume_bpc=0x%016" PRIx64
+                    " resume_tpc=0x%016" PRIx64
+                    " a0=0x%016" PRIx64
+                    " ecstate=0x%016" PRIx64 "\n",
+                    mgr, target, rra_type, bi ? 1u : 0u,
+                    resume_pc, resume_bpc, resume_tpc,
                     env->gpr[LINX_REG_A0], ecstate);
             fflush(stderr);
         }
+    }
+
+    /*
+     * v0.2 bring-up: ACR_ENTER may keep privilege or drop privilege.
+     * Entering a more-privileged ring directly from software is invalid.
+     */
+    if (target >= LINX_ACR_COUNT || target < mgr) {
+        env->pending_trap_arg0 = (uint64_t)target;
+        env->pending_trap_cause = 0;
+        helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
+        return;
     }
 
     /*
@@ -552,10 +954,71 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     }
     linx_acr_restore_block_state(env, target);
 
+    /* v0.2 ACRE(RRA) behavior: DEFAULT resets BSTATE; RESTORE uses EBARG snapshot. */
+    if (rra_type == 0) {
+        int i;
+        for (i = 0; i < 4; i++) {
+            env->tq[i] = 0;
+            env->uq[i] = 0;
+        }
+        env->tgt = 0;
+        env->cond = 0;
+        env->carg = 0;
+        env->brtype = 0;
+        env->blocktype = 0;
+        env->body_tpc = 0;
+        env->return_pc = 0;
+        env->in_body = 0;
+        env->tmpl_pc = 0;
+        env->tmpl_kind = 0;
+        env->tmpl_step = 0;
+        env->tmpl_reg_cur = 0;
+        env->tmpl_reg_begin = 0;
+        env->tmpl_reg_end = 0;
+        env->tmpl_stacksize = 0;
+        env->tmpl_mem_dst = 0;
+        env->tmpl_mem_src = 0;
+        env->tmpl_mem_remaining = 0;
+        env->tmpl_mem_value = 0;
+        for (i = 0; i < 3; i++) {
+            env->lb[i] = 0;
+            env->lc[i] = 0;
+        }
+    } else if (rra_type == 1) {
+        const uint64_t lb = env->ssr_acr[mgr][LINX_SSR_EBARG_LB];
+        const uint64_t lc = env->ssr_acr[mgr][LINX_SSR_EBARG_LC];
+        env->tq[0] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ0];
+        env->tq[1] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ1];
+        env->tq[2] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ2];
+        env->tq[3] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ3];
+        env->uq[0] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ0];
+        env->uq[1] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ1];
+        env->uq[2] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ2];
+        env->uq[3] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ3];
+        env->lb[0] = (lb >> 0) & 0xffffu;
+        env->lb[1] = (lb >> 16) & 0xffffu;
+        env->lb[2] = (lb >> 32) & 0xffffu;
+        env->lc[0] = (lc >> 0) & 0xffffu;
+        env->lc[1] = (lc >> 16) & 0xffffu;
+        env->lc[2] = (lc >> 32) & 0xffffu;
+    } else {
+        env->pending_trap_arg0 = (uint64_t)rra_type;
+        env->pending_trap_cause = 0;
+        helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
+        return;
+    }
+
+    /* v0.2: always restore BPC from EBARG. */
+    env->bpc = resume_bpc;
+
     env->acr = target;
-    env->ssr[LINX_SSR_CSTATE] = ecstate;
+    env->ssr[LINX_SSR_CSTATE] = ecstate & ~LINX_ECSTATE_BI_BIT;
     env->pc = resume_pc;
-    linx_irq_kick_if_allowed(env, env->acr & 0xF);
+    /*
+     * External IRQs route to ACR1 in the bring-up profile.
+     * Re-latch a pending request after privilege/state restore.
+     */
+    linx_irq_kick_if_allowed(env, 1);
 
     cs->exception_index = -1;
     cpu_loop_exit(cs);
@@ -1163,8 +1626,8 @@ void HELPER(linx_ebreak)(CPULinxState *env, uint32_t imm)
         /* Exit program - graceful shutdown */
         qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK EXIT at PC=0x%lx\n",
                       (unsigned long)env->pc);
-        cs->exception_index = LINX_EXCP_BREAKPOINT;
-        cpu_loop_exit_restore(cs, GETPC());
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        cpu_loop_exit_noexc(cs);
         break;
         
     case LINX_SEMIHOST_PUTCHAR: {
@@ -1205,10 +1668,11 @@ void HELPER(linx_ebreak)(CPULinxState *env, uint32_t imm)
     }
         
     default:
-        /* Unhandled semihosting operation - treat as breakpoint */
+        /* Unhandled semihosting operation - treat as a software breakpoint trap. */
         qemu_log_mask(LOG_GUEST_ERROR, 
                       "Linx: Unhandled EBREAK imm=%d at PC=0x%lx\n",
                       imm, (unsigned long)env->pc);
+        env->pending_trap_cause = imm & 0xffu;
         cs->exception_index = LINX_EXCP_BREAKPOINT;
         cpu_loop_exit_restore(cs, GETPC());
         break;
@@ -1285,6 +1749,46 @@ static inline void linx_template_clear(CPULinxState *env)
     env->tmpl_mem_value = 0;
 }
 
+static inline uint8_t linx_extctx_byte(const CPULinxState *env, uint64_t ext_kind, uint64_t off)
+{
+    static const uint8_t magic[8] = { 'L', 'I', 'N', 'X', '_', 'E', 'X', 'T' };
+
+    if (off < 8) {
+        return magic[off];
+    }
+    if (off < 16) {
+        const unsigned sh = (unsigned)((off - 8) * 8u);
+        return (uint8_t)((ext_kind >> sh) & 0xffu);
+    }
+    if (off < 40) {
+        const unsigned idx = (unsigned)((off - 16) / 8u);
+        const unsigned sh = (unsigned)(((off - 16) % 8u) * 8u);
+        return (uint8_t)((env->lb[idx] >> sh) & 0xffu);
+    }
+    if (off < 64) {
+        const unsigned idx = (unsigned)((off - 40) / 8u);
+        const unsigned sh = (unsigned)(((off - 40) % 8u) * 8u);
+        return (uint8_t)((env->lc[idx] >> sh) & 0xffu);
+    }
+    return 0;
+}
+
+static inline void linx_extctx_write_byte(CPULinxState *env, uint64_t off, uint8_t v)
+{
+    if (off >= 16 && off < 40) {
+        const unsigned idx = (unsigned)((off - 16) / 8u);
+        const unsigned sh = (unsigned)(((off - 16) % 8u) * 8u);
+        env->lb[idx] = (env->lb[idx] & ~(0xffull << sh)) | ((uint64_t)v << sh);
+        return;
+    }
+    if (off >= 40 && off < 64) {
+        const unsigned idx = (unsigned)((off - 40) / 8u);
+        const unsigned sh = (unsigned)(((off - 40) % 8u) * 8u);
+        env->lc[idx] = (env->lc[idx] & ~(0xffull << sh)) | ((uint64_t)v << sh);
+        return;
+    }
+}
+
 void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                                 uint64_t cur_pc, uint64_t next_pc,
                                 uint32_t op0, uint32_t op1, uint64_t op2)
@@ -1343,6 +1847,21 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             break;
         }
 
+        case LINX_TEMPLATE_ESAVE:
+        case LINX_TEMPLATE_ERCOV: {
+            const uint32_t base_reg = op0;
+            const uint32_t len_reg = op1;
+            const uint32_t kind_reg = (uint32_t)op2;
+            if (base_reg >= LINX_GPR_COUNT || len_reg >= LINX_GPR_COUNT ||
+                kind_reg >= LINX_GPR_COUNT) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            }
+            env->tmpl_mem_dst = env->gpr[base_reg];
+            env->tmpl_mem_remaining = env->gpr[len_reg];
+            env->tmpl_mem_value = env->gpr[kind_reg];
+            break;
+        }
+
         default:
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             break;
@@ -1360,7 +1879,12 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
 
         if (step == 0) {
             if (adj) {
+                const uint64_t old_sp = env->gpr[LINX_REG_SP];
                 env->gpr[LINX_REG_SP] -= adj;
+                linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+                if (linx_trace_ra_match(cur_pc)) {
+                    HELPER(linx_trace_ra)(env, cur_pc, 2, old_sp, env->gpr[LINX_REG_SP]);
+                }
             }
             env->tmpl_step = 1;
 
@@ -1370,7 +1894,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             } else {
                 env->pc = cur_pc;
             }
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
 
         /* step >= 1: save one register per step. */
@@ -1381,12 +1905,17 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             if (off < 0) {
                 linx_template_clear(env);
                 env->pc = next_pc;
-                cpu_loop_exit_noexc(cs);
+                linx_template_commit_and_exit(env, cs, env->pc);
             }
 
             if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                 const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
+                const uint64_t v = env->gpr[reg];
+                linx_trace_mem(env, true, addr, v, 0, 8);
                 cpu_stq_le_data(env, (abi_ptr)addr, env->gpr[reg]);
+                if (reg == LINX_REG_RA && linx_trace_ra_match(cur_pc)) {
+                    HELPER(linx_trace_ra)(env, cur_pc, 2, addr, v);
+                }
             }
 
             if (reg == end) {
@@ -1397,7 +1926,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                 env->tmpl_step = step + 1;
                 env->pc = cur_pc;
             }
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
         break;
     }
@@ -1418,7 +1947,13 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
 
             if (off >= 0 && reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                 const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
-                env->gpr[reg] = cpu_ldq_le_data(env, (abi_ptr)addr);
+                const uint64_t v = cpu_ldq_le_data(env, (abi_ptr)addr);
+                env->gpr[reg] = v;
+                linx_trace_mem(env, false, addr, 0, v, 8);
+                linx_trace_wb(env, (uint32_t)reg, v);
+                if (reg == LINX_REG_RA && linx_trace_ra_match(cur_pc)) {
+                    HELPER(linx_trace_ra)(env, cur_pc, 3, addr, v);
+                }
             }
 
             if (reg != end) {
@@ -1426,18 +1961,19 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             }
             env->tmpl_step = step + 1;
             env->pc = cur_pc;
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
 
         /* After restoring regs: adjust SP and either fall through or return. */
         if (adj) {
             env->gpr[LINX_REG_SP] += adj;
+            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
         }
 
         if (kind == LINX_TEMPLATE_FEXIT) {
             linx_template_clear(env);
             env->pc = next_pc;
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
 
         {
@@ -1445,7 +1981,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             HELPER(linx_check_bstart_target)(env, ra);
             linx_template_clear(env);
             env->pc = ra;
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
         break;
     }
@@ -1458,21 +1994,53 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
 
-        const uint64_t n = MIN(remaining, 16u);
-        for (uint64_t i = 0; i < n; i++) {
-            uint8_t b = cpu_ldub_data(env, (abi_ptr)src);
-            cpu_stb_data(env, (abi_ptr)dst, b);
-            src++;
-            dst++;
-            remaining--;
-            env->tmpl_mem_src = src;
-            env->tmpl_mem_dst = dst;
-            env->tmpl_mem_remaining = remaining;
-            env->tmpl_step++;
+        /*
+         * One restartable step per helper invocation so commit-tracing can
+         * treat each step like a single committed micro-op.
+         *
+         * Trace convention: record the destination store only (the source read
+         * is internal and not representable in the single mem_* slot schema).
+         */
+        uint32_t sz = 1;
+        if (remaining >= 8) {
+            sz = 8;
+        } else if (remaining >= 4) {
+            sz = 4;
+        } else if (remaining >= 2) {
+            sz = 2;
         }
+
+        uint64_t v = 0;
+        switch (sz) {
+        case 8:
+            v = cpu_ldq_le_data(env, (abi_ptr)src);
+            cpu_stq_le_data(env, (abi_ptr)dst, v);
+            break;
+        case 4:
+            v = cpu_ldl_le_data(env, (abi_ptr)src);
+            cpu_stl_le_data(env, (abi_ptr)dst, (uint32_t)v);
+            break;
+        case 2:
+            v = cpu_lduw_le_data(env, (abi_ptr)src);
+            cpu_stw_le_data(env, (abi_ptr)dst, (uint16_t)v);
+            break;
+        default:
+            v = cpu_ldub_data(env, (abi_ptr)src);
+            cpu_stb_data(env, (abi_ptr)dst, (uint8_t)v);
+            break;
+        }
+        linx_trace_mem(env, true, dst, v, 0, sz);
+
+        src += sz;
+        dst += sz;
+        remaining -= sz;
+        env->tmpl_mem_src = src;
+        env->tmpl_mem_dst = dst;
+        env->tmpl_mem_remaining = remaining;
+        env->tmpl_step += sz;
 
         if (remaining == 0) {
             linx_template_clear(env);
@@ -1480,7 +2048,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         } else {
             env->pc = cur_pc;
         }
-        cpu_loop_exit_noexc(cs);
+        linx_template_commit_and_exit(env, cs, env->pc);
         break;
     }
 
@@ -1492,18 +2060,43 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
-            cpu_loop_exit_noexc(cs);
+            linx_template_commit_and_exit(env, cs, env->pc);
         }
 
-        const uint64_t n = MIN(remaining, 16u);
-        for (uint64_t i = 0; i < n; i++) {
-            cpu_stb_data(env, (abi_ptr)dst, v);
-            dst++;
-            remaining--;
-            env->tmpl_mem_dst = dst;
-            env->tmpl_mem_remaining = remaining;
-            env->tmpl_step++;
+        uint32_t sz = 1;
+        if (remaining >= 8) {
+            sz = 8;
+        } else if (remaining >= 4) {
+            sz = 4;
+        } else if (remaining >= 2) {
+            sz = 2;
         }
+
+        uint64_t pat = 0;
+        for (uint32_t i = 0; i < sz; i++) {
+            pat |= (uint64_t)v << (i * 8u);
+        }
+        switch (sz) {
+        case 8:
+            cpu_stq_le_data(env, (abi_ptr)dst, pat);
+            break;
+        case 4:
+            cpu_stl_le_data(env, (abi_ptr)dst, (uint32_t)pat);
+            break;
+        case 2:
+            cpu_stw_le_data(env, (abi_ptr)dst, (uint16_t)pat);
+            break;
+        default:
+            cpu_stb_data(env, (abi_ptr)dst, (uint8_t)pat);
+            break;
+        }
+        linx_trace_mem(env, true, dst, pat, 0, sz);
+
+        dst += sz;
+        remaining -= sz;
+        env->tmpl_mem_dst = dst;
+        env->tmpl_mem_remaining = remaining;
+        env->tmpl_step += sz;
 
         if (remaining == 0) {
             linx_template_clear(env);
@@ -1511,7 +2104,60 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         } else {
             env->pc = cur_pc;
         }
-        cpu_loop_exit_noexc(cs);
+        linx_template_commit_and_exit(env, cs, env->pc);
+        break;
+    }
+
+    case LINX_TEMPLATE_ESAVE:
+    case LINX_TEMPLATE_ERCOV: {
+        const uint64_t base = env->tmpl_mem_dst;
+        uint64_t remaining = env->tmpl_mem_remaining;
+        const uint64_t ext_kind = env->tmpl_mem_value;
+        uint64_t off = env->tmpl_step;
+
+        if (remaining == 0) {
+            linx_template_clear(env);
+            env->pc = next_pc;
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+
+        const uint64_t addr = base + off;
+        uint8_t byte = 0;
+
+        /*
+         * Bring-up ext-context blob (64 bytes, little-endian fields):
+         *  [0..7]   magic "LINX_EXT"
+         *  [8..15]  ext_kind (operand RegSrc2)
+         *  [16..39] LB0/LB1/LB2 (u64 each)
+         *  [40..63] LC0/LC1/LC2 (u64 each)
+         *
+         * Bytes beyond 64 are zero on ESAVE and ignored on ERCOV.
+         *
+         * Use a byte-at-a-time restartable transfer to keep fault/interrupt
+         * restart semantics deterministic (idempotent on restart).
+         */
+        if (kind == LINX_TEMPLATE_ESAVE) {
+            byte = linx_extctx_byte(env, ext_kind, off);
+            cpu_stb_data(env, (abi_ptr)addr, byte);
+            linx_trace_mem(env, true, addr, byte, 0, 1);
+        } else {
+            byte = cpu_ldub_data(env, (abi_ptr)addr);
+            linx_trace_mem(env, false, addr, 0, byte, 1);
+            linx_extctx_write_byte(env, off, byte);
+        }
+
+        off += 1;
+        remaining -= 1;
+        env->tmpl_step = (uint32_t)off;
+        env->tmpl_mem_remaining = remaining;
+
+        if (remaining == 0) {
+            linx_template_clear(env);
+            env->pc = next_pc;
+        } else {
+            env->pc = cur_pc;
+        }
+        linx_template_commit_and_exit(env, cs, env->pc);
         break;
     }
 
@@ -1552,7 +2198,7 @@ static bool linx_iommu_translate(CPULinxState *env, uint64_t iova,
         return false;
     }
 
-    /* v0.1 subset: only 48-bit IOVA supported (SZ must be 16). */
+    /* v0.2 bring-up subset: only 48-bit IOVA supported (SZ must be 16). */
     const uint32_t sz = (uint32_t)((iotcr >> 1) & 0x3fu);
     if (sz != 16) {
         return false;
@@ -2015,6 +2661,7 @@ void HELPER(linx_watch_store)(CPULinxState *env, uint64_t pc, uint64_t addr,
 {
     CPUState *cs = env_cpu(env);
     static int do_abort = -1;
+    static unsigned dump_count;
 
     if (do_abort < 0) {
         const char *mode = getenv("LINX_WATCH_STORE_MODE");
@@ -2026,9 +2673,21 @@ void HELPER(linx_watch_store)(CPULinxState *env, uint64_t pc, uint64_t addr,
     }
 
     fprintf(stderr,
-            "Linx: WATCH store pc=0x%016" PRIx64 " addr=0x%016" PRIx64
+            "Linx: WATCH store pc=0x%016" PRIx64 " ra=0x%016" PRIx64
+            " sp=0x%016" PRIx64 " addr=0x%016" PRIx64
             " size=%u val=0x%016" PRIx64 "\n",
-            pc, addr, size, val);
+            pc, env->gpr[LINX_REG_RA], env->gpr[LINX_REG_SP], addr, size, val);
+    if (dump_count < 4) {
+        uint8_t raw[32 * 8];
+        if (cpu_memory_rw_debug(cs, env->gpr[LINX_REG_SP], raw, sizeof(raw), 0) == 0) {
+            for (int i = 0; i < 32; i++) {
+                uint64_t w = ldl_le_p(raw + i * 8);
+                w |= ((uint64_t)ldl_le_p(raw + i * 8 + 4) << 32);
+                fprintf(stderr, "Linx: WATCH stack[%d]=0x%016" PRIx64 "\n", i, w);
+            }
+        }
+        dump_count++;
+    }
     fflush(stderr);
 
     if (do_abort) {
@@ -2138,8 +2797,7 @@ void HELPER(linx_exit)(CPULinxState *env)
     
     /* Request graceful shutdown of the VM */
     qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-    
-    /* Exit via the normal exception path. */
-    cs->exception_index = LINX_EXCP_BREAKPOINT;
-    cpu_loop_exit_restore(cs, GETPC());
+
+    /* Exit immediately from the execution loop. */
+    cpu_loop_exit_noexc(cs);
 }

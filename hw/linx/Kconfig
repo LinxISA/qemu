@@ -4,3 +4,4 @@ config LINX_VIRT
     depends on LINX
     select DEVICE_TREE
     select SERIAL
+    select VIRTIO_MMIO

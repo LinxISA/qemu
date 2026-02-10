@@ -177,6 +177,8 @@ fret_stk      .... .... .... .... .011 .... .100 0001 uimm_hi=%fentry_uimm_hi ui
 # These are standalone template blocks (must not appear inside BSTART..BSTOP).
 mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
 mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD
+esave         .... .00. .... .... .010 0000 0011 0001 %SrcL %SrcR %SrcD
+ercov         .... .00. .... .... .011 0000 0011 0001 %SrcL %SrcR %SrcD
 
 # PC-relative address instructions (overlap group - setret is specialized addtpc with RegDst=RA)
 {

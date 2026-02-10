@@ -43,11 +43,10 @@ enum {
     LINX_SSR_EVBASE   = 0xF01,
     LINX_SSR_TRAPNO   = 0xF02,
     LINX_SSR_TRAPARG0 = 0xF03,
+    LINX_SSR_ETEMP    = 0xF05,
+    LINX_SSR_ETEMP0   = 0xF06,
     LINX_SSR_IPENDING = 0xF08,
     LINX_SSR_EOIEI    = 0xF0A,
-    LINX_SSR_EBPC     = 0xF0B,
-    LINX_SSR_ETPC     = 0xF0D,
-    LINX_SSR_EBPCN    = 0xF0E,
     LINX_SSR_TIMECMP  = 0xF21,
 
     /* ACR1 privileged MMU/IOMMU registers (see linxisa manual). */
@@ -58,6 +57,34 @@ enum {
     LINX_SSR_IOTTBR   = 0xF14,
     LINX_SSR_IOTCR    = 0xF15,
     LINX_SSR_IOMAIR   = 0xF16,
+
+    /* EBARG register group (v0.2). */
+    LINX_SSR_EBARG0          = 0xF40,
+    LINX_SSR_EBARG_BPC_CUR   = 0xF41,
+    LINX_SSR_EBARG_BPC_TGT   = 0xF42,
+    LINX_SSR_EBARG_TPC       = 0xF43,
+    LINX_SSR_EBARG_LRA       = 0xF44,
+    LINX_SSR_EBARG_TQ0       = 0xF45,
+    LINX_SSR_EBARG_TQ1       = 0xF46,
+    LINX_SSR_EBARG_TQ2       = 0xF47,
+    LINX_SSR_EBARG_TQ3       = 0xF48,
+    LINX_SSR_EBARG_UQ0       = 0xF49,
+    LINX_SSR_EBARG_UQ1       = 0xF4A,
+    LINX_SSR_EBARG_UQ2       = 0xF4B,
+    LINX_SSR_EBARG_UQ3       = 0xF4C,
+    LINX_SSR_EBARG_LB        = 0xF4D,
+    LINX_SSR_EBARG_LC        = 0xF4E,
+    LINX_SSR_EBARG_EXT_PTR   = 0xF4F,
+    LINX_SSR_EBARG_EXT_META  = 0xF50,
+
+    /* Debug SSR bank (v0.2). */
+    LINX_SSR_DBGID           = 0xF80,
+    LINX_SSR_DBCR0           = 0xF90,
+    LINX_SSR_DBVR0           = 0xF91,
+    LINX_SSR_DCCR0           = 0xFA0,
+    LINX_SSR_DCVR0           = 0xFA1,
+    LINX_SSR_DWCR0           = 0xFB0,
+    LINX_SSR_DWVR0           = 0xFB1,
 };
 
 /* Common (non-banked) SSR indices. */
@@ -69,19 +96,30 @@ enum {
 #define LINX_CSTATE_ACR_MASK 0xFULL
 #define LINX_CSTATE_I_BIT    (1ULL << 4)
 
-/* Trap number encoding (bring-up profile). */
-#define LINX_TRAPNO_E_BIT          (1ULL << 63)
-#define LINX_TRAPNO_CAUSE_SHIFT    8u
-#define LINX_TRAPNO_TRAPNUM_MASK   0xffu
+/* ECSTATE bits (v0.2 bring-up profile; mirrors key CSTATE fields). */
+#define LINX_ECSTATE_BI_BIT        (1ULL << 62)
+
+/* TRAPNO encoding (v0.2 bring-up profile). */
+#define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=async interrupt */
+#define LINX_TRAPNO_ARGV_BIT       (1ULL << 62)
+#define LINX_TRAPNO_CAUSE_SHIFT    24u
+#define LINX_TRAPNO_CAUSE_MASK     0xFFFFFFu
+#define LINX_TRAPNO_TRAPNUM_MASK   0x3Fu
 
 enum {
-    /* Synchronous exception classes (bring-up profile). */
-    LINX_TRAPNUM_E_INST  = 1,
-    LINX_TRAPNUM_E_DATA  = 2,
-    LINX_TRAPNUM_E_BLOCK = 3,
-
-    /* Software call / service request. */
-    LINX_TRAPNUM_E_SCALL = 16,
+    /* v0.2 bring-up trap major classes (TRAPNO.TRAPNUM). */
+    LINX_TRAPNUM_EXEC_STATE_CHECK = 0,
+    LINX_TRAPNUM_ILLEGAL_INST     = 4,
+    LINX_TRAPNUM_BLOCK_TRAP       = 5,
+    LINX_TRAPNUM_SYSCALL          = 6,
+    LINX_TRAPNUM_INST_PC_FAULT    = 32,
+    LINX_TRAPNUM_INST_PAGE_FAULT  = 33,
+    LINX_TRAPNUM_DATA_ALIGN_FAULT = 34,
+    LINX_TRAPNUM_DATA_PAGE_FAULT  = 35,
+    LINX_TRAPNUM_INTERRUPT        = 44,
+    LINX_TRAPNUM_HW_BREAKPOINT    = 49,
+    LINX_TRAPNUM_SW_BREAKPOINT    = 50,
+    LINX_TRAPNUM_HW_WATCHPOINT    = 51,
 };
 
 enum {
@@ -102,9 +140,26 @@ static inline uint8_t linx_trapcause_make(uint8_t cat, uint8_t acc)
     return (uint8_t)((cat << 4) | (acc & 0xfu));
 }
 
-static inline uint64_t linx_trapno_sync(uint8_t trapnum, uint8_t cause)
+static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, uint8_t trapnum)
 {
-    return LINX_TRAPNO_E_BIT | ((uint64_t)cause << LINX_TRAPNO_CAUSE_SHIFT) | (uint64_t)trapnum;
+    const uint64_t e = async ? LINX_TRAPNO_E_BIT : 0;
+    const uint64_t a = argv ? LINX_TRAPNO_ARGV_BIT : 0;
+    const uint64_t c = ((uint64_t)(cause & LINX_TRAPNO_CAUSE_MASK)) << LINX_TRAPNO_CAUSE_SHIFT;
+    const uint64_t t = (uint64_t)(trapnum & LINX_TRAPNO_TRAPNUM_MASK);
+    return e | a | c | t;
+}
+
+static bool linx_disable_timer_irq_inited;
+static bool linx_disable_timer_irq;
+
+static inline bool linx_timer_irq_enabled(void)
+{
+    if (!linx_disable_timer_irq_inited) {
+        const char *v = getenv("LINX_DISABLE_TIMER_IRQ");
+        linx_disable_timer_irq = v && v[0] && strcmp(v, "0") != 0;
+        linx_disable_timer_irq_inited = true;
+    }
+    return !linx_disable_timer_irq;
 }
 
 /* Simple timer interrupt ID (bring-up). */
@@ -116,6 +171,24 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
                                MMUAccessType access_type, int mmu_idx,
                                hwaddr *pa_out, int *prot_out,
                                hwaddr *tlb_size_out, uint8_t *cause_out);
+
+static inline hwaddr linx_nommu_phys_addr(vaddr va)
+{
+    /*
+     * NOMMU bring-up profile:
+     * - keep identity mapping for normal low addresses (including MMIO windows),
+     * - fold only sign-extended legacy 29-bit addresses back into the low
+     *   physical region.
+     */
+    const uint64_t low_mask = 0x1fffffffULL;
+    const uint64_t high_mask = ~low_mask;
+    const uint64_t raw = (uint64_t)va;
+
+    if ((raw & high_mask) == high_mask) {
+        return (hwaddr)(raw & low_mask);
+    }
+    return (hwaddr)raw;
+}
 
 static inline uint64_t linx_cstate_set_acr(uint64_t cstate, uint32_t acr)
 {
@@ -140,16 +213,17 @@ static inline bool linx_irq_allowed(const CPULinxState *env, uint32_t dst_acr)
 static inline void linx_irq_kick_if_allowed(CPUState *cs, CPULinxState *env,
                                             uint32_t dst_acr)
 {
-    if (!linx_irq_allowed(env, dst_acr)) {
-        return;
-    }
     if (env->ssr_acr[dst_acr][LINX_SSR_IPENDING] == 0) {
         return;
     }
     /*
-     * cpu_interrupt() requires the BQL. Our timer callback can run without the
-     * BQL (e.g. on the virtual clock while executing), so use the lock-free
-     * helper that sets the interrupt request bit and kicks the CPU if needed.
+     * Latch CPU_INTERRUPT_HARD whenever a source is pending.
+     *
+     * Permission checks (CSTATE.I / ring rules) run in cpu_exec_interrupt();
+     * keeping the request latched prevents pending IRQ loss across ACR changes.
+     *
+     * cpu_interrupt() requires the BQL. The timer callback can run without the
+     * BQL, so use the lock-free helper.
      */
     generic_handle_interrupt(cs, CPU_INTERRUPT_HARD);
 }
@@ -159,6 +233,10 @@ static void linx_timer_cb(void *opaque)
     CPUState *cs = opaque;
     LinxCPU *cpu = LINX_CPU(cs);
     CPULinxState *env = &cpu->env;
+
+    if (!linx_timer_irq_enabled()) {
+        return;
+    }
 
     /* Set pending bit and raise a hard interrupt. */
     env->ssr_acr[1][LINX_SSR_IPENDING] |= (1ull << LINX_IRQ_TIMER0);
@@ -173,13 +251,7 @@ static hwaddr linx_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
     const bool mme = (tcr & 1u) != 0;
 
     if (!mme) {
-        /*
-         * NOMMU bring-up uses a small physical address space. Linux currently
-         * uses addresses that may be sign-extended from that width (e.g.
-         * stacks near the top of RAM), so mask to the implemented physical
-         * range for NOMMU.
-         */
-        return (hwaddr)(addr & 0x1fffffffULL);
+        return linx_nommu_phys_addr(addr);
     }
 
     /* Debug translation: attempt a best-effort walk using the current ACR. */
@@ -255,9 +327,20 @@ static bool linx_cpu_has_work(CPUState *cs)
 static bool linx_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
     if (interrupt_request & CPU_INTERRUPT_HARD) {
+        CPULinxState *env = cpu_env(cs);
+
+        /*
+         * The hard-interrupt request bit can lag behind IPENDING updates.
+         * Do not deliver EXCP_INTERRUPT without a live pending source.
+         */
+        if (env->ssr_acr[1][LINX_SSR_IPENDING] == 0) {
+            cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+            return false;
+        }
+
         /* Route all external interrupts to EXCP_INTERRUPT for now. */
         cs->exception_index = EXCP_INTERRUPT;
-        if (!linx_irq_allowed(cpu_env(cs), 1)) {
+        if (!linx_irq_allowed(env, 1)) {
             /* Leave the interrupt request pending until it becomes allowed. */
             cs->exception_index = -1;
             return false;
@@ -268,29 +351,69 @@ static bool linx_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     return false;
 }
 
+static inline uint64_t linx_pack_u16x3(uint64_t a, uint64_t b, uint64_t c)
+{
+    return ((a & 0xffffu) << 0) | ((b & 0xffffu) << 16) | ((c & 0xffffu) << 32);
+}
+
 static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
-                                   uint64_t tpc, uint8_t trapnum)
+                                   uint64_t tpc, uint64_t tpc_next,
+                                   uint8_t trapnum,
+                                   bool argv, bool is_trap, bool bi)
 {
     /*
      * Deliver a synchronous exception via the bring-up trap SSRs and EVBASE.
      *
      * Note: this is a simplified model that routes all synchronous exceptions
-     * (except those from ACR0) to ACR1, matching the Linx v0.1 draft defaults.
+     * (except those from ACR0) to ACR1, matching the bring-up defaults.
      */
     const uint32_t src_acr = env->acr & 0xFu;
     const uint32_t dst_acr = (src_acr == 0) ? 0 : 1;
+
+    /* Capture trapped-from state before switching to the managing ACR. */
+    uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], src_acr);
+    if (bi) {
+        src_cstate |= LINX_ECSTATE_BI_BIT;
+    } else {
+        src_cstate &= ~LINX_ECSTATE_BI_BIT;
+    }
+    const uint64_t src_bpc = env->bpc;
+
+    if (getenv("LINX_TRACE_TRAP")) {
+        fprintf(stderr,
+                "Linx: deliver_sync_trap trapnum=%u src_acr=%u dst_acr=%u"
+                " tpc=0x%016" PRIx64 " bpc=0x%016" PRIx64
+                " cstate=0x%016" PRIx64 "\n",
+                trapnum, src_acr, dst_acr, tpc, src_bpc, src_cstate);
+        fflush(stderr);
+    }
 
     linx_acr_save_block_state(env, src_acr);
     linx_acr_restore_block_state(env, dst_acr);
 
     const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
 
-    env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = env->ssr[LINX_SSR_CSTATE];
-    env->ssr_acr[dst_acr][LINX_SSR_EBPC] = env->bpc;
-    env->ssr_acr[dst_acr][LINX_SSR_ETPC] = tpc;
-    env->ssr_acr[dst_acr][LINX_SSR_EBPCN] = env->bpc;
+    env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(env->blocktype & 0x1fu);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = src_bpc;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = tpc_next;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = is_trap ? tpc_next : tpc;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(env->lb[0], env->lb[1], env->lb[2]);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(env->lc[0], env->lc[1], env->lc[2]);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
+
     env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
-        linx_trapno_sync(trapnum, (uint8_t)env->pending_trap_cause);
+        linx_trapno_make(false, argv, env->pending_trap_cause, trapnum);
     env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = env->pending_trap_arg0;
 
     env->pending_trap_arg0 = 0;
@@ -324,80 +447,158 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case LINX_EXCP_BREAKPOINT:
-        /* EBREAK - used for program exit in virt machine */
-        qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK - program exit at PC=0x%" PRIx64 "\n",
-                      last_pc);
-        cs->exception_index = -1;
-        /* Request graceful shutdown of the VM */
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-        cpu_loop_exit(cs);
+        /* Software breakpoint trap (EBREAK). */
+        env->pending_trap_arg0 = last_pc;
+        /* pending_trap_cause may carry the imm value (profile-defined). */
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_SW_BREAKPOINT,
+                               true,  /* argv */
+                               true,  /* is_trap (resume at next PC) */
+                               true   /* BI */
+                               );
         return;
 
     case LINX_EXCP_BAD_BRANCH_TARGET:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: branch target violation at PC=0x%" PRIx64 "\n",
                       last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, LINX_TRAPNUM_E_BLOCK);
+        linx_deliver_sync_trap(cs, env, last_pc, last_pc,
+                               LINX_TRAPNUM_BLOCK_TRAP,
+                               true,   /* argv */
+                               false,  /* fault */
+                               false   /* header */
+                               );
         return;
 
     case LINX_EXCP_ILLEGAL_INST:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
                       last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, LINX_TRAPNUM_E_INST);
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_ILLEGAL_INST,
+                               false, /* argv */
+                               false, /* fault */
+                               true   /* BI */
+                               );
         return;
 
     case LINX_EXCP_BLOCK_FAULT:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: block-format fault at PC=0x%" PRIx64 "\n",
                       last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, LINX_TRAPNUM_E_BLOCK);
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_BLOCK_TRAP,
+                               true,               /* argv */
+                               false,              /* fault */
+                               (env->in_body != 0) /* BI best-effort */
+                               );
+        return;
+
+    case LINX_EXCP_HW_BREAKPOINT:
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_HW_BREAKPOINT,
+                               true,  /* argv */
+                               true,  /* trap */
+                               true   /* BI */
+                               );
+        return;
+
+    case LINX_EXCP_HW_WATCHPOINT:
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_HW_WATCHPOINT,
+                               true,  /* argv */
+                               true,  /* trap */
+                               true   /* BI */
+                               );
+        return;
+
+    case LINX_EXCP_EXEC_STATE_CHECK:
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_EXEC_STATE_CHECK,
+                               false, /* argv */
+                               false, /* fault */
+                               true   /* BI */
+                               );
         return;
 
     case LINX_EXCP_INST_ACCESS_FAULT:
     case LINX_EXCP_LOAD_ACCESS_FAULT:
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
-        /* MMU/IOMMU faults are delivered as a synchronous E_DATA trap. */
-        linx_deliver_sync_trap(cs, env, last_pc, LINX_TRAPNUM_E_DATA);
+        /* MMU/IOMMU faults are delivered as synchronous v0.2 page-fault classes. */
+        const uint8_t trapnum =
+            (exception == LINX_EXCP_INST_ACCESS_FAULT) ? LINX_TRAPNUM_INST_PAGE_FAULT : LINX_TRAPNUM_DATA_PAGE_FAULT;
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               trapnum,
+                               true,  /* argv (TRAPARG0=fault VA) */
+                               false, /* fault */
+                               true   /* BI */
+                               );
         return;
     }
 
     case EXCP_INTERRUPT:
     {
         /*
-         * Hardware interrupt (bring-up).
+         * Hardware interrupt (bring-up): asynchronous interrupt routed to ACR1.
          *
-         * Model this as an asynchronous SERVICE_REQUEST routed to ACR1.
+         * v0.2 resume contract:
+         * - Preserve BPC as the interrupted block start marker.
+         * - Resume from TPC (BI=1) for normal instruction streams.
+         * - For in-flight restartable templates, resume from template PC.
          */
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
 
-        /*
-         * Preserve block/queue state for the interrupted ACR and restore ACR0's
-         * state before vectoring. This keeps mid-block interrupts precise and
-         * avoids clobbering the trapped context's commit metadata.
-         */
         const uint32_t src_acr = env->acr & 0xFu;
         const uint32_t dst_acr = 1;
+        /*
+         * Asynchronous IRQs are taken at instruction boundaries, so env->pc is
+         * already the architectural resume address. Using insn_pc_next here can
+         * skip an instruction if the interrupt is recognized between TBs.
+         */
+        const uint64_t resume_pc = env->pc;
+        const uint64_t resume_bpc = env->bpc ? env->bpc : resume_pc;
+
+        uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], src_acr);
+        src_cstate |= LINX_ECSTATE_BI_BIT;
 
         linx_acr_save_block_state(env, src_acr);
         linx_acr_restore_block_state(env, dst_acr);
 
         const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
 
-        /* Save trap source state into managing ACR bank. */
-        env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = env->ssr[LINX_SSR_CSTATE];
-        /*
-         * QEMU delivers external interrupts between translated Linx blocks
-         * (TB boundaries). At this point env->pc already points at the next
-         * block start marker, so model the interrupt as occurring "at" that
-         * boundary and resume there on ACRE.
-         */
-        env->ssr_acr[dst_acr][LINX_SSR_EBPC] = last_pc;
-        env->ssr_acr[dst_acr][LINX_SSR_ETPC] = last_pc;
-        env->ssr_acr[dst_acr][LINX_SSR_EBPCN] = last_pc;
-        env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] = 0; /* profile-defined */
-        env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = LINX_IRQ_TIMER0;
+        /* Save interrupt source state into managing ACR bank. */
+        env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = 0;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = resume_bpc;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = resume_pc;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = resume_pc;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(env->lb[0], env->lb[1], env->lb[2]);
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(env->lc[0], env->lc[1], env->lc[2]);
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
+
+        /* Find an IRQ ID from IPENDING (simple bitmap model). */
+        uint32_t irq_id = LINX_IRQ_TIMER0;
+        {
+            const uint64_t ip = env->ssr_acr[dst_acr][LINX_SSR_IPENDING];
+            if (ip) {
+                irq_id = (uint32_t)ctz64(ip);
+            }
+        }
+
+        env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
+            linx_trapno_make(true, true, 0, LINX_TRAPNUM_INTERRUPT);
+        env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)irq_id;
 
         /* Switch to managing ring and vector. */
         env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
@@ -479,7 +680,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
 
     if (!mme) {
         /* Identity mapping for NOMMU / MME=0. */
-        *pa_out = (hwaddr)(va & 0x1fffffffULL);
+        *pa_out = linx_nommu_phys_addr(va);
         *prot_out = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
         *tlb_size_out = TARGET_PAGE_SIZE;
         *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
@@ -491,7 +692,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
         return false;
     }
 
-    /* v0.1 bring-up profile: only 48-bit VA supported (T0SZ/T1SZ must be 16). */
+    /* v0.2 bring-up profile: only 48-bit VA supported (T0SZ/T1SZ must be 16). */
     const uint32_t t0sz = (uint32_t)((tcr >> 1) & 0x3fu);
     const uint32_t t1sz = (uint32_t)((tcr >> 7) & 0x3fu);
     if (t0sz != 16 || t1sz != 16) {
@@ -663,8 +864,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                               bool probe, uintptr_t retaddr)
 {
     /*
-     * Simple identity mapping (NOMMU), but with address masking to support the
-     * bring-up convention of sign-extended physical addresses.
+     * NOMMU uses identity translation, with a compatibility fold for
+     * sign-extended legacy 29-bit physical addresses.
      */
     CPULinxState *env = cpu_env(cs);
     hwaddr pa = 0;
@@ -861,8 +1062,8 @@ static const TCGCPUOps linx_tcg_ops = {
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 8,
-    .minimum_version_id = 8,
+    .version_id = 10,
+    .minimum_version_id = 10,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(env.pc, LinxCPU),
         VMSTATE_UINT32(env.cond, LinxCPU),
@@ -890,8 +1091,11 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64_ARRAY(env.tq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.uq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.lb, LinxCPU, 3),
+        VMSTATE_UINT64_ARRAY(env.lc, LinxCPU, 3),
+        VMSTATE_UINT64(env.insn_pc_next, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
         VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),
+        VMSTATE_UINT64_ARRAY(env.irq_level_acr, LinxCPU, LINX_ACR_COUNT),
         VMSTATE_UINT64(env.lr_addr, LinxCPU),
         VMSTATE_UINT32(env.lr_size, LinxCPU),
         VMSTATE_UINT32(env.lr_valid, LinxCPU),

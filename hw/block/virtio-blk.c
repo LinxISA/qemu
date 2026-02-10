@@ -26,6 +26,7 @@
 #include "system/block-ram-registrar.h"
 #include "system/system.h"
 #include "system/runstate.h"
+#include "system/address-spaces.h"
 #include "hw/virtio/virtio-blk.h"
 #include "scsi/constants.h"
 #ifdef __linux__
@@ -167,7 +168,6 @@ static void virtio_blk_discard_write_zeroes_complete(void *opaque, int ret)
 static VirtIOBlockReq *virtio_blk_get_request(VirtIOBlock *s, VirtQueue *vq)
 {
     VirtIOBlockReq *req = virtqueue_pop(vq, sizeof(VirtIOBlockReq));
-
     if (req) {
         virtio_blk_init_request(s, vq, req);
     }
@@ -1535,7 +1535,7 @@ static int virtio_blk_start_ioeventfd(VirtIODevice *vdev)
         if (r != 0) {
             int j = i;
 
-            fprintf(stderr, "virtio-blk failed to set host notifier (%d)\n", r);
+            error_report("virtio-blk failed to set host notifier (%d)", r);
             while (i--) {
                 virtio_bus_set_host_notifier(VIRTIO_BUS(qbus), i, false);
             }

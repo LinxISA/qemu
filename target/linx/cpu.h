@@ -33,6 +33,9 @@ enum {
     LINX_EXCP_STORE_ACCESS_FAULT = 5, /* Store access fault */
     LINX_EXCP_BAD_BRANCH_TARGET = 6, /* Branch target not at block start marker */
     LINX_EXCP_BLOCK_FAULT = 7, /* Block-format violation (header/body legality, missing B.TEXT, etc.) */
+    LINX_EXCP_HW_BREAKPOINT = 8, /* Hardware breakpoint */
+    LINX_EXCP_HW_WATCHPOINT = 9, /* Hardware watchpoint */
+    LINX_EXCP_EXEC_STATE_CHECK = 10, /* ACR_ENTER target/state invalid */
 };
 
 /*
@@ -46,6 +49,7 @@ enum {
     LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY   = 3,
     LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER = 4,
     LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK = 5,
+    LINX_EBLOCK_CAUSE_ACRC_MISSING_BSTOP = 6,
 };
 enum {
     LINX_REG_ZERO = 0,
@@ -76,6 +80,8 @@ typedef enum LinxTemplateKind {
     LINX_TEMPLATE_FRET_STK = 3,
     LINX_TEMPLATE_MCOPY    = 4,
     LINX_TEMPLATE_MSET     = 5,
+    LINX_TEMPLATE_ESAVE    = 6,
+    LINX_TEMPLATE_ERCOV    = 7,
 } LinxTemplateKind;
 
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */
@@ -120,6 +126,7 @@ typedef struct LinxAcrBlockState {
     uint64_t tmpl_mem_value;
 
     uint64_t lb[3]; /* LB0..LB2 */
+    uint64_t lc[3]; /* LC0..LC2 */
 
     /* Tile block state (minimal bring-up subset). */
     uint32_t tile_func;
@@ -185,6 +192,7 @@ typedef struct CPUArchState {
 
     /* Block argument registers (set via B.DIM / C.B.DIM*). */
     uint64_t lb[3]; /* LB0..LB2 */
+    uint64_t lc[3]; /* LC0..LC2 */
 
     /* Saved block/queue state per ACR for trap/return correctness. */
     LinxAcrBlockState acr_block_state[LINX_ACR_COUNT];
@@ -214,6 +222,9 @@ typedef struct CPUArchState {
     /* Current block start marker address (BPC) for trap reporting. */
     uint64_t bpc;
 
+    /* Next instruction PC (set at instruction start for precise trap reporting). */
+    uint64_t insn_pc_next;
+
     uint64_t pc;
 
     /* Dynamic instruction counter (for benchmarking/bring-up). */
@@ -222,6 +233,14 @@ typedef struct CPUArchState {
     /* Pending trap reporting for synchronous faults (MMU/IOMMU). */
     uint64_t pending_trap_arg0;
     uint32_t pending_trap_cause;
+
+    /*
+     * External interrupt line levels per managing ACR (bit-per-IRQ).
+     *
+     * IPENDING is an interrupt-pending latch that software clears via EOIEI.
+     * The level bitmap lets EOIEI re-pend level-high sources immediately.
+     */
+    uint64_t irq_level_acr[LINX_ACR_COUNT];
 
     /* Commit trace scratch (written by TCG, consumed by helper). */
     uint64_t trace_pc;
@@ -256,7 +275,7 @@ typedef struct CPUArchState {
         uint8_t inited;
         uint8_t enabled;
         uint8_t pc_filter_enabled;
-        uint8_t _pad0;
+        uint8_t stop_after_commit;
         uint64_t pc_lo;
         uint64_t pc_hi;
         uint64_t cycle;
@@ -308,6 +327,9 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
 
     for (i = 0; i < 3; i++) {
         s->lb[i] = env->lb[i];
+    }
+    for (i = 0; i < 3; i++) {
+        s->lc[i] = env->lc[i];
     }
 
     s->tile_func = env->tile_func;
@@ -363,6 +385,9 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
 
     for (i = 0; i < 3; i++) {
         env->lb[i] = s->lb[i];
+    }
+    for (i = 0; i < 3; i++) {
+        env->lc[i] = s->lc[i];
     }
 
     env->tile_func = s->tile_func;

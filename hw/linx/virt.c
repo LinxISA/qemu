@@ -11,6 +11,9 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/core/boards.h"
+#include "hw/core/cpu.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/reset.h"
@@ -81,6 +84,13 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_UART_STATUS_RX_READY 0x2
 
 #define LINX_UART_RX_BUFSZ 256
+
+/* Virtio-mmio transport (single slot for bring-up disk boot). */
+#define LINX_VIRTIO_MMIO_BASE 0x30001000
+#define LINX_VIRTIO_MMIO_IRQ 1
+
+/* ACR-scoped SSR low-12 indices used for external IRQ injection. */
+#define LINX_SSR_IPENDING 0xF08
 
 /*
  * For ET_REL kernel objects, the Linx virt machine uses a split layout:
@@ -198,6 +208,8 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
             CPULinxState *env = &s->cpu->env;
             fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
             fflush(stderr);
+            /* Stop commit tracing after the exit store commits (difftest). */
+            env->commit_trace.stop_after_commit = 1;
         }
         if (linx_virt_debug_enabled()) {
             fprintf(stderr, "linx virt: exit mmio write value=0x%" PRIx64 "\n", value);
@@ -278,6 +290,30 @@ static void linx_uart_init(LinxUARTState *s, LinxCPU *cpu)
     qemu_chr_fe_set_echo(&s->chr, false);
 }
 
+static void linx_virt_set_irq(void *opaque, int irq, int level)
+{
+    LinxCPU *cpu = opaque;
+    CPUState *cs = CPU(cpu);
+    CPULinxState *env = &cpu->env;
+    const uint32_t irq_id = (uint32_t)irq & 63u;
+    const uint64_t bit = (1ull << irq_id);
+
+    if (level) {
+        env->irq_level_acr[1] |= bit;
+        env->ssr_acr[1][LINX_SSR_IPENDING] |= bit;
+        cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+    } else {
+        /*
+         * Keep IPENDING latched until the guest EOIs the IRQ via EOIEI.
+         * This avoids dropping edge-like pulses before trap delivery.
+         */
+        env->irq_level_acr[1] &= ~bit;
+        if (env->ssr_acr[1][LINX_SSR_IPENDING] == 0) {
+            cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+        }
+    }
+}
+
 #define TYPE_LINX_VIRT_MACHINE MACHINE_TYPE_NAME("virt")
 OBJECT_DECLARE_SIMPLE_TYPE(LinxVirtMachineState, LINX_VIRT_MACHINE)
 
@@ -290,7 +326,8 @@ typedef struct LinxVirtMachineState {
     hwaddr initial_sp;
     hwaddr exit_trampoline;
     hwaddr fdt_addr;
-    
+
+    qemu_irq virtio_irq;
     LinxUARTState uart;
 } LinxVirtMachineState;
 
@@ -2183,6 +2220,16 @@ static void linx_virt_init(MachineState *machine)
 
     /* Initialize UART */
     linx_uart_init(&s->uart, s->cpu);
+
+    /*
+     * Provide one virtio-mmio transport for bring-up disk boot experiments.
+     *
+     * Guests can bind a backend with e.g.:
+     *   -drive if=none,id=vd0,file=<img>,format=raw
+     *   -device virtio-blk-device,drive=vd0
+     */
+    s->virtio_irq = qemu_allocate_irq(linx_virt_set_irq, s->cpu, LINX_VIRTIO_MMIO_IRQ);
+    sysbus_create_simple("virtio-mmio", LINX_VIRTIO_MMIO_BASE, s->virtio_irq);
 
     ram = memory_region_get_ram_ptr(machine->ram);
     if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
