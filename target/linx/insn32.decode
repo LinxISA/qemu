@@ -95,6 +95,12 @@ bstart_par_acccvt     .... .010 1000 0001 0001 0001 1000 0001 dtype=%TileDataTyp
 bstart_vpar 0000 0..0 0000 0010 0001 0001 1000 0001 mode=%Mode
 bstart_vseq 0000 0..0 0000 0010 1001 0001 1000 0001 mode=%Mode
 
+# Vector block headers for memory operations (MSEQ/MPAR).
+# MSEQ: sequential vector execution with memory access
+bstart_mseq 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
+# MPAR: parallel vector execution with memory access
+bstart_mpar 0000 0..0 0000 0000 0000 0001 1000 0001 mode=%Mode
+
 # Tile block headers (TMA/CUBE). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.
 bstart_tma     .... .00. .... 0001 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
@@ -159,6 +165,13 @@ ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%
 
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
+
+# Execution control - Bus Wait Event/Interrupt
+# Encoding: bits[27:24]=0000, bits[23:20]=func (0001=BWE, 0010=BWI)
+# BWE: Bus Wait Event - signals completion of previous side effects
+# BWI: Bus Wait Interrupt - waits for interrupt while allowing side effects
+bwe 0000 0000 0001 0000 000 00000 010 101 1 %SrcL
+bwi 0000 0000 0010 0000 000 00000 010 101 1 %SrcL
 
 # TLB flush (bring-up).
 tlb_iall 0000 0000 0011 0000 0111 0000 0010 1011

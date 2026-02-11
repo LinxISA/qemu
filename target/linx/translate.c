@@ -899,6 +899,40 @@ static bool trans_bstart_vseq(DisasContext *ctx, arg_bstart_vseq *a)
     return true;
 }
 
+static bool trans_bstart_mseq(DisasContext *ctx, arg_bstart_mseq *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 1); /* MSEQ: sequential vector with memory */
+    ctx->decoupled_header = true;
+    return true;
+}
+
+static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 0); /* MPAR: parallel vector with memory */
+    ctx->decoupled_header = true;
+    return true;
+}
+
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -3778,6 +3812,24 @@ static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
 {
     (void)a;
     tcg_gen_mb(TCG_MO_ALL);
+    return true;
+}
+
+static bool trans_bwe(DisasContext *ctx, arg_bwe *a)
+{
+    (void)ctx;
+    (void)a;
+    /* BWE: Bus Wait Event - signals completion of previous side effects */
+    /* TODO: Implement event signaling for BWE */
+    return true;
+}
+
+static bool trans_bwi(DisasContext *ctx, arg_bwi *a)
+{
+    (void)ctx;
+    (void)a;
+    /* BWI: Bus Wait Interrupt - waits for interrupt while allowing side effects */
+    /* TODO: Implement interrupt wait for BWI */
     return true;
 }
 
