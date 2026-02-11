@@ -12,10 +12,12 @@
 %SrcL 6:5
 %SrcR 11:5
 %payload 14:2
+%LoopNest 14:2
 %simm12 4:s12
 %simm5_11_s5 11:s5
 %simm5_6_s5 6:s5
 %uimm5 6:5
+%imm8 6:8
 
 # Block headers / terminators
 # Note: c_bstop is all zeros - check it first before other block instructions
@@ -66,6 +68,10 @@ c_addi          .... .... ..00 1100 %SrcL simm5=%simm5_11_s5
 # Shift left/right immediate (T-hand = T-hand op imm)
 c_slli          0001 0... ..10 1100 %uimm5
 c_srli          0001 1... ..10 1100 %uimm5
+
+# Block dimension immediate (LB0/LB1/LB2)
+# Encoding: bits[5:0]=0x3c, imm8 in [13:6], LoopNest in [15:14] (LoopNest!=3).
+c_b_dimi        .... .... ..11 1100 loopnest=%LoopNest imm8=%imm8
 
 # Compare immediate (T-hand == imm ? 1 : 0, result to T-hand)
 c_cmp_eqi       0000 0... ..10 1100 simm5=%simm5_6_s5

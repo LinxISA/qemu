@@ -86,6 +86,12 @@ typedef enum LinxTemplateKind {
 
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
+#define LINX_TILE_MAX_IOR 16u
+#define LINX_TILE_MAX_IOT 32u
+
+/* Bring-up tile backing store limits (TAU). */
+#define LINX_TILE_MAX_BYTES (64u * 1024u) /* must cover >=16KB bring-up */
+#define LINX_TILE_MAX_WORDS (LINX_TILE_MAX_BYTES / 4u)
 
 /*
  * Block/queue state that must be preserved across ACR transitions.
@@ -139,6 +145,12 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_iot_src1;
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
+
+    uint32_t tile_arg_format;
+    uint32_t tile_ior_count;
+    uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
+    uint32_t tile_iot_count;
+    uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
 } LinxAcrBlockState;
 
 typedef struct CPUArchState {
@@ -215,9 +227,19 @@ typedef struct CPUArchState {
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
 
-    /* Emulated tile register file: 4 hands x 8 depth = 32 tiles. */
-    uint32_t tile_reg[32][1024]; /* 4KB per tile (1024 x i32 words). */
-    uint32_t tile_acc[1024];     /* 4KB accumulator (bring-up). */
+    uint32_t tile_arg_format;
+    uint32_t tile_ior_count;
+    uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
+    uint32_t tile_iot_count;
+    uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+
+    /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
+    uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
+    uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
+
+    /* Accumulator backing store (separate scratch). */
+    uint32_t tile_acc[LINX_TILE_MAX_WORDS];
+    uint32_t tile_acc_bytes;
 
     /* Current block start marker address (BPC) for trap reporting. */
     uint64_t bpc;
@@ -342,6 +364,15 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->tile_iot_src1 = env->tile_iot_src1;
     s->tile_iot_reg = env->tile_iot_reg;
     s->tile_iot_size = env->tile_iot_size;
+    s->tile_arg_format = env->tile_arg_format;
+    s->tile_ior_count = env->tile_ior_count;
+    for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
+        s->tile_ior_desc[i] = env->tile_ior_desc[i];
+    }
+    s->tile_iot_count = env->tile_iot_count;
+    for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
+        s->tile_iot_desc[i] = env->tile_iot_desc[i];
+    }
 }
 
 static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
@@ -400,6 +431,15 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_iot_src1 = s->tile_iot_src1;
     env->tile_iot_reg = s->tile_iot_reg;
     env->tile_iot_size = s->tile_iot_size;
+    env->tile_arg_format = s->tile_arg_format;
+    env->tile_ior_count = s->tile_ior_count;
+    for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
+        env->tile_ior_desc[i] = s->tile_ior_desc[i];
+    }
+    env->tile_iot_count = s->tile_iot_count;
+    for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
+        env->tile_iot_desc[i] = s->tile_iot_desc[i];
+    }
 }
 
 /*

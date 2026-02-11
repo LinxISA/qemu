@@ -246,6 +246,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
     tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
     tcg_gen_movi_i32(cpu_tile_iot_size, 0);
+    gen_helper_linx_tile_reset_block(tcg_env);
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
@@ -772,6 +773,98 @@ static bool trans_bstart_cond(DisasContext *ctx, arg_bstart_cond *a)
     return true;
 }
 
+static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    op &= 0x3ffu;
+    dtype &= 0x1fu;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_tile_dtype, dtype);
+
+    switch (op) {
+    case 0u:   /* VCALL */
+        tcg_gen_movi_i32(cpu_blocktype, 4); /* VPAR-like non-tile decoupled header */
+        tcg_gen_movi_i32(cpu_tile_func, 0);
+        break;
+    case 2u:   /* MAMULB */
+        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+        tcg_gen_movi_i32(cpu_tile_func, 0);
+        break;
+    case 33u:  /* TLOAD */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+        tcg_gen_movi_i32(cpu_tile_func, 0);
+        break;
+    case 65u:  /* TSTORE */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+        tcg_gen_movi_i32(cpu_tile_func, 1);
+        break;
+    case 66u:  /* MAMULB.ACC */
+        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+        tcg_gen_movi_i32(cpu_tile_func, 2);
+        break;
+    case 163u: /* PAR conversion helper in sampled streams */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA-like */
+        tcg_gen_movi_i32(cpu_tile_func, 31); /* dedicated compatibility slot */
+        break;
+    case 258u: /* ACCCVT */
+        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+        tcg_gen_movi_i32(cpu_tile_func, 8);
+        break;
+    default:
+        /* Preserve decoupled behavior and let commit-path legality decide. */
+        tcg_gen_movi_i32(cpu_blocktype, 2);
+        tcg_gen_movi_i32(cpu_tile_func, op & 0x1f);
+        break;
+    }
+
+    /* v0.3 bring-up: treat tile blocks as coupled template-style blocks. */
+    ctx->decoupled_header = false;
+    return true;
+}
+
+static bool trans_bstart_par_vcall(DisasContext *ctx, arg_bstart_par_vcall *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 0u);
+}
+
+static bool trans_bstart_par_mamulb(DisasContext *ctx, arg_bstart_par_mamulb *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 2u);
+}
+
+static bool trans_bstart_par_tload(DisasContext *ctx, arg_bstart_par_tload *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 33u);
+}
+
+static bool trans_bstart_par_tstore(DisasContext *ctx, arg_bstart_par_tstore *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 65u);
+}
+
+static bool trans_bstart_par_mamulb_acc(DisasContext *ctx, arg_bstart_par_mamulb_acc *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 66u);
+}
+
+static bool trans_bstart_par_compat163(DisasContext *ctx, arg_bstart_par_compat163 *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 163u);
+}
+
+static bool trans_bstart_par_acccvt(DisasContext *ctx, arg_bstart_par_acccvt *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 258u);
+}
+
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -820,7 +913,7 @@ static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
     tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
     tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
     tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
-    ctx->decoupled_header = true;
+    ctx->decoupled_header = false;
     return true;
 }
 
@@ -838,11 +931,12 @@ static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
     tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
     tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
     tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
-    ctx->decoupled_header = true;
+    ctx->decoupled_header = false;
     return true;
 }
 
-static bool trans_b_dim(DisasContext *ctx, arg_b_dim *a)
+static bool trans_b_dim_common(DisasContext *ctx, uint32_t reg, uint32_t uimm,
+                               uint32_t lb)
 {
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
@@ -850,14 +944,105 @@ static bool trans_b_dim(DisasContext *ctx, arg_b_dim *a)
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
-    if (a->lb > 2) {
+    if (lb > 2) {
         return linx_illegal(ctx);
     }
 
-    TCGv_i64 src = linx_get_reg(a->reg);
-    const int64_t imm = (int64_t)(a->uimm & 0x1ffffu);
-    tcg_gen_addi_i64(cpu_lb[a->lb], src, imm);
+    TCGv_i64 src = linx_get_reg(reg);
+    const int64_t imm = (int64_t)(uimm & 0x1ffffu);
+    tcg_gen_addi_i64(cpu_lb[lb], src, imm);
     return true;
+}
+
+static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    if (a->loopnest > 2u) {
+        return linx_illegal(ctx);
+    }
+
+    tcg_gen_movi_i64(cpu_lb[a->loopnest], (uint64_t)(a->imm8 & 0xffu));
+    return true;
+}
+
+static bool trans_b_dim_lb0(DisasContext *ctx, arg_b_dim_lb0 *a)
+{
+    return trans_b_dim_common(ctx, a->reg, a->uimm, 0);
+}
+
+static bool trans_b_dim_lb1(DisasContext *ctx, arg_b_dim_lb1 *a)
+{
+    return trans_b_dim_common(ctx, a->reg, a->uimm, 1);
+}
+
+static bool trans_b_dim_lb2(DisasContext *ctx, arg_b_dim_lb2 *a)
+{
+    return trans_b_dim_common(ctx, a->reg, a->uimm, 2);
+}
+
+static bool trans_b_arg(DisasContext *ctx, arg_b_arg *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+
+    gen_helper_linx_tile_set_arg(tcg_env, tcg_constant_i32(a->format & 0x1f));
+    return true;
+}
+
+static bool trans_b_arg_named(DisasContext *ctx, uint32_t format)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
+    }
+    gen_helper_linx_tile_set_arg(tcg_env, tcg_constant_i32(format & 0x1f));
+    return true;
+}
+
+static bool trans_b_arg_nd2zn_fp16_null(DisasContext *ctx,
+                                         arg_b_arg_nd2zn_fp16_null *a)
+{
+    (void)a;
+    return trans_b_arg_named(ctx, 3u);
+}
+
+static bool trans_b_arg_dn2nz_fp32_null(DisasContext *ctx,
+                                         arg_b_arg_dn2nz_fp32_null *a)
+{
+    (void)a;
+    return trans_b_arg_named(ctx, 9u);
+}
+
+static bool trans_b_arg_dn2zn_fp16_null(DisasContext *ctx,
+                                         arg_b_arg_dn2zn_fp16_null *a)
+{
+    (void)a;
+    return trans_b_arg_named(ctx, 8u);
+}
+
+static bool trans_b_arg_nz2dn_canon(DisasContext *ctx,
+                                     arg_b_arg_nz2dn_canon *a)
+{
+    (void)a;
+    return trans_b_arg_named(ctx, 28u);
+}
+
+static bool trans_b_arg_norm_normal(DisasContext *ctx,
+                                     arg_b_arg_norm_normal *a)
+{
+    (void)a;
+    return trans_b_arg_named(ctx, 0u);
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
@@ -890,6 +1075,17 @@ static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
     tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
     tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
     tcg_gen_movi_i32(cpu_tile_iot_reg, a->reg & 0x1f);
+
+    const uint64_t desc =
+        ((uint64_t)(a->src0 & 0x1f) << 0) |
+        ((uint64_t)(a->src1 & 0x1f) << 5) |
+        ((uint64_t)(a->dst & 0x7) << 10) |
+        ((uint64_t)(a->grp & 0x1) << 13) |
+        ((uint64_t)(flags & 0xf) << 14) |
+        ((uint64_t)(a->reg & 0x1f) << 18) |
+        ((uint64_t)0 << 23) |
+        ((uint64_t)0 << 28); /* has_size=0 */
+    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
     return true;
 }
 
@@ -923,6 +1119,17 @@ static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
     tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
     tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
     tcg_gen_movi_i32(cpu_tile_iot_size, a->size & 0x1f);
+
+    const uint64_t desc =
+        ((uint64_t)(a->src0 & 0x1f) << 0) |
+        ((uint64_t)(a->src1 & 0x1f) << 5) |
+        ((uint64_t)(a->dst & 0x7) << 10) |
+        ((uint64_t)(a->grp & 0x1) << 13) |
+        ((uint64_t)(flags & 0xf) << 14) |
+        ((uint64_t)0 << 18) |
+        ((uint64_t)(a->size & 0x1f) << 23) |
+        ((uint64_t)1 << 28); /* has_size=1 */
+    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
     return true;
 }
 
@@ -950,7 +1157,12 @@ static bool trans_b_ior(DisasContext *ctx, arg_b_ior *a)
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
-    (void)a;
+    const uint64_t desc =
+        ((uint64_t)(a->RegDst & 0x1f) << 0) |
+        ((uint64_t)(a->SrcL & 0x1f) << 5) |
+        ((uint64_t)(a->SrcR & 0x1f) << 10) |
+        ((uint64_t)(a->SrcD & 0x1f) << 15);
+    gen_helper_linx_tile_append_ior(tcg_env, tcg_constant_i64(desc));
     return true;
 }
 
