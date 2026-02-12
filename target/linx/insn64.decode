@@ -1,0 +1,52 @@
+#
+# LinxISA 64-bit (V.*) instruction decoding
+#
+# This file contains the minimal 64-bit SIMT/vector instruction subset needed
+# for v0.3 bring-up tests (MSEQ/MPAR bodies).
+#
+
+# 10-bit vector register codes are split across the two 32-bit halves:
+#   hi bits in the low 32-bit word, lo bits in the high 32-bit word.
+#
+# Full 10-bit code = (class << 5) | index
+#
+
+# Fields
+%RegDst 7:5 39:5
+%SrcL 15:5 47:5
+%SrcR 20:5 52:5
+%SrcD 27:5 59:5
+%SrcRType 57:2
+%shamt_hi 59:5
+%shamt_lo 7:5
+%C 12:1
+%L 14:1
+
+# ---------------------------------------------------------------------------
+# Arithmetic
+# ---------------------------------------------------------------------------
+
+# V.ADD
+v_add .... .... .... .... .000 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+
+# V.SUB
+v_sub .... .... .... .... .001 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+
+# V.FADD / V.FMUL / V.FSUB (float32 bring-up subset)
+v_fadd 0000 000. .... .... .000 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fsub 0000 000. .... .... .001 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fmul 0000 000. .... .... .010 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# ---------------------------------------------------------------------------
+# Stores (bridged)
+# ---------------------------------------------------------------------------
+
+# V.LW / V.LW.BRG (word loads; `.local` uses tile bases, `.brg` uses RI bases)
+v_lw     .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lw_brg .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+
+# V.SW.BRG
+v_sw_brg .... .00. .... .... .010 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
+
+# V.SW (local/tile direction; `.local` uses tile bases)
+v_sw     .... .00. .... .... .010 0000 0100 1001 .... .00. .... .... ..0. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L

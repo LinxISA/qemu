@@ -1090,6 +1090,7 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64_ARRAY(env.gpr, LinxCPU, LINX_GPR_COUNT),
         VMSTATE_UINT64_ARRAY(env.tq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.uq, LinxCPU, 4),
+        VMSTATE_UINT64_ARRAY(env.vtq, LinxCPU, 4),
         VMSTATE_UINT64_ARRAY(env.lb, LinxCPU, 3),
         VMSTATE_UINT64_ARRAY(env.lc, LinxCPU, 3),
         VMSTATE_UINT64(env.insn_pc_next, LinxCPU),

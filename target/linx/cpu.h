@@ -104,6 +104,10 @@ typedef enum LinxTemplateKind {
 typedef struct LinxAcrBlockState {
     uint64_t tq[4];
     uint64_t uq[4];
+    uint64_t vtq[4];
+    uint64_t vuq[4];
+    uint64_t vmq[4];
+    uint64_t vnq[4];
 
     uint64_t bpc;
 
@@ -157,6 +161,10 @@ typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
     uint64_t uq[4];
+    uint64_t vtq[4];
+    uint64_t vuq[4];
+    uint64_t vmq[4];
+    uint64_t vnq[4];
 
     /*
      * System Status Registers (SSR).
@@ -321,6 +329,10 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < 4; i++) {
         s->tq[i] = env->tq[i];
         s->uq[i] = env->uq[i];
+        s->vtq[i] = env->vtq[i];
+        s->vuq[i] = env->vuq[i];
+        s->vmq[i] = env->vmq[i];
+        s->vnq[i] = env->vnq[i];
     }
 
     s->bpc = env->bpc;
@@ -388,6 +400,10 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < 4; i++) {
         env->tq[i] = s->tq[i];
         env->uq[i] = s->uq[i];
+        env->vtq[i] = s->vtq[i];
+        env->vuq[i] = s->vuq[i];
+        env->vmq[i] = s->vmq[i];
+        env->vnq[i] = s->vnq[i];
     }
 
     env->bpc = s->bpc;

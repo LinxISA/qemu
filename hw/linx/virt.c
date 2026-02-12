@@ -969,8 +969,8 @@ static bool linx_patch_hl_st_pcr(uint8_t *ram, size_t ram_size,
  *   - simm[28:17] -> insn[15:4]
  */
 static bool linx_patch_hl_bstart_pcrel(uint8_t *ram, size_t ram_size,
-                                       hwaddr patch_addr, hwaddr target_addr,
-                                       int64_t addend, Error **errp)
+                                      hwaddr patch_addr, hwaddr target_addr,
+                                      int64_t addend, Error **errp)
 {
     uint64_t insn48;
     int64_t delta;
@@ -1017,6 +1017,51 @@ static bool linx_patch_hl_bstart_pcrel(uint8_t *ram, size_t ram_size,
     return true;
 }
 
+static bool linx_patch_b_text_pcrel(uint8_t *ram, size_t ram_size,
+                                    hwaddr patch_addr, hwaddr target_addr,
+                                    int64_t addend, Error **errp)
+{
+    uint32_t insn;
+    int64_t delta;
+    int64_t simm25;
+    uint32_t imm;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "B.TEXT relocation out of bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    if ((insn & 0x7f) != 0x03) {
+        error_setg(errp,
+                   "expected B.TEXT instruction for B.TEXT relocation (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   insn, patch_addr);
+        return false;
+    }
+
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned B.TEXT target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    simm25 = delta >> 1;
+    if (simm25 < -(1LL << 24) || simm25 >= (1LL << 24)) {
+        error_setg(errp,
+                   "B.TEXT target out of range @ 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   patch_addr, delta);
+        return false;
+    }
+
+    imm = (uint32_t)(simm25 & 0x1ffffffu);
+    insn = (insn & 0x7f) | (imm << 7);
+    stl_le_p(ram + patch_addr, insn);
+    return true;
+}
+
 /* Generic relocation handler that dispatches based on instruction type */
 static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
                              hwaddr patch_addr, hwaddr target_addr,
@@ -1045,7 +1090,11 @@ static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
     opcode = insn & 0x7f;
 
     /* Check instruction type and dispatch */
-    if (opcode == 0x07) {
+    if (opcode == 0x03) {
+        /* B.TEXT: PC-relative decoupled body pointer (simm25 in halfwords). */
+        return linx_patch_b_text_pcrel(ram, ram_size, patch_addr, target_addr,
+                                       addend, errp);
+    } else if (opcode == 0x07) {
         /* ADDTPC instruction - PC-relative data address */
         return linx_patch_addtpc_pcrel(ram, ram_size, patch_addr, target_addr,
                                        addend, errp);
