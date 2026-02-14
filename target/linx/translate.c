@@ -64,6 +64,8 @@ static TCGv_i32 cpu_tile_iot_src0;
 static TCGv_i32 cpu_tile_iot_src1;
 static TCGv_i32 cpu_tile_iot_reg;
 static TCGv_i32 cpu_tile_iot_size;
+static TCGv_i32 cpu_tile_attr_pad;
+static TCGv_i32 cpu_tile_attr_dtype;
 static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
 static TCGv_i64 cpu_insn_pc_next;
@@ -246,6 +248,8 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
     tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
     tcg_gen_movi_i32(cpu_tile_iot_size, 0);
+    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
     gen_helper_linx_tile_reset_block(tcg_env);
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
@@ -1048,55 +1052,12 @@ static bool trans_b_arg(DisasContext *ctx, arg_b_arg *a)
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
 
-    gen_helper_linx_tile_set_arg(tcg_env, tcg_constant_i32(a->format & 0x1f));
-    return true;
-}
-
-static bool trans_b_arg_named(DisasContext *ctx, uint32_t format)
-{
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    const uint32_t arg = a->format & 0x1f;
+    if ((arg & 0x7u) > 4u) {
+        return linx_illegal(ctx);
     }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
-    }
-    gen_helper_linx_tile_set_arg(tcg_env, tcg_constant_i32(format & 0x1f));
+    gen_helper_linx_tile_set_arg(tcg_env, tcg_constant_i32(arg));
     return true;
-}
-
-static bool trans_b_arg_nd2zn_fp16_null(DisasContext *ctx,
-                                         arg_b_arg_nd2zn_fp16_null *a)
-{
-    (void)a;
-    return trans_b_arg_named(ctx, 3u);
-}
-
-static bool trans_b_arg_dn2nz_fp32_null(DisasContext *ctx,
-                                         arg_b_arg_dn2nz_fp32_null *a)
-{
-    (void)a;
-    return trans_b_arg_named(ctx, 9u);
-}
-
-static bool trans_b_arg_dn2zn_fp16_null(DisasContext *ctx,
-                                         arg_b_arg_dn2zn_fp16_null *a)
-{
-    (void)a;
-    return trans_b_arg_named(ctx, 8u);
-}
-
-static bool trans_b_arg_nz2dn_canon(DisasContext *ctx,
-                                     arg_b_arg_nz2dn_canon *a)
-{
-    (void)a;
-    return trans_b_arg_named(ctx, 28u);
-}
-
-static bool trans_b_arg_norm_normal(DisasContext *ctx,
-                                     arg_b_arg_norm_normal *a)
-{
-    (void)a;
-    return trans_b_arg_named(ctx, 0u);
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
@@ -1228,7 +1189,8 @@ static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
-    (void)a;
+    tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, a->dtype & 0x1f);
     return true;
 }
 
@@ -4327,6 +4289,8 @@ void linx_translate_init(void)
     cpu_tile_iot_src1 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src1), "tile_iot_src1");
     cpu_tile_iot_reg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_reg), "tile_iot_reg");
     cpu_tile_iot_size = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_size), "tile_iot_size");
+    cpu_tile_attr_pad = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_pad), "tile_attr_pad");
+    cpu_tile_attr_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_dtype), "tile_attr_dtype");
     cpu_lb[0] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[0]), "lb0");
     cpu_lb[1] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[1]), "lb1");
     cpu_lb[2] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[2]), "lb2");
