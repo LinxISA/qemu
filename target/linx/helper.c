@@ -21,8 +21,11 @@
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include <inttypes.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
-/* Configured in target/linx/translate.c from $LINX_CALLFRAME_SIZE. */
+/* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
 extern uint64_t linx_callframe_size;
 
 static bool linx_trace_mmu_inited;
@@ -168,6 +171,399 @@ static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, u
     return e | a | c | t;
 }
 
+typedef struct LinxCosimSnapshotHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t range_count;
+} LinxCosimSnapshotHeader;
+
+typedef struct LinxCosimSnapshotRange {
+    uint64_t base;
+    uint64_t size;
+    uint64_t file_offset;
+} LinxCosimSnapshotRange;
+
+static inline bool linx_env_enabled(const char *name)
+{
+    const char *v = getenv(name);
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
+static bool linx_parse_u64(const char *s, uint64_t *out)
+{
+    char *endp = NULL;
+
+    if (!s || !s[0]) {
+        return false;
+    }
+    errno = 0;
+    *out = strtoull(s, &endp, 0);
+    return errno == 0 && endp && endp != s && *endp == '\0';
+}
+
+static void linx_cosim_close_socket(CPULinxState *env)
+{
+    if (env->cosim.sock_fd >= 0) {
+        close(env->cosim.sock_fd);
+        env->cosim.sock_fd = -1;
+    }
+}
+
+static void linx_cosim_finish(CPULinxState *env)
+{
+    env->cosim.active = 0;
+    env->cosim.ended = 1;
+    linx_cosim_close_socket(env);
+}
+
+static bool linx_cosim_parse_ranges(CPULinxState *env, const char *ranges_s)
+{
+    char *cursor;
+    char *saveptr = NULL;
+    char *copy;
+
+    env->cosim.range_count = 0;
+    if (!ranges_s || !ranges_s[0]) {
+        return false;
+    }
+
+    copy = g_strdup(ranges_s);
+    if (!copy) {
+        return false;
+    }
+
+    for (cursor = strtok_r(copy, ",", &saveptr);
+         cursor;
+         cursor = strtok_r(NULL, ",", &saveptr)) {
+        char *sep = strchr(cursor, ':');
+        uint64_t base;
+        uint64_t size;
+
+        if (!sep) {
+            g_free(copy);
+            return false;
+        }
+        *sep = '\0';
+        if (!linx_parse_u64(cursor, &base) || !linx_parse_u64(sep + 1, &size) || size == 0) {
+            g_free(copy);
+            return false;
+        }
+        if (env->cosim.range_count >= LINX_COSIM_MAX_RANGES) {
+            g_free(copy);
+            return false;
+        }
+        env->cosim.ranges[env->cosim.range_count].base = base;
+        env->cosim.ranges[env->cosim.range_count].size = size;
+        env->cosim.range_count++;
+    }
+
+    g_free(copy);
+    return env->cosim.range_count > 0;
+}
+
+static bool linx_cosim_write_all(int fd, const char *buf, size_t len)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t n = send(fd, buf + off, len - off, 0);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0) {
+            return false;
+        }
+        off += (size_t)n;
+    }
+
+    return true;
+}
+
+static bool linx_cosim_send_line(CPULinxState *env, const char *line)
+{
+    const size_t len = strlen(line);
+    return linx_cosim_write_all(env->cosim.sock_fd, line, len) &&
+           linx_cosim_write_all(env->cosim.sock_fd, "\n", 1);
+}
+
+static bool linx_cosim_recv_line(CPULinxState *env, char *out, size_t out_sz)
+{
+    size_t off = 0;
+
+    if (out_sz == 0) {
+        return false;
+    }
+    while (off + 1 < out_sz) {
+        char ch = '\0';
+        ssize_t n = recv(env->cosim.sock_fd, &ch, 1, 0);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        if (n == 0) {
+            return false;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        out[off++] = ch;
+    }
+    out[off] = '\0';
+    return true;
+}
+
+static bool linx_cosim_connect(CPULinxState *env)
+{
+    struct sockaddr_un addr = { 0 };
+    int fd;
+
+    if (env->cosim.sock_fd >= 0) {
+        return true;
+    }
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Linx cosim: socket() failed: %s\n", strerror(errno));
+        return false;
+    }
+    addr.sun_family = AF_UNIX;
+    if (strlen(env->cosim.socket_path) >= sizeof(addr.sun_path)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: socket path too long: %s\n",
+                      env->cosim.socket_path);
+        close(fd);
+        return false;
+    }
+    strcpy(addr.sun_path, env->cosim.socket_path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: connect(%s) failed: %s\n",
+                      env->cosim.socket_path, strerror(errno));
+        close(fd);
+        return false;
+    }
+    env->cosim.sock_fd = fd;
+    return true;
+}
+
+static bool linx_cosim_dump_snapshot(CPULinxState *env)
+{
+    const LinxCosimSnapshotHeader hdr = {
+        .magic = { 'L', 'X', 'C', 'O', 'S', 'I', 'M', '1' },
+        .version = 1u,
+        .range_count = env->cosim.range_count,
+    };
+    LinxCosimSnapshotRange *table = NULL;
+    CPUState *cs = env_cpu(env);
+    FILE *fp = NULL;
+    uint64_t payload_off;
+    uint32_t i;
+    bool ok = false;
+
+    fp = fopen(env->cosim.snapshot_path, "wb");
+    if (!fp) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: failed to open snapshot '%s': %s\n",
+                      env->cosim.snapshot_path, strerror(errno));
+        return false;
+    }
+
+    table = g_new0(LinxCosimSnapshotRange, env->cosim.range_count);
+    if (!table) {
+        goto out;
+    }
+
+    payload_off = sizeof(hdr) + ((uint64_t)env->cosim.range_count * sizeof(*table));
+    for (i = 0; i < env->cosim.range_count; i++) {
+        table[i].base = env->cosim.ranges[i].base;
+        table[i].size = env->cosim.ranges[i].size;
+        table[i].file_offset = payload_off;
+        payload_off += env->cosim.ranges[i].size;
+    }
+
+    if (fwrite(&hdr, sizeof(hdr), 1, fp) != 1) {
+        goto out;
+    }
+    if (env->cosim.range_count > 0 &&
+        fwrite(table, sizeof(*table), env->cosim.range_count, fp) != env->cosim.range_count) {
+        goto out;
+    }
+
+    for (i = 0; i < env->cosim.range_count; i++) {
+        uint64_t remain = env->cosim.ranges[i].size;
+        uint64_t addr = env->cosim.ranges[i].base;
+        uint8_t chunk[4096];
+
+        while (remain > 0) {
+            const size_t n = (size_t)MIN((uint64_t)sizeof(chunk), remain);
+            if (cpu_memory_rw_debug(cs, addr, chunk, n, 0) != 0) {
+                memset(chunk, 0, n);
+            }
+            if (fwrite(chunk, 1, n, fp) != n) {
+                goto out;
+            }
+            addr += n;
+            remain -= n;
+        }
+    }
+
+    ok = true;
+out:
+    if (!ok) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: snapshot write failed for '%s'\n",
+                      env->cosim.snapshot_path);
+    }
+    g_free(table);
+    fclose(fp);
+    return ok;
+}
+
+static bool linx_cosim_parse_seq(const char *line, uint64_t *seq_out)
+{
+    const char *p = strstr(line, "\"seq\"");
+    char *endp = NULL;
+
+    if (!p) {
+        return false;
+    }
+    p = strchr(p, ':');
+    if (!p) {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    errno = 0;
+    *seq_out = strtoull(p, &endp, 10);
+    return errno == 0 && endp && endp != p;
+}
+
+static void linx_cosim_fail_fast(CPULinxState *env, const char *why, const char *line)
+{
+    if (line && line[0]) {
+        qemu_log_mask(LOG_GUEST_ERROR, "Linx cosim: %s: %s\n", why, line);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "Linx cosim: %s\n", why);
+    }
+    linx_cosim_finish(env);
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_PANIC);
+    cpu_loop_exit_noexc(env_cpu(env));
+}
+
+static bool linx_cosim_send_end(CPULinxState *env, const char *reason)
+{
+    char line[256];
+
+    if (env->cosim.sock_fd < 0) {
+        return false;
+    }
+    snprintf(line, sizeof(line), "{\"type\":\"end\",\"reason\":\"%s\"}", reason);
+    return linx_cosim_send_line(env, line);
+}
+
+static void linx_cosim_init(CPULinxState *env)
+{
+    const char *trigger_s;
+    const char *terminate_s;
+    const char *socket_s;
+    const char *snapshot_s;
+    const char *ranges_s;
+    const char *max_commits_s;
+    uint64_t max_commits = 0;
+
+    if (env->cosim.inited) {
+        return;
+    }
+    memset(&env->cosim, 0, sizeof(env->cosim));
+    env->cosim.sock_fd = -1;
+    env->cosim.inited = 1;
+
+    if (!linx_env_enabled("LINX_COSIM_ENABLE")) {
+        env->cosim.enabled = 0;
+        return;
+    }
+
+    trigger_s = getenv("LINX_COSIM_TRIGGER_PC");
+    terminate_s = getenv("LINX_COSIM_TERMINATE_PC");
+    socket_s = getenv("LINX_COSIM_SOCKET");
+    snapshot_s = getenv("LINX_COSIM_SNAPSHOT_PATH");
+    ranges_s = getenv("LINX_COSIM_MEM_RANGES");
+    max_commits_s = getenv("LINX_COSIM_MAX_COMMITS");
+
+    if (!linx_parse_u64(trigger_s, &env->cosim.trigger_pc) ||
+        !linx_parse_u64(terminate_s, &env->cosim.terminate_pc) ||
+        !socket_s || !socket_s[0] || !snapshot_s || !snapshot_s[0] ||
+        !linx_cosim_parse_ranges(env, ranges_s)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: invalid configuration; disable co-sim mode\n");
+        env->cosim.enabled = 0;
+        return;
+    }
+
+    if (strlen(socket_s) >= sizeof(env->cosim.socket_path) ||
+        strlen(snapshot_s) >= sizeof(env->cosim.snapshot_path)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx cosim: socket or snapshot path too long\n");
+        env->cosim.enabled = 0;
+        return;
+    }
+    strcpy(env->cosim.socket_path, socket_s);
+    strcpy(env->cosim.snapshot_path, snapshot_s);
+
+    if (max_commits_s && max_commits_s[0]) {
+        if (!linx_parse_u64(max_commits_s, &max_commits)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx cosim: invalid LINX_COSIM_MAX_COMMITS='%s'\n",
+                          max_commits_s);
+            env->cosim.enabled = 0;
+            return;
+        }
+    }
+    env->cosim.max_commits = max_commits;
+    env->cosim.enabled = 1;
+}
+
+void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
+{
+    char start_line[1024];
+
+    linx_cosim_init(env);
+    if (!env->cosim.enabled || env->cosim.active || env->cosim.ended) {
+        return;
+    }
+    if (pc != env->cosim.trigger_pc) {
+        return;
+    }
+    if (!linx_cosim_dump_snapshot(env) || !linx_cosim_connect(env)) {
+        env->cosim.enabled = 0;
+        linx_cosim_finish(env);
+        return;
+    }
+
+    snprintf(start_line, sizeof(start_line),
+             "{\"type\":\"start\",\"boot_pc\":%" PRIu64
+             ",\"boot_sp\":%" PRIu64
+             ",\"boot_ra\":%" PRIu64
+             ",\"trigger_pc\":%" PRIu64
+             ",\"terminate_pc\":%" PRIu64
+             ",\"snapshot_path\":\"%s\",\"seq_base\":0}",
+             pc, env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA], env->cosim.trigger_pc, env->cosim.terminate_pc,
+             env->cosim.snapshot_path);
+    if (!linx_cosim_send_line(env, start_line)) {
+        env->cosim.enabled = 0;
+        linx_cosim_finish(env);
+        return;
+    }
+    env->cosim.seq = 0;
+    env->cosim.active = 1;
+}
+
 static void linx_commit_trace_init(CPULinxState *env)
 {
     if (env->commit_trace.inited) {
@@ -223,9 +619,15 @@ static inline bool linx_commit_trace_active(CPULinxState *env)
     return env->commit_trace.enabled && env->commit_trace.fp;
 }
 
+static inline bool linx_trace_capture_active(CPULinxState *env)
+{
+    linx_cosim_init(env);
+    return linx_commit_trace_active(env) || env->cosim.active;
+}
+
 static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
 {
-    if (!linx_commit_trace_active(env)) {
+    if (!linx_trace_capture_active(env)) {
         return;
     }
     env->trace_wb_valid = 1;
@@ -237,10 +639,11 @@ static inline void linx_trace_mem(CPULinxState *env, bool is_store,
                                   uint64_t addr, uint64_t wdata,
                                   uint64_t rdata, uint32_t size)
 {
-    if (!linx_commit_trace_active(env)) {
+    if (!linx_trace_capture_active(env)) {
         return;
     }
     env->trace_mem_valid = 1;
+    env->trace_mem_is_store = is_store ? 1 : 0;
     env->trace_mem_addr = addr;
     env->trace_mem_size = size;
     env->trace_mem_wdata = is_store ? wdata : 0;
@@ -251,60 +654,131 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
                                                  CPUState *cs,
                                                  uint64_t next_pc)
 {
-    if (linx_commit_trace_active(env)) {
+    if (linx_trace_capture_active(env)) {
         HELPER(linx_commit_trace)(env, next_pc);
     }
     cpu_loop_exit_noexc(cs);
 }
 
+static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
+{
+    char line[2048];
+    char ack[2048];
+    uint64_t ack_seq = UINT64_MAX;
+    const uint64_t seq = env->cosim.seq;
+
+    if (!env->cosim.active) {
+        return;
+    }
+
+    snprintf(line, sizeof(line),
+             "{\"type\":\"commit\",\"seq\":%" PRIu64
+             ",\"pc\":%" PRIu64
+             ",\"insn\":%" PRIu64
+             ",\"len\":%u"
+             ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
+             ",\"mem_valid\":%u,\"mem_is_store\":%u"
+             ",\"mem_addr\":%" PRIu64 ",\"mem_wdata\":%" PRIu64
+             ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
+             ",\"trap_valid\":%u,\"trap_cause\":%u,\"traparg0\":%" PRIu64
+             ",\"next_pc\":%" PRIu64 "}",
+             seq,
+             env->trace_pc, env->trace_insn, env->trace_len,
+             env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
+             env->trace_mem_valid, env->trace_mem_is_store,
+             env->trace_mem_addr, env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
+             env->trace_trap_valid, env->trace_trap_cause, env->trace_traparg0,
+             next_pc);
+    if (!linx_cosim_send_line(env, line)) {
+        linx_cosim_fail_fast(env, "failed to send commit", NULL);
+    }
+    if (!linx_cosim_recv_line(env, ack, sizeof(ack))) {
+        linx_cosim_fail_fast(env, "failed to receive ack", NULL);
+    }
+    if (!linx_cosim_parse_seq(ack, &ack_seq) || ack_seq != seq) {
+        linx_cosim_fail_fast(env, "ack sequence mismatch", ack);
+    }
+    if (strstr(ack, "\"status\":\"mismatch\"")) {
+        linx_cosim_fail_fast(env, "mismatch reported by DUT", ack);
+    }
+    if (!strstr(ack, "\"status\":\"ok\"")) {
+        linx_cosim_fail_fast(env, "invalid ack status", ack);
+    }
+
+    env->cosim.seq = seq + 1;
+
+    if (env->trace_pc == env->cosim.terminate_pc) {
+        (void)linx_cosim_send_end(env, "terminate_pc");
+        linx_cosim_finish(env);
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        cpu_loop_exit_noexc(env_cpu(env));
+    }
+    if (env->cosim.max_commits && env->cosim.seq >= env->cosim.max_commits) {
+        (void)linx_cosim_send_end(env, "max_commits");
+        linx_cosim_finish(env);
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        cpu_loop_exit_noexc(env_cpu(env));
+    }
+}
+
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 {
+    bool emit_file = false;
+
     linx_commit_trace_init(env);
-    if (!env->commit_trace.enabled || !env->commit_trace.fp) {
-        return;
+    emit_file = env->commit_trace.enabled && env->commit_trace.fp;
+    if (emit_file) {
+        const uint64_t pc = env->trace_pc;
+        if (env->commit_trace.pc_filter_enabled &&
+            (pc < env->commit_trace.pc_lo || pc > env->commit_trace.pc_hi)) {
+            emit_file = false;
+        }
     }
 
-    const uint64_t pc = env->trace_pc;
-    if (env->commit_trace.pc_filter_enabled &&
-        (pc < env->commit_trace.pc_lo || pc > env->commit_trace.pc_hi)) {
-        return;
+    if (emit_file) {
+        const uint64_t pc = env->trace_pc;
+        const uint64_t cycle = env->commit_trace.cycle++;
+        const uint32_t trap_valid = env->trace_trap_valid;
+        const uint32_t trap_cause = env->trace_trap_cause;
+        const uint8_t trapnum = (uint8_t)(trap_cause & 0xffu);
+        const uint32_t cause = (uint32_t)((trap_cause >> 8) & 0xffu);
+        const bool argv = trap_valid != 0; /* commit-trace: treat TRAPARG0 as present when trap_valid */
+        const uint64_t trapno_full = trap_valid ? linx_trapno_make(false, argv, cause, trapnum) : 0;
+
+        /* Mandatory schema fields (see linxisa/docs/bringup/contracts/trace_schema.md). */
+        fprintf(env->commit_trace.fp,
+                "{\"cycle\":%" PRIu64
+                ",\"pc\":%" PRIu64
+                ",\"insn\":%" PRIu64
+                ",\"len\":%u"
+                ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
+                ",\"mem_valid\":%u,\"mem_is_store\":%u,\"mem_addr\":%" PRIu64
+                ",\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
+                ",\"trap_valid\":%u,\"trap_cause\":%u"
+                ",\"trapno_full\":%" PRIu64 ",\"traparg0\":%" PRIu64
+                ",\"next_pc\":%" PRIu64 "}\n",
+                cycle,
+                pc,
+                env->trace_insn,
+                env->trace_len,
+                env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
+                env->trace_mem_valid, env->trace_mem_is_store, env->trace_mem_addr,
+                env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
+                trap_valid, trap_cause,
+                trapno_full, env->trace_traparg0,
+                next_pc);
+        fflush(env->commit_trace.fp);
+
+        if (env->commit_trace.stop_after_commit) {
+            fclose(env->commit_trace.fp);
+            env->commit_trace.fp = NULL;
+            env->commit_trace.enabled = 0;
+            env->commit_trace.stop_after_commit = 0;
+        }
     }
 
-    const uint64_t cycle = env->commit_trace.cycle++;
-    const uint32_t trap_valid = env->trace_trap_valid;
-    const uint32_t trap_cause = env->trace_trap_cause;
-    const uint8_t trapnum = (uint8_t)(trap_cause & 0xffu);
-    const uint32_t cause = (uint32_t)((trap_cause >> 8) & 0xffu);
-    const bool argv = trap_valid != 0; /* commit-trace: treat TRAPARG0 as present when trap_valid */
-    const uint64_t trapno_full = trap_valid ? linx_trapno_make(false, argv, cause, trapnum) : 0;
-
-    /* Mandatory schema fields (see linxisa/docs/bringup/contracts/trace_schema.md). */
-    fprintf(env->commit_trace.fp,
-            "{\"cycle\":%" PRIu64
-            ",\"pc\":%" PRIu64
-            ",\"insn\":%" PRIu64
-            ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
-            ",\"mem_valid\":%u,\"mem_addr\":%" PRIu64
-            ",\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
-            ",\"trap_valid\":%u,\"trap_cause\":%u"
-            ",\"trapno_full\":%" PRIu64 ",\"traparg0\":%" PRIu64
-            ",\"next_pc\":%" PRIu64 "}\n",
-            cycle,
-            pc,
-            env->trace_insn,
-            env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
-            env->trace_mem_valid, env->trace_mem_addr,
-            env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
-            trap_valid, trap_cause,
-            trapno_full, env->trace_traparg0,
-            next_pc);
-    fflush(env->commit_trace.fp);
-
-    if (env->commit_trace.stop_after_commit) {
-        fclose(env->commit_trace.fp);
-        env->commit_trace.fp = NULL;
-        env->commit_trace.enabled = 0;
-        env->commit_trace.stop_after_commit = 0;
+    if (env->cosim.active) {
+        linx_cosim_send_commit_and_wait_ack(env, next_pc);
     }
 }
 
@@ -972,7 +1446,12 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         for (i = 0; i < 4; i++) {
             env->tq[i] = 0;
             env->uq[i] = 0;
+        }
+        for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
             env->vtq[i] = 0;
+            env->vuq[i] = 0;
+            env->vmq[i] = 0;
+            env->vnq[i] = 0;
         }
         env->tgt = 0;
         env->cond = 0;
@@ -2155,9 +2634,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         break;
     }
 
-    case LINX_TEMPLATE_FEXIT:
-    case LINX_TEMPLATE_FRET_RA:
-    case LINX_TEMPLATE_FRET_STK: {
+    case LINX_TEMPLATE_FEXIT: {
         const uint64_t stacksize = env->tmpl_stacksize;
         const uint64_t adj = stacksize + linx_callframe_size;
         const int begin = (int)env->tmpl_reg_begin;
@@ -2165,12 +2642,29 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
         const uint32_t step = env->tmpl_step;
 
-        if (count && step < (uint32_t)count) {
-            const int reg = (int)env->tmpl_reg_cur;
-            const int64_t off = (int64_t)stacksize - ((int64_t)(step + 1) * 8);
+        /* f.exit: addi sp, stack -> sp */
+        if (step == 0) {
+            if (adj) {
+                env->gpr[LINX_REG_SP] += adj;
+                linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+            }
+            if (count == 0) {
+                linx_template_clear(env);
+                env->pc = next_pc;
+            } else {
+                env->tmpl_step = 1;
+                env->pc = cur_pc;
+            }
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
 
-            if (off >= 0 && reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
-                const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
+        /* step >= 1: ldi [sp, -8 * step], -> reg */
+        {
+            const uint32_t load_idx = step;
+            const int reg = (int)env->tmpl_reg_cur;
+            const uint64_t addr = env->gpr[LINX_REG_SP] - ((uint64_t)load_idx * 8ull);
+
+            if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                 const uint64_t v = cpu_ldq_le_data(env, (abi_ptr)addr);
                 env->gpr[reg] = v;
                 linx_trace_mem(env, false, addr, 0, v, 8);
@@ -2180,31 +2674,146 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                 }
             }
 
-            if (reg != end) {
+            if (reg == end) {
+                linx_template_clear(env);
+                env->pc = next_pc;
+            } else {
                 env->tmpl_reg_cur = (uint32_t)linx_next_fentry_reg(reg);
+                env->tmpl_step = step + 1;
+                env->pc = cur_pc;
             }
-            env->tmpl_step = step + 1;
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+        break;
+    }
+
+    case LINX_TEMPLATE_FRET_STK: {
+        const uint64_t stacksize = env->tmpl_stacksize;
+        const uint64_t adj = stacksize + linx_callframe_size;
+        const int begin = (int)env->tmpl_reg_begin;
+        const int end = (int)env->tmpl_reg_end;
+        const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
+        const uint32_t step = env->tmpl_step;
+
+        /* f.ret.stk: addi sp, stack -> sp */
+        if (step == 0) {
+            if (adj) {
+                env->gpr[LINX_REG_SP] += adj;
+                linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+            }
+            if (count == 0) {
+                const uint64_t ra = env->gpr[LINX_REG_RA];
+                HELPER(linx_check_bstart_target)(env, ra);
+                linx_template_clear(env);
+                env->pc = ra;
+            } else {
+                env->tmpl_step = 1;
+                env->pc = cur_pc;
+            }
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+
+        /* Emit setc.tgt metadata immediately after restoring RA. */
+        if (env->tmpl_mem_src != 0) {
+            env->tmpl_mem_src = 0;
             env->pc = cur_pc;
             linx_template_commit_and_exit(env, cs, env->pc);
         }
 
-        /* After restoring regs: adjust SP and either fall through or return. */
-        if (adj) {
-            env->gpr[LINX_REG_SP] += adj;
-            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
-        }
+        /* step >= 1: ldi [sp, -8 * step], -> reg */
+        {
+            const uint32_t load_idx = step;
+            const int reg = (int)env->tmpl_reg_cur;
+            const uint64_t addr = env->gpr[LINX_REG_SP] - ((uint64_t)load_idx * 8ull);
 
-        if (kind == LINX_TEMPLATE_FEXIT) {
-            linx_template_clear(env);
-            env->pc = next_pc;
+            if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+                const uint64_t v = cpu_ldq_le_data(env, (abi_ptr)addr);
+                env->gpr[reg] = v;
+                linx_trace_mem(env, false, addr, 0, v, 8);
+                linx_trace_wb(env, (uint32_t)reg, v);
+                if (reg == LINX_REG_RA && linx_trace_ra_match(cur_pc)) {
+                    HELPER(linx_trace_ra)(env, cur_pc, 3, addr, v);
+                }
+            }
+
+            if (reg == end) {
+                const uint64_t ra = env->gpr[LINX_REG_RA];
+                HELPER(linx_check_bstart_target)(env, ra);
+                linx_template_clear(env);
+                env->pc = ra;
+            } else {
+                env->tmpl_reg_cur = (uint32_t)linx_next_fentry_reg(reg);
+                env->tmpl_step = step + 1;
+                if (reg == LINX_REG_RA) {
+                    env->tmpl_mem_src = 1;
+                }
+                env->pc = cur_pc;
+            }
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+        break;
+    }
+
+    case LINX_TEMPLATE_FRET_RA: {
+        const uint64_t stacksize = env->tmpl_stacksize;
+        const uint64_t adj = stacksize + linx_callframe_size;
+        const int begin = (int)env->tmpl_reg_begin;
+        const int end = (int)env->tmpl_reg_end;
+        const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
+        const uint32_t step = env->tmpl_step;
+
+        /* f.ret.ra step0: setc.tgt ra (metadata; no wb/mem trace fields). */
+        if (step == 0) {
+            env->tmpl_mem_value = env->gpr[LINX_REG_RA];
+            env->tmpl_step = 1;
+            env->pc = cur_pc;
             linx_template_commit_and_exit(env, cs, env->pc);
         }
 
+        /* step1: addi sp, stack -> sp */
+        if (step == 1) {
+            if (adj) {
+                env->gpr[LINX_REG_SP] += adj;
+                linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+            }
+            if (count == 0) {
+                const uint64_t ra = env->tmpl_mem_value;
+                HELPER(linx_check_bstart_target)(env, ra);
+                linx_template_clear(env);
+                env->pc = ra;
+            } else {
+                env->tmpl_step = 2;
+                env->pc = cur_pc;
+            }
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+
+        /* step >= 2: ldi [sp, -8 * (step - 1)], -> reg */
         {
-            const uint64_t ra = env->gpr[LINX_REG_RA];
-            HELPER(linx_check_bstart_target)(env, ra);
-            linx_template_clear(env);
-            env->pc = ra;
+            const uint32_t load_idx = step - 1;
+            const int reg = (int)env->tmpl_reg_cur;
+            const uint64_t addr = env->gpr[LINX_REG_SP] - ((uint64_t)load_idx * 8ull);
+
+            if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+                const uint64_t v = cpu_ldq_le_data(env, (abi_ptr)addr);
+                env->gpr[reg] = v;
+                linx_trace_mem(env, false, addr, 0, v, 8);
+                linx_trace_wb(env, (uint32_t)reg, v);
+                if (reg == LINX_REG_RA && linx_trace_ra_match(cur_pc)) {
+                    HELPER(linx_trace_ra)(env, cur_pc, 3, addr, v);
+                }
+            }
+
+            if (reg == end) {
+                const uint64_t ra = env->tmpl_mem_value;
+                HELPER(linx_check_bstart_target)(env, ra);
+                linx_template_clear(env);
+                env->pc = ra;
+            } else {
+                env->tmpl_reg_cur = (uint32_t)linx_next_fentry_reg(reg);
+                env->tmpl_step = step + 1;
+                env->pc = cur_pc;
+            }
             linx_template_commit_and_exit(env, cs, env->pc);
         }
         break;
@@ -2964,6 +3573,31 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
     return false;
 }
 
+static void linx_vec_capture_ri_values(CPULinxState *env)
+{
+    env->vec_ri_count = 0;
+
+    const unsigned desc_count = MIN(env->tile_ior_count, LINX_TILE_MAX_IOR);
+    for (unsigned i = 0; i < desc_count; i++) {
+        const uint64_t desc = env->tile_ior_desc[i];
+        const unsigned src0 = (desc >> 5) & 0x1fu;  /* RegSrc0 */
+        const unsigned src1 = (desc >> 10) & 0x1fu; /* RegSrc1 */
+        const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
+        const unsigned srcs[3] = { src1, src0, src2 };
+
+        for (unsigned s = 0; s < 3; s++) {
+            const unsigned reg = srcs[s];
+            if (reg == 0 || reg >= LINX_GPR_COUNT) {
+                continue;
+            }
+            if (env->vec_ri_count >= LINX_VEC_RI_MAX) {
+                return;
+            }
+            env->vec_ri_value[env->vec_ri_count++] = env->gpr[reg];
+        }
+    }
+}
+
 static bool linx_tile_get_base_reg(const CPULinxState *env, unsigned *addr_reg_out)
 {
     if (env->tile_ior_count == 0) {
@@ -2986,6 +3620,7 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
     env->tile_ior_count = 0;
+    env->vec_ri_count = 0;
     env->tile_iot_count = 0;
 }
 
@@ -3443,18 +4078,21 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
 static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
 {
     /*
-     * v0.3 bring-up: allow the scalar `zero` literal in SIMT bodies for
-     * addressing convenience (e.g. `[ri0, lc0<<2, zero]`).
-     *
-     * All other scalar GPR names are illegal in vector bodies; software must
-     * bind scalar inputs via `B.IOR` and access them through `ri*`.
+     * v0.3 bring-up: vector bodies may mix scalar and vector operands.
+     * Scalar encodings keep the base scalar namespace:
+     *   0      -> zero
+     *   1..23  -> GPR
+     *   24..27 -> TQ
+     *   28..31 -> UQ
      */
     if (code < 32u) {
-        if (code == 0) {
-            return 0;
+        if (code < LINX_GPR_COUNT) {
+            return env->gpr[code];
         }
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return 0;
+        if (code < 28u) {
+            return env->tq[code - 24u];
+        }
+        return env->uq[code - 28u];
     }
 
     const unsigned cls = linx_vec_reg_class(code);
@@ -3462,6 +4100,9 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
 
     switch (cls) {
     case LINX_VEC_REGCLASS_RI: {
+        if (idx < env->vec_ri_count) {
+            return env->vec_ri_value[idx];
+        }
         unsigned gpr = 0;
         if (!linx_tile_resolve_ior(env, idx, &gpr)) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -3479,7 +4120,7 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
         if (idx == 0) {
             return env->vtq[0];
         }
-        if (idx - 1u < 4u) {
+        if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
             return env->vtq[idx - 1u];
         }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -3488,7 +4129,7 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
         if (idx == 0) {
             return env->vuq[0];
         }
-        if (idx - 1u < 4u) {
+        if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
             return env->vuq[idx - 1u];
         }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -3497,7 +4138,7 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
         if (idx == 0) {
             return env->vmq[0];
         }
-        if (idx - 1u < 4u) {
+        if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
             return env->vmq[idx - 1u];
         }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -3506,7 +4147,7 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
         if (idx == 0) {
             return env->vnq[0];
         }
-        if (idx - 1u < 4u) {
+        if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
             return env->vnq[idx - 1u];
         }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -3529,13 +4170,13 @@ static void linx_vec_write_vt(CPULinxState *env, unsigned idx, uint64_t value)
 {
     if (idx == 0) {
         /* Push: VT#1 becomes the most recently produced value. */
-        for (unsigned i = 3; i > 0; i--) {
+        for (unsigned i = LINX_VEC_QUEUE_DEPTH - 1u; i > 0; i--) {
             env->vtq[i] = env->vtq[i - 1u];
         }
         env->vtq[0] = value;
         return;
     }
-    if (idx - 1u < 4u) {
+    if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
         env->vtq[idx - 1u] = value;
     }
 }
@@ -3543,13 +4184,13 @@ static void linx_vec_write_vt(CPULinxState *env, unsigned idx, uint64_t value)
 static void linx_vec_write_vu(CPULinxState *env, unsigned idx, uint64_t value)
 {
     if (idx == 0) {
-        for (unsigned i = 3; i > 0; i--) {
+        for (unsigned i = LINX_VEC_QUEUE_DEPTH - 1u; i > 0; i--) {
             env->vuq[i] = env->vuq[i - 1u];
         }
         env->vuq[0] = value;
         return;
     }
-    if (idx - 1u < 4u) {
+    if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
         env->vuq[idx - 1u] = value;
     }
 }
@@ -3557,13 +4198,13 @@ static void linx_vec_write_vu(CPULinxState *env, unsigned idx, uint64_t value)
 static void linx_vec_write_vm(CPULinxState *env, unsigned idx, uint64_t value)
 {
     if (idx == 0) {
-        for (unsigned i = 3; i > 0; i--) {
+        for (unsigned i = LINX_VEC_QUEUE_DEPTH - 1u; i > 0; i--) {
             env->vmq[i] = env->vmq[i - 1u];
         }
         env->vmq[0] = value;
         return;
     }
-    if (idx - 1u < 4u) {
+    if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
         env->vmq[idx - 1u] = value;
     }
 }
@@ -3571,13 +4212,13 @@ static void linx_vec_write_vm(CPULinxState *env, unsigned idx, uint64_t value)
 static void linx_vec_write_vn(CPULinxState *env, unsigned idx, uint64_t value)
 {
     if (idx == 0) {
-        for (unsigned i = 3; i > 0; i--) {
+        for (unsigned i = LINX_VEC_QUEUE_DEPTH - 1u; i > 0; i--) {
             env->vnq[i] = env->vnq[i - 1u];
         }
         env->vnq[0] = value;
         return;
     }
-    if (idx - 1u < 4u) {
+    if (idx - 1u < LINX_VEC_QUEUE_DEPTH) {
         env->vnq[idx - 1u] = value;
     }
 }
@@ -3588,7 +4229,8 @@ void HELPER(linx_vec_body_begin)(CPULinxState *env)
     env->lc[0] = 0;
     env->lc[1] = 0;
     env->lc[2] = 0;
-    for (unsigned i = 0; i < 4; i++) {
+    linx_vec_capture_ri_values(env);
+    for (unsigned i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = 0;
         env->vuq[i] = 0;
         env->vmq[i] = 0;
@@ -3650,6 +4292,44 @@ static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
     }
 }
 
+static uint64_t linx_vec_read_reduce_dst(CPULinxState *env, uint32_t dst)
+{
+    if (dst == 0) {
+        return 0;
+    }
+    if (dst < LINX_GPR_COUNT) {
+        return env->gpr[dst];
+    }
+    if (dst >= 24 && dst < 28) {
+        return env->tq[dst - 24];
+    }
+    if (dst >= 28 && dst < 32) {
+        return env->uq[dst - 28];
+    }
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    return 0;
+}
+
+static void linx_vec_write_reduce_dst(CPULinxState *env, uint32_t dst, uint64_t value)
+{
+    if (dst == 0) {
+        return;
+    }
+    if (dst < LINX_GPR_COUNT) {
+        env->gpr[dst] = value;
+        return;
+    }
+    if (dst >= 24 && dst < 28) {
+        env->tq[dst - 24] = value;
+        return;
+    }
+    if (dst >= 28 && dst < 32) {
+        env->uq[dst - 28] = value;
+        return;
+    }
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+}
+
 void HELPER(linx_v_add)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                         uint32_t srcR, uint32_t srctype, uint32_t shamt)
 {
@@ -3706,6 +4386,103 @@ void HELPER(linx_v_sub)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, res);
 }
 
+void HELPER(linx_v_cmp_eq)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs == rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_cmp_ne)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs != rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_cmp_lt)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs < rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_cmp_ltu)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs < rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_cmp_ge)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs >= rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_cmp_geu)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, lhs >= rhs ? 1u : 0u);
+}
+
+void HELPER(linx_v_feq)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = linx_fp_cmp_eq(env, lhs, rhs, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res ? 1u : 0u);
+}
+
+void HELPER(linx_v_fne)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = linx_fp_cmp_eq(env, lhs, rhs, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res ? 0u : 1u);
+}
+
+void HELPER(linx_v_flt)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = linx_fp_cmp_lt(env, lhs, rhs, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res ? 1u : 0u);
+}
+
+void HELPER(linx_v_fge)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = linx_fp_cmp_ge(env, lhs, rhs, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res ? 1u : 0u);
+}
+
+void HELPER(linx_v_csel)(CPULinxState *env, uint32_t dst, uint32_t srcP,
+                         uint32_t srcL, uint32_t srcR, uint32_t srctype)
+{
+    const uint64_t pred = linx_vec_read_reg(env, srcP);
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    uint64_t rhs = linx_vec_read_reg(env, srcR);
+
+    if ((srctype & 0x3u) == 2u) {
+        rhs = (uint64_t)(-(int64_t)rhs);
+    }
+    linx_vec_write_dst(env, dst, pred != 0 ? lhs : rhs);
+}
+
 void HELPER(linx_v_fadd)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                          uint32_t srcR)
 {
@@ -3733,15 +4510,88 @@ void HELPER(linx_v_fmul)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, res);
 }
 
+void HELPER(linx_v_fdiv)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = linx_fp_binop_div(env, lhs, rhs, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, acc + src);
+}
+
+void HELPER(linx_v_rdand)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, acc & src);
+}
+
+void HELPER(linx_v_rdfadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    const uint64_t res = linx_fp_binop_add(env, acc, src, /*srctype=*/1);
+    linx_vec_write_reduce_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdfmax)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    const uint64_t res = linx_fp_cmp_lt(env, acc, src, /*srctype=*/1) ? src : acc;
+    linx_vec_write_reduce_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdfmin)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    const uint64_t res = linx_fp_cmp_lt(env, src, acc, /*srctype=*/1) ? src : acc;
+    linx_vec_write_reduce_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdmax)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const int64_t acc = (int64_t)linx_vec_read_reduce_dst(env, dst);
+    const int64_t src = (int64_t)linx_vec_read_reg(env, srcL);
+    const uint64_t res = (uint64_t)(acc > src ? acc : src);
+    linx_vec_write_reduce_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdmin)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const int64_t acc = (int64_t)linx_vec_read_reduce_dst(env, dst);
+    const int64_t src = (int64_t)linx_vec_read_reg(env, srcL);
+    const uint64_t res = (uint64_t)(acc < src ? acc : src);
+    linx_vec_write_reduce_dst(env, dst, res);
+}
+
+void HELPER(linx_v_rdor)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, acc | src);
+}
+
+void HELPER(linx_v_rdxor)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, acc ^ src);
+}
+
 void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
-    if (env->blocktype == 4 || env->blocktype == 5) { /* VPAR/VSEQ */
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return;
-    }
     if (local != 0) {
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        HELPER(linx_v_sw_local)(env, srcD, srcL, srcR, shamt, local);
         return;
     }
     if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
@@ -3762,12 +4612,8 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
 void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
-    if (env->blocktype == 4 || env->blocktype == 5) { /* VPAR/VSEQ */
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return;
-    }
     if (local != 0) {
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        HELPER(linx_v_lw_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
     if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
@@ -4201,6 +5047,12 @@ void HELPER(linx_exit)(CPULinxState *env)
     if (linx_print_insn_count()) {
         fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
         fflush(stderr);
+    }
+
+    linx_cosim_init(env);
+    if (env->cosim.active) {
+        (void)linx_cosim_send_end(env, "guest_exit");
+        linx_cosim_finish(env);
     }
     
     /* Request graceful shutdown of the VM */
