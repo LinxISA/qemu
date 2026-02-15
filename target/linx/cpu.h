@@ -88,6 +88,10 @@ typedef enum LinxTemplateKind {
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
+#define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
+#define LINX_VEC_QUEUE_DEPTH 8u
+#define LINX_COSIM_MAX_RANGES 256u
+#define LINX_COSIM_PATH_MAX 512u
 
 /* Bring-up tile backing store limits (TAU). */
 #define LINX_TILE_MAX_BYTES (64u * 1024u) /* must cover >=16KB bring-up */
@@ -104,10 +108,10 @@ typedef enum LinxTemplateKind {
 typedef struct LinxAcrBlockState {
     uint64_t tq[4];
     uint64_t uq[4];
-    uint64_t vtq[4];
-    uint64_t vuq[4];
-    uint64_t vmq[4];
-    uint64_t vnq[4];
+    uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vnq[LINX_VEC_QUEUE_DEPTH];
 
     uint64_t bpc;
 
@@ -153,18 +157,25 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_arg_format;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
+    uint32_t vec_ri_count;
+    uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
 } LinxAcrBlockState;
+
+typedef struct LinxCosimRange {
+    uint64_t base;
+    uint64_t size;
+} LinxCosimRange;
 
 typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
     uint64_t uq[4];
-    uint64_t vtq[4];
-    uint64_t vuq[4];
-    uint64_t vmq[4];
-    uint64_t vnq[4];
+    uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vnq[LINX_VEC_QUEUE_DEPTH];
 
     /*
      * System Status Registers (SSR).
@@ -238,6 +249,8 @@ typedef struct CPUArchState {
     uint32_t tile_arg_format;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
+    uint32_t vec_ri_count;
+    uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
 
@@ -280,6 +293,7 @@ typedef struct CPUArchState {
     uint32_t trace_wb_rd;
     uint64_t trace_wb_data;
     uint32_t trace_mem_valid;
+    uint32_t trace_mem_is_store;
     uint64_t trace_mem_addr;
     uint64_t trace_mem_wdata;
     uint64_t trace_mem_rdata;
@@ -312,6 +326,23 @@ typedef struct CPUArchState {
         FILE *fp;
     } commit_trace;
 
+    /* QEMU <-> Janus lockstep co-simulation state (M1 bring-up). */
+    struct {
+        uint8_t inited;
+        uint8_t enabled;
+        uint8_t active;
+        uint8_t ended;
+        uint64_t trigger_pc;
+        uint64_t terminate_pc;
+        uint64_t max_commits;
+        uint64_t seq;
+        int sock_fd;
+        uint32_t range_count;
+        char socket_path[LINX_COSIM_PATH_MAX];
+        char snapshot_path[LINX_COSIM_PATH_MAX];
+        LinxCosimRange ranges[LINX_COSIM_MAX_RANGES];
+    } cosim;
+
     /* Per-CPU virtual timer for TIMER_TIMECMP (bring-up). */
     struct QEMUTimer *timer;
 } CPULinxState;
@@ -329,6 +360,8 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < 4; i++) {
         s->tq[i] = env->tq[i];
         s->uq[i] = env->uq[i];
+    }
+    for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         s->vtq[i] = env->vtq[i];
         s->vuq[i] = env->vuq[i];
         s->vmq[i] = env->vmq[i];
@@ -381,6 +414,10 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         s->tile_ior_desc[i] = env->tile_ior_desc[i];
     }
+    s->vec_ri_count = env->vec_ri_count;
+    for (i = 0; i < LINX_VEC_RI_MAX; i++) {
+        s->vec_ri_value[i] = env->vec_ri_value[i];
+    }
     s->tile_iot_count = env->tile_iot_count;
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         s->tile_iot_desc[i] = env->tile_iot_desc[i];
@@ -400,6 +437,8 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < 4; i++) {
         env->tq[i] = s->tq[i];
         env->uq[i] = s->uq[i];
+    }
+    for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = s->vtq[i];
         env->vuq[i] = s->vuq[i];
         env->vmq[i] = s->vmq[i];
@@ -451,6 +490,10 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_ior_count = s->tile_ior_count;
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         env->tile_ior_desc[i] = s->tile_ior_desc[i];
+    }
+    env->vec_ri_count = s->vec_ri_count;
+    for (i = 0; i < LINX_VEC_RI_MAX; i++) {
+        env->vec_ri_value[i] = s->vec_ri_value[i];
     }
     env->tile_iot_count = s->tile_iot_count;
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {

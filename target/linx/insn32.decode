@@ -167,13 +167,6 @@ ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
 
-# Execution control - Bus Wait Event/Interrupt
-# Encoding: bits[27:24]=0000, bits[23:20]=func (0001=BWE, 0010=BWI)
-# BWE: Bus Wait Event - signals completion of previous side effects
-# BWI: Bus Wait Interrupt - waits for interrupt while allowing side effects
-bwe 0000 0000 0001 .... .000 0000 0010 1011 %SrcL
-bwi 0000 0000 0010 .... .000 0000 0010 1011 %SrcL
-
 # TLB flush (bring-up).
 tlb_iall 0000 0000 0011 0000 0111 0000 0010 1011
 
