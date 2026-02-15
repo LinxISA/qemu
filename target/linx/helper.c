@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "opcode_meta.h"
 #include "exec/helper-proto.h"
 #include "exec/log.h"
 #include "accel/tcg/cpu-ldst.h"
@@ -82,6 +83,31 @@ static inline bool linx_print_insn_count(void)
         linx_print_insn_count_inited = true;
     }
     return linx_print_insn_count_enabled;
+}
+
+const LinxOpcodeMeta *linx_opcode_meta_lookup(uint64_t insn_word, unsigned insn_len)
+{
+    const LinxOpcodeMeta *best = NULL;
+    int best_bits = -1;
+    unsigned i;
+
+    for (i = 0; i < linx_opcode_meta_table_count; i++) {
+        const LinxOpcodeMeta *m = &linx_opcode_meta_table[i];
+        int bits;
+
+        if (m->insn_len != 0 && insn_len != 0 && m->insn_len != insn_len) {
+            continue;
+        }
+        if ((insn_word & m->mask) != m->match) {
+            continue;
+        }
+        bits = __builtin_popcountll(m->mask);
+        if (bits > best_bits) {
+            best = m;
+            best_bits = bits;
+        }
+    }
+    return best;
 }
 
 /* Semihosting operations via EBREAK immediate */

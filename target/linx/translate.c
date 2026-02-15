@@ -15,6 +15,7 @@
 #include "exec/translation-block.h"
 #include "exec/log.h"
 #include "trace.h"
+#include "opcode_meta.h"
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -91,6 +92,7 @@ static TCGv_i32 cpu_trace_trap_cause;
 static TCGv_i64 cpu_trace_traparg0;
 
 static bool linx_commit_trace_enabled;
+static bool linx_opcode_meta_strict = true;
 
 static unsigned linx_insn_len(uint16_t hw);
 
@@ -117,6 +119,7 @@ static uint32_t linx_trace_reg;
 static bool linx_trace_reg_pc_filter_enabled;
 static uint64_t linx_trace_reg_pc_lo;
 static uint64_t linx_trace_reg_pc_hi;
+static bool linx_illegal(DisasContext *ctx);
 
 /*
  * Optional compatibility addend for frame templates.
@@ -138,6 +141,22 @@ static inline bool linx_trace_ra_pc_match(vaddr pc)
 static inline MemOp linx_mo_endian(void)
 {
     return MO_LE;
+}
+
+static bool linx_validate_opcode_meta(DisasContext *ctx, vaddr pc, uint64_t insn_raw, unsigned len)
+{
+    const LinxOpcodeMeta *meta = linx_opcode_meta_lookup(insn_raw, len);
+    if (meta) {
+        return true;
+    }
+    if (!linx_opcode_meta_strict) {
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: opcode metadata missing @ PC=0x%" VADDR_PRIx " len=%u insn=0x%016" PRIx64 "\n",
+                  pc, len, insn_raw);
+    linx_illegal(ctx);
+    return false;
 }
 
 static inline void linx_lr_invalidate(void)
@@ -4319,6 +4338,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                        trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                    }
                } else {
+                   if (!linx_validate_opcode_meta(ctx, pc, (uint64_t)hw, len)) {
+                       break;
+                   }
                    decoded = decode_insn16(ctx, hw);
                    if (decoded) {
                        trace_linx_insn_exec(pc, insn_val, len, "16-bit");
@@ -4334,6 +4356,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         uint16_t hw2 = translator_lduw_end(env, &ctx->base, pc + 2, MO_LE);
         insn_val = (uint32_t)hw | ((uint32_t)hw2 << 16);
         linx_trace_begin(pc, (uint64_t)insn_val, len);
+        if (!linx_validate_opcode_meta(ctx, pc, (uint64_t)insn_val, len)) {
+            break;
+        }
         decoded = decode_insn32(ctx, insn_val);
         if (!decoded) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -4358,6 +4383,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
         insn_val = (uint32_t)(insn48 & 0xFFFFFFFF);
         linx_trace_begin(pc, insn48, len);
+        if (!linx_validate_opcode_meta(ctx, pc, insn48, len)) {
+            break;
+        }
         decoded = decode_insn48(ctx, insn48);
         if (!decoded) {
             if (getenv("LINX_TRACE_DECODE_FAIL")) {
@@ -4385,6 +4413,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                           ((uint64_t)top << 48);
         insn_val = (uint32_t)(insn64 & 0xFFFFFFFFu);
         linx_trace_begin(pc, insn64, len);
+        if (!linx_validate_opcode_meta(ctx, pc, insn64, len)) {
+            break;
+        }
         decoded = decode_insn64(ctx, insn64);
         if (!decoded) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -4463,6 +4494,7 @@ void linx_translate_init(void)
     const char *callframe = getenv("LINX_CALLFRAME_SIZE");
     const char *commit_trace = getenv("LINX_COMMIT_TRACE");
     const char *cosim_enable = getenv("LINX_COSIM_ENABLE");
+    const char *opcode_meta_strict = getenv("LINX_OPCODE_META_STRICT");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -4474,6 +4506,7 @@ void linx_translate_init(void)
     linx_commit_trace_enabled =
         (commit_trace && commit_trace[0] && strcmp(commit_trace, "0") != 0) ||
         (cosim_enable && cosim_enable[0] && strcmp(cosim_enable, "0") != 0);
+    linx_opcode_meta_strict = !(opcode_meta_strict && opcode_meta_strict[0] && strcmp(opcode_meta_strict, "0") == 0);
     
     for (i = 0; i < LINX_GPR_COUNT; i++) {
         cpu_gpr[i] = tcg_global_mem_new_i64(tcg_env,
