@@ -1484,6 +1484,8 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->carg = 0;
         env->brtype = 0;
         env->blocktype = 0;
+        env->call_ra_set = 0;
+        env->call_setret_pending = 0;
         env->body_tpc = 0;
         env->return_pc = 0;
         env->in_body = 0;

@@ -31,6 +31,8 @@ typedef struct DisasContext {
     bool in_body;
     bool decoupled_header;
     bool tgt_modified;
+    bool ra_set;
+    bool setret_required_next;
 } DisasContext;
 
 enum {
@@ -52,6 +54,8 @@ static TCGv_i32 cpu_cond;
 static TCGv_i32 cpu_carg;  /* Commit argument flag */
 static TCGv_i32 cpu_brtype;
 static TCGv_i32 cpu_blocktype;
+static TCGv_i32 cpu_call_ra_set;
+static TCGv_i32 cpu_call_setret_pending;
 static TCGv_i64 cpu_body_tpc;
 static TCGv_i64 cpu_return_pc;
 static TCGv_i32 cpu_in_body;
@@ -95,6 +99,7 @@ static bool linx_commit_trace_enabled;
 static bool linx_opcode_meta_strict = true;
 
 static unsigned linx_insn_len(uint16_t hw);
+static bool linx_block_fault(DisasContext *ctx, uint32_t cause, uint64_t arg0);
 
 static bool linx_watch_store_enabled;
 static uint64_t linx_watch_store_lo;
@@ -246,6 +251,7 @@ static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
 
 static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_target)
 {
+    const bool require_setret = (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL);
     int i;
     tcg_gen_movi_i64(cpu_bpc, ctx->base.pc_first);
     for (i = 0; i < 4; i++) {
@@ -256,6 +262,8 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_carg, 0);
     tcg_gen_movi_i32(cpu_brtype, brtype);
     tcg_gen_movi_i32(cpu_blocktype, 0);
+    tcg_gen_movi_i32(cpu_call_ra_set, 0);
+    tcg_gen_movi_i32(cpu_call_setret_pending, require_setret ? 1 : 0);
     tcg_gen_movi_i64(cpu_body_tpc, 0);
     tcg_gen_movi_i64(cpu_return_pc, 0);
     tcg_gen_movi_i32(cpu_in_body, 0);
@@ -277,6 +285,8 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i64(cpu_lb[2], 0);
     ctx->tgt_modified = false;
     ctx->decoupled_header = false;
+    ctx->ra_set = false;
+    ctx->setret_required_next = require_setret;
     
     /* For COND blocks: set diverted target in bpc (cpu_tgt) */
     /* For DIRECT/CALL blocks: set target in bpc (cpu_tgt) */
@@ -379,7 +389,6 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
 
     return false;
 }
-
 
 static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest)
 {
@@ -512,7 +521,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         }
         break;
     case LINX_BR_CALL:
-        /* Call blocks branch like DIRECT. RA is produced by explicit SETRET. */
+        if (!ctx->ra_set) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET,
+                             ctx->base.pc_first);
+            return;
+        }
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget);
         } else {
@@ -552,11 +565,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     }
     case LINX_BR_RET: {
-        /* Return: if cpu_cond is set, jump to cpu_tgt, else fall through */
-        TCGLabel *taken = gen_new_label();
-        tcg_gen_brcondi_i32(TCG_COND_NE, cpu_cond, 0, taken);
-        linx_gen_goto_tb(ctx, 1, fallthrough);
-        gen_set_label(taken);
+        if (!ctx->tgt_modified) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT,
+                             ctx->base.pc_first);
+            return;
+        }
         gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
@@ -567,7 +580,12 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     }
     case LINX_BR_IND:
-        /* Indirect jump: jump to cpu_tgt (must be set by SETC.TGT) */
+        if (!ctx->tgt_modified) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT,
+                             ctx->base.pc_first);
+            return;
+        }
+        /* Indirect jump: jump to cpu_tgt (set by SETC.TGT). */
         gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
@@ -577,11 +595,16 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         ctx->base.is_jmp = DISAS_NORETURN;
         break;
     case LINX_BR_ICALL:
-        /*
-         * Indirect call: like IND, but set RA to the fall-through block start
-         * marker for return.
-         */
-        linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
+        if (!ctx->ra_set) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET,
+                             ctx->base.pc_first);
+            return;
+        }
+        if (!ctx->tgt_modified) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT,
+                             ctx->base.pc_first);
+            return;
+        }
         /* Indirect jump/call: jump to cpu_tgt (must be set by SETC.TGT) */
         gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
         if (linx_commit_trace_enabled) {
@@ -1232,9 +1255,21 @@ static bool trans_b_hint_trace(DisasContext *ctx, arg_b_hint_trace *a)
 
 static bool trans_setret(DisasContext *ctx, arg_setret *a)
 {
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+    }
+    if ((ctx->brtype != LINX_BR_CALL && ctx->brtype != LINX_BR_ICALL) ||
+        ctx->ra_set) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE,
+                                ctx->base.pc_next - ctx->cur_insn_len);
+    }
     vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     vaddr tgt = pc + ((vaddr)a->imm20 << 1);
     linx_set_dest(LINX_REG_RA, tcg_constant_i64(tgt));
+    ctx->ra_set = true;
+    ctx->setret_required_next = false;
+    tcg_gen_movi_i32(cpu_call_ra_set, 1);
+    tcg_gen_movi_i32(cpu_call_setret_pending, 0);
     return true;
 }
 
@@ -2139,6 +2174,14 @@ static bool trans_c_movi(DisasContext *ctx, arg_c_movi *a)
 {
     /* C.SETRET is a special case of C.MOVI when RegDst == RA */
     if (a->RegDst == LINX_REG_RA) {
+        if (ctx->in_body) {
+            return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+        }
+        if ((ctx->brtype != LINX_BR_CALL && ctx->brtype != LINX_BR_ICALL) ||
+            ctx->ra_set) {
+            return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE,
+                                    ctx->base.pc_next - ctx->cur_insn_len);
+        }
         /* C.SETRET: RA = PC + (uimm5 << 1)
          * Note: simm5 field is reinterpreted as uimm5 for SETRET */
         vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -2152,6 +2195,10 @@ static bool trans_c_movi(DisasContext *ctx, arg_c_movi *a)
                                      tgt_v);
         }
         linx_set_dest(LINX_REG_RA, tgt_v);
+        ctx->ra_set = true;
+        ctx->setret_required_next = false;
+        tcg_gen_movi_i32(cpu_call_ra_set, 1);
+        tcg_gen_movi_i32(cpu_call_setret_pending, 0);
         return true;
     }
 
@@ -3778,8 +3825,42 @@ static bool trans_c_srli(DisasContext *ctx, arg_c_srli *a)
 
 static bool trans_hl_addtpc(DisasContext *ctx, arg_hl_addtpc *a)
 {
-    /* HL.ADDTPC: PC-relative with 32-bit offset */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    /*
+     * HL.SETRET alias: HL.ADDTPC with destination RA.
+     *
+     * Keep strict CALL/ICALL sequencing identical to SETRET/C.SETRET so fused
+     * long-range call headers satisfy the contract in strict mode.
+     */
+    if (a->RegDst == LINX_REG_RA) {
+        if (ctx->in_body) {
+            return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY, 0);
+        }
+        if ((ctx->brtype != LINX_BR_CALL && ctx->brtype != LINX_BR_ICALL) ||
+            ctx->ra_set) {
+            return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE,
+                                    current_pc);
+        }
+
+        /* HL.SETRET immediate is a signed halfword offset from this PC. */
+        int64_t off_hw = (int64_t)(int32_t)a->imm;
+        vaddr tgt = (vaddr)((int64_t)current_pc + (off_hw * 2));
+        TCGv_i64 tgt_v = tcg_constant_i64(tgt);
+        if (linx_trace_ra_enabled && linx_trace_ra_pc_match(current_pc)) {
+            TCGv_i64 old = tcg_temp_new_i64();
+            tcg_gen_mov_i64(old, cpu_gpr[LINX_REG_RA]);
+            gen_helper_linx_trace_ra(tcg_env, tcg_constant_i64(current_pc),
+                                     tcg_constant_i32(1), old, tgt_v);
+        }
+        linx_set_dest(LINX_REG_RA, tgt_v);
+        ctx->ra_set = true;
+        ctx->setret_required_next = false;
+        tcg_gen_movi_i32(cpu_call_ra_set, 1);
+        tcg_gen_movi_i32(cpu_call_setret_pending, 0);
+        return true;
+    }
+
+    /* HL.ADDTPC: PC-relative page materialization with 32-bit offset. */
     vaddr pc_page = current_pc & ~(vaddr)0xfff;
     int64_t offset = (int64_t)(int32_t)a->imm;
     offset <<= 12;
@@ -4251,6 +4332,8 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     ctx->in_body = env->in_body != 0;
     ctx->decoupled_header = false;
     ctx->tgt_modified = false;
+    ctx->ra_set = env->call_ra_set != 0;
+    ctx->setret_required_next = env->call_setret_pending != 0;
 }
 
 static void linx_tr_tb_start(DisasContextBase *db, CPUState *cpu)
@@ -4270,6 +4353,43 @@ static unsigned linx_insn_len(uint16_t hw)
         return ((hw & 0xf) == 0xe) ? 6 : 2;
     }
     return ((hw & 0xf) == 0xf) ? 8 : 4;
+}
+
+static inline bool linx_is_c_setret(uint16_t hw)
+{
+    return ((hw & 0x003fu) == 0x0016u) &&
+           (((hw >> 11) & 0x1fu) == LINX_REG_RA);
+}
+
+static inline bool linx_is_setret32(uint32_t insn)
+{
+    return (insn & 0x0fffu) == 0x0507u;
+}
+
+static bool linx_is_setret_insn(DisasContext *ctx, CPULinxState *env, vaddr pc,
+                                uint16_t hw, unsigned len)
+{
+    if (len == 2) {
+        return linx_is_c_setret(hw);
+    }
+
+    if (len == 4) {
+        uint16_t hw2 = translator_lduw_end(env, &ctx->base, pc + 2, MO_LE);
+        uint32_t insn32 = (uint32_t)hw | ((uint32_t)hw2 << 16);
+        return linx_is_setret32(insn32);
+    }
+
+    if (len == 6) {
+        if ((hw & 0x000fu) != 0x000eu) {
+            return false;
+        }
+        uint16_t hw2 = translator_lduw_end(env, &ctx->base, pc + 2, MO_LE);
+        uint16_t hw3 = translator_lduw_end(env, &ctx->base, pc + 4, MO_LE);
+        uint32_t insn32 = (uint32_t)hw2 | ((uint32_t)hw3 << 16);
+        return linx_is_setret32(insn32);
+    }
+
+    return false;
 }
 
 static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
@@ -4298,6 +4418,20 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     ctx->base.pc_next = pc + len;
     tcg_gen_movi_i64(cpu_insn_pc_next, ctx->base.pc_next);
     gen_helper_linx_dbg_check_pc(tcg_env, tcg_constant_i64(pc));
+
+    /*
+     * CALL/ICALL headers require fused adjacency: the first instruction after
+     * BSTART.CALL/BSTART.ICALL must be SETRET (32/48-bit or compressed form).
+     * Keep C.BSTOP as a special case so "missing setret" continues to report
+     * cause=CALL_MISSING_SETRET at block end.
+     */
+    if (ctx->setret_required_next) {
+        const bool is_bstop = (len == 2 && hw == 0);
+        if (!is_bstop && !linx_is_setret_insn(ctx, env, pc, hw, len)) {
+            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE, pc);
+            return;
+        }
+    }
 
     switch (len) {
            case 2:
@@ -4527,6 +4661,10 @@ void linx_translate_init(void)
     cpu_carg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, carg), "carg");
     cpu_brtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, brtype), "brtype");
     cpu_blocktype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, blocktype), "blocktype");
+    cpu_call_ra_set = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, call_ra_set),
+                                             "call_ra_set");
+    cpu_call_setret_pending = tcg_global_mem_new_i32(
+        tcg_env, offsetof(CPULinxState, call_setret_pending), "call_setret_pending");
     cpu_body_tpc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, body_tpc), "body_tpc");
     cpu_return_pc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, return_pc), "return_pc");
     cpu_in_body = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, in_body), "in_body");

@@ -50,6 +50,9 @@ enum {
     LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER = 4,
     LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK = 5,
     LINX_EBLOCK_CAUSE_ACRC_MISSING_BSTOP = 6,
+    LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET = 7,
+    LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE = 8,
+    LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT = 9,
 };
 enum {
     LINX_REG_ZERO = 0,
@@ -120,6 +123,8 @@ typedef struct LinxAcrBlockState {
     uint32_t carg;
     uint32_t brtype;
     uint32_t blocktype;
+    uint32_t call_ra_set;
+    uint32_t call_setret_pending;
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
@@ -204,6 +209,8 @@ typedef struct CPUArchState {
     uint32_t carg;  /* Commit argument flag (set by SETC.COND) */
     uint32_t brtype;
     uint32_t blocktype;
+    uint32_t call_ra_set;
+    uint32_t call_setret_pending;
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
@@ -379,6 +386,8 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->carg = env->carg;
     s->brtype = env->brtype;
     s->blocktype = env->blocktype;
+    s->call_ra_set = env->call_ra_set;
+    s->call_setret_pending = env->call_setret_pending;
 
     s->body_tpc = env->body_tpc;
     s->return_pc = env->return_pc;
@@ -458,6 +467,8 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->carg = s->carg;
     env->brtype = s->brtype;
     env->blocktype = s->blocktype;
+    env->call_ra_set = s->call_ra_set;
+    env->call_setret_pending = s->call_setret_pending;
 
     env->body_tpc = s->body_tpc;
     env->return_pc = s->return_pc;

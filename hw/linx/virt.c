@@ -111,8 +111,12 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 /* ELF relocation types (must match toolchain definitions). */
 #define R_LINX_NONE 0
+#define R_LINX_CBSTART12_PCREL 3
 #define R_LINX_B17_PCREL 4
 #define R_LINX_HL_BSTART30_PCREL 5
+#define R_LINX_CSETRET5_PCREL 6
+#define R_LINX_SETRET20_PCREL 7
+#define R_LINX_HL_SETRET32_PCREL 8
 #define R_LINX_PCREL_HI20 15
 #define R_LINX_LO12 17
 #define R_LINX_PCR17_LOAD 18
@@ -658,6 +662,155 @@ static bool linx_patch_bstart_call_pcrel(uint8_t *ram, size_t ram_size,
 
     imm_bits = (uint32_t)(simm17 & 0x1ffff);
     insn = (insn & 0x7fff) | (imm_bits << 15);
+    stl_le_p(ram + patch_addr, insn);
+    return true;
+}
+
+/* Patch a compressed C.BSTART.{DIRECT,COND} relocation (simm12 in bits [15:4]). */
+static bool linx_patch_cbstart12_pcrel(uint8_t *ram, size_t ram_size,
+                                       hwaddr patch_addr, hwaddr target_addr,
+                                       int64_t addend, Error **errp)
+{
+    uint16_t hw;
+    int64_t delta;
+    int64_t simm12;
+    uint16_t kind;
+
+    if (patch_addr + 2 > ram_size) {
+        error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    hw = lduw_le_p(ram + patch_addr);
+    if (hw & 1) {
+        error_setg(errp,
+                   "unsupported relocation: expected 16-bit instruction @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    kind = hw & 0x000f;
+    if (kind != 0x0002 && kind != 0x0004) {
+        error_setg(errp,
+                   "unsupported relocation: not a C.BSTART DIRECT/COND (insn=0x%04x) @ 0x%" HWADDR_PRIx,
+                   hw, patch_addr);
+        return false;
+    }
+
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned c.bstart target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    simm12 = delta >> 1;
+    if (simm12 < -(1 << 11) || simm12 >= (1 << 11)) {
+        error_setg(errp,
+                   "c.bstart target out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    hw = (uint16_t)((hw & 0x000f) | (((uint16_t)simm12 & 0x0fff) << 4));
+    stw_le_p(ram + patch_addr, hw);
+    return true;
+}
+
+/* Patch a compressed C.SETRET relocation (uimm5 in bits [10:6]). */
+static bool linx_patch_csetret5_pcrel(uint8_t *ram, size_t ram_size,
+                                      hwaddr patch_addr, hwaddr target_addr,
+                                      int64_t addend, Error **errp)
+{
+    uint16_t hw;
+    int64_t delta;
+    int64_t uimm5;
+
+    if (patch_addr + 2 > ram_size) {
+        error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    hw = lduw_le_p(ram + patch_addr);
+    if (hw & 1) {
+        error_setg(errp,
+                   "unsupported relocation: expected 16-bit instruction @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    /* C.SETRET is encoded as C.MOVI with RegDst==RA and low opcode 0x16. */
+    if ((hw & 0x003f) != 0x0016 || (hw & 0x0f80) != 0) {
+        error_setg(errp,
+                   "unsupported relocation: not a C.SETRET (insn=0x%04x) @ 0x%" HWADDR_PRIx,
+                   hw, patch_addr);
+        return false;
+    }
+
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned c.setret target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    uimm5 = delta >> 1;
+    if (uimm5 < 0 || uimm5 > 31) {
+        error_setg(errp,
+                   "c.setret target out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    hw = (uint16_t)((hw & ~(0x1fu << 6)) | ((uint16_t)uimm5 << 6));
+    stw_le_p(ram + patch_addr, hw);
+    return true;
+}
+
+/* Patch a 32-bit SETRET relocation (imm20 in bits [31:12], halfword-scaled). */
+static bool linx_patch_setret20_pcrel(uint8_t *ram, size_t ram_size,
+                                      hwaddr patch_addr, hwaddr target_addr,
+                                      int64_t addend, Error **errp)
+{
+    uint32_t insn;
+    int64_t delta;
+    int64_t uimm20;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    if ((insn & 0x0fffu) != 0x0507u) {
+        error_setg(errp,
+                   "unsupported relocation: not a SETRET20 instruction (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   insn, patch_addr);
+        return false;
+    }
+
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned setret target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    uimm20 = delta >> 1;
+    if (uimm20 < 0 || uimm20 >= (1 << 20)) {
+        error_setg(errp,
+                   "setret target out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    insn = (insn & 0x0fffu) | ((uint32_t)uimm20 << 12);
     stl_le_p(ram + patch_addr, insn);
     return true;
 }
@@ -1447,6 +1600,24 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                     goto fail;
                 }
                 continue;
+            } else if (rtype == R_LINX_CBSTART12_PCREL) {
+                if (!linx_patch_cbstart12_pcrel(ram, ram_size, patch_addr, target,
+                                                (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_CSETRET5_PCREL) {
+                if (!linx_patch_csetret5_pcrel(ram, ram_size, patch_addr, target,
+                                               (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_SETRET20_PCREL) {
+                if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
+                                               (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
             }
             
             /* Check what instruction is at the patch site */
@@ -1966,6 +2137,24 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 }
                 if (!linx_patch_hl_bstart_pcrel(ram, ram_size, patch_addr, target,
                                                 rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_CBSTART12_PCREL) {
+                if (!linx_patch_cbstart12_pcrel(ram, ram_size, patch_addr, target,
+                                                rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_CSETRET5_PCREL) {
+                if (!linx_patch_csetret5_pcrel(ram, ram_size, patch_addr, target,
+                                               rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_SETRET20_PCREL) {
+                if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
+                                               rela[j].r_addend, errp)) {
                     goto fail;
                 }
                 continue;
