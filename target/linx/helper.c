@@ -651,6 +651,112 @@ static inline bool linx_trace_capture_active(CPULinxState *env)
     return linx_commit_trace_active(env) || env->cosim.active;
 }
 
+static inline uint32_t linx_trace_len_to_meta_len(uint32_t len)
+{
+    switch (len) {
+    case 2:
+        return 16;
+    case 4:
+        return 32;
+    case 6:
+        return 64;
+    case 8:
+        return 64;
+    default:
+        return 0;
+    }
+}
+
+static inline bool linx_trace_kind_is_reg(const char *kind)
+{
+    return kind && strcmp(kind, "REG") == 0;
+}
+
+static inline uint32_t linx_trace_extract_rd(uint64_t insn_raw, uint32_t len)
+{
+    if (len == 2) {
+        const uint16_t hw = (uint16_t)(insn_raw & 0xffffu);
+        return (uint32_t)((hw >> 11) & 0x1fu);
+    }
+    if (len == 6) {
+        const uint32_t main32 = (uint32_t)((insn_raw >> 16) & 0xffffffffu);
+        return (main32 >> 7) & 0x1fu;
+    }
+    return (uint32_t)((insn_raw >> 7) & 0x1fu);
+}
+
+static inline uint32_t linx_trace_extract_rs1(uint64_t insn_raw, uint32_t len)
+{
+    if (len == 2) {
+        const uint16_t hw = (uint16_t)(insn_raw & 0xffffu);
+        /* 16-bit %SrcL field is bits[10:6]. */
+        return (uint32_t)((hw >> 6) & 0x1fu);
+    }
+    if (len == 6) {
+        const uint32_t main32 = (uint32_t)((insn_raw >> 16) & 0xffffffffu);
+        return (main32 >> 15) & 0x1fu;
+    }
+    return (uint32_t)((insn_raw >> 15) & 0x1fu);
+}
+
+static inline uint32_t linx_trace_extract_rs2(uint64_t insn_raw, uint32_t len)
+{
+    if (len == 2) {
+        const uint16_t hw = (uint16_t)(insn_raw & 0xffffu);
+        return (uint32_t)((hw >> 11) & 0x1fu);
+    }
+    if (len == 6) {
+        const uint32_t main32 = (uint32_t)((insn_raw >> 16) & 0xffffffffu);
+        return (main32 >> 20) & 0x1fu;
+    }
+    return (uint32_t)((insn_raw >> 20) & 0x1fu);
+}
+
+void HELPER(linx_trace_operands_begin)(CPULinxState *env, uint64_t insn_raw, uint32_t len)
+{
+    const LinxOpcodeMeta *meta;
+    const uint32_t len_meta = linx_trace_len_to_meta_len(len);
+    const uint32_t rd = linx_trace_extract_rd(insn_raw, len);
+    const uint32_t rs1 = linx_trace_extract_rs1(insn_raw, len);
+    const uint32_t rs2 = linx_trace_extract_rs2(insn_raw, len);
+
+    if (!linx_trace_capture_active(env)) {
+        return;
+    }
+
+    env->trace_src0_valid = 0;
+    env->trace_src0_reg = 0;
+    env->trace_src0_data = 0;
+    env->trace_src1_valid = 0;
+    env->trace_src1_reg = 0;
+    env->trace_src1_data = 0;
+    env->trace_dst_valid = 0;
+    env->trace_dst_reg = 0;
+    env->trace_dst_data = 0;
+
+    meta = linx_opcode_meta_lookup(insn_raw, len_meta);
+    if (!meta) {
+        meta = linx_opcode_meta_lookup(insn_raw, 0);
+    }
+    if (!meta) {
+        return;
+    }
+
+    if (linx_trace_kind_is_reg(meta->rs1_kind) && rs1 < LINX_GPR_COUNT) {
+        env->trace_src0_valid = 1;
+        env->trace_src0_reg = rs1;
+        env->trace_src0_data = env->gpr[rs1];
+    }
+    if (linx_trace_kind_is_reg(meta->rs2_kind) && rs2 < LINX_GPR_COUNT) {
+        env->trace_src1_valid = 1;
+        env->trace_src1_reg = rs2;
+        env->trace_src1_data = env->gpr[rs2];
+    }
+    if (linx_trace_kind_is_reg(meta->rd_kind)) {
+        env->trace_dst_reg = rd;
+    }
+}
+
 static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
 {
     if (!linx_trace_capture_active(env)) {
@@ -659,6 +765,9 @@ static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
     env->trace_wb_valid = 1;
     env->trace_wb_rd = rd;
     env->trace_wb_data = data;
+    env->trace_dst_valid = 1;
+    env->trace_dst_reg = rd;
+    env->trace_dst_data = data;
 }
 
 static inline void linx_trace_mem(CPULinxState *env, bool is_store,
@@ -688,10 +797,13 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
 
 static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
 {
-    char line[2048];
+    char line[4096];
     char ack[2048];
     uint64_t ack_seq = UINT64_MAX;
     const uint64_t seq = env->cosim.seq;
+    const uint32_t dst_valid = env->trace_wb_valid ? 1u : env->trace_dst_valid;
+    const uint32_t dst_reg = env->trace_wb_valid ? env->trace_wb_rd : env->trace_dst_reg;
+    const uint64_t dst_data = env->trace_wb_valid ? env->trace_wb_data : env->trace_dst_data;
 
     if (!env->cosim.active) {
         return;
@@ -703,6 +815,9 @@ static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next
              ",\"insn\":%" PRIu64
              ",\"len\":%u"
              ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
+             ",\"src0_valid\":%u,\"src0_reg\":%u,\"src0_data\":%" PRIu64
+             ",\"src1_valid\":%u,\"src1_reg\":%u,\"src1_data\":%" PRIu64
+             ",\"dst_valid\":%u,\"dst_reg\":%u,\"dst_data\":%" PRIu64
              ",\"mem_valid\":%u,\"mem_is_store\":%u"
              ",\"mem_addr\":%" PRIu64 ",\"mem_wdata\":%" PRIu64
              ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
@@ -711,6 +826,9 @@ static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next
              seq,
              env->trace_pc, env->trace_insn, env->trace_len,
              env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
+             env->trace_src0_valid, env->trace_src0_reg, env->trace_src0_data,
+             env->trace_src1_valid, env->trace_src1_reg, env->trace_src1_data,
+             dst_valid, dst_reg, dst_data,
              env->trace_mem_valid, env->trace_mem_is_store,
              env->trace_mem_addr, env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
              env->trace_trap_valid, env->trace_trap_cause, env->trace_traparg0,
@@ -766,6 +884,9 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
         const uint64_t cycle = env->commit_trace.cycle++;
         const uint32_t trap_valid = env->trace_trap_valid;
         const uint32_t trap_cause = env->trace_trap_cause;
+        const uint32_t dst_valid = env->trace_wb_valid ? 1u : env->trace_dst_valid;
+        const uint32_t dst_reg = env->trace_wb_valid ? env->trace_wb_rd : env->trace_dst_reg;
+        const uint64_t dst_data = env->trace_wb_valid ? env->trace_wb_data : env->trace_dst_data;
         const uint8_t trapnum = (uint8_t)(trap_cause & 0xffu);
         const uint32_t cause = (uint32_t)((trap_cause >> 8) & 0xffu);
         const bool argv = trap_valid != 0; /* commit-trace: treat TRAPARG0 as present when trap_valid */
@@ -778,6 +899,9 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
                 ",\"insn\":%" PRIu64
                 ",\"len\":%u"
                 ",\"wb_valid\":%u,\"wb_rd\":%u,\"wb_data\":%" PRIu64
+                ",\"src0_valid\":%u,\"src0_reg\":%u,\"src0_data\":%" PRIu64
+                ",\"src1_valid\":%u,\"src1_reg\":%u,\"src1_data\":%" PRIu64
+                ",\"dst_valid\":%u,\"dst_reg\":%u,\"dst_data\":%" PRIu64
                 ",\"mem_valid\":%u,\"mem_is_store\":%u,\"mem_addr\":%" PRIu64
                 ",\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
                 ",\"trap_valid\":%u,\"trap_cause\":%u"
@@ -788,6 +912,9 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
                 env->trace_insn,
                 env->trace_len,
                 env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
+                env->trace_src0_valid, env->trace_src0_reg, env->trace_src0_data,
+                env->trace_src1_valid, env->trace_src1_reg, env->trace_src1_data,
+                dst_valid, dst_reg, dst_data,
                 env->trace_mem_valid, env->trace_mem_is_store, env->trace_mem_addr,
                 env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
                 trap_valid, trap_cause,
@@ -1312,9 +1439,85 @@ static inline void linx_dbg_check_mem(CPULinxState *env, uint64_t addr, uint32_t
     }
 }
 
+static bool linx_dbg_trace_load_pc_inited;
+static bool linx_dbg_trace_load_pc_enabled;
+static uint64_t linx_dbg_trace_load_pc_lo;
+static uint64_t linx_dbg_trace_load_pc_hi;
+
+static inline void linx_dbg_trace_load_pc_init(void)
+{
+    if (linx_dbg_trace_load_pc_inited) {
+        return;
+    }
+
+    linx_dbg_trace_load_pc_inited = true;
+    const char *spec = getenv("LINX_TRACE_DBG_LOAD_PC");
+    if (!spec || !spec[0] || strcmp(spec, "0") == 0) {
+        return;
+    }
+
+    errno = 0;
+    char *endp = NULL;
+    uint64_t lo = strtoull(spec, &endp, 0);
+    if (errno != 0 || !endp || endp == spec) {
+        return;
+    }
+
+    uint64_t hi = lo;
+    if (*endp == ':') {
+        const char *rhs = endp + 1;
+        if (!*rhs) {
+            return;
+        }
+        errno = 0;
+        char *endp2 = NULL;
+        hi = strtoull(rhs, &endp2, 0);
+        if (errno != 0 || !endp2 || endp2 == rhs || *endp2 != '\0') {
+            return;
+        }
+        if (hi < lo) {
+            uint64_t tmp = lo;
+            lo = hi;
+            hi = tmp;
+        }
+    } else if (*endp != '\0') {
+        return;
+    }
+
+    linx_dbg_trace_load_pc_enabled = true;
+    linx_dbg_trace_load_pc_lo = lo;
+    linx_dbg_trace_load_pc_hi = hi;
+}
+
 void HELPER(linx_dbg_check_load)(CPULinxState *env, uint64_t pc, uint64_t addr, uint32_t size)
 {
-    (void)pc;
+    linx_dbg_trace_load_pc_init();
+    if (linx_dbg_trace_load_pc_enabled &&
+        pc >= linx_dbg_trace_load_pc_lo &&
+        pc <= linx_dbg_trace_load_pc_hi) {
+        fprintf(stderr,
+                "Linx: DBG_LOAD pc=0x%016" PRIx64 " addr=0x%016" PRIx64
+                " size=%u acr=%u tq=[0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64 "]"
+                " uq=[0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64 "]"
+                " bpc=0x%016" PRIx64 " tgt=0x%016" PRIx64 " cond=%u carg=0x%08x"
+                " sp=0x%016" PRIx64
+                " a0=0x%016" PRIx64 " a1=0x%016" PRIx64 " a2=0x%016" PRIx64 " a3=0x%016" PRIx64
+                " a4=0x%016" PRIx64 " a5=0x%016" PRIx64 " a6=0x%016" PRIx64 " a7=0x%016" PRIx64
+                " s0=0x%016" PRIx64 " s1=0x%016" PRIx64 " s2=0x%016" PRIx64 " s3=0x%016" PRIx64
+                " s4=0x%016" PRIx64 " s5=0x%016" PRIx64 " s6=0x%016" PRIx64 " s7=0x%016" PRIx64
+                " s8=0x%016" PRIx64 "\n",
+                pc, addr, size, env->acr & 0xfu,
+                env->tq[0], env->tq[1], env->tq[2], env->tq[3],
+                env->uq[0], env->uq[1], env->uq[2], env->uq[3],
+                env->bpc, env->tgt, env->cond, env->carg,
+                env->gpr[LINX_REG_SP],
+                env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
+                env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5], env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7],
+                env->gpr[11], env->gpr[12], env->gpr[13], env->gpr[14],
+                env->gpr[15], env->gpr[16], env->gpr[17], env->gpr[18],
+                env->gpr[19]);
+        fflush(stderr);
+    }
     linx_dbg_check_mem(env, addr, size, false);
 }
 
@@ -1370,28 +1573,31 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
      * trap return.
      */
     linx_acr_save_block_state(env, src_acr);
+    const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
     linx_acr_restore_block_state(env, dst_acr);
 
     /* Save trap state into the managing ACR bank (v0.2: EBARG + TRAPNO). */
     env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(env->blocktype & 0x1fu);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = bpc;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = pc_next;
     /* v0.2: ACRC resume PC is the following instruction (bring-up: explicit BSTOP). */
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = pc_next;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = src_state->tq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = src_state->tq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = src_state->tq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = src_state->tq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = src_state->uq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = src_state->uq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = src_state->uq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = src_state->uq[3];
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] =
-        ((env->lb[0] & 0xffffu) << 0) | ((env->lb[1] & 0xffffu) << 16) | ((env->lb[2] & 0xffffu) << 32);
+        ((src_state->lb[0] & 0xffffu) << 0) | ((src_state->lb[1] & 0xffffu) << 16) |
+        ((src_state->lb[2] & 0xffffu) << 32);
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] =
-        ((env->lc[0] & 0xffffu) << 0) | ((env->lc[1] & 0xffffu) << 16) | ((env->lc[2] & 0xffffu) << 32);
+        ((src_state->lc[0] & 0xffffu) << 0) | ((src_state->lc[1] & 0xffffu) << 16) |
+        ((src_state->lc[2] & 0xffffu) << 32);
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
@@ -4922,9 +5128,12 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
                           target, buf[0], buf[1], buf[2], buf[3],
                           buf[4], buf[5], buf[6], buf[7], hw, len);
         } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "Linx: target bytes @0x%" PRIx64 ": <unreadable>\n",
-                          target);
+            /*
+             * The target page may not be present yet (lazy demand paging). Defer
+             * block-start validation to fetch-time instead of forcing a synthetic
+             * BAD_BRANCH_TARGET trap here.
+             */
+            return;
         }
     }
 

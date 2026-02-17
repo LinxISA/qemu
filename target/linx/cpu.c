@@ -389,26 +389,27 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
     }
 
     linx_acr_save_block_state(env, src_acr);
+    const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
     linx_acr_restore_block_state(env, dst_acr);
 
     const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
 
     env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(env->blocktype & 0x1fu);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = src_bpc;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = tpc_next;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = is_trap ? tpc_next : tpc;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(env->lb[0], env->lb[1], env->lb[2]);
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(env->lc[0], env->lc[1], env->lc[2]);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = src_state->tq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = src_state->tq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = src_state->tq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = src_state->tq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = src_state->uq[0];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = src_state->uq[1];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = src_state->uq[2];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = src_state->uq[3];
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(src_state->lb[0], src_state->lb[1], src_state->lb[2]);
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(src_state->lc[0], src_state->lc[1], src_state->lc[2]);
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
@@ -563,27 +564,28 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         src_cstate |= LINX_ECSTATE_BI_BIT;
 
         linx_acr_save_block_state(env, src_acr);
+        const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
         linx_acr_restore_block_state(env, dst_acr);
 
         const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
 
         /* Save interrupt source state into managing ACR bank. */
         env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = 0;
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = resume_bpc;
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = resume_pc;
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = resume_pc;
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = env->tq[0];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = env->tq[1];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = env->tq[2];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = env->tq[3];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = env->uq[0];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = env->uq[1];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = env->uq[2];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = env->uq[3];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(env->lb[0], env->lb[1], env->lb[2]);
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(env->lc[0], env->lc[1], env->lc[2]);
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = src_state->tq[0];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = src_state->tq[1];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = src_state->tq[2];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = src_state->tq[3];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = src_state->uq[0];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = src_state->uq[1];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = src_state->uq[2];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = src_state->uq[3];
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(src_state->lb[0], src_state->lb[1], src_state->lb[2]);
+        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(src_state->lc[0], src_state->lc[1], src_state->lc[2]);
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
         env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
