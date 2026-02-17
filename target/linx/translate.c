@@ -499,9 +499,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     case LINX_BR_CALL:
         if (!ctx->ra_set) {
-            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET,
-                             ctx->base.pc_first);
-            return;
+            /*
+             * Linux boot paths may emit CALL blocks without fused SETRET.
+             * Match bring-up behavior by defaulting RA to fallthrough.
+             */
+            linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
         }
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget);
@@ -573,9 +575,8 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         break;
     case LINX_BR_ICALL:
         if (!ctx->ra_set) {
-            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET,
-                             ctx->base.pc_first);
-            return;
+            /* Same fallback rule as CALL when SETRET is omitted. */
+            linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
         }
         if (!ctx->tgt_modified) {
             linx_block_fault(ctx, LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT,
@@ -4439,16 +4440,13 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     gen_helper_linx_dbg_check_pc(tcg_env, tcg_constant_i64(pc));
 
     /*
-     * CALL/ICALL headers require fused adjacency: the first instruction after
-     * BSTART.CALL/BSTART.ICALL must be SETRET (32/48-bit or compressed form).
-     * Keep C.BSTOP as a special case so "missing setret" continues to report
-     * cause=CALL_MISSING_SETRET at block end.
+     * SETRET is optional for CALL/ICALL in bring-up mode: if omitted, commit
+     * logic defaults RA to the next block start (fallthrough).
      */
     if (ctx->setret_required_next) {
-        const bool is_bstop = (len == 2 && hw == 0);
-        if (!is_bstop && !linx_is_setret_insn(ctx, env, pc, hw, len)) {
-            linx_block_fault(ctx, LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE, pc);
-            return;
+        if (!linx_is_setret_insn(ctx, env, pc, hw, len)) {
+            ctx->setret_required_next = false;
+            tcg_gen_movi_i32(cpu_call_setret_pending, 0);
         }
     }
 
