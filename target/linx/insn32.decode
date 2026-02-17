@@ -81,6 +81,10 @@
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
 bstart_call   .... .... .... .... .100 0000 0000 0001 %simm17
+bstart_ind    .... .... .... .... .101 0000 0000 0001 %simm17
+bstart_icall  .... .... .... .... .110 0000 0000 0001 %simm17
+bstart_ret    .... .... .... .... .111 0000 0000 0001 %simm17
+bstop         0000 0000 0000 0000 0000 0000 0000 0001
 
 # PAR-style decoupled tile/vector header (v0.3 canonical disassembly form).
 bstart_par_vcall      .... .010 0000 0000 0001 0001 1000 0001 dtype=%TileDataType
@@ -338,7 +342,13 @@ lwui          .... .... .... .... .110 .... .001 1001 %RegDst %SrcL simm12=%simm
 ldi           .... .... .... .... .011 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
 
 # Loads (PC-relative symbol addressing)
+lb_pcr        .... .... .... .... .000 .... .011 1001 %RegDst %simm17
+lbu_pcr       .... .... .... .... .100 .... .011 1001 %RegDst %simm17
+lh_pcr        .... .... .... .... .001 .... .011 1001 %RegDst %simm17
+lhu_pcr       .... .... .... .... .101 .... .011 1001 %RegDst %simm17
 lw_pcr        .... .... .... .... .010 .... .011 1001 %RegDst %simm17
+lwu_pcr       .... .... .... .... .110 .... .011 1001 %RegDst %simm17
+ld_pcr        .... .... .... .... .011 .... .011 1001 %RegDst %simm17
 
 # Loads (indexed)
 lb            .... .... .... .... .000 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
@@ -356,7 +366,10 @@ swi           .... .... .... .... .010 .... .101 1001 %SrcL %SrcR simm12=%simm12
 sdi           .... .... .... .... .011 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
 
 # Stores (PC-relative symbol addressing)
+sb_pcr        .... .... .... .... .000 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sh_pcr        .... .... .... .... .001 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
 sw_pcr        .... .... .... .... .010 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sd_pcr        .... .... .... .... .011 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
 
 # Stores (indexed)
 sb            .... .... .... .... .000 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType

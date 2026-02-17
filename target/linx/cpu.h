@@ -299,6 +299,15 @@ typedef struct CPUArchState {
     uint32_t trace_wb_valid;
     uint32_t trace_wb_rd;
     uint64_t trace_wb_data;
+    uint32_t trace_src0_valid;
+    uint32_t trace_src0_reg;
+    uint64_t trace_src0_data;
+    uint32_t trace_src1_valid;
+    uint32_t trace_src1_reg;
+    uint64_t trace_src1_data;
+    uint32_t trace_dst_valid;
+    uint32_t trace_dst_reg;
+    uint64_t trace_dst_data;
     uint32_t trace_mem_valid;
     uint32_t trace_mem_is_store;
     uint64_t trace_mem_addr;
