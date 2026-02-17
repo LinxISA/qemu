@@ -65,6 +65,8 @@
 %TileDataType 27:5
 %TileFunc 20:5
 %TileOp10 15:10
+%TileParOp 15:9
+%TileParSub 12:3
 %TileDst 25:3
 %TileSrc0 15:5
 %TileSrc1 20:5
@@ -86,14 +88,10 @@ bstart_icall  .... .... .... .... .110 0000 0000 0001 %simm17
 bstart_ret    .... .... .... .... .111 0000 0000 0001 %simm17
 bstop         0000 0000 0000 0000 0000 0000 0000 0001
 
-# PAR-style decoupled tile/vector header (v0.3 canonical disassembly form).
-bstart_par_vcall      .... .010 0000 0000 0001 0001 1000 0001 dtype=%TileDataType
-bstart_par_mamulb     .... .010 0000 0001 0001 0001 1000 0001 dtype=%TileDataType
-bstart_par_tload      .... .010 0001 0000 1001 0001 1000 0001 dtype=%TileDataType
-bstart_par_tstore     .... .010 0010 0000 1001 0001 1000 0001 dtype=%TileDataType
-bstart_par_mamulb_acc .... .010 0010 0001 0001 0001 1000 0001 dtype=%TileDataType
-bstart_par_compat163  .... .010 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
-bstart_par_acccvt     .... .010 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
+# Legacy packed PAR-style header (encodes TileOp + DataType).
+# Canonical compiler output still prints typed mnemonics, but these headers
+# share the packed op family in the binary encoding.
+bstart_par            .... .010 .... .... .... 0001 1000 0001 dtype=%TileDataType op=%TileParOp sub=%TileParSub
 
 # Vector block headers (VPAR/VSEQ). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.

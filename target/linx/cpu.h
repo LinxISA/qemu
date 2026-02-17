@@ -160,6 +160,7 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_iot_size;
 
     uint32_t tile_arg_format;
+    uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
     uint32_t tile_ior_count;
@@ -256,6 +257,7 @@ typedef struct CPUArchState {
     uint32_t tile_iot_size;
 
     uint32_t tile_arg_format;
+    uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
     uint32_t tile_ior_count;
@@ -432,6 +434,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->tile_iot_reg = env->tile_iot_reg;
     s->tile_iot_size = env->tile_iot_size;
     s->tile_arg_format = env->tile_arg_format;
+    s->tile_attr_raw = env->tile_attr_raw;
     s->tile_attr_pad = env->tile_attr_pad;
     s->tile_attr_dtype = env->tile_attr_dtype;
     s->tile_ior_count = env->tile_ior_count;
@@ -513,6 +516,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_iot_reg = s->tile_iot_reg;
     env->tile_iot_size = s->tile_iot_size;
     env->tile_arg_format = s->tile_arg_format;
+    env->tile_attr_raw = s->tile_attr_raw;
     env->tile_attr_pad = s->tile_attr_pad;
     env->tile_attr_dtype = s->tile_attr_dtype;
     env->tile_ior_count = s->tile_ior_count;
