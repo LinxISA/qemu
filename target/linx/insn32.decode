@@ -124,13 +124,6 @@ b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 # Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
 b_arg          0000 0000 0000 0000 0011 .... .100 0011 format=%TileFormat
 
-# Named v0.3 B.ARG forms observed in canonical disassembly streams.
-b_arg_nd2zn_fp16_null 0001 1000 0000 0010 0010 0001 1010 0011
-b_arg_dn2nz_fp32_null 0001 1000 0000 0000 1010 0100 1010 0011
-b_arg_dn2zn_fp16_null 0001 1000 0000 0010 0010 0100 0010 0011
-b_arg_nz2dn_canon     0000 0010 0000 1111 1010 1110 0010 0011
-b_arg_norm_normal     0000 0000 0000 1111 1010 0000 0010 0011
-
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl
 

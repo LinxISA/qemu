@@ -6,6 +6,7 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "opcode_meta.h"
 #include "exec/helper-proto.h"
 #include "exec/log.h"
 #include "accel/tcg/cpu-ldst.h"
@@ -82,6 +83,31 @@ static inline bool linx_print_insn_count(void)
         linx_print_insn_count_inited = true;
     }
     return linx_print_insn_count_enabled;
+}
+
+const LinxOpcodeMeta *linx_opcode_meta_lookup(uint64_t insn_word, unsigned insn_len)
+{
+    const LinxOpcodeMeta *best = NULL;
+    int best_bits = -1;
+    unsigned i;
+
+    for (i = 0; i < linx_opcode_meta_table_count; i++) {
+        const LinxOpcodeMeta *m = &linx_opcode_meta_table[i];
+        int bits;
+
+        if (m->insn_len != 0 && insn_len != 0 && m->insn_len != insn_len) {
+            continue;
+        }
+        if ((insn_word & m->mask) != m->match) {
+            continue;
+        }
+        bits = __builtin_popcountll(m->mask);
+        if (bits > best_bits) {
+            best = m;
+            best_bits = bits;
+        }
+    }
+    return best;
 }
 
 /* Semihosting operations via EBREAK immediate */
@@ -2451,6 +2477,179 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
     return d;
 }
 
+typedef enum LinxTileLayout {
+    LINX_TILE_LAYOUT_ND = 0,
+    LINX_TILE_LAYOUT_DN = 1,
+    LINX_TILE_LAYOUT_NZ = 2,
+    LINX_TILE_LAYOUT_ZN = 3,
+} LinxTileLayout;
+
+typedef struct LinxTileFormatDesc {
+    bool valid;
+    LinxTileLayout src;
+    LinxTileLayout dst;
+} LinxTileFormatDesc;
+
+typedef enum LinxTMATransferDir {
+    LINX_TMA_GM_TO_TR = 0,
+    LINX_TMA_TR_TO_GM = 1,
+} LinxTMATransferDir;
+
+enum {
+    LINX_TMA_FMT_NORM  = 0u,
+    LINX_TMA_FMT_ND2NZ = 1u,
+    LINX_TMA_FMT_ND2ZN = 2u,
+    LINX_TMA_FMT_DN2NZ = 3u,
+    LINX_TMA_FMT_DN2ZN = 4u,
+};
+
+static inline uint32_t linx_tile_arg_format(uint32_t arg)
+{
+    return arg & 0x7u;
+}
+
+static inline uint32_t linx_tile_arg_pad(uint32_t arg)
+{
+    return (arg >> 3) & 0x3u;
+}
+
+static inline LinxTileFormatDesc linx_tile_decode_tma_format(uint32_t arg,
+                                                             LinxTMATransferDir dir)
+{
+    LinxTileFormatDesc d = { .valid = true, .src = LINX_TILE_LAYOUT_ND, .dst = LINX_TILE_LAYOUT_ND };
+    LinxTileLayout gm = LINX_TILE_LAYOUT_ND;
+    LinxTileLayout tr = LINX_TILE_LAYOUT_ND;
+
+    switch (linx_tile_arg_format(arg)) {
+    case LINX_TMA_FMT_NORM:
+        gm = LINX_TILE_LAYOUT_ND;
+        tr = LINX_TILE_LAYOUT_ND;
+        break;
+    case LINX_TMA_FMT_ND2NZ:
+        gm = LINX_TILE_LAYOUT_ND;
+        tr = LINX_TILE_LAYOUT_NZ;
+        break;
+    case LINX_TMA_FMT_ND2ZN:
+        gm = LINX_TILE_LAYOUT_ND;
+        tr = LINX_TILE_LAYOUT_ZN;
+        break;
+    case LINX_TMA_FMT_DN2NZ:
+        gm = LINX_TILE_LAYOUT_DN;
+        tr = LINX_TILE_LAYOUT_NZ;
+        break;
+    case LINX_TMA_FMT_DN2ZN:
+        gm = LINX_TILE_LAYOUT_DN;
+        tr = LINX_TILE_LAYOUT_ZN;
+        break;
+    default:
+        d.valid = false;
+        return d;
+    }
+
+    if (dir == LINX_TMA_GM_TO_TR) {
+        d.src = gm;
+        d.dst = tr;
+    } else {
+        d.src = tr;
+        d.dst = gm;
+    }
+    return d;
+}
+
+static inline unsigned linx_tile_dtype_elem_bytes(uint32_t dtype)
+{
+    switch (dtype & 0x1fu) {
+    case 4u:  /* FP16/BF16-like encodings in bring-up streams */
+        return 2u;
+    case 1u:  /* FP32-like */
+    case 0u:  /* I32-like */
+    default:
+        return 4u;
+    }
+}
+
+static inline uint32_t linx_tile_pad_value(uint32_t pad_mode, uint32_t dtype,
+                                           unsigned elem_bytes, uint32_t seed)
+{
+    uint32_t value = 0;
+    const uint32_t mode = pad_mode & 0x1fu;
+    const uint32_t dt = dtype & 0x1fu;
+
+    switch (mode) {
+    case 1u: /* Zero */
+        value = 0u;
+        break;
+    case 2u: /* Max */
+        if (elem_bytes == 2u) {
+            value = (dt == 4u) ? 0x7bffu : 0xffffu;
+        } else {
+            value = (dt == 1u) ? 0x7f7fffffu : 0x7fffffffu;
+        }
+        break;
+    case 3u: /* Min */
+        if (elem_bytes == 2u) {
+            value = (dt == 4u) ? 0xfbffu : 0x8000u;
+        } else {
+            value = (dt == 1u) ? 0xff7fffffu : 0x80000000u;
+        }
+        break;
+    case 0u: /* Null / unspecified */
+    default:
+        /* Deterministic pseudo-random fill in bring-up mode. */
+        value = (seed * 1664525u) + 1013904223u;
+        break;
+    }
+
+    if (elem_bytes == 2u) {
+        return value & 0xffffu;
+    }
+    return value;
+}
+
+static inline bool linx_tile_linear_index(LinxTileLayout layout, unsigned outer,
+                                          unsigned inner, unsigned elem_bytes,
+                                          unsigned o, unsigned i, uint32_t *idx_out)
+{
+    if (outer == 0u || inner == 0u || o >= outer || i >= inner) {
+        return false;
+    }
+
+    if (layout == LINX_TILE_LAYOUT_ND) {
+        *idx_out = (uint32_t)(o * inner + i);
+        return true;
+    }
+    if (layout == LINX_TILE_LAYOUT_DN) {
+        *idx_out = (uint32_t)(i * outer + o);
+        return true;
+    }
+
+    const unsigned blk_inner = MAX(1u, 32u / elem_bytes);
+    const unsigned blk_outer = 16u;
+    if ((inner % blk_inner) != 0u || (outer % blk_outer) != 0u) {
+        return false;
+    }
+
+    const unsigned nblk_outer = outer / blk_outer;
+    const unsigned nblk_inner = inner / blk_inner;
+    const unsigned bo = o / blk_outer;
+    const unsigned bi = i / blk_inner;
+    const unsigned io = o % blk_outer;
+    const unsigned ii = i % blk_inner;
+    const unsigned blk_area = blk_outer * blk_inner;
+    uint32_t blk_index = 0;
+    uint32_t inblk_index = 0;
+
+    if (layout == LINX_TILE_LAYOUT_NZ) {
+        blk_index = (uint32_t)(bi * nblk_outer + bo);           /* inter-block column-major */
+        inblk_index = (uint32_t)(io * blk_inner + ii);          /* intra-block row-major */
+    } else { /* ZN */
+        blk_index = (uint32_t)(bo * nblk_inner + bi);           /* inter-block row-major */
+        inblk_index = (uint32_t)(ii * blk_outer + io);          /* intra-block column-major */
+    }
+    *idx_out = blk_index * blk_area + inblk_index;
+    return true;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Restartable template blocks                                               */
 /* ------------------------------------------------------------------------- */
@@ -3169,7 +3368,8 @@ static bool linx_iommu_translate(CPULinxState *env, uint64_t iova,
     return false;
 }
 
-static inline uint32_t linx_tile_read32(CPULinxState *env, uint64_t addr)
+static inline uint32_t linx_tile_mem_read(CPULinxState *env, uint64_t addr,
+                                          unsigned elem_bytes)
 {
     hwaddr pa;
     if (!linx_iommu_translate(env, addr, false, &pa)) {
@@ -3179,8 +3379,21 @@ static inline uint32_t linx_tile_read32(CPULinxState *env, uint64_t addr)
     }
 
     MemTxResult result = MEMTX_OK;
-    const uint32_t v = address_space_ldl_le(&address_space_memory, pa,
-                                           MEMTXATTRS_UNSPECIFIED, &result);
+    uint32_t v = 0;
+    switch (elem_bytes) {
+    case 1u:
+        v = address_space_ldub(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    case 2u:
+        v = address_space_lduw_le(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    case 4u:
+        v = address_space_ldl_le(&address_space_memory, pa, MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
     if (result != MEMTX_OK) {
         env->pending_trap_arg0 = addr;
         env->pending_trap_cause = (uint32_t)((LINX_TRAPCAUSE_CAT_IOMMU_PF << 4) | LINX_TRAPCAUSE_ACC_LOAD);
@@ -3189,7 +3402,8 @@ static inline uint32_t linx_tile_read32(CPULinxState *env, uint64_t addr)
     return v;
 }
 
-static inline void linx_tile_write32(CPULinxState *env, uint64_t addr, uint32_t v)
+static inline void linx_tile_mem_write(CPULinxState *env, uint64_t addr,
+                                       unsigned elem_bytes, uint32_t v)
 {
     hwaddr pa;
     if (!linx_iommu_translate(env, addr, true, &pa)) {
@@ -3199,12 +3413,75 @@ static inline void linx_tile_write32(CPULinxState *env, uint64_t addr, uint32_t 
     }
 
     MemTxResult result = MEMTX_OK;
-    address_space_stl_le(&address_space_memory, pa, v,
-                         MEMTXATTRS_UNSPECIFIED, &result);
+    switch (elem_bytes) {
+    case 1u:
+        address_space_stb(&address_space_memory, pa, v & 0xffu,
+                          MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    case 2u:
+        address_space_stw_le(&address_space_memory, pa, v & 0xffffu,
+                             MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    case 4u:
+        address_space_stl_le(&address_space_memory, pa, v,
+                             MEMTXATTRS_UNSPECIFIED, &result);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
     if (result != MEMTX_OK) {
         env->pending_trap_arg0 = addr;
         env->pending_trap_cause = (uint32_t)((LINX_TRAPCAUSE_CAT_IOMMU_PF << 4) | LINX_TRAPCAUSE_ACC_STORE);
         helper_raise_exception(env, LINX_EXCP_STORE_ACCESS_FAULT);
+    }
+}
+
+static inline bool linx_tile_set_elem(CPULinxState *env, unsigned tile,
+                                      uint32_t elem_idx, unsigned elem_bytes,
+                                      uint32_t value)
+{
+    uint8_t *buf = (uint8_t *)env->tile_reg[tile];
+    const size_t off = (size_t)elem_idx * elem_bytes;
+    if (off + elem_bytes > LINX_TILE_MAX_BYTES) {
+        return false;
+    }
+    switch (elem_bytes) {
+    case 1u:
+        buf[off] = (uint8_t)(value & 0xffu);
+        return true;
+    case 2u:
+        stw_le_p(buf + off, value & 0xffffu);
+        return true;
+    case 4u:
+        stl_le_p(buf + off, value);
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline bool linx_tile_get_elem(const CPULinxState *env, unsigned tile,
+                                      uint32_t elem_idx, unsigned elem_bytes,
+                                      uint32_t *value_out)
+{
+    const uint8_t *buf = (const uint8_t *)env->tile_reg[tile];
+    const size_t off = (size_t)elem_idx * elem_bytes;
+    if (off + elem_bytes > LINX_TILE_MAX_BYTES) {
+        return false;
+    }
+    switch (elem_bytes) {
+    case 1u:
+        *value_out = (uint32_t)buf[off];
+        return true;
+    case 2u:
+        *value_out = (uint32_t)lduw_le_p(buf + off);
+        return true;
+    case 4u:
+        *value_out = ldl_le_p(buf + off);
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -3222,18 +3499,74 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
         return;
     }
     const size_t bytes = (size_t)bytes64;
-    if ((bytes & 3u) != 0) {
+    const uint32_t dtype = env->tile_dtype;
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+    if ((bytes % elem_bytes) != 0u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    const size_t words = bytes / 4u;
+    const uint32_t tile_elems = (uint32_t)(bytes / elem_bytes);
+    const LinxTileFormatDesc fmt =
+        linx_tile_decode_tma_format(env->tile_arg_format, LINX_TMA_GM_TO_TR);
+    if (!fmt.valid) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    uint32_t tr_inner = (uint32_t)(env->lb[2] & 0xffffffffu);
+    if (tr_inner == 0u) {
+        tr_inner = tile_elems;
+    }
+    if (tr_inner == 0u || (tile_elems % tr_inner) != 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint32_t tr_outer = tile_elems / tr_inner;
+    uint32_t gm_inner = (uint32_t)(env->lb[0] & 0xffffffffu);
+    uint32_t gm_outer = (uint32_t)(env->lb[1] & 0xffffffffu);
+    if (gm_inner == 0u) {
+        gm_inner = tr_inner;
+    }
+    if (gm_outer == 0u) {
+        gm_outer = tr_outer;
+    }
+    if ((uint64_t)gm_inner * (uint64_t)gm_outer > (uint64_t)tr_inner * (uint64_t)tr_outer) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if ((fmt.dst == LINX_TILE_LAYOUT_NZ || fmt.dst == LINX_TILE_LAYOUT_ZN) &&
+        (((uint64_t)tr_inner * elem_bytes) % 32u != 0u || (tr_outer % 16u) != 0u)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
 
     const uint64_t base = env->gpr[addr_reg];
-    for (size_t i = 0; i < words; i++) {
-        env->tile_reg[dst_tile][i] = linx_tile_read32(env, base + (uint64_t)i * 4u);
-    }
-    for (size_t i = words; i < LINX_TILE_MAX_WORDS; i++) {
-        env->tile_reg[dst_tile][i] = 0;
+    memset(env->tile_reg[dst_tile], 0, LINX_TILE_MAX_BYTES);
+    for (uint32_t to = 0; to < tr_outer; to++) {
+        for (uint32_t ti = 0; ti < tr_inner; ti++) {
+            uint32_t dst_idx = 0;
+            uint32_t value = 0;
+            if (!linx_tile_linear_index(fmt.dst, tr_outer, tr_inner, elem_bytes, to, ti, &dst_idx)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+            if (to < gm_outer && ti < gm_inner) {
+                uint32_t src_idx = 0;
+                if (!linx_tile_linear_index(fmt.src, gm_outer, gm_inner, elem_bytes, to, ti, &src_idx)) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    return;
+                }
+                value = linx_tile_mem_read(env, base + (uint64_t)src_idx * elem_bytes, elem_bytes);
+            } else {
+                const uint32_t seed = (to * tr_inner) ^ ti ^ (uint32_t)base ^ (env->tile_arg_format << 8);
+                value = linx_tile_pad_value(linx_tile_arg_pad(env->tile_arg_format),
+                                            dtype, elem_bytes, seed);
+            }
+            if (!linx_tile_set_elem(env, dst_tile, dst_idx, elem_bytes, value)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+        }
     }
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes;
 }
@@ -3252,7 +3585,9 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_
         return;
     }
     const size_t bytes = (size_t)bytes64;
-    if ((bytes & 3u) != 0) {
+    const uint32_t dtype = env->tile_dtype;
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+    if ((bytes % elem_bytes) != 0u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -3260,11 +3595,58 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    const size_t words = bytes / 4u;
+    const uint32_t tile_elems = (uint32_t)(bytes / elem_bytes);
+    const LinxTileFormatDesc fmt =
+        linx_tile_decode_tma_format(env->tile_arg_format, LINX_TMA_TR_TO_GM);
+    if (!fmt.valid) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    uint32_t tr_inner = (uint32_t)(env->lb[2] & 0xffffffffu);
+    if (tr_inner == 0u) {
+        tr_inner = tile_elems;
+    }
+    if (tr_inner == 0u || (tile_elems % tr_inner) != 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint32_t tr_outer = tile_elems / tr_inner;
+    uint32_t gm_inner = (uint32_t)(env->lb[0] & 0xffffffffu);
+    uint32_t gm_outer = (uint32_t)(env->lb[1] & 0xffffffffu);
+    if (gm_inner == 0u) {
+        gm_inner = tr_inner;
+    }
+    if (gm_outer == 0u) {
+        gm_outer = tr_outer;
+    }
+    if ((uint64_t)gm_inner * (uint64_t)gm_outer > (uint64_t)tr_inner * (uint64_t)tr_outer) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if ((fmt.src == LINX_TILE_LAYOUT_NZ || fmt.src == LINX_TILE_LAYOUT_ZN) &&
+        (((uint64_t)tr_inner * elem_bytes) % 32u != 0u || (tr_outer % 16u) != 0u)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
 
     const uint64_t base = env->gpr[addr_reg];
-    for (size_t i = 0; i < words; i++) {
-        linx_tile_write32(env, base + (uint64_t)i * 4u, env->tile_reg[src_tile][i]);
+    for (uint32_t go = 0; go < gm_outer; go++) {
+        for (uint32_t gi = 0; gi < gm_inner; gi++) {
+            uint32_t src_idx = 0;
+            uint32_t dst_idx = 0;
+            uint32_t value = 0;
+            if (!linx_tile_linear_index(fmt.src, tr_outer, tr_inner, elem_bytes, go, gi, &src_idx) ||
+                !linx_tile_linear_index(fmt.dst, gm_outer, gm_inner, elem_bytes, go, gi, &dst_idx)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+            if (!linx_tile_get_elem(env, src_tile, src_idx, elem_bytes, &value)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+            linx_tile_mem_write(env, base + (uint64_t)dst_idx * elem_bytes, elem_bytes, value);
+        }
     }
 }
 
@@ -3469,6 +3851,8 @@ static bool linx_tile_get_base_reg(const CPULinxState *env, unsigned *addr_reg_o
 void HELPER(linx_tile_reset_block)(CPULinxState *env)
 {
     env->tile_arg_format = 0;
+    env->tile_attr_pad = 0;
+    env->tile_attr_dtype = 0;
     env->tile_ior_count = 0;
     env->vec_ri_count = 0;
     env->tile_iot_count = 0;
@@ -3815,6 +4199,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
     env->tile_iot_size = 0;
     env->tile_iot_grp = 0;
     env->tile_arg_format = 0;
+    env->tile_attr_pad = 0;
+    env->tile_attr_dtype = 0;
     env->tile_ior_count = 0;
     env->tile_iot_count = 0;
 }
