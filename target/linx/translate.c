@@ -263,7 +263,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i64(cpu_return_pc, 0);
     tcg_gen_movi_i32(cpu_in_body, 0);
     tcg_gen_movi_i32(cpu_tile_func, 0);
-    tcg_gen_movi_i32(cpu_tile_dtype, 0);
+    tcg_gen_movi_i32(cpu_tile_dtype, 17); /* INT32 default in v0.3 DataType */
     tcg_gen_movi_i32(cpu_tile_iot_valid, 0);
     tcg_gen_movi_i32(cpu_tile_iot_flags, 0);
     tcg_gen_movi_i32(cpu_tile_iot_dst, 0);
@@ -272,8 +272,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
     tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
     tcg_gen_movi_i32(cpu_tile_iot_size, 0);
-    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
-    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
+    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(0));
     gen_helper_linx_tile_reset_block(tcg_env);
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
@@ -866,14 +865,6 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
     tcg_gen_movi_i32(cpu_tile_dtype, dtype);
 
     switch (op) {
-    case 0u:   /* VCALL */
-        tcg_gen_movi_i32(cpu_blocktype, 4); /* VPAR-like non-tile decoupled header */
-        tcg_gen_movi_i32(cpu_tile_func, 0);
-        break;
-    case 2u:   /* MAMULB */
-        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
-        tcg_gen_movi_i32(cpu_tile_func, 0);
-        break;
     case 33u:  /* TLOAD */
         tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
         tcg_gen_movi_i32(cpu_tile_func, 0);
@@ -895,9 +886,12 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
         tcg_gen_movi_i32(cpu_tile_func, 8);
         break;
     default:
-        /* Preserve decoupled behavior and let commit-path legality decide. */
-        tcg_gen_movi_i32(cpu_blocktype, 2);
-        tcg_gen_movi_i32(cpu_tile_func, op & 0x1f);
+        /*
+         * Strict-v0.3 canonical TEPL path:
+         * route packed PAR TileOp10 forms to TEPL block execution.
+         */
+        tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
+        tcg_gen_movi_i32(cpu_tile_func, op & 0x3ff);
         break;
     }
 
@@ -906,39 +900,9 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
     return true;
 }
 
-static bool trans_bstart_par_vcall(DisasContext *ctx, arg_bstart_par_vcall *a)
+static bool trans_bstart_par(DisasContext *ctx, arg_bstart_par *a)
 {
-    return trans_bstart_par_common(ctx, a->dtype, 0u);
-}
-
-static bool trans_bstart_par_mamulb(DisasContext *ctx, arg_bstart_par_mamulb *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 2u);
-}
-
-static bool trans_bstart_par_tload(DisasContext *ctx, arg_bstart_par_tload *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 33u);
-}
-
-static bool trans_bstart_par_tstore(DisasContext *ctx, arg_bstart_par_tstore *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 65u);
-}
-
-static bool trans_bstart_par_mamulb_acc(DisasContext *ctx, arg_bstart_par_mamulb_acc *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 66u);
-}
-
-static bool trans_bstart_par_compat163(DisasContext *ctx, arg_bstart_par_compat163 *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 163u);
-}
-
-static bool trans_bstart_par_acccvt(DisasContext *ctx, arg_bstart_par_acccvt *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 258u);
+    return trans_bstart_par_common(ctx, a->dtype, a->op);
 }
 
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
@@ -1241,8 +1205,18 @@ static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK, 0);
     }
-    tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_attr_dtype, a->dtype & 0x1f);
+    const uint32_t packed =
+        ((uint32_t)(a->c & 0x1u) << 0) |
+        ((uint32_t)(a->dr & 0x1u) << 1) |
+        ((uint32_t)(a->layout & 0x1fu) << 2) |
+        ((uint32_t)(a->dtype & 0x1fu) << 7) |
+        ((uint32_t)(a->pad & 0x1fu) << 12) |
+        ((uint32_t)(a->t & 0x1u) << 17) |
+        ((uint32_t)(a->aq & 0x1u) << 18) |
+        ((uint32_t)(a->atom & 0x1u) << 19) |
+        ((uint32_t)(a->far & 0x1u) << 20) |
+        ((uint32_t)(a->rl & 0x1u) << 21);
+    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(packed));
     return true;
 }
 

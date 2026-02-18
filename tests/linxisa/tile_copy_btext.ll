@@ -1,7 +1,9 @@
 target triple = "linx64"
 
-declare <1024 x i32> @llvm.linx.tma.tload(ptr, i32)
-declare void @llvm.linx.tma.tstore(ptr, <1024 x i32>, i32)
+%linx.tile = type target("linx.tile")
+
+declare %linx.tile @llvm.linx.tile.tload(ptr, i32, i32, i64, i64, i64, i64)
+declare void @llvm.linx.tile.tstore(ptr, %linx.tile, i32, i32, i64, i64, i64, i64)
 
 @src_buf = internal global [1024 x i32] zeroinitializer, align 4
 @dst_buf = internal global [1024 x i32] zeroinitializer, align 4
@@ -34,8 +36,8 @@ init:
 copy:
   %src0 = getelementptr inbounds [1024 x i32], ptr @src_buf, i32 0, i32 0
   %dst0 = getelementptr inbounds [1024 x i32], ptr @dst_buf, i32 0, i32 0
-  %t = call <1024 x i32> @llvm.linx.tma.tload(ptr %src0, i32 12)
-  call void @llvm.linx.tma.tstore(ptr %dst0, <1024 x i32> %t, i32 12)
+  %t = call %linx.tile @llvm.linx.tile.tload(ptr %src0, i32 8, i32 0, i64 0, i64 32, i64 32, i64 0)
+  call void @llvm.linx.tile.tstore(ptr %dst0, %linx.tile %t, i32 8, i32 0, i64 0, i64 32, i64 32, i64 0)
   br label %check
 
 check:
