@@ -51,6 +51,37 @@ static bool linx_print_insn_count_inited;
 static bool linx_print_insn_count_enabled;
 static bool linx_tile_debug_inited;
 static bool linx_tile_debug_enabled;
+static bool linx_trace_vbrg_inited;
+static bool linx_trace_vbrg_enabled;
+static uint64_t linx_trace_vbrg_max_bodies;
+static uint64_t linx_trace_vbrg_body_count;
+
+static inline bool linx_trace_vbrg(void)
+{
+    if (!linx_trace_vbrg_inited) {
+        const char *v = getenv("LINX_TRACE_VBRG");
+        linx_trace_vbrg_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_trace_vbrg_max_bodies = 0;
+
+        if (linx_trace_vbrg_enabled) {
+            /* Default: only trace the first vblock body to keep output small. */
+            linx_trace_vbrg_max_bodies = 1;
+            if (strcmp(v, "all") == 0 || strcmp(v, "ALL") == 0) {
+                linx_trace_vbrg_max_bodies = UINT64_MAX;
+            } else {
+                char *endp = NULL;
+                errno = 0;
+                uint64_t parsed = strtoull(v, &endp, 0);
+                if (errno == 0 && endp && endp != v && *endp == '\0' && parsed > 0) {
+                    linx_trace_vbrg_max_bodies = parsed;
+                }
+            }
+        }
+
+        linx_trace_vbrg_inited = true;
+    }
+    return linx_trace_vbrg_enabled;
+}
 
 static inline bool linx_trace_ra_match(uint64_t pc)
 {
@@ -5368,6 +5399,9 @@ void HELPER(linx_vec_body_begin)(CPULinxState *env)
     env->lc[0] = 0;
     env->lc[1] = 0;
     env->lc[2] = 0;
+    if (linx_trace_vbrg()) {
+        linx_trace_vbrg_body_count++;
+    }
     linx_vec_capture_ri_values(env);
     for (unsigned i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = 0;
@@ -5525,6 +5559,14 @@ void HELPER(linx_v_sub)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, res);
 }
 
+void HELPER(linx_v_mul)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t res = lhs * rhs;
+    linx_vec_write_dst(env, dst, res);
+}
+
 void HELPER(linx_v_cmp_eq)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                            uint32_t srcR)
 {
@@ -5658,6 +5700,13 @@ void HELPER(linx_v_fdiv)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, res);
 }
 
+void HELPER(linx_v_fabs)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    const uint64_t res = linx_fp_unop_fabs(env, src, /*srctype=*/1);
+    linx_vec_write_dst(env, dst, res);
+}
+
 void HELPER(linx_v_rdadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
     const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
@@ -5744,6 +5793,19 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint64_t addr = base + (lane << 2) + (idx << (2u + (shamt & 0x1fu)));
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
 
+    if (linx_trace_vbrg() &&
+        linx_trace_vbrg_body_count > 0 &&
+        linx_trace_vbrg_body_count <= linx_trace_vbrg_max_bodies &&
+        (lane < 4 || (lane + 1) >= env->lb[0])) {
+        fprintf(stderr,
+                "Linx: VBRG.SW pc=0x%016" PRIx64 " body=%" PRIu64
+                " lane=%" PRIu64 " base=0x%016" PRIx64 " idx=%" PRId64
+                " shamt=%u addr=0x%016" PRIx64 " val=0x%08x\n",
+                env->pc, linx_trace_vbrg_body_count, lane, base, (int64_t)idx,
+                (unsigned)(shamt & 0x3fu), addr, value);
+        fflush(stderr);
+    }
+
     linx_lr_clear(env);
     cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), GETPC());
 }
@@ -5767,23 +5829,37 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     const uint64_t addr = base + (lane << 2) + (idx << (shamt & 0x3fu));
 
     linx_lr_clear(env);
-    const uint32_t value =
+    const uint32_t raw =
         cpu_ldl_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UL), GETPC());
+    const uint64_t value = (uint64_t)(int64_t)(int32_t)raw;
+
+    if (linx_trace_vbrg() &&
+        linx_trace_vbrg_body_count > 0 &&
+        linx_trace_vbrg_body_count <= linx_trace_vbrg_max_bodies &&
+        (lane < 4 || (lane + 1) >= env->lb[0])) {
+        fprintf(stderr,
+                "Linx: VBRG.LW pc=0x%016" PRIx64 " body=%" PRIu64
+                " lane=%" PRIu64 " base=0x%016" PRIx64 " idx=%" PRId64
+                " shamt=%u addr=0x%016" PRIx64 " val=0x%08x\n",
+                env->pc, linx_trace_vbrg_body_count, lane, base, (int64_t)idx,
+                (unsigned)(shamt & 0x3fu), addr, raw);
+        fflush(stderr);
+    }
 
     const unsigned cls = linx_vec_reg_class(dst);
     const unsigned didx = linx_vec_reg_index(dst);
     switch (cls) {
     case LINX_VEC_REGCLASS_VT:
-        linx_vec_write_vt(env, didx, (uint64_t)value);
+        linx_vec_write_vt(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VU:
-        linx_vec_write_vu(env, didx, (uint64_t)value);
+        linx_vec_write_vu(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VM:
-        linx_vec_write_vm(env, didx, (uint64_t)value);
+        linx_vec_write_vm(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VN:
-        linx_vec_write_vn(env, didx, (uint64_t)value);
+        linx_vec_write_vn(env, didx, value);
         return;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -5887,22 +5963,23 @@ void HELPER(linx_v_lw_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    const uint32_t value = env->tile_reg[tile][word];
+    const uint32_t raw = env->tile_reg[tile][word];
+    const uint64_t value = (uint64_t)(int64_t)(int32_t)raw;
 
     const unsigned cls = linx_vec_reg_class(dst);
     const unsigned didx = linx_vec_reg_index(dst);
     switch (cls) {
     case LINX_VEC_REGCLASS_VT:
-        linx_vec_write_vt(env, didx, (uint64_t)value);
+        linx_vec_write_vt(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VU:
-        linx_vec_write_vu(env, didx, (uint64_t)value);
+        linx_vec_write_vu(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VM:
-        linx_vec_write_vm(env, didx, (uint64_t)value);
+        linx_vec_write_vm(env, didx, value);
         return;
     case LINX_VEC_REGCLASS_VN:
-        linx_vec_write_vn(env, didx, (uint64_t)value);
+        linx_vec_write_vn(env, didx, value);
         return;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
