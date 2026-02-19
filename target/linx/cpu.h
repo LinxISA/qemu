@@ -92,7 +92,11 @@ typedef enum LinxTemplateKind {
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
-#define LINX_VEC_QUEUE_DEPTH 8u
+/*
+ * v0.3 SIMT bring-up: LLVM autovec may reference VT indices up to VT#31 in
+ * workloads (TSVC), so the emulator must model at least that depth.
+ */
+#define LINX_VEC_QUEUE_DEPTH 32u
 #define LINX_COSIM_MAX_RANGES 256u
 #define LINX_COSIM_PATH_MAX 512u
 

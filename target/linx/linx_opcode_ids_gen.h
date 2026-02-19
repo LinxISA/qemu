@@ -297,6 +297,15 @@ typedef enum LinxOpcodeId {
     LINX_OP_SC_W = 292,
     LINX_OP_TLB_IALL = 293,
     LINX_OP_UCVTF = 294,
+    LINX_OP_V_MUL = 295,
+    LINX_OP_V_FABS = 296,
+    LINX_OP_B_EQ = 297,
+    LINX_OP_B_NE = 298,
+    LINX_OP_B_LT = 299,
+    LINX_OP_B_LTU = 300,
+    LINX_OP_B_GE = 301,
+    LINX_OP_B_GEU = 302,
+    LINX_OP_J = 303,
 } LinxOpcodeId;
 
 #endif /* LINX_OPCODE_IDS_GEN_H */

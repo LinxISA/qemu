@@ -2867,6 +2867,17 @@ static bool trans_v_sub(DisasContext *ctx, arg_v_sub *a)
     return true;
 }
 
+static bool trans_v_mul(DisasContext *ctx, arg_v_mul *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    gen_helper_linx_v_mul(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
+                          tcg_constant_i32((int32_t)a->SrcL),
+                          tcg_constant_i32((int32_t)a->SrcR));
+    return true;
+}
+
 static bool trans_v_cmp_eq(DisasContext *ctx, arg_v_cmp_eq *a)
 {
     if (!linx_require_in_body(ctx)) {
@@ -2983,8 +2994,9 @@ static bool trans_v_csel(DisasContext *ctx, arg_v_csel *a)
         return false;
     }
     gen_helper_linx_v_csel(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
-                           tcg_constant_i32((int32_t)a->SrcL),
+                           /* Predicate lives in the SrcD field for V.CSEL. */
                            tcg_constant_i32((int32_t)a->SrcD),
+                           tcg_constant_i32((int32_t)a->SrcL),
                            tcg_constant_i32((int32_t)a->SrcR),
                            tcg_constant_i32((int32_t)a->srctype));
     return true;
@@ -3031,6 +3043,16 @@ static bool trans_v_fdiv(DisasContext *ctx, arg_v_fdiv *a)
     gen_helper_linx_v_fdiv(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
                            tcg_constant_i32((int32_t)a->SrcL),
                            tcg_constant_i32((int32_t)a->SrcR));
+    return true;
+}
+
+static bool trans_v_fabs(DisasContext *ctx, arg_v_fabs *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    gen_helper_linx_v_fabs(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
+                           tcg_constant_i32((int32_t)a->SrcL));
     return true;
 }
 
@@ -3746,6 +3768,128 @@ static bool trans_cmp_geui(DisasContext *ctx, arg_cmp_geui *a)
 }
 
 /* ===================== Branch on Zero/Non-Zero Instructions ===================== */
+
+/* Internal relative control flow (used in decoupled bodies). */
+static bool trans_b_eq(DisasContext *ctx, arg_b_eq *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_EQ, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_ne(DisasContext *ctx, arg_b_ne *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_NE, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_lt(DisasContext *ctx, arg_b_lt *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_LT, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_ge(DisasContext *ctx, arg_b_ge *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_GE, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_ltu(DisasContext *ctx, arg_b_ltu *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_LTU, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_geu(DisasContext *ctx, arg_b_geu *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
+    tcg_gen_brcond_i64(TCG_COND_GEU, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
+    tcg_gen_br(done);
+    gen_set_label(taken);
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_j(DisasContext *ctx, arg_j *a)
+{
+    if (!ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER, 0);
+    }
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm22 << 1);
+    tcg_gen_movi_i64(cpu_pc, target);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    tcg_gen_exit_tb(NULL, 0);
+    return true;
+}
 
 static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
 {

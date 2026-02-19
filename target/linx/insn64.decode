@@ -32,6 +32,9 @@ v_add .... .... .... .... .000 .... .000 0101 0000 000. .... .... .000 .... .111
 # V.SUB
 v_sub .... .... .... .... .001 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
 
+# V.MUL
+v_mul .... .... .... .... .000 .... .100 0111 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi c=%C l=%L
+
 # V.CMP.{EQ,NE,LT,LTU,GE,GEU}
 v_cmp_eq  0000 000. .... .... .000 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
 v_cmp_ne  0000 000. .... .... .001 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
@@ -54,6 +57,9 @@ v_fadd 0000 000. .... .... .000 .... .100 1011 0000 000. .... .... .000 .... .11
 v_fsub 0000 000. .... .... .001 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
 v_fmul 0000 000. .... .... .010 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
 v_fdiv 0000 000. .... .... .011 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.FABS (float32 abs, unary)
+v_fabs .... .... .... .... .000 .... .111 1011 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi c=%C l=%L
 
 # V.RD* reductions (vector source -> scalar destination register)
 v_rdadd  0000 0000 0000 .... .000 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL

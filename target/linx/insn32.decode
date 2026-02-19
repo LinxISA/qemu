@@ -29,7 +29,7 @@
 %imml 20:6
 %imms 26:6
 %immr 26:6
-%uimm17_20_12_7_5 20:12 7:5
+%uimm17_7_5_20_12 7:5 20:12
 %lb_dst 12:3
 %ssr_id 20:12
 %acr_type 20:4
@@ -130,9 +130,9 @@ b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V
 b_hint_trace   .... .... .... .... .001 0000 0011 0011 b_e=%HINT_B_E reserve=%HINT_reserve_16_16
 
 # Block argument registers (LB0/LB1/LB2): LBx = RegSrc + uimm17
-b_dim_lb0      .... .... .... .... .000 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
-b_dim_lb1      .... .... .... .... .001 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
-b_dim_lb2      .... .... .... .... .010 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
+b_dim_lb0      .... .... .... .... .000 .... .100 0011 reg=%SrcL uimm=%uimm17_7_5_20_12
+b_dim_lb1      .... .... .... .... .001 .... .100 0011 reg=%SrcL uimm=%uimm17_7_5_20_12
+b_dim_lb2      .... .... .... .... .010 .... .100 0011 reg=%SrcL uimm=%uimm17_7_5_20_12
 
 # SSR access (system registers)
 # Encoding (base form): SSR_ID[11:0] in bits [31:20].
@@ -357,10 +357,10 @@ swi           .... .... .... .... .010 .... .101 1001 %SrcL %SrcR simm12=%simm12
 sdi           .... .... .... .... .011 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
 
 # Stores (PC-relative symbol addressing)
-sb_pcr        .... .... .... .... .000 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
-sh_pcr        .... .... .... .... .001 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
-sw_pcr        .... .... .... .... .010 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
-sd_pcr        .... .... .... .... .011 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sb_pcr        .... .... .... .... .000 .... .110 1001 %SrcL imm=%uimm17_7_5_20_12
+sh_pcr        .... .... .... .... .001 .... .110 1001 %SrcL imm=%uimm17_7_5_20_12
+sw_pcr        .... .... .... .... .010 .... .110 1001 %SrcL imm=%uimm17_7_5_20_12
+sd_pcr        .... .... .... .... .011 .... .110 1001 %SrcL imm=%uimm17_7_5_20_12
 
 # Stores (indexed)
 sb            .... .... .... .... .000 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
@@ -399,7 +399,16 @@ cmp_gei       .... .... .... .... .101 .... .101 0101 %RegDst %SrcL simm12=%simm
 cmp_ltui      .... .... .... .... .110 .... .101 0101 %RegDst %SrcL %uimm12
 cmp_geui      .... .... .... .... .111 .... .101 0101 %RegDst %SrcL %uimm12
 
-# Branch instructions (set condition, not direct branches)
+# Branch instructions (internal relative control flow; used in decoupled bodies)
+b_eq          .... .... .... .... .000 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ne          .... .... .... .... .001 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_lt          .... .... .... .... .010 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ge          .... .... .... .... .011 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ltu         .... .... .... .... .100 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_geu         .... .... .... .... .101 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+
+# Branch on condition flag (block-level control flow)
+j             .... .... .... .... .000 .... .011 0111 %simm22
 b_z           .... .... .... .... .001 .... .011 0111 %simm22
 b_nz          .... .... .... .... .010 .... .011 0111 %simm22
 
