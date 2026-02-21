@@ -23,10 +23,8 @@
 #include "system/memory.h"
 #include <inttypes.h>
 #include <math.h>
-#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
-#endif
 #include <unistd.h>
 
 /* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
@@ -254,8 +252,6 @@ typedef struct LinxCosimSnapshotRange {
     uint64_t size;
     uint64_t file_offset;
 } LinxCosimSnapshotRange;
-
-#if !defined(_WIN32)
 
 static inline bool linx_env_enabled(const char *name)
 {
@@ -638,40 +634,6 @@ void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
     env->cosim.active = 1;
 }
 
-#else /* _WIN32 */
-
-/* Windows build: co-sim currently relies on UNIX domain sockets; disable it. */
-static void linx_cosim_init(CPULinxState *env)
-{
-    if (env->cosim.inited) {
-        return;
-    }
-    memset(&env->cosim, 0, sizeof(env->cosim));
-    env->cosim.sock_fd = -1;
-    env->cosim.inited = 1;
-    env->cosim.enabled = 0;
-}
-
-static void linx_cosim_finish(CPULinxState *env)
-{
-    (void)env;
-}
-
-static bool linx_cosim_send_end(CPULinxState *env, const char *reason)
-{
-    (void)env;
-    (void)reason;
-    return false;
-}
-
-void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
-{
-    (void)pc;
-    linx_cosim_init(env);
-}
-
-#endif /* !_WIN32 */
-
 static void linx_commit_trace_init(CPULinxState *env)
 {
     if (env->commit_trace.inited) {
@@ -970,7 +932,6 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
     cpu_loop_exit_noexc(cs);
 }
 
-#if !defined(_WIN32)
 static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
 {
     char line[4096];
@@ -1040,13 +1001,6 @@ static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next
         cpu_loop_exit_noexc(env_cpu(env));
     }
 }
-#else /* _WIN32 */
-static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
-{
-    (void)env;
-    (void)next_pc;
-}
-#endif /* !_WIN32 */
 
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 {
@@ -1859,7 +1813,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->pending_trap_arg0 = (uint64_t)target;
         env->pending_trap_cause = 0;
         helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
-        cpu_loop_exit(cs);
+        return;
     }
 
     /*
@@ -1938,7 +1892,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->pending_trap_arg0 = (uint64_t)rra_type;
         env->pending_trap_cause = 0;
         helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
-        cpu_loop_exit(cs);
+        return;
     }
 
     /* v0.2: always restore BPC from EBARG. */
@@ -2654,7 +2608,8 @@ enum {
     LINX_TEPL_TCVT = 0x00fu,
     LINX_TEPL_TROWMAX = 0x020u,
     LINX_TEPL_TROWSUM = 0x022u,
-    LINX_TEPL_TCOLEXPAND = 0x027u,
+    LINX_TEPL_TCOLEXPAND = 0x0C0u,
+    LINX_TEPL_TROWEXPAND = 0x0C1u,
     LINX_TEPL_TEXP = 0x040u,
     LINX_TEPL_TRECIP = 0x044u,
     LINX_TEPL_TEXPANDS = 0x045u,
@@ -4492,10 +4447,16 @@ static void linx_tile_tepl_exec(CPULinxState *env,
     case LINX_TEPL_TROWMAX:
     case LINX_TEPL_TROWSUM:
     case LINX_TEPL_TCOLEXPAND:
+    case LINX_TEPL_TROWEXPAND:
         if (mode != 0u || !src0_present) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return;
         }
+        /* Strict-v0.3 bring-up placeholder: expand ops are treated as unary tile ops.
+         * Canonical encodings are:
+         *  - TCOLEXPAND = 0x0C0
+         *  - TROWEXPAND = 0x0C1
+         */
         for (unsigned i = 0; i < words; ++i) {
             env->tile_reg[dst_tile][i] = env->tile_reg[src0_tile][i];
         }
@@ -6176,9 +6137,11 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: invalid branch target 0x%" PRIx64 " (not a block start marker)\n",
                   target);
-    env->pending_trap_arg0 = target;
-    env->pending_trap_cause = LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET;
-    cs->exception_index = LINX_EXCP_BAD_BRANCH_TARGET;
+    /* v0.3: E_BLOCK(EC_CFI), report source PC/TPC via TRAPARG0. */
+    env->pending_trap_arg0 = env->pc;
+    env->pending_trap_cause = linx_eblock_cause_make(LINX_EBLOCK_EC_CFI,
+                                                     LINX_EBLOCK_CFI_BAD_TARGET);
+    cs->exception_index = LINX_EXCP_BLOCK_FAULT;
     cpu_loop_exit_restore(cs, GETPC());
 }
 

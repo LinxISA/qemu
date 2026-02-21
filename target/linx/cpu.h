@@ -39,20 +39,43 @@ enum {
 };
 
 /*
- * Bring-up exception cause codes for E_BLOCK (encoded in TRAPNO.CAUSE).
+ * v0.3 bring-up: E_BLOCK cause encoding (encoded in TRAPNO.CAUSE).
  *
- * These are profile-defined and only used for debug/reporting today.
+ * TRAPNO layout is unchanged from the v0.2 bring-up profile:
+ * - TRAPNO.CAUSE is a 24-bit field stored at TRAPNO[47:24].
+ *
+ * v0.3 encoding within TRAPNO.CAUSE:
+ * - CAUSE[15:8]  = EC (E_BLOCK cause)
+ * - CAUSE[7:4]   = reserved (0)
+ * - CAUSE[3:0]   = kind (used by EC_CFI)
  */
 enum {
-    LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET = 1,
-    LINX_EBLOCK_CAUSE_MISSING_BODY_TPC  = 2,
-    LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY   = 3,
-    LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER = 4,
-    LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK = 5,
-    LINX_EBLOCK_CAUSE_ACRC_MISSING_BSTOP = 6,
-    LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET = 7,
-    LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE = 8,
-    LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT = 9,
+    LINX_EBLOCK_EC_CFI      = 0x01, /* E_BLOCK(EC_CFI) */
+    LINX_EBLOCK_EC_BLOCKFMT = 0x02, /* E_BLOCK(EC_BLOCKFMT) */
+    LINX_EBLOCK_EC_BFETCH   = 0x03, /* E_BLOCK(EC_BFETCH) */
+};
+
+enum {
+    LINX_EBLOCK_CFI_BAD_TARGET        = 0x1,
+    LINX_EBLOCK_CFI_MISSING_NEXT_MARKER = 0x3,
+};
+
+static inline uint32_t linx_eblock_cause_make(uint8_t ec, uint8_t kind)
+{
+    return ((uint32_t)ec << 8) | (uint32_t)(kind & 0x0fu);
+}
+
+/* Legacy v0.2 block fault codes (kept temporarily for internal translation). */
+enum {
+    LINX_EBLOCK_LEGACY_BAD_BRANCH_TARGET = 1,
+    LINX_EBLOCK_LEGACY_MISSING_BODY_TPC  = 2,
+    LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY   = 3,
+    LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER = 4,
+    LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK = 5,
+    LINX_EBLOCK_LEGACY_ACRC_MISSING_BSTOP = 6,
+    LINX_EBLOCK_LEGACY_CALL_MISSING_SETRET = 7,
+    LINX_EBLOCK_LEGACY_CALL_INVALID_SEQUENCE = 8,
+    LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT = 9,
 };
 enum {
     LINX_REG_ZERO = 0,

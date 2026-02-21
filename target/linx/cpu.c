@@ -460,16 +460,13 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case LINX_EXCP_BAD_BRANCH_TARGET:
+        /* v0.3: route via E_BLOCK(EC_CFI) (see LINX_EXCP_BLOCK_FAULT path). */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: branch target violation at PC=0x%" PRIx64 "\n",
                       last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, last_pc,
-                               LINX_TRAPNUM_BLOCK_TRAP,
-                               true,   /* argv */
-                               false,  /* fault */
-                               false   /* header */
-                               );
-        return;
+        cs->exception_index = LINX_EXCP_BLOCK_FAULT;
+        /* pending_trap_cause/arg0 should already be set by the raising site. */
+        /* fallthrough */
 
     case LINX_EXCP_ILLEGAL_INST:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -479,20 +476,25 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                                LINX_TRAPNUM_ILLEGAL_INST,
                                false, /* argv */
                                false, /* fault */
-                               true   /* BI */
+                               (env->in_body != 0) /* BI */
                                );
         return;
 
     case LINX_EXCP_BLOCK_FAULT:
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: block-format fault at PC=0x%" PRIx64 "\n",
+                      "Linx: block fault at PC=0x%" PRIx64 "\n",
                       last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
-                               LINX_TRAPNUM_BLOCK_TRAP,
-                               true,               /* argv */
-                               false,              /* fault */
-                               (env->in_body != 0) /* BI best-effort */
-                               );
+        /* v0.3: BI is determined by the E_BLOCK EC class. */
+        {
+            const uint8_t ec = (uint8_t)((env->pending_trap_cause >> 8) & 0xffu);
+            const bool bi = (ec == LINX_EBLOCK_EC_BFETCH) ? true : false;
+            linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                                   LINX_TRAPNUM_BLOCK_TRAP,
+                                   true,  /* argv */
+                                   false, /* fault */
+                                   bi     /* BI */
+                                   );
+        }
         return;
 
     case LINX_EXCP_HW_BREAKPOINT:
