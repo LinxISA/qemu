@@ -2754,6 +2754,327 @@ static bool trans_hl_sd_pcr(DisasContext *ctx, arg_hl_sd_pcr *a)
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UQ);
 }
 
+/* ===================== HL writeback + pair memory (48-bit) ===================== */
+
+static bool linx_hl_load_wb_reg(DisasContext *ctx,
+                                unsigned dst_val, unsigned dst_updated,
+                                unsigned base, unsigned idx,
+                                unsigned idx_type, unsigned shamt,
+                                bool is_pre, MemOp mop)
+{
+    TCGv_i64 base64 = linx_get_reg(base);
+    TCGv_i64 updated64 = linx_addr_add_reg(ctx, base, idx, idx_type, shamt);
+    TCGv addr = linx_addr_from_i64(is_pre ? updated64 : base64);
+
+    /* If the memory access traps, the updated writeback must not commit. */
+    if (!linx_load_to_dest(ctx, dst_val, addr, mop)) {
+        return false;
+    }
+    linx_set_dest(dst_updated, updated64);
+    return true;
+}
+
+static bool linx_hl_load_wb_imm(DisasContext *ctx,
+                                unsigned dst_val, unsigned dst_updated,
+                                unsigned base, int64_t off,
+                                bool is_pre, MemOp mop)
+{
+    TCGv_i64 base64 = linx_get_reg(base);
+    TCGv_i64 updated64 = tcg_temp_new_i64();
+    TCGv addr;
+
+    tcg_gen_addi_i64(updated64, base64, off);
+    addr = linx_addr_from_i64(is_pre ? updated64 : base64);
+
+    if (!linx_load_to_dest(ctx, dst_val, addr, mop)) {
+        return false;
+    }
+    linx_set_dest(dst_updated, updated64);
+    return true;
+}
+
+static bool linx_hl_store_wb_reg(DisasContext *ctx,
+                                 unsigned dst_updated, unsigned src_data,
+                                 unsigned base, unsigned idx,
+                                 unsigned idx_type, unsigned shamt,
+                                 bool is_pre, MemOp mop)
+{
+    TCGv_i64 base64 = linx_get_reg(base);
+    TCGv_i64 updated64 = linx_addr_add_reg(ctx, base, idx, idx_type, shamt);
+    TCGv addr = linx_addr_from_i64(is_pre ? updated64 : base64);
+
+    if (!linx_store_from_reg(ctx, addr, linx_get_reg(src_data), mop)) {
+        return false;
+    }
+    linx_set_dest(dst_updated, updated64);
+    return true;
+}
+
+static bool linx_hl_store_wb_imm(DisasContext *ctx,
+                                 unsigned dst_updated, unsigned src_data,
+                                 unsigned base, int64_t off,
+                                 bool is_pre, MemOp mop)
+{
+    TCGv_i64 base64 = linx_get_reg(base);
+    TCGv_i64 updated64 = tcg_temp_new_i64();
+    TCGv addr;
+
+    tcg_gen_addi_i64(updated64, base64, off);
+    addr = linx_addr_from_i64(is_pre ? updated64 : base64);
+
+    if (!linx_store_from_reg(ctx, addr, linx_get_reg(src_data), mop)) {
+        return false;
+    }
+    linx_set_dest(dst_updated, updated64);
+    return true;
+}
+
+static bool linx_hl_load_pair_reg(DisasContext *ctx,
+                                  unsigned dst0, unsigned dst1,
+                                  unsigned base, unsigned idx,
+                                  unsigned idx_type, unsigned shamt,
+                                  MemOp mop)
+{
+    const int64_t step = (int64_t)memop_size(mop);
+    TCGv_i64 addr0 = linx_addr_add_reg(ctx, base, idx, idx_type, shamt);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, step);
+
+    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
+        return false;
+    }
+    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+}
+
+static bool linx_hl_load_pair_imm(DisasContext *ctx,
+                                  unsigned dst0, unsigned dst1,
+                                  unsigned base, int64_t off,
+                                  MemOp mop)
+{
+    const int64_t step = (int64_t)memop_size(mop);
+    TCGv_i64 addr0 = linx_addr_add_imm(ctx, base, off);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, step);
+
+    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
+        return false;
+    }
+    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+}
+
+static bool linx_hl_store_pair_reg(DisasContext *ctx,
+                                   unsigned src0, unsigned src1,
+                                   unsigned base, unsigned idx,
+                                   unsigned idx_type, unsigned shamt,
+                                   MemOp mop)
+{
+    const int64_t step = (int64_t)memop_size(mop);
+    TCGv_i64 addr0 = linx_addr_add_reg(ctx, base, idx, idx_type, shamt);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, step);
+
+    if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr0), linx_get_reg(src0), mop)) {
+        return false;
+    }
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr1), linx_get_reg(src1), mop);
+}
+
+static bool linx_hl_store_pair_imm(DisasContext *ctx,
+                                   unsigned src0, unsigned src1,
+                                   unsigned base, int64_t off,
+                                   MemOp mop)
+{
+    const int64_t step = (int64_t)memop_size(mop);
+    TCGv_i64 addr0 = linx_addr_add_imm(ctx, base, off);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, step);
+
+    if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr0), linx_get_reg(src0), mop)) {
+        return false;
+    }
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr1), linx_get_reg(src1), mop);
+}
+
+#define DEF_HL_LOAD_WB_REG(NAME, MOP, IS_PRE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        return linx_hl_load_wb_reg(ctx, a->RegDst0, a->RegDst1, \
+                                   a->SrcL, a->SrcR, a->SrcRType, a->shamt, \
+                                   (IS_PRE), (MOP)); \
+    }
+
+#define DEF_HL_LOAD_WB_IMM(NAME, MOP, SCALE, IS_PRE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        const int64_t off = (int64_t)a->simm17 * (int64_t)(SCALE); \
+        return linx_hl_load_wb_imm(ctx, a->RegDst0, a->RegDst1, a->SrcL, off, \
+                                   (IS_PRE), (MOP)); \
+    }
+
+#define DEF_HL_STORE_WB_REG(NAME, MOP, SHIFT, IS_PRE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        return linx_hl_store_wb_reg(ctx, a->RegDst, a->SrcD, \
+                                    a->SrcL, a->SrcR, a->SrcRType, (SHIFT), \
+                                    (IS_PRE), (MOP)); \
+    }
+
+#define DEF_HL_STORE_WB_IMM(NAME, MOP, SCALE, IS_PRE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        const int64_t off = (int64_t)a->simm17 * (int64_t)(SCALE); \
+        return linx_hl_store_wb_imm(ctx, a->RegDst, a->SrcD, a->SrcR, off, \
+                                    (IS_PRE), (MOP)); \
+    }
+
+#define DEF_HL_LOAD_PAIR_REG(NAME, MOP) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        return linx_hl_load_pair_reg(ctx, a->RegDst0, a->RegDst1, \
+                                     a->SrcL, a->SrcR, a->SrcRType, a->shamt, (MOP)); \
+    }
+
+#define DEF_HL_LOAD_PAIR_IMM(NAME, MOP, SCALE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        const int64_t off = (int64_t)a->simm17 * (int64_t)(SCALE); \
+        return linx_hl_load_pair_imm(ctx, a->RegDst0, a->RegDst1, a->SrcL, off, (MOP)); \
+    }
+
+#define DEF_HL_STORE_PAIR_REG(NAME, MOP, SHIFT) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        return linx_hl_store_pair_reg(ctx, a->SrcD, a->SrcD1, \
+                                      a->SrcL, a->SrcR, a->SrcRType, (SHIFT), (MOP)); \
+    }
+
+#define DEF_HL_STORE_PAIR_IMM(NAME, MOP, SCALE) \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+    { \
+        const int64_t off = (int64_t)a->simm17 * (int64_t)(SCALE); \
+        return linx_hl_store_pair_imm(ctx, a->SrcD, a->SrcD1, a->SrcR, off, (MOP)); \
+    }
+
+/* HL load writeback: post-index. */
+DEF_HL_LOAD_WB_REG(hl_lb_po, MO_SB, false)
+DEF_HL_LOAD_WB_IMM(hl_lbi_po, MO_SB, 1, false)
+DEF_HL_LOAD_WB_REG(hl_lbu_po, MO_UB, false)
+DEF_HL_LOAD_WB_IMM(hl_lbui_po, MO_UB, 1, false)
+DEF_HL_LOAD_WB_REG(hl_lh_po, MO_SW, false)
+DEF_HL_LOAD_WB_IMM(hl_lhi_po, MO_SW, 2, false)
+DEF_HL_LOAD_WB_IMM(hl_lhi_upo, MO_SW, 1, false)
+DEF_HL_LOAD_WB_REG(hl_lhu_po, MO_UW, false)
+DEF_HL_LOAD_WB_IMM(hl_lhui_po, MO_UW, 2, false)
+DEF_HL_LOAD_WB_IMM(hl_lhui_upo, MO_UW, 1, false)
+DEF_HL_LOAD_WB_REG(hl_lw_po, MO_SL, false)
+DEF_HL_LOAD_WB_IMM(hl_lwi_po, MO_SL, 4, false)
+DEF_HL_LOAD_WB_IMM(hl_lwi_upo, MO_SL, 1, false)
+DEF_HL_LOAD_WB_REG(hl_lwu_po, MO_UL, false)
+DEF_HL_LOAD_WB_IMM(hl_lwui_po, MO_UL, 4, false)
+DEF_HL_LOAD_WB_IMM(hl_lwui_upo, MO_UL, 1, false)
+DEF_HL_LOAD_WB_REG(hl_ld_po, MO_UQ, false)
+DEF_HL_LOAD_WB_IMM(hl_ldi_po, MO_UQ, 8, false)
+DEF_HL_LOAD_WB_IMM(hl_ldi_upo, MO_UQ, 1, false)
+
+/* HL load writeback: pre-index. */
+DEF_HL_LOAD_WB_REG(hl_lb_pr, MO_SB, true)
+DEF_HL_LOAD_WB_IMM(hl_lbi_pr, MO_SB, 1, true)
+DEF_HL_LOAD_WB_REG(hl_lbu_pr, MO_UB, true)
+DEF_HL_LOAD_WB_IMM(hl_lbui_pr, MO_UB, 1, true)
+DEF_HL_LOAD_WB_REG(hl_lh_pr, MO_SW, true)
+DEF_HL_LOAD_WB_IMM(hl_lhi_pr, MO_SW, 2, true)
+DEF_HL_LOAD_WB_IMM(hl_lhi_upr, MO_SW, 1, true)
+DEF_HL_LOAD_WB_REG(hl_lhu_pr, MO_UW, true)
+DEF_HL_LOAD_WB_IMM(hl_lhui_pr, MO_UW, 2, true)
+DEF_HL_LOAD_WB_IMM(hl_lhui_upr, MO_UW, 1, true)
+DEF_HL_LOAD_WB_REG(hl_lw_pr, MO_SL, true)
+DEF_HL_LOAD_WB_IMM(hl_lwi_pr, MO_SL, 4, true)
+DEF_HL_LOAD_WB_IMM(hl_lwi_upr, MO_SL, 1, true)
+DEF_HL_LOAD_WB_REG(hl_lwu_pr, MO_UL, true)
+DEF_HL_LOAD_WB_IMM(hl_lwui_pr, MO_UL, 4, true)
+DEF_HL_LOAD_WB_IMM(hl_lwui_upr, MO_UL, 1, true)
+DEF_HL_LOAD_WB_REG(hl_ld_pr, MO_UQ, true)
+DEF_HL_LOAD_WB_IMM(hl_ldi_pr, MO_UQ, 8, true)
+DEF_HL_LOAD_WB_IMM(hl_ldi_upr, MO_UQ, 1, true)
+
+/* HL store writeback: post-index. */
+DEF_HL_STORE_WB_REG(hl_sb_po, MO_UB, 0, false)
+DEF_HL_STORE_WB_IMM(hl_sbi_po, MO_UB, 1, false)
+DEF_HL_STORE_WB_REG(hl_sh_po, MO_UW, 1, false)
+DEF_HL_STORE_WB_REG(hl_sh_upo, MO_UW, 0, false)
+DEF_HL_STORE_WB_IMM(hl_shi_po, MO_UW, 2, false)
+DEF_HL_STORE_WB_IMM(hl_shi_upo, MO_UW, 1, false)
+DEF_HL_STORE_WB_REG(hl_sw_po, MO_UL, 2, false)
+DEF_HL_STORE_WB_REG(hl_sw_upo, MO_UL, 0, false)
+DEF_HL_STORE_WB_IMM(hl_swi_po, MO_UL, 4, false)
+DEF_HL_STORE_WB_IMM(hl_swi_upo, MO_UL, 1, false)
+DEF_HL_STORE_WB_REG(hl_sd_po, MO_UQ, 3, false)
+DEF_HL_STORE_WB_REG(hl_sd_upo, MO_UQ, 0, false)
+DEF_HL_STORE_WB_IMM(hl_sdi_po, MO_UQ, 8, false)
+DEF_HL_STORE_WB_IMM(hl_sdi_upo, MO_UQ, 1, false)
+
+/* HL store writeback: pre-index. */
+DEF_HL_STORE_WB_REG(hl_sb_pr, MO_UB, 0, true)
+DEF_HL_STORE_WB_IMM(hl_sbi_pr, MO_UB, 1, true)
+DEF_HL_STORE_WB_REG(hl_sh_pr, MO_UW, 1, true)
+DEF_HL_STORE_WB_REG(hl_sh_upr, MO_UW, 0, true)
+DEF_HL_STORE_WB_IMM(hl_shi_pr, MO_UW, 2, true)
+DEF_HL_STORE_WB_IMM(hl_shi_upr, MO_UW, 1, true)
+DEF_HL_STORE_WB_REG(hl_sw_pr, MO_UL, 2, true)
+DEF_HL_STORE_WB_REG(hl_sw_upr, MO_UL, 0, true)
+DEF_HL_STORE_WB_IMM(hl_swi_pr, MO_UL, 4, true)
+DEF_HL_STORE_WB_IMM(hl_swi_upr, MO_UL, 1, true)
+DEF_HL_STORE_WB_REG(hl_sd_pr, MO_UQ, 3, true)
+DEF_HL_STORE_WB_REG(hl_sd_upr, MO_UQ, 0, true)
+DEF_HL_STORE_WB_IMM(hl_sdi_pr, MO_UQ, 8, true)
+DEF_HL_STORE_WB_IMM(hl_sdi_upr, MO_UQ, 1, true)
+
+/* HL Load Pair. */
+DEF_HL_LOAD_PAIR_IMM(hl_lbip, MO_SB, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lbp, MO_SB)
+DEF_HL_LOAD_PAIR_IMM(hl_lbuip, MO_UB, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lbup, MO_UB)
+DEF_HL_LOAD_PAIR_IMM(hl_lhip, MO_SW, 2)
+DEF_HL_LOAD_PAIR_IMM(hl_lhip_u, MO_SW, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lhp, MO_SW)
+DEF_HL_LOAD_PAIR_IMM(hl_lhuip, MO_UW, 2)
+DEF_HL_LOAD_PAIR_IMM(hl_lhuip_u, MO_UW, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lhup, MO_UW)
+DEF_HL_LOAD_PAIR_IMM(hl_lwip, MO_SL, 4)
+DEF_HL_LOAD_PAIR_IMM(hl_lwip_u, MO_SL, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lwp, MO_SL)
+DEF_HL_LOAD_PAIR_IMM(hl_lwuip, MO_UL, 4)
+DEF_HL_LOAD_PAIR_IMM(hl_lwuip_u, MO_UL, 1)
+DEF_HL_LOAD_PAIR_REG(hl_lwup, MO_UL)
+DEF_HL_LOAD_PAIR_IMM(hl_ldip, MO_UQ, 8)
+DEF_HL_LOAD_PAIR_IMM(hl_ldip_u, MO_UQ, 1)
+DEF_HL_LOAD_PAIR_REG(hl_ldp, MO_UQ)
+
+/* HL Store Pair. */
+DEF_HL_STORE_PAIR_IMM(hl_sbip, MO_UB, 1)
+DEF_HL_STORE_PAIR_REG(hl_sbp, MO_UB, 0)
+DEF_HL_STORE_PAIR_IMM(hl_ship, MO_UW, 2)
+DEF_HL_STORE_PAIR_IMM(hl_ship_u, MO_UW, 1)
+DEF_HL_STORE_PAIR_REG(hl_shp, MO_UW, 1)
+DEF_HL_STORE_PAIR_REG(hl_shp_u, MO_UW, 0)
+DEF_HL_STORE_PAIR_IMM(hl_swip, MO_UL, 4)
+DEF_HL_STORE_PAIR_IMM(hl_swip_u, MO_UL, 1)
+DEF_HL_STORE_PAIR_REG(hl_swp, MO_UL, 2)
+DEF_HL_STORE_PAIR_REG(hl_swp_u, MO_UL, 0)
+DEF_HL_STORE_PAIR_IMM(hl_sdip, MO_UQ, 8)
+DEF_HL_STORE_PAIR_IMM(hl_sdip_u, MO_UQ, 1)
+DEF_HL_STORE_PAIR_REG(hl_sdp, MO_UQ, 3)
+DEF_HL_STORE_PAIR_REG(hl_sdp_u, MO_UQ, 0)
+
+#undef DEF_HL_STORE_PAIR_IMM
+#undef DEF_HL_STORE_PAIR_REG
+#undef DEF_HL_LOAD_PAIR_IMM
+#undef DEF_HL_LOAD_PAIR_REG
+#undef DEF_HL_STORE_WB_IMM
+#undef DEF_HL_STORE_WB_REG
+#undef DEF_HL_LOAD_WB_IMM
+#undef DEF_HL_LOAD_WB_REG
+
 static bool trans_sdi(DisasContext *ctx, arg_sdi *a)
 {
     int64_t off = (int64_t)a->simm12 * 8;
