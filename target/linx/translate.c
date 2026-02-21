@@ -1214,7 +1214,7 @@ static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
         ((uint32_t)(a->t & 0x1u) << 17) |
         ((uint32_t)(a->aq & 0x1u) << 18) |
         ((uint32_t)(a->atom & 0x1u) << 19) |
-        ((uint32_t)(a->far & 0x1u) << 20) |
+        ((uint32_t)(a->far_ & 0x1u) << 20) |
         ((uint32_t)(a->rl & 0x1u) << 21);
     gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(packed));
     return true;

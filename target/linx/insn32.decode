@@ -123,7 +123,7 @@ b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 b_arg          0000 0000 0000 0000 0011 .... .100 0011 format=%TileFormat
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
-b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl
+b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far_=%BA_far rl=%BA_rl
 
 # Block hints; treated as no-ops in bring-up.
 b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp
@@ -148,16 +148,16 @@ acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
 
 # Atomics (minimal subset for toolchain intrinsics bring-up)
 # Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
-lr_w   0010 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
-lr_d   0011 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
-sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lr_w   0010 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far_=%far aq=%aq rl=%rl
+lr_d   0011 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far_=%far aq=%aq rl=%rl
+sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
+sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
 
-swapw  0010 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapw  0010 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
+swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
 
-lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
+ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far_=%far aq=%aq rl=%rl
 
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011

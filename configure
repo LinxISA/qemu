@@ -982,7 +982,15 @@ get_pwd() {
     fi
 }
 
-meson="$(cd pyvenv/bin; get_pwd)/meson"
+venv_bindir="pyvenv/bin"
+if test ! -d "$venv_bindir" ; then
+    venv_bindir="pyvenv/Scripts"
+fi
+if test ! -d "$venv_bindir" ; then
+    error_exit "python venv scripts dir not found (expected pyvenv/bin or pyvenv/Scripts)"
+fi
+
+meson="$(cd "$venv_bindir"; get_pwd)/meson"
 if [ -f "$meson$EXESUF" ]; then
   meson="$meson$EXESUF"
 fi
