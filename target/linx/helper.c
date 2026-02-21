@@ -23,8 +23,10 @@
 #include "system/memory.h"
 #include <inttypes.h>
 #include <math.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
 #include <unistd.h>
 
 /* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
@@ -252,6 +254,8 @@ typedef struct LinxCosimSnapshotRange {
     uint64_t size;
     uint64_t file_offset;
 } LinxCosimSnapshotRange;
+
+#if !defined(_WIN32)
 
 static inline bool linx_env_enabled(const char *name)
 {
@@ -634,6 +638,40 @@ void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
     env->cosim.active = 1;
 }
 
+#else /* _WIN32 */
+
+/* Windows build: co-sim currently relies on UNIX domain sockets; disable it. */
+static void linx_cosim_init(CPULinxState *env)
+{
+    if (env->cosim.inited) {
+        return;
+    }
+    memset(&env->cosim, 0, sizeof(env->cosim));
+    env->cosim.sock_fd = -1;
+    env->cosim.inited = 1;
+    env->cosim.enabled = 0;
+}
+
+static void linx_cosim_finish(CPULinxState *env)
+{
+    (void)env;
+}
+
+static bool linx_cosim_send_end(CPULinxState *env, const char *reason)
+{
+    (void)env;
+    (void)reason;
+    return false;
+}
+
+void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
+{
+    (void)pc;
+    linx_cosim_init(env);
+}
+
+#endif /* !_WIN32 */
+
 static void linx_commit_trace_init(CPULinxState *env)
 {
     if (env->commit_trace.inited) {
@@ -932,6 +970,7 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
     cpu_loop_exit_noexc(cs);
 }
 
+#if !defined(_WIN32)
 static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
 {
     char line[4096];
@@ -1001,6 +1040,13 @@ static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next
         cpu_loop_exit_noexc(env_cpu(env));
     }
 }
+#else /* _WIN32 */
+static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next_pc)
+{
+    (void)env;
+    (void)next_pc;
+}
+#endif /* !_WIN32 */
 
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 {
@@ -1813,7 +1859,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->pending_trap_arg0 = (uint64_t)target;
         env->pending_trap_cause = 0;
         helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
-        return;
+        cpu_loop_exit(cs);
     }
 
     /*
@@ -1892,7 +1938,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->pending_trap_arg0 = (uint64_t)rra_type;
         env->pending_trap_cause = 0;
         helper_raise_exception(env, LINX_EXCP_EXEC_STATE_CHECK);
-        return;
+        cpu_loop_exit(cs);
     }
 
     /* v0.2: always restore BPC from EBARG. */
