@@ -24,8 +24,14 @@
 #include "system/address-spaces.h"
 #include "system/memory.h"
 
+static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags);
+
 static bool linx_trace_mmu_inited;
 static bool linx_trace_mmu_enabled;
+static bool linx_cpu_dump_debug_inited;
+static bool linx_cpu_dump_debug_enabled;
+static bool linx_cpu_dump_on_event_inited;
+static bool linx_cpu_dump_on_event_enabled;
 
 static inline bool linx_trace_mmu(void)
 {
@@ -35,6 +41,31 @@ static inline bool linx_trace_mmu(void)
         linx_trace_mmu_inited = true;
     }
     return linx_trace_mmu_enabled;
+}
+
+static inline bool linx_cpu_dump_debug(void)
+{
+    if (!linx_cpu_dump_debug_inited) {
+        const char *v = getenv("LINX_CPU_DUMP_DEBUG");
+        linx_cpu_dump_debug_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_cpu_dump_debug_inited = true;
+    }
+    return linx_cpu_dump_debug_enabled;
+}
+
+static inline uint32_t linx_managing_acr(uint32_t acr)
+{
+    return (acr == 0) ? 0 : 1;
+}
+
+static inline bool linx_cpu_dump_on_event(void)
+{
+    if (!linx_cpu_dump_on_event_inited) {
+        const char *v = getenv("LINX_CPU_DUMP_ON_EVENT");
+        linx_cpu_dump_on_event_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_cpu_dump_on_event_inited = true;
+    }
+    return linx_cpu_dump_on_event_enabled;
 }
 
 /* Managing-ACR SSR indices (low 12 bits). */
@@ -147,6 +178,114 @@ static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, u
     const uint64_t c = ((uint64_t)(cause & LINX_TRAPNO_CAUSE_MASK)) << LINX_TRAPNO_CAUSE_SHIFT;
     const uint64_t t = (uint64_t)(trapnum & LINX_TRAPNO_TRAPNUM_MASK);
     return e | a | c | t;
+}
+
+static void linx_dump_q4(FILE *f, const char *name, const uint64_t q[4],
+                         const char *head_name, const char *tail_name,
+                         const char *producer)
+{
+    qemu_fprintf(f,
+                 "%s[%s..%s]=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 name, head_name, tail_name, q[0], q[1], q[2], q[3]);
+    qemu_fprintf(f,
+                 "  %s semantics: push-front by %s producer, consume from %s\n",
+                 name, producer, head_name);
+}
+
+static void linx_dump_ebarg_bank(FILE *f, const CPULinxState *env,
+                                 uint32_t bank, const char *tag)
+{
+    const uint64_t *ssr = env->ssr_acr[bank];
+
+    qemu_fprintf(f,
+                 "%s ACR%u: ECSTATE=0x%016" PRIx64 " TRAPNO=0x%016" PRIx64
+                 " TRAPARG0=0x%016" PRIx64 " IPENDING=0x%016" PRIx64 "\n",
+                 tag, bank,
+                 ssr[LINX_SSR_ECSTATE], ssr[LINX_SSR_TRAPNO],
+                 ssr[LINX_SSR_TRAPARG0], ssr[LINX_SSR_IPENDING]);
+
+    qemu_fprintf(f,
+                 "  EBARG0=0x%016" PRIx64 " BPC_CUR=0x%016" PRIx64
+                 " BPC_TGT=0x%016" PRIx64 " TPC=0x%016" PRIx64
+                 " LRA=0x%016" PRIx64 "\n",
+                 ssr[LINX_SSR_EBARG0], ssr[LINX_SSR_EBARG_BPC_CUR],
+                 ssr[LINX_SSR_EBARG_BPC_TGT], ssr[LINX_SSR_EBARG_TPC],
+                 ssr[LINX_SSR_EBARG_LRA]);
+
+    qemu_fprintf(f,
+                 "  EBARG.TQ=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 ssr[LINX_SSR_EBARG_TQ0], ssr[LINX_SSR_EBARG_TQ1],
+                 ssr[LINX_SSR_EBARG_TQ2], ssr[LINX_SSR_EBARG_TQ3]);
+    qemu_fprintf(f,
+                 "  EBARG.UQ=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 ssr[LINX_SSR_EBARG_UQ0], ssr[LINX_SSR_EBARG_UQ1],
+                 ssr[LINX_SSR_EBARG_UQ2], ssr[LINX_SSR_EBARG_UQ3]);
+    qemu_fprintf(f,
+                 "  EBARG.LB=0x%016" PRIx64 " EBARG.LC=0x%016" PRIx64
+                 " EBARG.EXT_PTR=0x%016" PRIx64
+                 " EBARG.EXT_META=0x%016" PRIx64 "\n",
+                 ssr[LINX_SSR_EBARG_LB], ssr[LINX_SSR_EBARG_LC],
+                 ssr[LINX_SSR_EBARG_EXT_PTR], ssr[LINX_SSR_EBARG_EXT_META]);
+}
+
+static void linx_dump_bstate_snapshot(FILE *f, const char *label, uint32_t acr,
+                                      const LinxAcrBlockState *s)
+{
+    qemu_fprintf(f,
+                 "%s ACR%u: bstate{blocktype=%u brtype=%u carg=0x%08x cond=%u"
+                 " tgt=0x%016" PRIx64 " bpc=0x%016" PRIx64
+                 " in_body=%u body_tpc=0x%016" PRIx64
+                 " return_pc=0x%016" PRIx64 "}\n",
+                 label, acr,
+                 s->blocktype, s->brtype, s->carg, s->cond, s->tgt, s->bpc,
+                 s->in_body, s->body_tpc, s->return_pc);
+    qemu_fprintf(f,
+                 "  bstate.lb=[0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64
+                 "] lc=[0x%016" PRIx64 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 s->lb[0], s->lb[1], s->lb[2], s->lc[0], s->lc[1], s->lc[2]);
+    qemu_fprintf(f,
+                 "  bstate.template={kind=%u step=%u pc=0x%016" PRIx64
+                 " reg_cur=%u reg_range=[%u,%u] rem=0x%016" PRIx64 "}\n",
+                 s->tmpl_kind, s->tmpl_step, s->tmpl_pc,
+                 s->tmpl_reg_cur, s->tmpl_reg_begin, s->tmpl_reg_end,
+                 s->tmpl_mem_remaining);
+    qemu_fprintf(f,
+                 "  bstate.tq=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 s->tq[0], s->tq[1], s->tq[2], s->tq[3]);
+    qemu_fprintf(f,
+                 "  bstate.uq=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 ",0x%016" PRIx64 "]\n",
+                 s->uq[0], s->uq[1], s->uq[2], s->uq[3]);
+}
+
+static void linx_dump_event_state(CPUState *cs, const char *tag, int exception)
+{
+    CPULinxState *env;
+    const uint32_t mgr = linx_managing_acr(cpu_env(cs)->acr & 0xFu);
+
+    if (!linx_cpu_dump_on_event()) {
+        return;
+    }
+
+    env = cpu_env(cs);
+    qemu_fprintf(stderr,
+                 "linx-event: %s exception=%d pc=0x%016" PRIx64
+                 " acr=%u cstate=0x%016" PRIx64
+                 " ecstate_mgr=0x%016" PRIx64
+                 " trapno_mgr=0x%016" PRIx64
+                 " traparg0_mgr=0x%016" PRIx64
+                 " ipending_mgr=0x%016" PRIx64 "\n",
+                 tag, exception, env->pc, env->acr & 0xFu, env->ssr[LINX_SSR_CSTATE],
+                 env->ssr_acr[mgr][LINX_SSR_ECSTATE],
+                 env->ssr_acr[mgr][LINX_SSR_TRAPNO],
+                 env->ssr_acr[mgr][LINX_SSR_TRAPARG0],
+                 env->ssr_acr[mgr][LINX_SSR_IPENDING]);
+    linx_cpu_dump_state(cs, stderr, 0);
+    fflush(stderr);
 }
 
 static bool linx_disable_timer_irq_inited;
@@ -426,6 +565,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
     env->pc = evbase ? evbase : tpc;
     cs->exception_index = -1;
+    linx_dump_event_state(cs, "sync-delivered", trapnum);
 }
 
 static void linx_cpu_do_interrupt(CPUState *cs)
@@ -433,6 +573,8 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     CPULinxState *env = cpu_env(cs);
     int exception = cs->exception_index;
     uint64_t last_pc = env->pc;
+
+    linx_dump_event_state(cs, "interrupt-entry", exception);
 
     qemu_log_mask(CPU_LOG_INT, "Linx: exception %d at PC=0x%" PRIx64 "\n",
                   exception, last_pc);
@@ -486,7 +628,7 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                       last_pc);
         /* v0.3: BI is determined by the E_BLOCK EC class. */
         {
-            const uint8_t ec = (uint8_t)((env->pending_trap_cause >> 8) & 0xffu);
+            const uint8_t ec = linx_eblock_cause_ec(env->pending_trap_cause);
             const bool bi = (ec == LINX_EBLOCK_EC_BFETCH) ? true : false;
             linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                    LINX_TRAPNUM_BLOCK_TRAP,
@@ -528,14 +670,21 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     case LINX_EXCP_LOAD_ACCESS_FAULT:
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
-        /* MMU/IOMMU faults are delivered as synchronous v0.2 page-fault classes. */
+        /*
+         * v0.3 split policy:
+         * - MMU body-fetch faults are reported through E_DATA (BI=1).
+         * - non-body instruction fetch faults keep INST_PAGE_FAULT.
+         */
+        const bool in_body = env->in_body != 0;
         const uint8_t trapnum =
-            (exception == LINX_EXCP_INST_ACCESS_FAULT) ? LINX_TRAPNUM_INST_PAGE_FAULT : LINX_TRAPNUM_DATA_PAGE_FAULT;
+            (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
+                ? LINX_TRAPNUM_INST_PAGE_FAULT
+                : LINX_TRAPNUM_DATA_PAGE_FAULT;
         linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                trapnum,
                                true,  /* argv (TRAPARG0=fault VA) */
                                false, /* fault */
-                               true   /* BI */
+                               in_body /* BI */
                                );
         return;
     }
@@ -610,6 +759,7 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
         env->pc = evbase ? evbase : last_pc;
         cs->exception_index = -1;
+        linx_dump_event_state(cs, "irq-delivered", exception);
         return;
     }
 
@@ -954,6 +1104,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 {
     CPULinxState *env = cpu_env(cs);
+    const uint32_t cur_acr = env->acr & 0xFu;
+    const uint32_t mgr_acr = linx_managing_acr(cur_acr);
     int i;
 
     qemu_fprintf(f,
@@ -966,6 +1118,43 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
                      " r%-2d=0x%016" PRIx64 " r%-2d=0x%016" PRIx64 "\n",
                      i, env->gpr[i], i + 1, env->gpr[i + 1],
                      i + 2, env->gpr[i + 2], i + 3, env->gpr[i + 3]);
+    }
+
+    if (!linx_cpu_dump_debug()) {
+        return;
+    }
+
+    qemu_fprintf(f,
+                 "debug: LINX_CPU_DUMP_DEBUG=1 (flags=0x%x) cstate=0x%016" PRIx64
+                 " acr=%u mgr_acr=%u fcsr=0x%08x\n",
+                 flags, env->ssr[LINX_SSR_CSTATE], cur_acr, mgr_acr, env->fcsr);
+    qemu_fprintf(f,
+                 "debug.bstate.live: blocktype=%u brtype=%u carg=0x%08x cond=%u"
+                 " tgt=0x%016" PRIx64 " bpc=0x%016" PRIx64
+                 " in_body=%u body_tpc=0x%016" PRIx64
+                 " return_pc=0x%016" PRIx64 "\n",
+                 env->blocktype, env->brtype, env->carg, env->cond, env->tgt,
+                 env->bpc, env->in_body, env->body_tpc, env->return_pc);
+    qemu_fprintf(f,
+                 "debug.bstate.live.lb=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 "] lc=[0x%016" PRIx64 ",0x%016" PRIx64
+                 ",0x%016" PRIx64 "]\n",
+                 env->lb[0], env->lb[1], env->lb[2],
+                 env->lc[0], env->lc[1], env->lc[2]);
+
+    linx_dump_q4(f, "debug.queue.tq", env->tq, "t#1", "t#4", "T-hand");
+    linx_dump_q4(f, "debug.queue.uq", env->uq, "u#1", "u#4", "U-hand");
+
+    linx_dump_ebarg_bank(f, env, mgr_acr, "debug.ebarg.manager");
+    if (mgr_acr != cur_acr) {
+        linx_dump_ebarg_bank(f, env, cur_acr, "debug.ebarg.current");
+    }
+
+    linx_dump_bstate_snapshot(f, "debug.bstate.snapshot.current",
+                              cur_acr, &env->acr_block_state[cur_acr]);
+    if (mgr_acr != cur_acr) {
+        linx_dump_bstate_snapshot(f, "debug.bstate.snapshot.manager",
+                                  mgr_acr, &env->acr_block_state[mgr_acr]);
     }
 }
 
