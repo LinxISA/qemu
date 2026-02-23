@@ -262,6 +262,28 @@ static void linx_dump_bstate_snapshot(FILE *f, const char *label, uint32_t acr,
                  s->uq[0], s->uq[1], s->uq[2], s->uq[3]);
 }
 
+static void linx_dump_debug_ssr_bank(FILE *f, const CPULinxState *env,
+                                     uint32_t bank, const char *tag)
+{
+    const uint64_t *ssr = env->ssr_acr[bank];
+    unsigned n;
+
+    for (n = 0; n < 4; n++) {
+        const uint32_t dbcr = LINX_SSR_DBCR0 + (2u * n);
+        const uint32_t dbvr = LINX_SSR_DBVR0 + (2u * n);
+        const uint32_t dwcr = LINX_SSR_DWCR0 + (2u * n);
+        const uint32_t dwvr = LINX_SSR_DWVR0 + (2u * n);
+
+        qemu_fprintf(f,
+                     "%s ACR%u slot%u: DBCR=0x%016" PRIx64
+                     " DBVR=0x%016" PRIx64
+                     " DWCR=0x%016" PRIx64
+                     " DWVR=0x%016" PRIx64 "\n",
+                     tag, bank, n,
+                     ssr[dbcr], ssr[dbvr], ssr[dwcr], ssr[dwvr]);
+    }
+}
+
 static void linx_dump_event_state(CPUState *cs, const char *tag, int exception)
 {
     CPULinxState *env;
@@ -1148,6 +1170,11 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     linx_dump_ebarg_bank(f, env, mgr_acr, "debug.ebarg.manager");
     if (mgr_acr != cur_acr) {
         linx_dump_ebarg_bank(f, env, cur_acr, "debug.ebarg.current");
+    }
+
+    linx_dump_debug_ssr_bank(f, env, mgr_acr, "debug.hwdbg.manager");
+    if (mgr_acr != cur_acr) {
+        linx_dump_debug_ssr_bank(f, env, cur_acr, "debug.hwdbg.current");
     }
 
     linx_dump_bstate_snapshot(f, "debug.bstate.snapshot.current",

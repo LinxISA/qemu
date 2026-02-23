@@ -1029,9 +1029,39 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
     return true;
 }
 
-static bool trans_bstart_par(DisasContext *ctx, arg_bstart_par *a)
+static bool trans_bstart_par_vcall(DisasContext *ctx, arg_bstart_par_vcall *a)
 {
-    return trans_bstart_par_common(ctx, a->dtype, a->op);
+    return trans_bstart_par_common(ctx, a->dtype, 1u);
+}
+
+static bool trans_bstart_par_mamulb(DisasContext *ctx, arg_bstart_par_mamulb *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 17u);
+}
+
+static bool trans_bstart_par_tload(DisasContext *ctx, arg_bstart_par_tload *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 33u);
+}
+
+static bool trans_bstart_par_tstore(DisasContext *ctx, arg_bstart_par_tstore *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 65u);
+}
+
+static bool trans_bstart_par_mamulb_acc(DisasContext *ctx, arg_bstart_par_mamulb_acc *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 66u);
+}
+
+static bool trans_bstart_par_compat163(DisasContext *ctx, arg_bstart_par_compat163 *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 163u);
+}
+
+static bool trans_bstart_par_acccvt(DisasContext *ctx, arg_bstart_par_acccvt *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 258u);
 }
 
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
@@ -4221,128 +4251,6 @@ static bool trans_cmp_geui(DisasContext *ctx, arg_cmp_geui *a)
 
 /* ===================== Branch on Zero/Non-Zero Instructions ===================== */
 
-/* Internal relative control flow (used in decoupled bodies). */
-static bool trans_b_eq(DisasContext *ctx, arg_b_eq *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_EQ, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_ne(DisasContext *ctx, arg_b_ne *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_NE, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_lt(DisasContext *ctx, arg_b_lt *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_LT, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_ge(DisasContext *ctx, arg_b_ge *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_GE, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_ltu(DisasContext *ctx, arg_b_ltu *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_LTU, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_geu(DisasContext *ctx, arg_b_geu *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm12 << 1);
-    tcg_gen_brcond_i64(TCG_COND_GEU, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR), taken);
-    tcg_gen_br(done);
-    gen_set_label(taken);
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_j(DisasContext *ctx, arg_j *a)
-{
-    if (!ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER, 0);
-    }
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm22 << 1);
-    tcg_gen_movi_i64(cpu_pc, target);
-    ctx->base.is_jmp = DISAS_NORETURN;
-    tcg_gen_exit_tb(NULL, 0);
-    return true;
-}
-
 static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
 {
     if (ctx->in_body) {
@@ -4938,18 +4846,9 @@ static bool trans_ssrswap(DisasContext *ctx, arg_ssrswap *a)
 static bool trans_ebreak(DisasContext *ctx, arg_ebreak *a)
 {
     tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
-    
-    if (a->imm4 == 0) {
-        /* Exit request - directly exit the TB without calling helper
-         * This ensures QEMU terminates immediately */
-        ctx->base.is_jmp = DISAS_NORETURN;
-        /* Request shutdown before exiting */
-        gen_helper_linx_exit(tcg_env);
-        /* This never returns - the helper calls cpu_loop_exit */
-        return true;
-    }
-    
-    /* For other EBREAK operations (semihosting), call the helper */
+
+    /* EBREAK defaults to architecture trap semantics; semihost behavior is
+     * opt-in and decided by helper-side runtime policy. */
     gen_helper_linx_ebreak(tcg_env, tcg_constant_i32(a->imm4));
     /*
      * Most semihosting operations return to the guest. Only exit/breakpoint
