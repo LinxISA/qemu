@@ -53,6 +53,8 @@ static bool linx_trace_ra_pc_filter_enabled;
 static uint64_t linx_trace_ra_pc;
 static bool linx_print_insn_count_inited;
 static bool linx_print_insn_count_enabled;
+static bool linx_semihost_inited;
+static bool linx_semihost_enabled;
 
 static inline bool linx_trace_ra_match(uint64_t pc)
 {
@@ -88,6 +90,16 @@ static inline bool linx_print_insn_count(void)
         linx_print_insn_count_inited = true;
     }
     return linx_print_insn_count_enabled;
+}
+
+static inline bool linx_semihost_enabled_p(void)
+{
+    if (!linx_semihost_inited) {
+        const char *v = getenv("LINX_SEMIHOST");
+        linx_semihost_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_semihost_inited = true;
+    }
+    return linx_semihost_enabled;
 }
 
 const LinxOpcodeMeta *linx_opcode_meta_lookup(uint64_t insn_word, unsigned insn_len)
@@ -1770,22 +1782,14 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
             env->lc[i] = 0;
         }
     } else if (rra_type == 1) {
-        const uint64_t lb = env->ssr_acr[mgr][LINX_SSR_EBARG_LB];
-        const uint64_t lc = env->ssr_acr[mgr][LINX_SSR_EBARG_LC];
-        env->tq[0] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ0];
-        env->tq[1] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ1];
-        env->tq[2] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ2];
-        env->tq[3] = env->ssr_acr[mgr][LINX_SSR_EBARG_TQ3];
-        env->uq[0] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ0];
-        env->uq[1] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ1];
-        env->uq[2] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ2];
-        env->uq[3] = env->ssr_acr[mgr][LINX_SSR_EBARG_UQ3];
-        env->lb[0] = (lb >> 0) & 0xffffu;
-        env->lb[1] = (lb >> 16) & 0xffffu;
-        env->lb[2] = (lb >> 32) & 0xffffu;
-        env->lc[0] = (lc >> 0) & 0xffffu;
-        env->lc[1] = (lc >> 16) & 0xffffu;
-        env->lc[2] = (lc >> 32) & 0xffffu;
+        /*
+         * RRA_RESTORE: keep the full second-level architectural snapshot that
+         * was restored by linx_acr_restore_block_state().
+         *
+         * Only continuation control-flow (BPC/TPC) is sourced from manager
+         * EBARG below. This prevents handler-side EBARG pollution from
+         * clobbering resumed queue/lane state.
+         */
     } else {
         env->pending_trap_arg0 = (uint64_t)rra_type;
         env->pending_trap_cause = 0;
@@ -2401,68 +2405,67 @@ uint64_t HELPER(linx_ucvtf)(CPULinxState *env, uint64_t a, uint32_t dsttype, uin
 void HELPER(linx_ebreak)(CPULinxState *env, uint32_t imm)
 {
     CPUState *cs = env_cpu(env);
-    
+    const bool semihost_enabled = linx_semihost_enabled_p();
+
     qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK imm=%d, a0=0x%lx, a1=0x%lx, a2=0x%lx\n",
                   imm, (unsigned long)env->gpr[LINX_REG_A0],
                   (unsigned long)env->gpr[LINX_REG_A1],
                   (unsigned long)env->gpr[LINX_REG_A2]);
-    
-    switch (imm) {
-    case LINX_SEMIHOST_EXIT:
-        /* Exit program - graceful shutdown */
-        qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK EXIT at PC=0x%lx\n",
-                      (unsigned long)env->pc);
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
-        cpu_loop_exit_noexc(cs);
-        break;
-        
-    case LINX_SEMIHOST_PUTCHAR: {
-        /* Output single character from a0 */
-        int ch = env->gpr[LINX_REG_A0] & 0xff;
-        qemu_log_mask(CPU_LOG_INT, "Linx: PUTCHAR '%c' (0x%02x)\n", 
-                      (ch >= 32 && ch < 127) ? ch : '.', ch);
-        /* Write to stderr for immediate visibility */
-        fputc(ch, stderr);
-        fflush(stderr);
-        env->gpr[LINX_REG_A0] = ch;  /* Return the character */
-        return;  /* Continue execution */
-    }
-        
-    case LINX_SEMIHOST_WRITE: {
-        /* Write buffer: a0=fd (ignored, always stderr), a1=buf, a2=len */
-        uint64_t buf_addr = env->gpr[LINX_REG_A1];
-        uint64_t len = env->gpr[LINX_REG_A2];
-        uint64_t i;
-        
-        qemu_log_mask(CPU_LOG_INT, "Linx: WRITE buf=0x%lx len=%lu\n",
-                      (unsigned long)buf_addr, (unsigned long)len);
-        
-        /* Read and output each byte from guest memory */
-        for (i = 0; i < len; i++) {
-            uint8_t ch = cpu_ldub_data(env, buf_addr + i);
+
+    /*
+     * ARM-style policy for Linx bring-up:
+     * - default: all EBREAK immediates are architectural SW_BREAKPOINT traps
+     * - opt-in semihost: LINX_SEMIHOST=1 enables imm[0..3] helper behavior.
+     */
+    if (semihost_enabled) {
+        switch (imm) {
+        case LINX_SEMIHOST_EXIT:
+            qemu_log_mask(CPU_LOG_INT, "Linx: EBREAK EXIT at PC=0x%lx\n",
+                          (unsigned long)env->pc);
+            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+            cpu_loop_exit_noexc(cs);
+            break;
+
+        case LINX_SEMIHOST_PUTCHAR: {
+            int ch = env->gpr[LINX_REG_A0] & 0xff;
+            qemu_log_mask(CPU_LOG_INT, "Linx: PUTCHAR '%c' (0x%02x)\n",
+                          (ch >= 32 && ch < 127) ? ch : '.', ch);
             fputc(ch, stderr);
+            fflush(stderr);
+            env->gpr[LINX_REG_A0] = ch;
+            return;
         }
-        fflush(stderr);
-        env->gpr[LINX_REG_A0] = len;  /* Return bytes written */
-        return;  /* Continue execution */
+
+        case LINX_SEMIHOST_WRITE: {
+            uint64_t buf_addr = env->gpr[LINX_REG_A1];
+            uint64_t len = env->gpr[LINX_REG_A2];
+            uint64_t i;
+
+            qemu_log_mask(CPU_LOG_INT, "Linx: WRITE buf=0x%lx len=%lu\n",
+                          (unsigned long)buf_addr, (unsigned long)len);
+            for (i = 0; i < len; i++) {
+                uint8_t ch = cpu_ldub_data(env, buf_addr + i);
+                fputc(ch, stderr);
+            }
+            fflush(stderr);
+            env->gpr[LINX_REG_A0] = len;
+            return;
+        }
+
+        case LINX_SEMIHOST_READ:
+            env->gpr[LINX_REG_A0] = 0;
+            return;
+        default:
+            break;
+        }
     }
-        
-    case LINX_SEMIHOST_READ: {
-        /* Read not implemented for now - return 0 */
-        env->gpr[LINX_REG_A0] = 0;
-        return;
-    }
-        
-    default:
-        /* Unhandled semihosting operation - treat as a software breakpoint trap. */
-        qemu_log_mask(LOG_GUEST_ERROR, 
-                      "Linx: Unhandled EBREAK imm=%d at PC=0x%lx\n",
-                      imm, (unsigned long)env->pc);
-        env->pending_trap_cause = imm & 0xffu;
-        cs->exception_index = LINX_EXCP_BREAKPOINT;
-        cpu_loop_exit_restore(cs, GETPC());
-        break;
-    }
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: EBREAK trap imm=%u at PC=0x%lx (LINX_SEMIHOST=%u)\n",
+                  imm, (unsigned long)env->pc, semihost_enabled ? 1u : 0u);
+    env->pending_trap_cause = imm & 0xffu;
+    cs->exception_index = LINX_EXCP_BREAKPOINT;
+    cpu_loop_exit_restore(cs, GETPC());
 }
 
 void HELPER(raise_exception)(CPULinxState *env, uint32_t exception)
@@ -4919,7 +4922,7 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 2) + (idx << (2u + (shamt & 0x1fu)));
+    const uint64_t addr = base + (lane << 2) + (idx << (shamt & 0x3fu));
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
 
     linx_lr_clear(env);
