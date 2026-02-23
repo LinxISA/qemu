@@ -60,9 +60,54 @@ enum {
     LINX_EBLOCK_CFI_MISSING_NEXT_MARKER = 0x3,
 };
 
+/*
+ * v0.3 E_BLOCK(EC_BLOCKFMT) TRAPARG0[15:0] encoding:
+ *   [7:0]   = descriptor family
+ *   [15:8]  = detail code
+ */
+enum {
+    LINX_BLOCKFMT_FAMILY_NONE = 0x00,
+    LINX_BLOCKFMT_FAMILY_DIM  = 0x01,
+    LINX_BLOCKFMT_FAMILY_TEXT = 0x02,
+    LINX_BLOCKFMT_FAMILY_ARG  = 0x03,
+    LINX_BLOCKFMT_FAMILY_IOR  = 0x04,
+    LINX_BLOCKFMT_FAMILY_IOT  = 0x05,
+};
+
+enum {
+    LINX_BLOCKFMT_DETAIL_MISSING = 0x00,
+    LINX_BLOCKFMT_DETAIL_INVALID = 0x01,
+    LINX_BLOCKFMT_DETAIL_ILLEGAL_COMBO = 0x02,
+};
+
 static inline uint32_t linx_eblock_cause_make(uint8_t ec, uint8_t kind)
 {
     return ((uint32_t)ec << 8) | (uint32_t)(kind & 0x0fu);
+}
+
+static inline uint8_t linx_eblock_cause_ec(uint32_t cause)
+{
+    return (uint8_t)((cause >> 8) & 0xffu);
+}
+
+static inline uint32_t linx_eblock_cfi_cause(uint8_t kind)
+{
+    return linx_eblock_cause_make(LINX_EBLOCK_EC_CFI, kind);
+}
+
+static inline uint32_t linx_eblock_blockfmt_cause(void)
+{
+    return linx_eblock_cause_make(LINX_EBLOCK_EC_BLOCKFMT, 0);
+}
+
+static inline uint32_t linx_eblock_bfetch_cause(void)
+{
+    return linx_eblock_cause_make(LINX_EBLOCK_EC_BFETCH, 0);
+}
+
+static inline uint64_t linx_blockfmt_traparg_make(uint8_t family, uint8_t detail)
+{
+    return ((uint64_t)(detail & 0xffu) << 8) | (uint64_t)(family & 0xffu);
 }
 
 /* Legacy v0.2 block fault codes (kept temporarily for internal translation). */
@@ -76,6 +121,18 @@ enum {
     LINX_EBLOCK_LEGACY_CALL_MISSING_SETRET = 7,
     LINX_EBLOCK_LEGACY_CALL_INVALID_SEQUENCE = 8,
     LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT = 9,
+};
+/* Compatibility aliases used by v0.3 helper/translate paths. */
+enum {
+    LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET = LINX_EBLOCK_LEGACY_BAD_BRANCH_TARGET,
+    LINX_EBLOCK_CAUSE_MISSING_BODY_TPC  = LINX_EBLOCK_LEGACY_MISSING_BODY_TPC,
+    LINX_EBLOCK_CAUSE_ILLEGAL_IN_BODY   = LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY,
+    LINX_EBLOCK_CAUSE_ILLEGAL_IN_HEADER = LINX_EBLOCK_LEGACY_ILLEGAL_IN_HEADER,
+    LINX_EBLOCK_CAUSE_DESC_OUTSIDE_BLOCK = LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
+    LINX_EBLOCK_CAUSE_ACRC_MISSING_BSTOP = LINX_EBLOCK_LEGACY_ACRC_MISSING_BSTOP,
+    LINX_EBLOCK_CAUSE_CALL_MISSING_SETRET = LINX_EBLOCK_LEGACY_CALL_MISSING_SETRET,
+    LINX_EBLOCK_CAUSE_CALL_INVALID_SEQUENCE = LINX_EBLOCK_LEGACY_CALL_INVALID_SEQUENCE,
+    LINX_EBLOCK_CAUSE_RET_MISSING_SETCTGT = LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT,
 };
 enum {
     LINX_REG_ZERO = 0,
@@ -122,6 +179,7 @@ typedef enum LinxTemplateKind {
 #define LINX_VEC_QUEUE_DEPTH 32u
 #define LINX_COSIM_MAX_RANGES 256u
 #define LINX_COSIM_PATH_MAX 512u
+#define LINX_BSTART_CACHE_SIZE 64u
 
 /* Bring-up tile backing store limits (TAU). */
 #define LINX_TILE_MAX_BYTES (64u * 1024u) /* must cover >=16KB bring-up */
@@ -356,9 +414,16 @@ typedef struct CPUArchState {
     uint32_t lr_size;
     uint32_t lr_valid;
 
-    /* Small hot-path cache for bstart target validation. */
-    uint64_t bstart_cache[4];
-    uint32_t bstart_cache_next;
+    /* Direct-mapped hot-path cache for bstart target validation. */
+    uint64_t bstart_cache_tag[LINX_BSTART_CACHE_SIZE];
+    uint8_t bstart_cache_valid[LINX_BSTART_CACHE_SIZE];
+
+    /*
+     * Runtime-specialized fast-path state.
+     * These bits are folded into TB flags by cpu.c.
+     */
+    uint8_t tb_dbg_active;
+    uint8_t tb_cosim_precheck;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

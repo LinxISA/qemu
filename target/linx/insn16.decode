@@ -40,7 +40,7 @@ c_setc_ne       .... .... ..11 0110 %SrcL %SrcR
 
 # Register moves / ALU
 # C.MOVR and C.MOVI have different opcodes ([5:0])
-# NOTE: C.SETRET is handled inside trans_c_movi when RegDst==RA
+# C.SETRET uses a dedicated compact encoding.
 c_movr          .... .... ..00 0110 %RegDst %SrcL
 c_add           .... .... ..00 1000 %SrcL %SrcR
 c_sub           .... .... ..01 1000 %SrcL %SrcR
