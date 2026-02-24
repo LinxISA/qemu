@@ -1029,9 +1029,43 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
     return true;
 }
 
-static bool trans_bstart_par(DisasContext *ctx, arg_bstart_par *a)
+/*
+ * PAR tile block starters are decodetree-fixed opcodes: only dtype is a field.
+ * (see target/linx/insn32.decode bstart_par_* entries)
+ */
+static bool trans_bstart_par_vcall(DisasContext *ctx, arg_bstart_par_vcall *a)
 {
-    return trans_bstart_par_common(ctx, a->dtype, a->op);
+    return trans_bstart_par_common(ctx, a->dtype, 1u);
+}
+
+static bool trans_bstart_par_mamulb(DisasContext *ctx, arg_bstart_par_mamulb *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 17u);
+}
+
+static bool trans_bstart_par_tload(DisasContext *ctx, arg_bstart_par_tload *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 33u);
+}
+
+static bool trans_bstart_par_tstore(DisasContext *ctx, arg_bstart_par_tstore *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 65u);
+}
+
+static bool trans_bstart_par_mamulb_acc(DisasContext *ctx, arg_bstart_par_mamulb_acc *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 66u);
+}
+
+static bool trans_bstart_par_compat163(DisasContext *ctx, arg_bstart_par_compat163 *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 163u);
+}
+
+static bool trans_bstart_par_acccvt(DisasContext *ctx, arg_bstart_par_acccvt *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, 258u);
 }
 
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
@@ -4222,6 +4256,7 @@ static bool trans_cmp_geui(DisasContext *ctx, arg_cmp_geui *a)
 /* ===================== Branch on Zero/Non-Zero Instructions ===================== */
 
 /* Internal relative control flow (used in decoupled bodies). */
+#if 0 /* legacy reg-compare branches (pre v0.3 decoder); kept for reference */
 static bool trans_b_eq(DisasContext *ctx, arg_b_eq *a)
 {
     if (!ctx->in_body) {
@@ -4342,6 +4377,8 @@ static bool trans_j(DisasContext *ctx, arg_j *a)
     tcg_gen_exit_tb(NULL, 0);
     return true;
 }
+
+#endif
 
 static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
 {
