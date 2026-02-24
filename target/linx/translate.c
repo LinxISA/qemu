@@ -534,7 +534,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
              * Fast path: direct/call blocks with a fixed PC-relative target and no
              * SETC.TGT override can be emitted as a direct TB branch.
              */
-            linx_gen_goto_tb(ctx, 0, ctx->brtarget, false);
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
         } else {
             /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT). */
             gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
@@ -547,10 +547,13 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         }
         break;
     case LINX_BR_CALL:
-        /* CALL blocks return to the next block start unless SETRET overrode RA. */
+        /*
+         * v0.3: for direct CALL transitions, the return address defaults to the
+         * next block-start marker in the linear stream (the fall-through). A
+         * following SETRET/C.SETRET may override RA, but is not required.
+         */
         if (!ctx->ra_set) {
-            (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_CALL_MISSING_SETRET, 0);
-            return;
+            linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
         }
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
@@ -629,8 +632,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
          * marker for return.
          */
         if (!ctx->ra_set) {
-            (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_CALL_MISSING_SETRET, 0);
-            return;
+            linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
         }
         if (!ctx->tgt_modified && ctx->brtarget == 0) {
             (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT, 0);
