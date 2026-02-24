@@ -5234,8 +5234,9 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: invalid branch target 0x%" PRIx64 " (not a block start marker)\n",
                   target);
-    env->pending_trap_arg0 = target;
-    env->pending_trap_cause = LINX_EBLOCK_CAUSE_BAD_BRANCH_TARGET;
+    /* v0.3: E_BLOCK(EC_CFI), TRAPARG0 is the source PC/TPC (not the target VA). */
+    env->pending_trap_arg0 = env->pc;
+    env->pending_trap_cause = linx_eblock_cfi_cause(LINX_EBLOCK_CFI_BAD_TARGET);
     cs->exception_index = LINX_EXCP_BAD_BRANCH_TARGET;
     cpu_loop_exit_restore(cs, GETPC());
 }

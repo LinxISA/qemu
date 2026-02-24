@@ -624,30 +624,17 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case LINX_EXCP_BAD_BRANCH_TARGET:
-        /* v0.3: route via E_BLOCK(EC_CFI) (see LINX_EXCP_BLOCK_FAULT path). */
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: branch target violation at PC=0x%" PRIx64 "\n",
-                      last_pc);
-        cs->exception_index = LINX_EXCP_BLOCK_FAULT;
-        /* pending_trap_cause/arg0 should already be set by the raising site. */
-        /* fallthrough */
-
-    case LINX_EXCP_ILLEGAL_INST:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
-                      last_pc);
-        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
-                               LINX_TRAPNUM_ILLEGAL_INST,
-                               false, /* argv */
-                               false, /* fault */
-                               (env->in_body != 0) /* BI */
-                               );
-        return;
-
     case LINX_EXCP_BLOCK_FAULT:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: block fault at PC=0x%" PRIx64 "\n",
-                      last_pc);
+        if (exception == LINX_EXCP_BAD_BRANCH_TARGET) {
+            /* v0.3: route via E_BLOCK(EC_CFI) (see E_BLOCK delivery path). */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: branch target violation at PC=0x%" PRIx64 "\n",
+                          last_pc);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: block fault at PC=0x%" PRIx64 "\n",
+                          last_pc);
+        }
         /* v0.3: BI is determined by the E_BLOCK EC class. */
         {
             const uint8_t ec = linx_eblock_cause_ec(env->pending_trap_cause);
@@ -659,6 +646,18 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                                    bi     /* BI */
                                    );
         }
+        return;
+
+    case LINX_EXCP_ILLEGAL_INST:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
+                      last_pc);
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_ILLEGAL_INST,
+                               false, /* argv */
+                               false, /* fault */
+                               (env->in_body != 0) /* BI */
+                               );
         return;
 
     case LINX_EXCP_HW_BREAKPOINT:
