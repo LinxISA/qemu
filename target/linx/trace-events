@@ -4,3 +4,16 @@
 # translate.c
 linx_insn_exec(uint64_t pc, uint32_t insn, unsigned len, const char *name) "PC=0x%" PRIx64 " insn=0x%08" PRIx32 " len=%u %s"
 linx_insn_decode_fail(uint64_t pc, uint32_t insn, unsigned len) "PC=0x%" PRIx64 " insn=0x%08" PRIx32 " len=%u (decode failed)"
+
+# mmu / traps / debug
+linx_tlb_fill(uint64_t va, int access, int mmu_idx, int probe, uint64_t tcr, uint32_t acr) "va=0x%" PRIx64 " access=%d mmu=%d probe=%d tcr=0x%" PRIx64 " acr=%u"
+linx_tlb_fill_ok(uint64_t va, uint64_t pa, uint64_t size, int prot) "va=0x%" PRIx64 " pa=0x%" PRIx64 " size=0x%" PRIx64 " prot=0x%x"
+linx_tlb_fill_set(uint64_t va_base, uint64_t pa_base, uint64_t size) "va_base=0x%" PRIx64 " pa_base=0x%" PRIx64 " size=0x%" PRIx64
+linx_mmu_ssr_write(uint32_t ssrid, uint32_t bank, uint32_t idx, uint64_t value) "ssrid=0x%06" PRIx32 " bank=%u idx=0x%03" PRIx32 " value=0x%016" PRIx64
+linx_deliver_sync_trap(uint32_t trapnum, uint32_t src_acr, uint32_t dst_acr, uint64_t tpc, uint64_t bpc, uint64_t cstate) "trap=%u src_acr=%u dst_acr=%u tpc=0x%" PRIx64 " bpc=0x%" PRIx64 " cstate=0x%" PRIx64
+linx_service_request(uint32_t src_acr, uint32_t req, uint64_t bpc, uint64_t tpc, uint64_t pc_next) "src_acr=%u req=%u bpc=0x%" PRIx64 " tpc=0x%" PRIx64 " pc_next=0x%" PRIx64
+linx_acr_enter(uint32_t mgr, uint32_t target, uint32_t rra, uint32_t bi, uint64_t resume_pc, uint64_t resume_bpc, uint64_t resume_tpc, uint64_t a0, uint64_t ecstate) "mgr=%u target=%u rra=%u bi=%u resume=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64 " a0=0x%" PRIx64 " ecstate=0x%" PRIx64
+linx_debug_breakpoint_hit(uint64_t pc) "pc=0x%" PRIx64
+linx_debug_watchpoint_hit(uint64_t pc, uint64_t addr, int flags) "pc=0x%" PRIx64 " addr=0x%" PRIx64 " flags=0x%x"
+linx_ra_trace(uint64_t pc, uint32_t what, uint64_t sp, uint64_t ra, uint32_t brtype, uint32_t cond, uint32_t carg, uint64_t tgt, uint64_t v0, uint64_t v1) "pc=0x%" PRIx64 " what=%u sp=0x%" PRIx64 " ra=0x%" PRIx64 " brtype=%u cond=%u carg=0x%x tgt=0x%" PRIx64 " v0=0x%" PRIx64 " v1=0x%" PRIx64
+linx_reg_trace(uint64_t pc, uint32_t what, uint32_t reg, uint64_t sp, uint64_t ra, uint32_t brtype, uint32_t cond, uint64_t tgt, uint64_t v0, uint64_t v1) "pc=0x%" PRIx64 " what=%u r=%u sp=0x%" PRIx64 " ra=0x%" PRIx64 " brtype=%u cond=%u tgt=0x%" PRIx64 " v0=0x%" PRIx64 " v1=0x%" PRIx64

@@ -8,6 +8,7 @@
 #include "qemu/qemu-print.h"
 #include "qapi/error.h"
 #include "cpu.h"
+#include "trace.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
 #include "exec/memattrs.h"
@@ -26,22 +27,10 @@
 
 static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags);
 
-static bool linx_trace_mmu_inited;
-static bool linx_trace_mmu_enabled;
 static bool linx_cpu_dump_debug_inited;
 static bool linx_cpu_dump_debug_enabled;
 static bool linx_cpu_dump_on_event_inited;
 static bool linx_cpu_dump_on_event_enabled;
-
-static inline bool linx_trace_mmu(void)
-{
-    if (!linx_trace_mmu_inited) {
-        const char *v = getenv("LINX_TRACE_MMU");
-        linx_trace_mmu_enabled = v && v[0] && strcmp(v, "0") != 0;
-        linx_trace_mmu_inited = true;
-    }
-    return linx_trace_mmu_enabled;
-}
 
 static inline bool linx_cpu_dump_debug(void)
 {
@@ -539,15 +528,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         src_cstate &= ~LINX_ECSTATE_BI_BIT;
     }
     const uint64_t src_bpc = env->bpc;
-
-    if (getenv("LINX_TRACE_TRAP")) {
-        fprintf(stderr,
-                "Linx: deliver_sync_trap trapnum=%u src_acr=%u dst_acr=%u"
-                " tpc=0x%016" PRIx64 " bpc=0x%016" PRIx64
-                " cstate=0x%016" PRIx64 "\n",
-                trapnum, src_acr, dst_acr, tpc, src_bpc, src_cstate);
-        fflush(stderr);
-    }
+    trace_linx_deliver_sync_trap(trapnum, src_acr, dst_acr, tpc, src_bpc, src_cstate);
 
     linx_acr_save_block_state(env, src_acr);
     const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
@@ -1048,17 +1029,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
     hwaddr tlb_size = TARGET_PAGE_SIZE;
     uint8_t cause = 0;
 
-    if (linx_trace_mmu()) {
-        static int count;
-        if (count++ < 128) {
-            const uint64_t tcr = env->ssr_acr[1][LINX_SSR_TCR];
-            fprintf(stderr,
-                    "linx: tlb_fill addr=0x%016" PRIx64 " access=%d mmu_idx=%d probe=%d tcr=0x%016" PRIx64 " acr=%u\n",
-                    (uint64_t)addr, access_type, mmu_idx, probe ? 1 : 0,
-                    tcr, env->acr & 0xFu);
-            fflush(stderr);
-        }
-    }
+    trace_linx_tlb_fill(addr, access_type, mmu_idx, probe ? 1 : 0,
+                        env->ssr_acr[1][LINX_SSR_TCR], env->acr & 0xFu);
 
     if (linx_mmu_translate(cs, env, addr, access_type, mmu_idx,
                            &pa, &prot, &tlb_size, &cause)) {
@@ -1075,27 +1047,9 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         }
         vaddr vbase = addr & ~(vaddr)(map_size - 1u);
         hwaddr pbase = pa & ~(hwaddr)(map_size - 1u);
-        if (linx_trace_mmu()) {
-            static int count_ok;
-            if (count_ok++ < 128) {
-                fprintf(stderr,
-                        "linx: tlb_ok  va=0x%016" PRIx64 " -> pa=0x%016" HWADDR_PRIx
-                        " size=0x%016" HWADDR_PRIx " prot=0x%x\n",
-                        (uint64_t)addr, pa, map_size, prot);
-                fflush(stderr);
-            }
-        }
+        trace_linx_tlb_fill_ok(addr, pa, map_size, prot);
         tlb_set_page(cs, vbase, pbase, prot, mmu_idx, map_size);
-        if (linx_trace_mmu()) {
-            static int count_set;
-            if (count_set++ < 128) {
-                fprintf(stderr,
-                        "linx: tlb_set va_base=0x%016" PRIx64 " pa_base=0x%016" HWADDR_PRIx
-                        " size=0x%016" HWADDR_PRIx "\n",
-                        (uint64_t)vbase, pbase, map_size);
-                fflush(stderr);
-            }
-        }
+        trace_linx_tlb_fill_set(vbase, pbase, map_size);
         return true;
     }
 
@@ -1257,6 +1211,35 @@ static const struct SysemuCPUOps linx_sysemu_ops = {
     .get_phys_page_debug = linx_cpu_get_phys_page_debug,
 };
 
+static void linx_cpu_debug_excp_handler(CPUState *cs)
+{
+    CPULinxState *env = cpu_env(cs);
+
+    if (cs->watchpoint_hit) {
+        trace_linx_debug_watchpoint_hit(env->pc, cs->watchpoint_hit->hitaddr,
+                                        cs->watchpoint_hit->flags);
+        return;
+    }
+
+    if (cpu_breakpoint_test(cs, env->pc, BP_CPU) ||
+        cpu_breakpoint_test(cs, env->pc, BP_GDB)) {
+        trace_linx_debug_breakpoint_hit(env->pc);
+    }
+}
+
+static bool linx_cpu_debug_check_breakpoint(CPUState *cs)
+{
+    CPULinxState *env = cpu_env(cs);
+
+    return cpu_breakpoint_test(cs, env->pc, BP_CPU);
+}
+
+static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
+{
+    (void)cs;
+    return (wp->flags & BP_CPU) != 0;
+}
+
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
     .mttcg_supported = false,
@@ -1276,6 +1259,9 @@ static const TCGCPUOps linx_tcg_ops = {
     .cpu_exec_interrupt = linx_cpu_exec_interrupt,
     .cpu_exec_halt = linx_cpu_has_work,
     .cpu_exec_reset = cpu_reset,
+    .debug_excp_handler = linx_cpu_debug_excp_handler,
+    .debug_check_breakpoint = linx_cpu_debug_check_breakpoint,
+    .debug_check_watchpoint = linx_cpu_debug_check_watchpoint,
     .do_interrupt = linx_cpu_do_interrupt,
 };
 

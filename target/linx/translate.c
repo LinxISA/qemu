@@ -97,30 +97,6 @@ static bool linx_commit_trace_enabled;
 static bool linx_opcode_meta_strict = true;
 
 static unsigned linx_insn_len(uint16_t hw);
-
-static bool linx_watch_store_enabled;
-static uint64_t linx_watch_store_lo;
-static uint64_t linx_watch_store_hi;
-static bool linx_watch_store_pc_filter_enabled;
-static uint64_t linx_watch_store_pc_lo;
-static uint64_t linx_watch_store_pc_hi;
-
-static bool linx_watch_load_enabled;
-static uint64_t linx_watch_load_lo;
-static uint64_t linx_watch_load_hi;
-static bool linx_watch_load_pc_filter_enabled;
-static uint64_t linx_watch_load_pc_lo;
-static uint64_t linx_watch_load_pc_hi;
-
-static bool linx_trace_ra_enabled;
-static bool linx_trace_ra_pc_enabled;
-static uint64_t linx_trace_ra_pc;
-
-static bool linx_trace_reg_enabled;
-static uint32_t linx_trace_reg;
-static bool linx_trace_reg_pc_filter_enabled;
-static uint64_t linx_trace_reg_pc_lo;
-static uint64_t linx_trace_reg_pc_hi;
 static bool linx_illegal(DisasContext *ctx);
 static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t arg0);
 static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw);
@@ -136,11 +112,6 @@ static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw);
  * binaries that relied on an additional fixed outgoing-call frame.
  */
 uint64_t linx_callframe_size = 0;
-
-static inline bool linx_trace_ra_pc_match(vaddr pc)
-{
-    return !linx_trace_ra_pc_enabled || (uint64_t)pc == linx_trace_ra_pc;
-}
 
 static inline MemOp linx_mo_endian(void)
 {
@@ -2518,41 +2489,6 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
         tcg_gen_movi_i32(cpu_trace_mem_size, (int32_t)memop_size(mop));
     }
 
-    if (linx_watch_load_enabled) {
-        if (!linx_watch_load_pc_filter_enabled ||
-            ((uint64_t)pc >= linx_watch_load_pc_lo &&
-             (uint64_t)pc <= linx_watch_load_pc_hi)) {
-            const unsigned size = memop_size(mop);
-            TCGLabel *skip = gen_new_label();
-            TCGv_i64 addr64;
-            TCGv_i64 end64;
-
-#if TARGET_LONG_BITS == 32
-            addr64 = tcg_temp_new_i64();
-            tcg_gen_extu_tl_i64(addr64, addr);
-#else
-            addr64 = (TCGv_i64)addr;
-#endif
-
-            tcg_gen_brcondi_i64(TCG_COND_GTU, addr64,
-                                (int64_t)linx_watch_load_hi, skip);
-            if (size > 1) {
-                end64 = tcg_temp_new_i64();
-                tcg_gen_addi_i64(end64, addr64, (int64_t)size - 1);
-                tcg_gen_brcondi_i64(TCG_COND_LTU, end64,
-                                    (int64_t)linx_watch_load_lo, skip);
-            } else {
-                tcg_gen_brcondi_i64(TCG_COND_LTU, addr64,
-                                    (int64_t)linx_watch_load_lo, skip);
-            }
-
-            gen_helper_linx_watch_load(tcg_env, tcg_constant_i64(pc), addr64,
-                                       out,
-                                       tcg_constant_i32((int32_t)size));
-            gen_set_label(skip);
-        }
-    }
-
     linx_set_dest(dst, out);
     return true;
 }
@@ -3071,39 +3007,6 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
 #endif
         gen_helper_linx_dbg_check_store(tcg_env, tcg_constant_i64(pc), addr64,
                                         tcg_constant_i32((int32_t)size));
-    }
-
-    if (linx_watch_store_enabled) {
-        if (!linx_watch_store_pc_filter_enabled ||
-            ((uint64_t)pc >= linx_watch_store_pc_lo &&
-             (uint64_t)pc <= linx_watch_store_pc_hi)) {
-            const unsigned size = memop_size(mop);
-            TCGLabel *skip = gen_new_label();
-            TCGv_i64 addr64;
-            TCGv_i64 end64;
-
-#if TARGET_LONG_BITS == 32
-            addr64 = tcg_temp_new_i64();
-            tcg_gen_extu_tl_i64(addr64, addr);
-#else
-            addr64 = (TCGv_i64)addr;
-#endif
-
-            tcg_gen_brcondi_i64(TCG_COND_GTU, addr64, (int64_t)linx_watch_store_hi, skip);
-            if (size > 1) {
-                end64 = tcg_temp_new_i64();
-                tcg_gen_addi_i64(end64, addr64, (int64_t)size - 1);
-                tcg_gen_brcondi_i64(TCG_COND_LTU, end64,
-                                    (int64_t)linx_watch_store_lo, skip);
-            } else {
-                tcg_gen_brcondi_i64(TCG_COND_LTU, addr64,
-                                    (int64_t)linx_watch_store_lo, skip);
-            }
-
-            gen_helper_linx_watch_store(tcg_env, tcg_constant_i64(pc), addr64, val,
-                                        tcg_constant_i32((int32_t)size));
-            gen_set_label(skip);
-        }
     }
 
     if (linx_commit_trace_enabled) {
@@ -5141,14 +5044,6 @@ void linx_translate_code(CPUState *cs, TranslationBlock *tb,
 void linx_translate_init(void)
 {
     int i;
-    const char *watch = getenv("LINX_WATCH_STORE");
-    const char *watch_pc = getenv("LINX_WATCH_STORE_PC");
-    const char *watch_load = getenv("LINX_WATCH_LOAD");
-    const char *watch_load_pc = getenv("LINX_WATCH_LOAD_PC");
-    const char *trace_ra = getenv("LINX_TRACE_RA");
-    const char *trace_ra_pc = getenv("LINX_TRACE_RA_PC");
-    const char *trace_reg = getenv("LINX_TRACE_REG");
-    const char *trace_reg_pc = getenv("LINX_TRACE_REG_PC");
     const char *callframe = getenv("LINX_CALLFRAME_SIZE");
     const char *commit_trace = getenv("LINX_COMMIT_TRACE");
     const char *cosim_enable = getenv("LINX_COSIM_ENABLE");
@@ -5243,169 +5138,6 @@ void linx_translate_init(void)
             if ((v & 7u) == 0) {
                 linx_callframe_size = v;
             }
-        }
-    }
-
-    if (trace_reg && trace_reg[0] && strcmp(trace_reg, "0") != 0) {
-        char *endp = NULL;
-        unsigned long v;
-
-        errno = 0;
-        v = strtoul(trace_reg, &endp, 0);
-        if (errno == 0 && endp && endp != trace_reg && *endp == '\0') {
-            if (v < LINX_GPR_COUNT) {
-                linx_trace_reg = (uint32_t)v;
-                linx_trace_reg_enabled = true;
-            }
-        }
-    }
-
-    if (linx_trace_reg_enabled && trace_reg_pc && trace_reg_pc[0] &&
-        strcmp(trace_reg_pc, "0") != 0) {
-        char *endp = NULL;
-        char *endp2 = NULL;
-        uint64_t lo;
-        uint64_t hi;
-
-        errno = 0;
-        lo = strtoull(trace_reg_pc, &endp, 0);
-        if (errno == 0 && endp && endp != trace_reg_pc) {
-            if (*endp == '-' || *endp == ':') {
-                errno = 0;
-                hi = strtoull(endp + 1, &endp2, 0);
-                if (errno == 0 && endp2 && endp2 != endp + 1 &&
-                    *endp2 == '\0') {
-                    linx_trace_reg_pc_lo = MIN(lo, hi);
-                    linx_trace_reg_pc_hi = MAX(lo, hi);
-                    linx_trace_reg_pc_filter_enabled = true;
-                }
-            } else if (*endp == '\0') {
-                linx_trace_reg_pc_lo = lo;
-                linx_trace_reg_pc_hi = lo;
-                linx_trace_reg_pc_filter_enabled = true;
-            }
-        }
-    }
-
-    if (trace_ra && trace_ra[0] && strcmp(trace_ra, "0") != 0) {
-        linx_trace_ra_enabled = true;
-        if (trace_ra_pc && trace_ra_pc[0] && strcmp(trace_ra_pc, "0") != 0) {
-            char *endp = NULL;
-            uint64_t pc;
-
-            errno = 0;
-            pc = strtoull(trace_ra_pc, &endp, 0);
-            if (errno == 0 && endp && endp != trace_ra_pc && *endp == '\0') {
-                linx_trace_ra_pc = pc;
-                linx_trace_ra_pc_enabled = true;
-            }
-        }
-    }
-
-    if (watch_pc && watch_pc[0] && strcmp(watch_pc, "0") != 0) {
-        char *endp = NULL;
-        char *endp2 = NULL;
-        uint64_t lo;
-        uint64_t hi;
-
-        errno = 0;
-        lo = strtoull(watch_pc, &endp, 0);
-        if (errno == 0 && endp && endp != watch_pc) {
-            if (*endp == '-' || *endp == ':') {
-                errno = 0;
-                hi = strtoull(endp + 1, &endp2, 0);
-                if (errno == 0 && endp2 && endp2 != endp + 1 && *endp2 == '\0') {
-                    linx_watch_store_pc_lo = MIN(lo, hi);
-                    linx_watch_store_pc_hi = MAX(lo, hi);
-                    linx_watch_store_pc_filter_enabled = true;
-                }
-            } else if (*endp == '\0') {
-                linx_watch_store_pc_lo = lo;
-                linx_watch_store_pc_hi = lo;
-                linx_watch_store_pc_filter_enabled = true;
-            }
-        }
-    }
-
-    if (watch_load_pc && watch_load_pc[0] && strcmp(watch_load_pc, "0") != 0) {
-        char *endp = NULL;
-        char *endp2 = NULL;
-        uint64_t lo;
-        uint64_t hi;
-
-        errno = 0;
-        lo = strtoull(watch_load_pc, &endp, 0);
-        if (errno == 0 && endp && endp != watch_load_pc) {
-            if (*endp == '-' || *endp == ':') {
-                errno = 0;
-                hi = strtoull(endp + 1, &endp2, 0);
-                if (errno == 0 && endp2 && endp2 != endp + 1 &&
-                    *endp2 == '\0') {
-                    linx_watch_load_pc_lo = MIN(lo, hi);
-                    linx_watch_load_pc_hi = MAX(lo, hi);
-                    linx_watch_load_pc_filter_enabled = true;
-                }
-            } else if (*endp == '\0') {
-                linx_watch_load_pc_lo = lo;
-                linx_watch_load_pc_hi = lo;
-                linx_watch_load_pc_filter_enabled = true;
-            }
-        }
-    }
-
-    if (watch && watch[0] && strcmp(watch, "0") != 0) {
-        char *endp = NULL;
-        uint64_t addr;
-        unsigned long len = 1;
-
-        errno = 0;
-        addr = strtoull(watch, &endp, 0);
-        if (errno == 0 && endp && endp != watch) {
-            if (*endp == ':') {
-                errno = 0;
-                len = strtoul(endp + 1, NULL, 0);
-                if (errno != 0 || len == 0) {
-                    len = 1;
-                }
-            } else if (*endp != '\0') {
-                len = 0;
-            }
-        } else {
-            len = 0;
-        }
-
-        if (len) {
-            linx_watch_store_lo = addr;
-            linx_watch_store_hi = addr + (uint64_t)len - 1;
-            linx_watch_store_enabled = true;
-        }
-    }
-
-    if (watch_load && watch_load[0] && strcmp(watch_load, "0") != 0) {
-        char *endp = NULL;
-        uint64_t addr;
-        unsigned long len = 1;
-
-        errno = 0;
-        addr = strtoull(watch_load, &endp, 0);
-        if (errno == 0 && endp && endp != watch_load) {
-            if (*endp == ':') {
-                errno = 0;
-                len = strtoul(endp + 1, NULL, 0);
-                if (errno != 0 || len == 0) {
-                    len = 1;
-                }
-            } else if (*endp != '\0') {
-                len = 0;
-            }
-        } else {
-            len = 0;
-        }
-
-        if (len) {
-            linx_watch_load_lo = addr;
-            linx_watch_load_hi = addr + (uint64_t)len - 1;
-            linx_watch_load_enabled = true;
         }
     }
 }

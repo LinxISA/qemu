@@ -3607,6 +3607,7 @@ if have_system
     'hw/input',
     'hw/intc',
     'hw/isa',
+    'hw/linx',
     'hw/mem',
     'hw/mips',
     'hw/misc',
