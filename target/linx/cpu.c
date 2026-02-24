@@ -389,7 +389,11 @@ static void linx_timer_cb(void *opaque)
     }
 
     /* Set pending bit and raise a hard interrupt. */
-    env->ssr_acr[1][LINX_SSR_IPENDING] |= (1ull << LINX_IRQ_TIMER0);
+    const uint64_t before = env->ssr_acr[1][LINX_SSR_IPENDING];
+    const uint64_t after = before | (1ull << LINX_IRQ_TIMER0);
+    const uint64_t now = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    trace_linx_timer_fire(now, before, after);
+    env->ssr_acr[1][LINX_SSR_IPENDING] = after;
     linx_irq_kick_if_allowed(cs, env, 1);
 }
 
@@ -722,6 +726,16 @@ static void linx_cpu_do_interrupt(CPUState *cs)
 
         const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
 
+        if (src_acr == dst_acr) {
+            const uint32_t depth_before = env->ebarg_stack_depth;
+            if (linx_ebarg_stack_push(env, dst_acr)) {
+                trace_linx_ebarg_stack_push(dst_acr, depth_before,
+                                            env->ebarg_stack_depth);
+            } else if (depth_before >= LINX_EBARG_STACK_DEPTH) {
+                trace_linx_ebarg_stack_overflow(dst_acr, depth_before);
+            }
+        }
+
         /* Save interrupt source state into managing ACR bank. */
         env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
         env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
@@ -750,6 +764,11 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                 irq_id = (uint32_t)ctz64(ip);
             }
         }
+
+        trace_linx_deliver_async_irq(src_acr, dst_acr, irq_id, 1u,
+                                     resume_pc, resume_bpc, resume_pc,
+                                     evbase, src_cstate,
+                                     env->ssr_acr[dst_acr][LINX_SSR_IPENDING]);
 
         env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
             linx_trapno_make(true, true, 0, LINX_TRAPNUM_INTERRUPT);
