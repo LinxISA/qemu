@@ -109,11 +109,11 @@ privileged SSRs used for Linux bring-up:
 
 - `TIME` (`ssrid 0x0010`): virtual time counter (ns)
 - `CSTATE` (`0x0020`): common state (includes `I` interrupt enable bit)
-- Managing ACR0 (low-12 indices under `0x0fxx`):
-  - `EVBASE_ACR0` (`0x0f01`): trap vector base
-  - `IPENDING_ACR0` (`0x0f08`): pending interrupt bitmap (bit0 = timer0)
-  - `EOIEI_ACR0` (`0x0f0a`): end-of-interrupt (write IRQ id to clear pending)
-  - `TIMER_TIMECMP_ACR0` (`0x0f21`): timer compare (absolute ns)
+- Managing ACR1 (low-12 indices under `0x1fxx`):
+  - `EVBASE_ACR1` (`0x1f01`): trap vector base
+  - `IPENDING_ACR1` (`0x1f08`): pending interrupt bitmap (bit0 = timer0)
+  - `EOIEI_ACR1` (`0x1f0a`): end-of-interrupt (write IRQ id to clear pending)
+  - `TIMER_TIMECMP_ACR1` (`0x1f21`): timer compare (absolute ns)
 
 ## Debug tips
 

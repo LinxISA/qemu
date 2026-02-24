@@ -181,6 +181,17 @@ typedef enum LinxTemplateKind {
 #define LINX_COSIM_PATH_MAX 512u
 #define LINX_BSTART_CACHE_SIZE 64u
 
+/*
+ * EBARG preservation stack (bring-up).
+ *
+ * Linux relies on the manager-bank EBARG group being restored after nested
+ * async interrupts so kernel code does not observe EBARG "state pollution"
+ * when timer IRQs are enabled.
+ */
+#define LINX_SSR_EBARG_BASE 0xF40u
+#define LINX_SSR_EBARG_COUNT 0x11u /* 0xF40..0xF50 inclusive */
+#define LINX_EBARG_STACK_DEPTH 8u
+
 /* Bring-up tile backing store limits (TAU). */
 #define LINX_TILE_MAX_BYTES (64u * 1024u) /* must cover >=16KB bring-up */
 #define LINX_TILE_MAX_WORDS (LINX_TILE_MAX_BYTES / 4u)
@@ -324,6 +335,14 @@ typedef struct CPUArchState {
     LinxAcrBlockState acr_block_state[LINX_ACR_COUNT];
 
     /*
+     * Nested same-ACR traps (timer IRQ inside a syscall, etc.) overwrite the
+     * managing ring's EBARG snapshot. Preserve and restore the full EBARG
+     * group so software can treat it as stable across async interrupt returns.
+     */
+    uint32_t ebarg_stack_depth;
+    uint64_t ebarg_stack[LINX_EBARG_STACK_DEPTH][LINX_SSR_EBARG_COUNT];
+
+    /*
      * Tile block state (TAU bring-up).
      *
      * For now this models a minimal single-B.IOT descriptor per block. The
@@ -460,6 +479,45 @@ typedef struct CPUArchState {
     /* Per-CPU virtual timer for TIMER_TIMECMP (bring-up). */
     struct QEMUTimer *timer;
 } CPULinxState;
+
+static inline bool linx_ebarg_stack_push(CPULinxState *env, uint32_t acr)
+{
+    uint32_t d;
+    uint32_t i;
+
+    if (acr >= LINX_ACR_COUNT || acr != 1) {
+        return false;
+    }
+    d = env->ebarg_stack_depth;
+    if (d >= LINX_EBARG_STACK_DEPTH) {
+        return false;
+    }
+    for (i = 0; i < LINX_SSR_EBARG_COUNT; i++) {
+        env->ebarg_stack[d][i] = env->ssr_acr[acr][LINX_SSR_EBARG_BASE + i];
+    }
+    env->ebarg_stack_depth = d + 1;
+    return true;
+}
+
+static inline bool linx_ebarg_stack_pop_restore(CPULinxState *env, uint32_t acr)
+{
+    uint32_t d;
+    uint32_t i;
+
+    if (acr >= LINX_ACR_COUNT || acr != 1) {
+        return false;
+    }
+    d = env->ebarg_stack_depth;
+    if (d == 0) {
+        return false;
+    }
+    d -= 1;
+    for (i = 0; i < LINX_SSR_EBARG_COUNT; i++) {
+        env->ssr_acr[acr][LINX_SSR_EBARG_BASE + i] = env->ebarg_stack[d][i];
+    }
+    env->ebarg_stack_depth = d;
+    return true;
+}
 
 static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
 {

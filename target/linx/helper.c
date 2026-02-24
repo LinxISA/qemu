@@ -1198,11 +1198,15 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                 CPUState *cs = env_cpu(env);
                 const uint32_t irq_id = (uint32_t)value & 63u;
                 const uint64_t bit = (1ull << irq_id);
+                const uint64_t before = env->ssr_acr[bank][LINX_SSR_IPENDING];
+                uint64_t after;
 
-                env->ssr_acr[bank][LINX_SSR_IPENDING] &= ~bit;
+                after = before & ~bit;
                 if (env->irq_level_acr[bank] & bit) {
-                    env->ssr_acr[bank][LINX_SSR_IPENDING] |= bit;
+                    after |= bit;
                 }
+                trace_linx_eoiei_write(bank, irq_id, before, after, env->irq_level_acr[bank]);
+                env->ssr_acr[bank][LINX_SSR_IPENDING] = after;
 
                 if (env->ssr_acr[bank][LINX_SSR_IPENDING] == 0) {
                     cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
@@ -1219,6 +1223,8 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                  * If TIMECMP is non-zero, schedule a virtual timer interrupt at
                  * that absolute virtual time (ns). If TIMECMP is zero, cancel.
                  */
+                const uint64_t now = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                trace_linx_timer_timecmp_write(bank, value, now);
                 env->ssr_acr[bank][idx] = value;
 
                 if (bank == 1 && env->timer) {
@@ -1230,12 +1236,12 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                         return;
                     }
 
-                    const uint64_t now = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
                     if (value <= now) {
                         env->ssr_acr[1][LINX_SSR_IPENDING] |= (1ull << 0);
                         linx_irq_kick_if_allowed(env, 1);
                         return;
                     }
+                    trace_linx_timer_schedule(now, value);
                     timer_mod_ns(env->timer, (int64_t)value);
                 }
                 return;
@@ -1663,6 +1669,14 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     linx_bstart_cache_reset(env);
     env->ssr[LINX_SSR_CSTATE] = ecstate & ~LINX_ECSTATE_BI_BIT;
     env->pc = resume_pc;
+    if (target == mgr) {
+        const uint32_t depth_before = env->ebarg_stack_depth;
+        if (linx_ebarg_stack_pop_restore(env, mgr)) {
+            trace_linx_ebarg_stack_pop(mgr, depth_before, env->ebarg_stack_depth);
+        } else {
+            trace_linx_ebarg_stack_underflow(mgr, depth_before);
+        }
+    }
     /*
      * External IRQs route to ACR1 in the bring-up profile.
      * Re-latch a pending request after privilege/state restore.
@@ -5084,6 +5098,7 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
         if (rc == 0) {
             const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
             const unsigned len = linx_insn_len(hw);
+            trace_linx_cfi_bad_target(env->pc, target, (uint32_t)hw, len);
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx: target bytes @0x%" PRIx64 ": %02x %02x %02x %02x %02x %02x %02x %02x (hw=0x%04x len=%u)\n",
                           target, buf[0], buf[1], buf[2], buf[3],

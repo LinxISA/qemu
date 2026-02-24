@@ -4904,6 +4904,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                    }
                }
                if (!decoded) {
+                   trace_linx_insn_decode_fail_raw(pc, (uint64_t)hw, len);
                    qemu_log_mask(LOG_GUEST_ERROR, "Linx: decode failed @ PC=0x%" VADDR_PRIx
                                 " hw=0x%04x len=%u\n", pc, hw, len);
                    linx_illegal(ctx);
@@ -4918,6 +4919,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
         decoded = decode_insn32(ctx, insn_val);
         if (!decoded) {
+            trace_linx_insn_decode_fail_raw(pc, (uint64_t)insn_val, len);
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx: decode32 failed @ PC=0x%" VADDR_PRIx " insn=0x%08x\n",
                           pc, insn_val);
@@ -4932,12 +4934,8 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         uint16_t hw3 = translator_lduw_end(env, &ctx->base, pc + 4, MO_LE);
         uint32_t hi = (uint32_t)hw2 | ((uint32_t)hw3 << 16);
         uint64_t insn48 = (uint64_t)hw | ((uint64_t)hi << 16);
-        if (getenv("LINX_TRACE_DECODE48")) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "Linx: insn48 pc=0x%" VADDR_PRIx " insn48=0x%012" PRIx64
-                          " key=0x%016" PRIx64 "\n",
-                          pc, insn48, (uint64_t)(insn48 & 0xffff0000007f000full));
-        }
+        trace_linx_insn_decode48(pc, insn48,
+                                 (uint64_t)(insn48 & 0xffff0000007f000full));
         insn_val = (uint32_t)(insn48 & 0xFFFFFFFF);
         linx_trace_begin(pc, insn48, len);
         if (!linx_validate_opcode_meta(ctx, pc, insn48, len)) {
@@ -4945,14 +4943,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
         decoded = decode_insn48(ctx, insn48);
         if (!decoded) {
-            if (getenv("LINX_TRACE_DECODE_FAIL")) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "Linx: decode48 failed pc=0x%" VADDR_PRIx
-                              " hw=0x%04x hw2=0x%04x hw3=0x%04x insn48=0x%012" PRIx64
-                              " key=0x%016" PRIx64 "\n",
-                              pc, hw, hw2, hw3, insn48,
-                              (uint64_t)(insn48 & 0xffff0000007f000full));
-            }
+            trace_linx_insn_decode_fail_raw(pc, insn48, len);
             linx_illegal(ctx);
         } else {
             trace_linx_insn_exec(pc, insn_val, len, "48-bit");
@@ -4975,6 +4966,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         }
         decoded = decode_insn64(ctx, insn64);
         if (!decoded) {
+            trace_linx_insn_decode_fail_raw(pc, insn64, len);
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx: decode64 failed @ PC=0x%" VADDR_PRIx
                           " insn=0x%016" PRIx64 "\n",
