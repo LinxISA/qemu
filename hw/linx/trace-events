@@ -1,0 +1,9 @@
+# Linx virt machine trace events
+
+linx_virt_exit_write(uint64_t value) "value=0x%" PRIx64
+linx_virt_uart_write(uint32_t value, uint32_t ch) "value=0x%02x ch=0x%02x"
+linx_virt_reset(uint64_t entry, uint64_t sp, uint64_t tramp) "entry=0x%" PRIx64 " sp=0x%" PRIx64 " tramp=0x%" PRIx64
+linx_virt_load_kernel(const char *kernel) "kernel=%s"
+linx_virt_loaded_elf(uint64_t entry, uint64_t image_end) "entry=0x%" PRIx64 " image_end=0x%" PRIx64
+linx_virt_loaded_initrd(const char *initrd, uint64_t base, uint64_t size) "initrd=%s base=0x%" PRIx64 " size=0x%" PRIx64
+linx_virt_fdt(uint64_t fdt_addr, uint32_t fdt_size) "fdt=0x%" PRIx64 " size=0x%x"

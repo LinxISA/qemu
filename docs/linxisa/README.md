@@ -117,5 +117,8 @@ privileged SSRs used for Linux bring-up:
 
 ## Debug tips
 
-- Set `LINX_VIRT_DEBUG=1` for loader/UART debug on stderr.
-- Use `-d in_asm,cpu` to log execution (very noisy).
+- Use QEMU trace events for Linx diagnostics, for example:
+  `-trace "linx_*" -D /tmp/linx.trace`.
+- For breakpoint/watchpoint debugging, run QEMU with gdbstub:
+  `-s -S`, then in GDB use `b *<pc>` / `watch *<addr>`.
+- Use `-d in_asm,cpu` only for low-level instruction logs (very noisy).

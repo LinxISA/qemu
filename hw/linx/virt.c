@@ -25,14 +25,9 @@
 #include "system/system.h"
 
 #include "cpu.h"
+#include "trace.h"
 
 #include <libfdt.h>
-
-static bool linx_virt_debug_enabled(void)
-{
-    const char *v = getenv("LINX_VIRT_DEBUG");
-    return v && v[0] && strcmp(v, "0") != 0;
-}
 
 static bool linx_virt_print_insn_count_enabled(void)
 {
@@ -223,10 +218,7 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
             /* Stop commit tracing after the exit store commits (difftest). */
             env->commit_trace.stop_after_commit = 1;
         }
-        if (linx_virt_debug_enabled()) {
-            fprintf(stderr, "linx virt: exit mmio write value=0x%" PRIx64 "\n", value);
-            fflush(stderr);
-        }
+        trace_linx_virt_exit_write(value);
         qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
                                                (int)(uint32_t)value);
         return;
@@ -238,15 +230,7 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
 
     qemu_mutex_lock(&s->lock);
     c = (unsigned char)(value & 0xFF);
-    if (linx_virt_debug_enabled()) {
-        static int uart_debug_count;
-        if (uart_debug_count < 64) {
-            fprintf(stderr, "linx virt: uart mmio write value=0x%02x ('%c')\n",
-                    (unsigned)c, (c >= 32 && c < 127) ? c : '.');
-            fflush(stderr);
-            uart_debug_count++;
-        }
-    }
+    trace_linx_virt_uart_write((uint32_t)c, (uint32_t)c);
     if (qemu_chr_fe_backend_connected(&s->chr)) {
         qemu_chr_fe_write_all(&s->chr, &c, 1);
     } else {
@@ -2406,12 +2390,7 @@ static void linx_virt_reset(void *opaque)
         exit(1);
     }
 
-    if (linx_virt_debug_enabled()) {
-        fprintf(stderr, "linx virt: reset entry=0x%" HWADDR_PRIx " sp=0x%" HWADDR_PRIx
-                        " tramp=0x%" HWADDR_PRIx "\n",
-                s->entry, s->initial_sp, s->exit_trampoline);
-        fflush(stderr);
-    }
+    trace_linx_virt_reset(s->entry, s->initial_sp, s->exit_trampoline);
 
     // Quiet boot - don't print entry address to avoid mixing with UART output
     // qemu_log_mask(LOG_TRACE, "linx virt: entry=0x%" HWADDR_PRIx " sp=0x%" HWADDR_PRIx "\n",
@@ -2450,10 +2429,7 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
 
-    if (linx_virt_debug_enabled()) {
-        fprintf(stderr, "linx virt: loading kernel %s\n", machine->kernel_filename);
-        fflush(stderr);
-    }
+    trace_linx_virt_load_kernel(machine->kernel_filename);
 
     if (!machine->ram) {
         error_report("linx virt: machine RAM not initialized");
@@ -2483,11 +2459,7 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
 
-    if (linx_virt_debug_enabled()) {
-        fprintf(stderr, "linx virt: loaded entry=0x%" HWADDR_PRIx " image_end=0x%" HWADDR_PRIx "\n",
-                entry, image_end);
-        fflush(stderr);
-    }
+    trace_linx_virt_loaded_elf(entry, image_end);
 
     cur = linx_align_up(image_end, 0x1000);
 
@@ -2515,11 +2487,7 @@ static void linx_virt_init(MachineState *machine)
 
         cur = linx_align_up(initrd_base + initrd_size, 0x1000);
 
-        if (linx_virt_debug_enabled()) {
-            fprintf(stderr, "linx virt: loaded initrd=%s @ 0x%" HWADDR_PRIx " size=0x%" HWADDR_PRIx "\n",
-                    machine->initrd_filename, initrd_base, initrd_size);
-            fflush(stderr);
-        }
+        trace_linx_virt_loaded_initrd(machine->initrd_filename, initrd_base, initrd_size);
     }
 
     fdt = linx_virt_get_fdt(machine, machine->ram_size,
@@ -2547,11 +2515,7 @@ static void linx_virt_init(MachineState *machine)
         image_end = cur;
     }
 
-    if (linx_virt_debug_enabled()) {
-        fprintf(stderr, "linx virt: fdt @ 0x%" HWADDR_PRIx " size=0x%x\n",
-                fdt_addr, fdt_size);
-        fflush(stderr);
-    }
+    trace_linx_virt_fdt(fdt_addr, (uint32_t)fdt_size);
 
     tramp = (machine->ram_size - 8) & ~0xfULL;
     sp = (tramp - 0x10000) & ~0xfULL;
