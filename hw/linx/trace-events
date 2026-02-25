@@ -1,9 +1,15 @@
 # Linx virt machine trace events
 
 linx_virt_exit_write(uint64_t value) "value=0x%" PRIx64
-linx_virt_uart_write(uint32_t value, uint32_t ch) "value=0x%02x ch=0x%02x"
+linx_virt_uart_write(uint64_t pc, uint32_t value, uint32_t ch) "pc=0x%" PRIx64 " value=0x%02x ch=0x%02x"
+linx_virt_uart_can_receive(int space) "space=%d"
+linx_virt_uart_receive(uint32_t ch, uint32_t head, uint32_t tail) "ch=0x%02x head=%u tail=%u"
+linx_virt_uart_read_status(uint64_t st) "st=0x%" PRIx64
+linx_virt_uart_read_data(uint32_t ch, uint32_t head, uint32_t tail) "ch=0x%02x head=%u tail=%u"
 linx_virt_reset(uint64_t entry, uint64_t sp, uint64_t tramp) "entry=0x%" PRIx64 " sp=0x%" PRIx64 " tramp=0x%" PRIx64
 linx_virt_load_kernel(const char *kernel) "kernel=%s"
 linx_virt_loaded_elf(uint64_t entry, uint64_t image_end) "entry=0x%" PRIx64 " image_end=0x%" PRIx64
 linx_virt_loaded_initrd(const char *initrd, uint64_t base, uint64_t size) "initrd=%s base=0x%" PRIx64 " size=0x%" PRIx64
 linx_virt_fdt(uint64_t fdt_addr, uint32_t fdt_size) "fdt=0x%" PRIx64 " size=0x%x"
+linx_virt_memwatch_enable(uint64_t addr, uint32_t len, int stop) "addr=0x%" PRIx64 " len=%u stop=%d"
+linx_virt_memwatch_write(uint64_t paddr, uint32_t size, uint64_t old, uint64_t new, uint64_t pc, uint64_t sp, uint64_t ra, uint64_t a0, int cpu, uint32_t attrs) "paddr=0x%" PRIx64 " size=%u old=0x%" PRIx64 " new=0x%" PRIx64 " pc=0x%" PRIx64 " sp=0x%" PRIx64 " ra=0x%" PRIx64 " a0=0x%" PRIx64 " cpu=%d attrs=0x%08x"

@@ -22,6 +22,7 @@ linx_service_request(uint32_t src_acr, uint32_t req, uint64_t bpc, uint64_t tpc,
 linx_acr_enter(uint32_t mgr, uint32_t target, uint32_t rra, uint32_t bi, uint64_t resume_pc, uint64_t resume_bpc, uint64_t resume_tpc, uint64_t a0, uint64_t ecstate) "mgr=%u target=%u rra=%u bi=%u resume=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64 " a0=0x%" PRIx64 " ecstate=0x%" PRIx64
 linx_debug_breakpoint_hit(uint64_t pc) "pc=0x%" PRIx64
 linx_debug_watchpoint_hit(uint64_t pc, uint64_t addr, int flags) "pc=0x%" PRIx64 " addr=0x%" PRIx64 " flags=0x%x"
+linx_dfx_watchpoint_insert(uint64_t addr, uint32_t len, int flags) "addr=0x%" PRIx64 " len=%u flags=0x%x"
 linx_cfi_bad_target(uint64_t src_pc, uint64_t target, uint32_t hw, unsigned len) "src_pc=0x%" PRIx64 " target=0x%" PRIx64 " hw=0x%04x len=%u"
 linx_timer_timecmp_write(uint32_t bank, uint64_t value, uint64_t now) "bank=%u value=0x%" PRIx64 " now=0x%" PRIx64
 linx_timer_schedule(uint64_t now, uint64_t cmp) "now=0x%" PRIx64 " cmp=0x%" PRIx64

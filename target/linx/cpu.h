@@ -691,6 +691,11 @@ struct ArchCPU {
     CPUState parent_obj;
 
     CPULinxState env;
+
+    /* Optional bring-up DFX: insert a CPU watchpoint on realize(). */
+    uint64_t dfx_watch_addr;
+    uint32_t dfx_watch_len;
+    uint32_t dfx_watch_flags;
 };
 
 struct LinxCPUClass {

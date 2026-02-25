@@ -15,6 +15,7 @@
 #include "exec/page-protection.h"
 #include "exec/translation-block.h"
 #include "exec/target_page.h"
+#include "exec/watchpoint.h"
 #include "exec/log.h"
 #include "fpu/softfloat-helpers.h"
 #include "tcg/debug-assert.h"
@@ -24,6 +25,7 @@
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
+#include "hw/core/qdev-properties.h"
 
 static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags);
 
@@ -1184,6 +1186,7 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
 static void linx_cpu_realize(DeviceState *dev, Error **errp)
 {
     CPUState *cs = CPU(dev);
+    LinxCPU *cpu = LINX_CPU(dev);
     LinxCPUClass *lcc = LINX_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
@@ -1201,6 +1204,28 @@ static void linx_cpu_realize(DeviceState *dev, Error **errp)
 
     qemu_init_vcpu(cs);
     cpu_reset(cs);
+
+    if (cpu->dfx_watch_addr) {
+        CPUWatchpoint *wp = NULL;
+        uint64_t addr = cpu->dfx_watch_addr;
+        uint32_t len = cpu->dfx_watch_len ? cpu->dfx_watch_len : 8;
+        int flags = BP_CPU | BP_STOP_BEFORE_ACCESS |
+                    (cpu->dfx_watch_flags & BP_MEM_ACCESS);
+
+        if ((flags & BP_MEM_ACCESS) == 0) {
+            flags |= BP_MEM_WRITE;
+        }
+
+        if (cpu_watchpoint_insert(cs, addr, len, flags, &wp) < 0) {
+            error_setg(&local_err,
+                       "linx: failed to insert DFX watchpoint addr=0x%" PRIx64
+                       " len=%u flags=0x%x",
+                       addr, len, flags);
+            error_propagate(errp, local_err);
+            return;
+        }
+        trace_linx_dfx_watchpoint_insert(addr, len, flags);
+    }
 
     /* Create the per-CPU virtual timer after reset initialization. */
     {
@@ -1328,6 +1353,11 @@ static const VMStateDescription vmstate_linx_cpu = {
     },
 };
 
+static const Property linx_cpu_properties[] = {
+    DEFINE_PROP_UINT64("dfx-watch-addr", LinxCPU, dfx_watch_addr, 0),
+    DEFINE_PROP_UINT32("dfx-watch-len", LinxCPU, dfx_watch_len, 0),
+    DEFINE_PROP_UINT32("dfx-watch-flags", LinxCPU, dfx_watch_flags, BP_MEM_WRITE),
+};
 
 static void linx_cpu_class_init(ObjectClass *klass, const void *data)
 {
@@ -1339,6 +1369,7 @@ static void linx_cpu_class_init(ObjectClass *klass, const void *data)
     device_class_set_parent_realize(dc, linx_cpu_realize,
                                     &lcc->parent_realize);
     dc->vmsd = &vmstate_linx_cpu;
+    device_class_set_props(dc, linx_cpu_properties);
 
     resettable_class_set_parent_phases(rc, NULL, linx_cpu_reset_hold, NULL,
                                        &lcc->parent_phases);
