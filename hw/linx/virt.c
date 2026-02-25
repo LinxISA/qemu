@@ -16,6 +16,7 @@
 #include "hw/core/sysbus.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
+#include "system/memory.h"
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "elf.h"
@@ -88,6 +89,7 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 /* Virtio-mmio transport (single slot for bring-up disk boot). */
 #define LINX_VIRTIO_MMIO_BASE 0x30001000
+#define LINX_VIRTIO_MMIO_SIZE 0x200
 #define LINX_VIRTIO_MMIO_IRQ 1
 
 /* ACR-scoped SSR low-12 indices used for external IRQ injection. */
@@ -147,6 +149,7 @@ static int linx_uart_can_receive(void *opaque)
     }
     qemu_mutex_unlock(&s->lock);
 
+    trace_linx_virt_uart_can_receive(space);
     return space;
 }
 
@@ -165,6 +168,7 @@ static void linx_uart_receive(void *opaque, const uint8_t *buf, int size)
 
         s->rx_buf[s->rx_head] = buf[i];
         s->rx_head = next;
+        trace_linx_virt_uart_receive((uint32_t)buf[i], s->rx_head, s->rx_tail);
     }
     qemu_mutex_unlock(&s->lock);
 }
@@ -182,6 +186,7 @@ static uint64_t linx_uart_read(void *opaque, hwaddr addr, unsigned size)
             c = s->rx_buf[s->rx_tail];
             s->rx_tail = (s->rx_tail + 1) % LINX_UART_RX_BUFSZ;
         }
+        trace_linx_virt_uart_read_data((uint32_t)c, s->rx_head, s->rx_tail);
         qemu_mutex_unlock(&s->lock);
 
         qemu_chr_fe_accept_input(&s->chr);
@@ -195,6 +200,7 @@ static uint64_t linx_uart_read(void *opaque, hwaddr addr, unsigned size)
         }
         qemu_mutex_unlock(&s->lock);
 
+        trace_linx_virt_uart_read_status(st);
         return st;
     }
     return 0;
@@ -230,7 +236,7 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
 
     qemu_mutex_lock(&s->lock);
     c = (unsigned char)(value & 0xFF);
-    trace_linx_virt_uart_write((uint32_t)c, (uint32_t)c);
+    trace_linx_virt_uart_write(s->cpu ? s->cpu->env.pc : 0, (uint32_t)c, (uint32_t)c);
     if (qemu_chr_fe_backend_connected(&s->chr)) {
         qemu_chr_fe_write_all(&s->chr, &c, 1);
     } else {
@@ -284,6 +290,7 @@ static void linx_uart_init(LinxUARTState *s, LinxCPU *cpu)
     qemu_chr_fe_set_handlers(&s->chr, linx_uart_can_receive, linx_uart_receive,
                              NULL, NULL, s, NULL, true);
     qemu_chr_fe_set_echo(&s->chr, false);
+    qemu_chr_fe_accept_input(&s->chr);
 }
 
 static void linx_virt_set_irq(void *opaque, int irq, int level)
@@ -325,6 +332,13 @@ typedef struct LinxVirtMachineState {
 
     qemu_irq virtio_irq;
     LinxUARTState uart;
+
+    /* DFX: RAM memwatch overlay (catches CPU + DMA writes). */
+    uint64_t dfx_memwatch_addr;
+    uint32_t dfx_memwatch_len;
+    bool dfx_memwatch_stop;
+    MemoryRegion dfx_memwatch;
+    uint8_t *dfx_ram_ptr;
 } LinxVirtMachineState;
 
 static hwaddr linx_align_up(hwaddr v, hwaddr align)
@@ -342,6 +356,7 @@ static void *linx_virt_build_fdt(MachineState *machine,
 {
     void *fdt;
     char *nodename;
+    char *virtio_nodename;
     uint8_t rng_seed[32];
 
     fdt = create_device_tree(fdt_alloc_size);
@@ -410,6 +425,9 @@ static void *linx_virt_build_fdt(MachineState *machine,
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "device_type", "cpu");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "compatible", "linx,linxisa");
     qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "reg", 0x0);
+    qemu_fdt_setprop(fdt, "/cpus/cpu@0", "interrupt-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "#interrupt-cells", 0x1);
+    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "phandle", 0x1);
 
     qemu_fdt_add_subnode(fdt, "/soc");
     qemu_fdt_setprop(fdt, "/soc", "ranges", NULL, 0);
@@ -426,9 +444,21 @@ static void *linx_virt_build_fdt(MachineState *machine,
                            0x0, (uint32_t)LINX_UART_SIZE);
     qemu_fdt_setprop_cell(fdt, nodename, "current-speed", 115200);
 
+    virtio_nodename = g_strdup_printf("/soc/virtio_mmio@%" HWADDR_PRIx,
+                                      (hwaddr)LINX_VIRTIO_MMIO_BASE);
+    qemu_fdt_add_subnode(fdt, virtio_nodename);
+    qemu_fdt_setprop_string(fdt, virtio_nodename, "compatible", "virtio,mmio");
+    qemu_fdt_setprop_cells(fdt, virtio_nodename, "reg",
+                           0x0, (uint32_t)LINX_VIRTIO_MMIO_BASE,
+                           0x0, (uint32_t)LINX_VIRTIO_MMIO_SIZE);
+    qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupt-parent", 0x1);
+    qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupts",
+                          LINX_VIRTIO_MMIO_IRQ);
+
     qemu_fdt_add_subnode(fdt, "/aliases");
     qemu_fdt_setprop_string(fdt, "/aliases", "serial0", nodename);
 
+    g_free(virtio_nodename);
     g_free(nodename);
     return fdt;
 }
@@ -2405,6 +2435,199 @@ static void linx_virt_reset(void *opaque)
     env->gpr[LINX_REG_A2] = 0;
 }
 
+static uint32_t linx_memwatch_pack_attrs(MemTxAttrs attrs)
+{
+    uint32_t v = 0;
+
+    if (attrs.secure) {
+        v |= 1u << 0;
+    }
+    if (attrs.user) {
+        v |= 1u << 1;
+    }
+    if (attrs.debug) {
+        v |= 1u << 2;
+    }
+    if (attrs.memory) {
+        v |= 1u << 3;
+    }
+    if (attrs.unspecified) {
+        v |= 1u << 4;
+    }
+    v |= (uint32_t)attrs.requester_id << 16;
+    return v;
+}
+
+static uint64_t linx_memwatch_read(void *opaque, hwaddr addr, unsigned size)
+{
+    LinxVirtMachineState *s = opaque;
+    const hwaddr paddr = (hwaddr)s->dfx_memwatch_addr + addr;
+    uint64_t v = 0;
+
+    if (!s->dfx_ram_ptr || paddr + size > s->parent_obj.ram_size) {
+        return 0;
+    }
+
+    switch (size) {
+    case 1:
+        v = *(uint8_t *)(s->dfx_ram_ptr + paddr);
+        break;
+    case 2:
+        v = lduw_le_p(s->dfx_ram_ptr + paddr);
+        break;
+    case 4:
+        v = ldl_le_p(s->dfx_ram_ptr + paddr);
+        break;
+    case 8:
+        v = ldq_le_p(s->dfx_ram_ptr + paddr);
+        break;
+    default:
+        memcpy(&v, s->dfx_ram_ptr + paddr, MIN((unsigned)sizeof(v), size));
+        break;
+    }
+
+    return v;
+}
+
+static void linx_memwatch_do_write(LinxVirtMachineState *s, hwaddr addr,
+                                   uint64_t data, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    const hwaddr paddr = (hwaddr)s->dfx_memwatch_addr + addr;
+    uint64_t old = 0;
+    uint64_t pc = 0;
+    uint64_t sp = 0;
+    uint64_t ra = 0;
+    uint64_t a0 = 0;
+    int cpu = 0;
+    uint32_t attrs_packed = linx_memwatch_pack_attrs(attrs);
+
+    if (!s->dfx_ram_ptr || paddr + size > s->parent_obj.ram_size) {
+        return;
+    }
+
+    if (current_cpu) {
+        cpu = 1;
+        LinxCPU *lc = LINX_CPU(current_cpu);
+        pc = lc->env.pc;
+        sp = lc->env.gpr[LINX_REG_SP];
+        ra = lc->env.gpr[LINX_REG_RA];
+        a0 = lc->env.gpr[LINX_REG_A0];
+    }
+
+    /* Read old value (little-endian) for tracing. */
+    old = linx_memwatch_read(s, addr, size);
+
+    /* Store new bytes into backing RAM (little-endian). */
+    switch (size) {
+    case 1:
+        *(uint8_t *)(s->dfx_ram_ptr + paddr) = (uint8_t)data;
+        break;
+    case 2:
+        stw_le_p(s->dfx_ram_ptr + paddr, (uint16_t)data);
+        break;
+    case 4:
+        stl_le_p(s->dfx_ram_ptr + paddr, (uint32_t)data);
+        break;
+    case 8:
+        stq_le_p(s->dfx_ram_ptr + paddr, data);
+        break;
+    default:
+        memcpy(s->dfx_ram_ptr + paddr, &data, MIN((unsigned)sizeof(data), size));
+        break;
+    }
+
+    trace_linx_virt_memwatch_write(paddr, size, old, data, pc, sp, ra, a0,
+                                   cpu, attrs_packed);
+    if (s->dfx_memwatch_stop) {
+        qemu_system_debug_request();
+    }
+}
+
+static void linx_memwatch_write(void *opaque, hwaddr addr, uint64_t data,
+                                unsigned size)
+{
+    linx_memwatch_do_write(opaque, addr, data, size, MEMTXATTRS_UNSPECIFIED);
+}
+
+static MemTxResult linx_memwatch_read_with_attrs(void *opaque, hwaddr addr,
+                                                 uint64_t *data, unsigned size,
+                                                 MemTxAttrs attrs)
+{
+    (void)attrs;
+    *data = linx_memwatch_read(opaque, addr, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult linx_memwatch_write_with_attrs(void *opaque, hwaddr addr,
+                                                  uint64_t data, unsigned size,
+                                                  MemTxAttrs attrs)
+{
+    linx_memwatch_do_write(opaque, addr, data, size, attrs);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps linx_memwatch_ops = {
+    .read = linx_memwatch_read,
+    .write = linx_memwatch_write,
+    .read_with_attrs = linx_memwatch_read_with_attrs,
+    .write_with_attrs = linx_memwatch_write_with_attrs,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+    .impl = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+};
+
+static bool linx_virt_get_dfx_memwatch_stop(Object *obj, Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    return s->dfx_memwatch_stop;
+}
+
+static void linx_virt_set_dfx_memwatch_stop(Object *obj, bool value,
+                                            Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    s->dfx_memwatch_stop = value;
+}
+
+static void linx_virt_instance_init(Object *obj)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+
+    s->dfx_memwatch_addr = 0;
+    s->dfx_memwatch_len = 0;
+    s->dfx_memwatch_stop = false;
+    s->dfx_ram_ptr = NULL;
+
+    object_property_add_uint64_ptr(obj, "dfx-memwatch-addr",
+                                   &s->dfx_memwatch_addr,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "dfx-memwatch-addr",
+                                    "Physical base address of RAM memwatch overlay");
+
+    object_property_add_uint32_ptr(obj, "dfx-memwatch-len",
+                                   &s->dfx_memwatch_len,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "dfx-memwatch-len",
+                                    "Length in bytes of RAM memwatch overlay (0 disables)");
+
+    object_property_add_bool(obj, "dfx-memwatch-stop",
+                             linx_virt_get_dfx_memwatch_stop,
+                             linx_virt_set_dfx_memwatch_stop);
+    object_property_set_description(obj, "dfx-memwatch-stop",
+                                    "Stop VM (RUN_STATE_DEBUG) on memwatch write");
+}
+
 static void linx_virt_init(MachineState *machine)
 {
     LinxVirtMachineState *s = LINX_VIRT_MACHINE(machine);
@@ -2419,6 +2642,7 @@ static void linx_virt_init(MachineState *machine)
     int fdt_size;
     void *fdt = NULL;
     int ret;
+    const hwaddr fdt_gap = 0x10000;
 
     hwaddr load_base = 0x10000;
     hwaddr tramp;
@@ -2437,6 +2661,30 @@ static void linx_virt_init(MachineState *machine)
     }
 
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
+    s->dfx_ram_ptr = memory_region_get_ram_ptr(machine->ram);
+
+    if (s->dfx_memwatch_len) {
+        hwaddr end = (hwaddr)s->dfx_memwatch_addr +
+                     (hwaddr)s->dfx_memwatch_len;
+        if (end < (hwaddr)s->dfx_memwatch_addr ||
+            end > machine->ram_size) {
+            error_report("linx virt: memwatch region out of RAM bounds: "
+                         "addr=0x%" PRIx64 " len=%u ram=0x%" PRIx64,
+                         s->dfx_memwatch_addr, s->dfx_memwatch_len,
+                         (uint64_t)machine->ram_size);
+            exit(1);
+        }
+
+        memory_region_init_io(&s->dfx_memwatch, OBJECT(machine),
+                              &linx_memwatch_ops, s, "linx.memwatch",
+                              s->dfx_memwatch_len);
+        memory_region_add_subregion_overlap(get_system_memory(),
+                                            (hwaddr)s->dfx_memwatch_addr,
+                                            &s->dfx_memwatch, 1);
+        trace_linx_virt_memwatch_enable(s->dfx_memwatch_addr,
+                                        s->dfx_memwatch_len,
+                                        s->dfx_memwatch_stop ? 1 : 0);
+    }
 
     s->cpu = LINX_CPU(cpu_create(machine->cpu_type));
 
@@ -2453,7 +2701,7 @@ static void linx_virt_init(MachineState *machine)
     s->virtio_irq = qemu_allocate_irq(linx_virt_set_irq, s->cpu, LINX_VIRTIO_MMIO_IRQ);
     sysbus_create_simple("virtio-mmio", LINX_VIRTIO_MMIO_BASE, s->virtio_irq);
 
-    ram = memory_region_get_ram_ptr(machine->ram);
+    ram = s->dfx_ram_ptr;
     if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
                        load_base, &entry, &image_end, &error_fatal)) {
         exit(1);
@@ -2499,12 +2747,26 @@ static void linx_virt_init(MachineState *machine)
     }
     ret = fdt_pack(fdt);
     g_assert(ret == 0);
+    fdt_size = fdt_totalsize(fdt);
+    if (fdt_size <= 0) {
+        error_report("linx virt: invalid packed device tree");
+        exit(1);
+    }
 
-    fdt_addr = linx_align_up(cur, 0x10);
-    if ((size_t)fdt_addr + (size_t)fdt_size > machine->ram_size) {
+    tramp = (machine->ram_size - 8) & ~0xfULL;
+    sp = (tramp - 0x10000) & ~0xfULL;
+    if (sp <= (hwaddr)fdt_size + fdt_gap) {
         error_report("linx virt: FDT does not fit in RAM");
         exit(1);
     }
+    fdt_addr = (sp - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
+    if (fdt_addr < cur || (size_t)fdt_addr + (size_t)fdt_size > machine->ram_size) {
+        error_report("linx virt: FDT placement overlaps payload (fdt=0x%" HWADDR_PRIx
+                     " payload_end=0x%" HWADDR_PRIx " size=0x%x)",
+                     fdt_addr, cur, fdt_size);
+        exit(1);
+    }
+
     memcpy(ram + fdt_addr, fdt, fdt_size);
     machine->fdt = fdt;
     qemu_register_reset_nosnapshotload(qemu_fdt_randomize_seeds,
@@ -2516,9 +2778,6 @@ static void linx_virt_init(MachineState *machine)
     }
 
     trace_linx_virt_fdt(fdt_addr, (uint32_t)fdt_size);
-
-    tramp = (machine->ram_size - 8) & ~0xfULL;
-    sp = (tramp - 0x10000) & ~0xfULL;
 
     if (image_end > sp) {
         error_report("linx virt: RAM too small (image_end=0x%" HWADDR_PRIx
@@ -2562,6 +2821,7 @@ static const TypeInfo linx_virt_machine_info = {
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(LinxVirtMachineState),
     .class_init = linx_virt_machine_class_init,
+    .instance_init = linx_virt_instance_init,
 };
 
 static void linx_virt_machine_register_types(void)

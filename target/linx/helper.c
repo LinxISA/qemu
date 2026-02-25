@@ -888,6 +888,89 @@ static void linx_cosim_send_commit_and_wait_ack(CPULinxState *env, uint64_t next
     }
 }
 
+static uint64_t linx_trace_canonical_insn(uint64_t insn_raw, uint32_t len,
+                                          const LinxOpcodeMeta *meta)
+{
+    uint64_t v = insn_raw;
+
+    if (len == 2) {
+        return v & 0xffffu;
+    }
+    if (len == 4) {
+        v &= 0xffffffffu;
+        if (meta && meta->mnemonic &&
+            strncmp(meta->mnemonic, "bstart_", 7) == 0) {
+            /*
+             * Commit trace normalization: block-start opcodes are compared
+             * against golden fixtures that store the low opcode payload.
+             */
+            v &= 0x00ffffffu;
+        }
+        return v;
+    }
+    if (len == 6) {
+        return v & UINT64_C(0xffffffffffff);
+    }
+    return v;
+}
+
+static const char *linx_trace_block_kind_name(const LinxOpcodeMeta *meta,
+                                              uint64_t insn_raw, uint32_t len)
+{
+    const char *mnemonic;
+
+    if (len == 2) {
+        const uint16_t hw = (uint16_t)(insn_raw & 0xffffu);
+        if (hw == 0x88c0u) {
+            return "vpar";
+        }
+        if (hw == 0xc8c0u) {
+            return "vseq";
+        }
+    }
+
+    if (!meta) {
+        return "scalar";
+    }
+
+    if (meta->minor_cat && strcmp(meta->minor_cat, "sys") == 0) {
+        return "sys";
+    }
+
+    mnemonic = meta->mnemonic;
+    if (!mnemonic) {
+        return "scalar";
+    }
+    if (strstr(mnemonic, "bstart_vpar")) {
+        return "vpar";
+    }
+    if (strstr(mnemonic, "bstart_vseq")) {
+        return "vseq";
+    }
+    if (strstr(mnemonic, "bstart_tma")) {
+        return "tma";
+    }
+    if (strstr(mnemonic, "bstart_cube")) {
+        return "cube";
+    }
+    if (strstr(mnemonic, "tepl")) {
+        return "tepl";
+    }
+
+    return "scalar";
+}
+
+static int32_t linx_trace_lane_id_for_kind(const char *block_kind)
+{
+    if (!block_kind) {
+        return -1;
+    }
+    if (strcmp(block_kind, "vpar") == 0 || strcmp(block_kind, "vseq") == 0) {
+        return 0;
+    }
+    return -1;
+}
+
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 {
     bool emit_file = false;
@@ -914,6 +997,18 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
         const uint32_t cause = (uint32_t)((trap_cause >> 8) & 0xffu);
         const bool argv = trap_valid != 0; /* commit-trace: treat TRAPARG0 as present when trap_valid */
         const uint64_t trapno_full = trap_valid ? linx_trapno_make(false, argv, cause, trapnum) : 0;
+        const uint32_t len_meta = linx_trace_len_to_meta_len(env->trace_len);
+        const LinxOpcodeMeta *meta = linx_opcode_meta_lookup(env->trace_insn, len_meta);
+        uint64_t canonical_insn;
+        const char *block_kind;
+        int32_t lane_id;
+
+        if (!meta) {
+            meta = linx_opcode_meta_lookup(env->trace_insn, 0);
+        }
+        canonical_insn = linx_trace_canonical_insn(env->trace_insn, env->trace_len, meta);
+        block_kind = linx_trace_block_kind_name(meta, canonical_insn, env->trace_len);
+        lane_id = linx_trace_lane_id_for_kind(block_kind);
 
         /* Mandatory schema fields (see linxisa/docs/bringup/contracts/trace_schema.md). */
         fprintf(env->commit_trace.fp,
@@ -928,11 +1023,13 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
                 ",\"mem_valid\":%u,\"mem_is_store\":%u,\"mem_addr\":%" PRIu64
                 ",\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64 ",\"mem_size\":%u"
                 ",\"trap_valid\":%u,\"trap_cause\":%u"
+                ",\"block_kind\":\"%s\",\"lane_id\":%d"
+                ",\"tile_meta\":\"\",\"tile_ref_src\":0,\"tile_ref_dst\":0"
                 ",\"trapno_full\":%" PRIu64 ",\"traparg0\":%" PRIu64
                 ",\"next_pc\":%" PRIu64 "}\n",
                 cycle,
                 pc,
-                env->trace_insn,
+                canonical_insn,
                 env->trace_len,
                 env->trace_wb_valid, env->trace_wb_rd, env->trace_wb_data,
                 env->trace_src0_valid, env->trace_src0_reg, env->trace_src0_data,
@@ -941,6 +1038,7 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
                 env->trace_mem_valid, env->trace_mem_is_store, env->trace_mem_addr,
                 env->trace_mem_wdata, env->trace_mem_rdata, env->trace_mem_size,
                 trap_valid, trap_cause,
+                block_kind, lane_id,
                 trapno_full, env->trace_traparg0,
                 next_pc);
         fflush(env->commit_trace.fp);
