@@ -14,6 +14,8 @@
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/virtio/virtio-mmio.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
 #include "system/memory.h"
@@ -89,8 +91,10 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 /* Virtio-mmio transport (single slot for bring-up disk boot). */
 #define LINX_VIRTIO_MMIO_BASE 0x30001000
+#define LINX_VIRTIO_MMIO_STRIDE 0x200
 #define LINX_VIRTIO_MMIO_SIZE 0x200
-#define LINX_VIRTIO_MMIO_IRQ 1
+#define LINX_VIRTIO_MMIO_IRQ_BASE 1
+#define LINX_VIRTIO_MMIO_COUNT 4
 
 /* ACR-scoped SSR low-12 indices used for external IRQ injection. */
 #define LINX_SSR_IPENDING 0xF08
@@ -330,7 +334,7 @@ typedef struct LinxVirtMachineState {
     hwaddr exit_trampoline;
     hwaddr fdt_addr;
 
-    qemu_irq virtio_irq;
+    qemu_irq virtio_irq[LINX_VIRTIO_MMIO_COUNT];
     LinxUARTState uart;
 
     /* DFX: RAM memwatch overlay (catches CPU + DMA writes). */
@@ -444,21 +448,24 @@ static void *linx_virt_build_fdt(MachineState *machine,
                            0x0, (uint32_t)LINX_UART_SIZE);
     qemu_fdt_setprop_cell(fdt, nodename, "current-speed", 115200);
 
-    virtio_nodename = g_strdup_printf("/soc/virtio_mmio@%" HWADDR_PRIx,
-                                      (hwaddr)LINX_VIRTIO_MMIO_BASE);
-    qemu_fdt_add_subnode(fdt, virtio_nodename);
-    qemu_fdt_setprop_string(fdt, virtio_nodename, "compatible", "virtio,mmio");
-    qemu_fdt_setprop_cells(fdt, virtio_nodename, "reg",
-                           0x0, (uint32_t)LINX_VIRTIO_MMIO_BASE,
-                           0x0, (uint32_t)LINX_VIRTIO_MMIO_SIZE);
-    qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupt-parent", 0x1);
-    qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupts",
-                          LINX_VIRTIO_MMIO_IRQ);
+    for (int i = 0; i < LINX_VIRTIO_MMIO_COUNT; i++) {
+        const hwaddr base = (hwaddr)LINX_VIRTIO_MMIO_BASE + (hwaddr)i * (hwaddr)LINX_VIRTIO_MMIO_STRIDE;
+        const int irq = LINX_VIRTIO_MMIO_IRQ_BASE + i;
+
+        virtio_nodename = g_strdup_printf("/soc/virtio_mmio@%" HWADDR_PRIx, base);
+        qemu_fdt_add_subnode(fdt, virtio_nodename);
+        qemu_fdt_setprop_string(fdt, virtio_nodename, "compatible", "virtio,mmio");
+        qemu_fdt_setprop_cells(fdt, virtio_nodename, "reg",
+                               0x0, (uint32_t)base,
+                               0x0, (uint32_t)LINX_VIRTIO_MMIO_SIZE);
+        qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupt-parent", 0x1);
+        qemu_fdt_setprop_cell(fdt, virtio_nodename, "interrupts", irq);
+            virtio_nodename = NULL;
+    }
 
     qemu_fdt_add_subnode(fdt, "/aliases");
     qemu_fdt_setprop_string(fdt, "/aliases", "serial0", nodename);
 
-    g_free(virtio_nodename);
     g_free(nodename);
     return fdt;
 }
@@ -2698,8 +2705,22 @@ static void linx_virt_init(MachineState *machine)
      *   -drive if=none,id=vd0,file=<img>,format=raw
      *   -device virtio-blk-device,drive=vd0
      */
-    s->virtio_irq = qemu_allocate_irq(linx_virt_set_irq, s->cpu, LINX_VIRTIO_MMIO_IRQ);
-    sysbus_create_simple("virtio-mmio", LINX_VIRTIO_MMIO_BASE, s->virtio_irq);
+    for (int i = 0; i < LINX_VIRTIO_MMIO_COUNT; i++) {
+        const hwaddr base = (hwaddr)LINX_VIRTIO_MMIO_BASE + (hwaddr)i * (hwaddr)LINX_VIRTIO_MMIO_STRIDE;
+        const int irq = LINX_VIRTIO_MMIO_IRQ_BASE + i;
+        DeviceState *vdev = qdev_new(TYPE_VIRTIO_MMIO);
+        SysBusDevice *sbd = SYS_BUS_DEVICE(vdev);
+
+        /* Use modern virtio-mmio transport by default for Linx guests. */
+        qdev_prop_set_bit(vdev, "force-legacy", false);
+        qdev_prop_set_bit(vdev, "ioeventfd", false);
+        qdev_prop_set_bit(vdev, "format_transport_address", true);
+
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_mmio_map(sbd, 0, base);
+        s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu, irq);
+        sysbus_connect_irq(sbd, 0, s->virtio_irq[i]);
+    }
 
     ram = s->dfx_ram_ptr;
     if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
