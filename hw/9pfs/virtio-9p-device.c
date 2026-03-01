@@ -27,6 +27,7 @@
 #include "qemu/iov.h"
 #include "qemu/module.h"
 #include "system/qtest.h"
+#include "trace.h"
 
 static void virtio_9p_push_and_notify(V9fsPDU *pdu)
 {
@@ -35,6 +36,7 @@ static void virtio_9p_push_and_notify(V9fsPDU *pdu)
     VirtQueueElement *elem = v->elems[pdu->idx];
 
     /* push onto queue and notify */
+    trace_virtio_9p_rsp(pdu->tag, pdu->id + 1, pdu->size);
     virtqueue_push(v->vq, elem, pdu->size);
     g_free(elem);
     v->elems[pdu->idx] = NULL;
@@ -72,6 +74,11 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
                          "header size is %zd, should be 7", len);
             goto out_free_req;
         }
+
+        trace_virtio_9p_req(le16_to_cpu(out.tag_le), out.id,
+                           le32_to_cpu(out.size_le),
+                           iov_size(elem->out_sg, elem->out_num),
+                           iov_size(elem->in_sg, elem->in_num));
 
         v->elems[pdu->idx] = elem;
 
