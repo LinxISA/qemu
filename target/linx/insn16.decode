@@ -80,10 +80,13 @@ c_slli          0001 0... ..10 1100 %uimm5
 c_srli          0001 1... ..10 1100 %uimm5
 
 # Block dimension immediate (LB0/LB1/LB2)
-# C.B.DIM uses bits[15:14]=11 and loopnest in bits[13:11].
-c_b_dim         11.. .... ..11 1100 loopnest=%LoopNest3 reg=%SrcL
-# Encoding: bits[5:0]=0x3c, imm8 in [13:6], LoopNest in [15:14] (LoopNest!=3).
-c_b_dimi        .... .... ..11 1100 loopnest=%LoopNest imm8=%imm8
+# These forms intentionally overlap: C.B.DIM reserves bits[15:14]=11 while
+# C.B.DIMI uses the same low opcode with LoopNest encoded in bits[15:14].
+{
+  c_b_dim       11.. .... ..11 1100 loopnest=%LoopNest3 reg=%SrcL
+  # Encoding: bits[5:0]=0x3c, imm8 in [13:6], LoopNest in [15:14] (LoopNest!=3).
+  c_b_dimi      .... .... ..11 1100 loopnest=%LoopNest imm8=%imm8
+}
 
 # Compare immediate (T-hand == imm ? 1 : 0, result to T-hand)
 c_cmp_eqi       0000 0... ..10 1100 simm5=%simm5_6_s5

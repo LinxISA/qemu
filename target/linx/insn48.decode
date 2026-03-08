@@ -47,7 +47,11 @@
 hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
 
 # HL.ADDTPC | hl.addtpc imm, ->{t, u, Rd} (PC-relative, 32-bit immediate)
-hl_addtpc 0000 0000 0000 0000 .... .... .... .... .... .... .000 0111 .... .... .... 1110 %RegDst imm=%imm32
+# HL.SETRET is the specialized RA form of HL.ADDTPC and intentionally overlaps.
+{
+  hl_setret 0000 0000 0000 0000 .... .... .... .... .... 0101 0000 0111 .... .... .... 1110 imm=%imm32
+  hl_addtpc 0000 0000 0000 0000 .... .... .... .... .... .... .000 0111 .... .... .... 1110 %RegDst imm=%imm32
+}
 
 # HL.SSRGET | hl.ssrget SSR_ID, ->{t, u, Rd}
 hl_ssrget 0000 0000 0000 0000 .... .... .... 0000 0000 .... .011 1011 .... .... .... 1110 %RegDst ssrid=%ssr_id
@@ -242,30 +246,31 @@ hl_sdi_upo   0000 0000 0000 0000 .... .... .... .... .111 .... .101 1001 .... ..
 hl_sdi_upr   0000 0000 0000 0000 .... .... .... .... .111 .... .101 1001 .... .... ..10 1110 %RegDst1 %SrcD %SrcR simm=%simm17_6_s5_23_5_41_7
 
 # Remaining HL utility / control forms
-hl_bfi       0000 000. .... .... .010 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %immr %imms
-hl_ccat      .... .... .... .... .001 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
-hl_ccatw     .... .... .... .... .010 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
-hl_lis       .... .... .... .... .... .... .000 1101 .... .... .... 1110 %RegDst simm=%simm32
-hl_liu       .... .... .... .... .... .... .001 1101 .... .... .... 1110 %RegDst uimm=%imm32
-hl_miadd     .... .... .... .... .000 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %uimm19
-hl_misub     .... .... .... .... .001 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %uimm19
-hl_qmt       000. .... .... .... .000 .... .111 1101 0000 0000 0000 1110 %RegDst %SrcL %SrcR %e %i %r %s
-hl_qpush     0000 .... .... .... .001 .... .111 1101 0000 0000 0000 1110 %RegDst %SrcL %SrcR %e %h %r
-hl_qpop      0000 0... .... .... .010 .... .111 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR %e %r
-hl_setc_eqi  .... .... .... .... .000 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
-hl_setc_nei  .... .... .... .... .001 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
-hl_setc_lti  .... .... .... .... .100 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
-hl_setc_gei  .... .... .... .... .101 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
-hl_setc_ltui .... .... .... .... .110 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
-hl_setc_geui .... .... .... .... .111 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
-hl_setret    .... .... .... .... .... 0101 0000 0111 .... .... .... 1110 imm=%imm32
-hl_prf       .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
-hl_prf_a     .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
-hl_prfi_u    .... .... .... .... .111 0000 0010 1001 .... .... ..00 1110 %SrcL model=%model simm=%simm17_6_s5_36_12
-hl_prfi_ua   .... .... .... .... .111 .... .010 1001 .... .... ..01 1110 %RegDst %SrcL model=%model simm=%simm17_6_s5_36_12
+hl_bfi       0000 0000 0000 0000 0000 000. .... .... .010 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %immr %imms
+hl_ccat      0000 0000 0000 0000 .... .00. .... .... .001 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
+hl_ccatw     0000 0000 0000 0000 .... .00. .... .... .010 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
+hl_lis       0000 0000 0000 0000 .... .... .... .... .... .... .000 1101 .... .... .... 1110 %RegDst simm=%simm32
+hl_liu       0000 0000 0000 0000 .... .... .... .... .... .... .001 1101 .... .... .... 1110 %RegDst uimm=%imm32
+hl_miadd     0000 0000 0000 0000 .... .... .... .... .000 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %uimm19
+hl_misub     0000 0000 0000 0000 .... .... .... .... .001 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %uimm19
+hl_qmt       0000 0000 0000 0000 000. .... .... .... .000 .... .111 1101 0000 0000 0000 1110 %RegDst %SrcL %SrcR %e %i %r %s
+hl_qpush     0000 0000 0000 0000 0000 .... .... .... .001 .... .111 1101 0000 0000 0000 1110 %RegDst %SrcL %SrcR %e %h %r
+hl_qpop      0000 0000 0000 0000 0000 0... .... .... .010 .... .111 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR %e %r
+hl_setc_eqi  0000 0000 0000 0000 .... .... .... .... .000 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
+hl_setc_nei  0000 0000 0000 0000 .... .... .... .... .001 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
+hl_setc_lti  0000 0000 0000 0000 .... .... .... .... .100 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
+hl_setc_gei  0000 0000 0000 0000 .... .... .... .... .101 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 simm=%simm24
+hl_setc_ltui 0000 0000 0000 0000 .... .... .... .... .110 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
+hl_setc_geui 0000 0000 0000 0000 .... .... .... .... .111 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
+{
+  hl_prf     0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
+  hl_prf_a   0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
+}
+hl_prfi_u    0000 0000 0000 0000 .... .... .... .... .111 0000 0010 1001 .... .... ..00 1110 %SrcL model=%model simm=%simm17_6_s5_36_12
+hl_prfi_ua   0000 0000 0000 0000 .... .... .... .... .111 .... .010 1001 .... .... ..01 1110 %RegDst %SrcL model=%model simm=%simm17_6_s5_36_12
 
 # Remaining HL CAS forms
-hl_casb      0000 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
-hl_cash      0001 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
-hl_casw      0010 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
-hl_casd      0011 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
+hl_casb      0000 0000 0000 0000 0000 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
+hl_cash      0000 0000 0000 0000 0001 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
+hl_casw      0000 0000 0000 0000 0010 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
+hl_casd      0000 0000 0000 0000 0011 .... .... .... .110 .... .000 1011 0000 0... ..00 1110 %RegDst %SrcD1 %SrcL %SrcR %aq %far %rl
