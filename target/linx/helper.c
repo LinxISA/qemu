@@ -3802,10 +3802,10 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
                                   unsigned *addr_reg_out)
 {
     /*
-     * v0.3 SIMT contract: RI registers are an ordered namespace bound by
-     * header B.IOR descriptors.
+     * Canonical v0.4 VEC contract: RI registers are an ordered namespace bound
+     * by header B.IOR descriptors.
      *
-     * Encoding still carries a RegDst field, but bring-up streams keep it zero
+     * Encoding still carries a RegDst field, but current streams keep it zero
      * and rely on order rather than explicit slot IDs.
      */
     if (slot >= LINX_TILE_MAX_IOR) {
@@ -3821,11 +3821,11 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
         const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
 
         /*
-         * v0.3 bring-up disassembly contract prints B.IOR sources as
-         * `[RegSrc1, RegSrc0]` (base, stride), with an optional third source
-         * (`RegSrc2`) printed in the second bracket list.
+         * Canonical v0.4 disassembly prints B.IOR sources as `[RegSrc1,
+         * RegSrc0]` (base, stride), with an optional third source (`RegSrc2`)
+         * printed in the second bracket list.
          *
-         * For SIMT bodies, `ri*` maps to this ordered stream of non-zero
+         * For VEC bodies, `ri*` maps to this ordered stream of non-zero
          * sources (RegSrc1 then RegSrc0 then RegSrc2) across the header's
          * descriptor sequence.
          */
@@ -4894,7 +4894,7 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
         return;
     }
     if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
-        /* Strict v0.3: bridged/global accesses must use ri* base operands. */
+        /* Canonical v0.4: bridged/global accesses must use ri* base operands. */
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -4916,7 +4916,7 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         return;
     }
     if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
-        /* Strict v0.3: bridged/global accesses must use ri* base operands. */
+        /* Canonical v0.4: bridged/global accesses must use ri* base operands. */
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }

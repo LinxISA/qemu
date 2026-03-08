@@ -806,8 +806,10 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
 #include "decode-insn48.c.inc"
 #include "decode-insn64.c.inc"
 
-/* C.BSTART.STD handler - called explicitly from linx_tr_translate_insn */
-static bool trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
+static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
+static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a);
+
+static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
 {
     /* pc_next has already been advanced past the current insn, so we need to
      * check if the CURRENT instruction (pc_next - cur_insn_len) is at pc_first */
@@ -820,27 +822,87 @@ static bool trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
-    linx_block_begin(ctx, brtype, 0);
+    linx_block_begin(ctx, brtype, target);
     return true;
+}
+
+/* C.BSTART.STD helper - also used by explicit 16-bit overlap handling. */
+static bool linx_trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
+{
+    return linx_begin_header_target(ctx, brtype, 0);
+}
+
+static bool trans_c_bstart_std_fall(DisasContext *ctx, arg_c_bstart_std_fall *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_FALL);
+}
+
+static bool trans_c_bstart_std_direct(DisasContext *ctx, arg_c_bstart_std_direct *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_DIRECT);
+}
+
+static bool trans_c_bstart_std_cond(DisasContext *ctx, arg_c_bstart_std_cond *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_COND);
+}
+
+static bool trans_c_bstart_std_call(DisasContext *ctx, arg_c_bstart_std_call *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_CALL);
+}
+
+static bool trans_c_bstart_std_ind(DisasContext *ctx, arg_c_bstart_std_ind *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_IND);
+}
+
+static bool trans_c_bstart_std_icall(DisasContext *ctx, arg_c_bstart_std_icall *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_ICALL);
+}
+
+static bool trans_c_bstart_std_ret(DisasContext *ctx, arg_c_bstart_std_ret *a)
+{
+    (void)a;
+    return linx_trans_c_bstart_std(ctx, LINX_BR_RET);
+}
+
+static bool trans_c_bstart_fp(DisasContext *ctx, arg_c_bstart_fp *a)
+{
+    return linx_begin_header_target(ctx, (uint8_t)(a->BrType & 0x7u), 0);
 }
 
 static bool trans_c_bstart_direct(DisasContext *ctx, arg_c_bstart_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    linx_block_begin(ctx, LINX_BR_DIRECT, linx_pcrel_target(current_pc, a->simm12));
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
+                                    linx_pcrel_target(current_pc, a->simm12));
 }
 
 static bool trans_c_bstart_cond(DisasContext *ctx, arg_c_bstart_cond *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_COND,
+                                    linx_pcrel_target(current_pc, a->simm12));
+}
+
+static bool trans_c_bstart_sys(DisasContext *ctx, arg_c_bstart_sys *a)
+{
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
+}
+
+static bool trans_c_bstart_mpar(DisasContext *ctx, arg_c_bstart_mpar *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -848,7 +910,60 @@ static bool trans_c_bstart_cond(DisasContext *ctx, arg_c_bstart_cond *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
-    linx_block_begin(ctx, LINX_BR_COND, linx_pcrel_target(current_pc, a->simm12));
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 0);
+    ctx->decoupled_header = true;
+    return true;
+}
+
+static bool trans_c_bstart_mseq(DisasContext *ctx, arg_c_bstart_mseq *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 1);
+    ctx->decoupled_header = true;
+    return true;
+}
+
+static bool trans_c_bstart_vpar(DisasContext *ctx, arg_c_bstart_vpar *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 4);
+    ctx->decoupled_header = true;
+    return true;
+}
+
+static bool trans_c_bstart_vseq(DisasContext *ctx, arg_c_bstart_vseq *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 5);
+    ctx->decoupled_header = true;
     return true;
 }
 
@@ -950,6 +1065,69 @@ static bool trans_bstart_ret(DisasContext *ctx, arg_bstart_ret *a)
     return true;
 }
 
+static bool trans_bstart_fp_fall(DisasContext *ctx, arg_bstart_fp_fall *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_FALL,
+                                    linx_pcrel_target(current_pc, a->simm17));
+}
+
+static bool trans_bstart_fp_direct(DisasContext *ctx, arg_bstart_fp_direct *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
+                                    linx_pcrel_target(current_pc, a->simm17));
+}
+
+static bool trans_bstart_fp_cond(DisasContext *ctx, arg_bstart_fp_cond *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_COND,
+                                    linx_pcrel_target(current_pc, a->simm17));
+}
+
+static bool trans_bstart_fp_call(DisasContext *ctx, arg_bstart_fp_call *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_CALL,
+                                    linx_pcrel_target(current_pc, a->simm17));
+}
+
+static bool trans_bstart_fp_ind(DisasContext *ctx, arg_bstart_fp_ind *a)
+{
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_IND, 0);
+}
+
+static bool trans_bstart_fp_icall(DisasContext *ctx, arg_bstart_fp_icall *a)
+{
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_ICALL, 0);
+}
+
+static bool trans_bstart_fp_ret(DisasContext *ctx, arg_bstart_fp_ret *a)
+{
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_RET, 0);
+}
+
+static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_FALL,
+                                    linx_pcrel_target(current_pc, a->simm17));
+}
+
+static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, a->func & 0x1fu);
+}
+
+static bool trans_bstart_tepl(DisasContext *ctx, arg_bstart_tepl *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, a->op & 0x3ffu);
+}
+
 static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -989,7 +1167,7 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
         break;
     default:
         /*
-         * Strict-v0.3 canonical TEPL path:
+         * Canonical v0.4 TEPL path:
          * route packed PAR TileOp10 forms to TEPL block execution.
          */
         tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
@@ -997,44 +1175,9 @@ static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t 
         break;
     }
 
-    /* v0.3 bring-up: treat tile blocks as coupled template-style blocks. */
+    /* Canonical v0.4 baseline keeps these tile blocks coupled in QEMU. */
     ctx->decoupled_header = false;
     return true;
-}
-
-static bool trans_bstart_par_vcall(DisasContext *ctx, arg_bstart_par_vcall *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 1u);
-}
-
-static bool trans_bstart_par_mamulb(DisasContext *ctx, arg_bstart_par_mamulb *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 17u);
-}
-
-static bool trans_bstart_par_tload(DisasContext *ctx, arg_bstart_par_tload *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 33u);
-}
-
-static bool trans_bstart_par_tstore(DisasContext *ctx, arg_bstart_par_tstore *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 65u);
-}
-
-static bool trans_bstart_par_mamulb_acc(DisasContext *ctx, arg_bstart_par_mamulb_acc *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 66u);
-}
-
-static bool trans_bstart_par_compat163(DisasContext *ctx, arg_bstart_par_compat163 *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 163u);
-}
-
-static bool trans_bstart_par_acccvt(DisasContext *ctx, arg_bstart_par_acccvt *a)
-{
-    return trans_bstart_par_common(ctx, a->dtype, 258u);
 }
 
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
@@ -2680,12 +2823,55 @@ static bool linx_hl_load_pair_imm(DisasContext *ctx, int dst0, int dst1, int src
     return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
 }
 
+static bool linx_hl_load_imm(DisasContext *ctx, int dst, int src_base,
+                             int64_t simm, unsigned shift, bool unscaled,
+                             MemOp mop)
+{
+    int64_t off = linx_scale_simm(simm, shift, unscaled);
+    TCGv_i64 addr = linx_addr_add_imm(ctx, src_base, off);
+    return linx_load_to_dest(ctx, dst, linx_addr_from_i64(addr), mop);
+}
+
 static bool linx_hl_load_writeback(DisasContext *ctx, int dst_val, int dst_wb, int src_base,
                                    int64_t simm, unsigned shift, bool unscaled, bool pre_index,
                                    MemOp mop)
 {
     int64_t off = linx_scale_simm(simm, shift, unscaled);
     TCGv_i64 wb = linx_addr_add_imm(ctx, src_base, off);
+    TCGv_i64 addr = tcg_temp_new_i64();
+
+    if (pre_index) {
+        tcg_gen_mov_i64(addr, wb);
+    } else {
+        tcg_gen_mov_i64(addr, linx_get_reg(src_base));
+    }
+
+    if (!linx_load_to_dest(ctx, dst_val, linx_addr_from_i64(addr), mop)) {
+        return false;
+    }
+    linx_set_dest(dst_wb, wb);
+    return true;
+}
+
+static bool linx_hl_load_pair_reg(DisasContext *ctx, int dst0, int dst1,
+                                  int src_base, int src_off, int src_off_type,
+                                  int shamt, MemOp mop, int elem_bytes)
+{
+    TCGv_i64 addr0 = linx_addr_add_reg(ctx, src_base, src_off, src_off_type, shamt);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, elem_bytes);
+
+    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
+        return false;
+    }
+    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+}
+
+static bool linx_hl_load_writeback_reg(DisasContext *ctx, int dst_val, int dst_wb,
+                                       int src_base, int src_off, int src_off_type,
+                                       int shamt, bool pre_index, MemOp mop)
+{
+    TCGv_i64 wb = linx_addr_add_reg(ctx, src_base, src_off, src_off_type, shamt);
     TCGv_i64 addr = tcg_temp_new_i64();
 
     if (pre_index) {
@@ -2714,6 +2900,49 @@ static bool linx_hl_store_pair_imm(DisasContext *ctx, int src0, int src1, int sr
         return false;
     }
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr1), linx_get_reg(src1), mop);
+}
+
+static bool linx_hl_store_imm(DisasContext *ctx, int src_data, int src_base,
+                              int64_t simm, unsigned shift, bool unscaled,
+                              MemOp mop)
+{
+    int64_t off = linx_scale_simm(simm, shift, unscaled);
+    TCGv_i64 addr = linx_addr_add_imm(ctx, src_base, off);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(src_data), mop);
+}
+
+static bool linx_hl_store_pair_reg(DisasContext *ctx, int src0, int src1,
+                                   int src_base, int src_off, int src_off_type,
+                                   int shamt, MemOp mop, int elem_bytes)
+{
+    TCGv_i64 addr0 = linx_addr_add_reg(ctx, src_base, src_off, src_off_type, shamt);
+    TCGv_i64 addr1 = tcg_temp_new_i64();
+    tcg_gen_addi_i64(addr1, addr0, elem_bytes);
+
+    if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr0), linx_get_reg(src0), mop)) {
+        return false;
+    }
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr1), linx_get_reg(src1), mop);
+}
+
+static bool linx_hl_store_writeback_reg(DisasContext *ctx, int dst_wb, int src_data,
+                                        int src_base, int src_off, int src_off_type,
+                                        int shamt, bool pre_index, MemOp mop)
+{
+    TCGv_i64 wb = linx_addr_add_reg(ctx, src_base, src_off, src_off_type, shamt);
+    TCGv_i64 addr = tcg_temp_new_i64();
+
+    if (pre_index) {
+        tcg_gen_mov_i64(addr, wb);
+    } else {
+        tcg_gen_mov_i64(addr, linx_get_reg(src_base));
+    }
+
+    if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(src_data), mop)) {
+        return false;
+    }
+    linx_set_dest(dst_wb, wb);
+    return true;
 }
 
 static bool linx_hl_swi_writeback(DisasContext *ctx, int dst_wb, int src_data, int src_base,
@@ -2755,6 +2984,184 @@ static bool linx_hl_sdi_writeback(DisasContext *ctx, int dst_wb, int src_data, i
     linx_set_dest(dst_wb, wb);
     return true;
 }
+
+#define DEFINE_HL_LOAD_IMM(NAME, MOP, SHIFT, UNSCALED) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_load_imm(ctx, a->RegDst, a->SrcL, (int64_t)a->simm, SHIFT, UNSCALED, MOP); \
+}
+
+#define DEFINE_HL_LOAD_PAIR_IMM(NAME, MOP, SHIFT, UNSCALED, ELEM_BYTES) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_load_pair_imm(ctx, a->RegDst0, a->RegDst1, a->SrcL, \
+                                 (int64_t)a->simm, SHIFT, UNSCALED, MOP, ELEM_BYTES); \
+}
+
+#define DEFINE_HL_LOAD_WB_IMM(NAME, MOP, SHIFT, UNSCALED, PRE_INDEX) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_load_writeback(ctx, a->RegDst0, a->RegDst1, a->SrcL, \
+                                  (int64_t)a->simm, SHIFT, UNSCALED, PRE_INDEX, MOP); \
+}
+
+#define DEFINE_HL_LOAD_PAIR_REG(NAME, MOP, ELEM_BYTES) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_load_pair_reg(ctx, a->RegDst0, a->RegDst1, a->SrcL, a->SrcR, \
+                                 a->SrcRType, a->shamt, MOP, ELEM_BYTES); \
+}
+
+#define DEFINE_HL_LOAD_WB_REG(NAME, MOP, PRE_INDEX) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_load_writeback_reg(ctx, a->RegDst0, a->RegDst1, a->SrcL, a->SrcR, \
+                                      a->SrcRType, a->shamt, PRE_INDEX, MOP); \
+}
+
+#define DEFINE_HL_STORE_IMM(NAME, MOP, SHIFT, UNSCALED) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_store_imm(ctx, a->SrcD, a->SrcR, (int64_t)a->simm, SHIFT, UNSCALED, MOP); \
+}
+
+#define DEFINE_HL_STORE_PAIR_IMM(NAME, MOP, SHIFT, UNSCALED, ELEM_BYTES) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_store_pair_imm(ctx, a->SrcD, a->SrcD1, a->SrcR, \
+                                  (int64_t)a->simm, SHIFT, UNSCALED, MOP, ELEM_BYTES); \
+}
+
+#define DEFINE_HL_STORE_WB_IMM(NAME, MOP, SHIFT, UNSCALED, PRE_INDEX) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    int64_t off = linx_scale_simm((int64_t)a->simm, SHIFT, UNSCALED); \
+    TCGv_i64 wb = linx_addr_add_imm(ctx, a->SrcR, off); \
+    TCGv_i64 addr = tcg_temp_new_i64(); \
+    if (PRE_INDEX) { \
+        tcg_gen_mov_i64(addr, wb); \
+    } else { \
+        tcg_gen_mov_i64(addr, linx_get_reg(a->SrcR)); \
+    } \
+    if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(a->SrcD), MOP)) { \
+        return false; \
+    } \
+    linx_set_dest(a->RegDst1, wb); \
+    return true; \
+}
+
+#define DEFINE_HL_STORE_PAIR_REG(NAME, MOP, ELEM_BYTES) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_store_pair_reg(ctx, a->SrcD, a->SrcD1, a->SrcL, a->SrcR, \
+                                  a->SrcRType, a->shamt, MOP, ELEM_BYTES); \
+}
+
+#define DEFINE_HL_STORE_WB_REG(NAME, MOP, PRE_INDEX) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    return linx_hl_store_writeback_reg(ctx, a->RegDst1, a->SrcD, a->SrcL, a->SrcR, \
+                                       a->SrcRType, a->shamt, PRE_INDEX, MOP); \
+}
+
+DEFINE_HL_LOAD_WB_REG(hl_lb_po, MO_SB, false)
+DEFINE_HL_LOAD_WB_REG(hl_lb_pr, MO_SB, true)
+DEFINE_HL_LOAD_IMM(hl_lbi, MO_SB, 0, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lbi_po, MO_SB, 0, false, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lbi_pr, MO_SB, 0, false, true)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lbip, MO_SB, 0, false, 1)
+DEFINE_HL_LOAD_PAIR_REG(hl_lbp, MO_SB, 1)
+
+DEFINE_HL_LOAD_WB_REG(hl_lbu_po, MO_UB, false)
+DEFINE_HL_LOAD_WB_REG(hl_lbu_pr, MO_UB, true)
+DEFINE_HL_LOAD_IMM(hl_lbui, MO_UB, 0, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lbui_po, MO_UB, 0, false, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lbui_pr, MO_UB, 0, false, true)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lbuip, MO_UB, 0, false, 1)
+DEFINE_HL_LOAD_PAIR_REG(hl_lbup, MO_UB, 1)
+
+DEFINE_HL_LOAD_WB_REG(hl_lh_po, MO_SW, false)
+DEFINE_HL_LOAD_WB_REG(hl_lh_pr, MO_SW, true)
+DEFINE_HL_LOAD_IMM(hl_lhi, MO_SW, 1, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhi_po, MO_SW, 1, false, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhi_pr, MO_SW, 1, false, true)
+DEFINE_HL_LOAD_IMM(hl_lhi_u, MO_SW, 1, true)
+DEFINE_HL_LOAD_WB_IMM(hl_lhi_upo, MO_SW, 1, true, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhi_upr, MO_SW, 1, true, true)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lhip, MO_SW, 1, false, 2)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lhip_u, MO_SW, 1, true, 2)
+DEFINE_HL_LOAD_PAIR_REG(hl_lhp, MO_SW, 2)
+
+DEFINE_HL_LOAD_WB_REG(hl_lhu_po, MO_UW, false)
+DEFINE_HL_LOAD_WB_REG(hl_lhu_pr, MO_UW, true)
+DEFINE_HL_LOAD_IMM(hl_lhui, MO_UW, 1, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhui_po, MO_UW, 1, false, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhui_pr, MO_UW, 1, false, true)
+DEFINE_HL_LOAD_IMM(hl_lhui_u, MO_UW, 1, true)
+DEFINE_HL_LOAD_WB_IMM(hl_lhui_upo, MO_UW, 1, true, false)
+DEFINE_HL_LOAD_WB_IMM(hl_lhui_upr, MO_UW, 1, true, true)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lhuip, MO_UW, 1, false, 2)
+DEFINE_HL_LOAD_PAIR_IMM(hl_lhuip_u, MO_UW, 1, true, 2)
+DEFINE_HL_LOAD_PAIR_REG(hl_lhup, MO_UW, 2)
+
+DEFINE_HL_LOAD_WB_REG(hl_ld_po, MO_UQ, false)
+DEFINE_HL_LOAD_WB_REG(hl_ld_pr, MO_UQ, true)
+DEFINE_HL_LOAD_IMM(hl_ldi, MO_UQ, 3, false)
+DEFINE_HL_LOAD_IMM(hl_ldi_u, MO_UQ, 3, true)
+DEFINE_HL_LOAD_PAIR_REG(hl_ldp, MO_UQ, 8)
+
+DEFINE_HL_LOAD_WB_REG(hl_lw_po, MO_SL, false)
+DEFINE_HL_LOAD_WB_REG(hl_lw_pr, MO_SL, true)
+DEFINE_HL_LOAD_IMM(hl_lwi, MO_SL, 2, false)
+DEFINE_HL_LOAD_IMM(hl_lwi_u, MO_SL, 2, true)
+DEFINE_HL_LOAD_PAIR_REG(hl_lwp, MO_SL, 4)
+
+DEFINE_HL_LOAD_WB_REG(hl_lwu_po, MO_UL, false)
+DEFINE_HL_LOAD_WB_REG(hl_lwu_pr, MO_UL, true)
+DEFINE_HL_LOAD_IMM(hl_lwui, MO_UL, 2, false)
+DEFINE_HL_LOAD_IMM(hl_lwui_u, MO_UL, 2, true)
+DEFINE_HL_LOAD_PAIR_REG(hl_lwup, MO_UL, 4)
+
+DEFINE_HL_STORE_WB_REG(hl_sb_po, MO_UB, false)
+DEFINE_HL_STORE_WB_REG(hl_sb_pr, MO_UB, true)
+DEFINE_HL_STORE_IMM(hl_sbi, MO_UB, 0, false)
+DEFINE_HL_STORE_WB_IMM(hl_sbi_po, MO_UB, 0, false, false)
+DEFINE_HL_STORE_WB_IMM(hl_sbi_pr, MO_UB, 0, false, true)
+DEFINE_HL_STORE_PAIR_IMM(hl_sbip, MO_UB, 0, false, 1)
+DEFINE_HL_STORE_PAIR_REG(hl_sbp, MO_UB, 1)
+
+DEFINE_HL_STORE_WB_REG(hl_sh_po, MO_UW, false)
+DEFINE_HL_STORE_WB_REG(hl_sh_pr, MO_UW, true)
+DEFINE_HL_STORE_WB_REG(hl_sh_upo, MO_UW, false)
+DEFINE_HL_STORE_WB_REG(hl_sh_upr, MO_UW, true)
+DEFINE_HL_STORE_IMM(hl_shi, MO_UW, 1, false)
+DEFINE_HL_STORE_WB_IMM(hl_shi_po, MO_UW, 1, false, false)
+DEFINE_HL_STORE_WB_IMM(hl_shi_pr, MO_UW, 1, false, true)
+DEFINE_HL_STORE_IMM(hl_shi_u, MO_UW, 1, true)
+DEFINE_HL_STORE_WB_IMM(hl_shi_upo, MO_UW, 1, true, false)
+DEFINE_HL_STORE_WB_IMM(hl_shi_upr, MO_UW, 1, true, true)
+DEFINE_HL_STORE_PAIR_IMM(hl_ship, MO_UW, 1, false, 2)
+DEFINE_HL_STORE_PAIR_IMM(hl_ship_u, MO_UW, 1, true, 2)
+DEFINE_HL_STORE_PAIR_REG(hl_shp, MO_UW, 2)
+DEFINE_HL_STORE_PAIR_REG(hl_shp_u, MO_UW, 2)
+
+DEFINE_HL_STORE_WB_REG(hl_sd_po, MO_UQ, false)
+DEFINE_HL_STORE_WB_REG(hl_sd_pr, MO_UQ, true)
+DEFINE_HL_STORE_WB_REG(hl_sd_upo, MO_UQ, false)
+DEFINE_HL_STORE_WB_REG(hl_sd_upr, MO_UQ, true)
+DEFINE_HL_STORE_IMM(hl_sdi, MO_UQ, 3, false)
+DEFINE_HL_STORE_IMM(hl_sdi_u, MO_UQ, 3, true)
+DEFINE_HL_STORE_PAIR_REG(hl_sdp, MO_UQ, 8)
+DEFINE_HL_STORE_PAIR_REG(hl_sdp_u, MO_UQ, 8)
+
+DEFINE_HL_STORE_WB_REG(hl_sw_po, MO_UL, false)
+DEFINE_HL_STORE_WB_REG(hl_sw_pr, MO_UL, true)
+DEFINE_HL_STORE_WB_REG(hl_sw_upo, MO_UL, false)
+DEFINE_HL_STORE_WB_REG(hl_sw_upr, MO_UL, true)
+DEFINE_HL_STORE_IMM(hl_swi, MO_UL, 2, false)
+DEFINE_HL_STORE_IMM(hl_swi_u, MO_UL, 2, true)
+DEFINE_HL_STORE_PAIR_REG(hl_swp, MO_UL, 4)
+DEFINE_HL_STORE_PAIR_REG(hl_swp_u, MO_UL, 4)
 
 static bool trans_hl_ldip(DisasContext *ctx, arg_hl_ldip *a)
 {
@@ -4202,6 +4609,62 @@ static bool trans_b_nz(DisasContext *ctx, arg_b_nz *a)
     return true;
 }
 
+static bool linx_trans_branch_cmp(DisasContext *ctx, TCGCond cond,
+                                  uint32_t src_l, uint32_t src_r, int64_t simm_hw)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+
+    TCGLabel *taken = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = linx_pcrel_target(current_pc, simm_hw);
+    TCGv_i64 lhs = linx_get_reg(src_l);
+    TCGv_i64 rhs = linx_get_reg(src_r);
+
+    tcg_gen_brcond_i64(cond, lhs, rhs, taken);
+    tcg_gen_br(done);
+
+    gen_set_label(taken);
+    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+
+    gen_set_label(done);
+    return true;
+}
+
+static bool trans_b_eq(DisasContext *ctx, arg_b_eq *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_EQ, a->SrcL, a->SrcR, a->simm12);
+}
+
+static bool trans_b_ne(DisasContext *ctx, arg_b_ne *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_NE, a->SrcL, a->SrcR, a->simm12);
+}
+
+static bool trans_b_lt(DisasContext *ctx, arg_b_lt *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_LT, a->SrcL, a->SrcR, a->simm12);
+}
+
+static bool trans_b_ge(DisasContext *ctx, arg_b_ge *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_GE, a->SrcL, a->SrcR, a->simm12);
+}
+
+static bool trans_b_ltu(DisasContext *ctx, arg_b_ltu *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_LTU, a->SrcL, a->SrcR, a->simm12);
+}
+
+static bool trans_b_geu(DisasContext *ctx, arg_b_geu *a)
+{
+    return linx_trans_branch_cmp(ctx, TCG_COND_GEU, a->SrcL, a->SrcR, a->simm12);
+}
+
 /* ===================== 16-bit Sign/Zero Extension ===================== */
 
 static bool trans_c_sext_b(DisasContext *ctx, arg_c_sext_b *a)
@@ -4509,48 +4972,64 @@ static bool trans_hl_cmp_geui(DisasContext *ctx, arg_hl_cmp_geui *a)
 static bool trans_hl_bstart_std_fall(DisasContext *ctx, arg_hl_bstart_std_fall *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    linx_block_begin(ctx, LINX_BR_FALL, 0);
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_FALL,
+                                    linx_pcrel_target(current_pc, a->simm));
 }
 
 static bool trans_hl_bstart_std_direct(DisasContext *ctx, arg_hl_bstart_std_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    vaddr target = current_pc + ((int64_t)a->simm << 1);
-    linx_block_begin(ctx, LINX_BR_DIRECT, target);
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
+                                    linx_pcrel_target(current_pc, a->simm));
 }
 
 static bool trans_hl_bstart_std_cond(DisasContext *ctx, arg_hl_bstart_std_cond *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    vaddr target = current_pc + ((int64_t)a->simm << 1);
-    linx_block_begin(ctx, LINX_BR_COND, target);
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_COND,
+                                    linx_pcrel_target(current_pc, a->simm));
 }
 
 static bool trans_hl_bstart_std_call(DisasContext *ctx, arg_hl_bstart_std_call *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    vaddr target = current_pc + ((int64_t)a->simm << 1);
-    linx_block_begin(ctx, LINX_BR_CALL, target);
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_CALL,
+                                    linx_pcrel_target(current_pc, a->simm));
+}
+
+static bool trans_hl_bstart_fp_fall(DisasContext *ctx, arg_hl_bstart_fp_fall *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_FALL,
+                                    linx_pcrel_target(current_pc, a->simm));
+}
+
+static bool trans_hl_bstart_fp_direct(DisasContext *ctx, arg_hl_bstart_fp_direct *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
+                                    linx_pcrel_target(current_pc, a->simm));
+}
+
+static bool trans_hl_bstart_fp_cond(DisasContext *ctx, arg_hl_bstart_fp_cond *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_COND,
+                                    linx_pcrel_target(current_pc, a->simm));
+}
+
+static bool trans_hl_bstart_fp_call(DisasContext *ctx, arg_hl_bstart_fp_call *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_CALL,
+                                    linx_pcrel_target(current_pc, a->simm));
+}
+
+static bool trans_hl_bstart_sys(DisasContext *ctx, arg_hl_bstart_sys *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_FALL,
+                                    linx_pcrel_target(current_pc, a->simm));
 }
 
 /* ===================== System Instructions ===================== */
@@ -4720,6 +5199,157 @@ static bool trans_tlb_iall(DisasContext *ctx, arg_tlb_iall *a)
     return true;
 }
 
+static bool trans_tlb_ia(DisasContext *ctx, arg_tlb_ia *a)
+{
+    (void)ctx;
+    (void)a;
+    gen_helper_linx_tlb_iall(tcg_env);
+    return true;
+}
+
+static bool trans_tlb_iv(DisasContext *ctx, arg_tlb_iv *a)
+{
+    (void)ctx;
+    (void)a;
+    gen_helper_linx_tlb_iall(tcg_env);
+    return true;
+}
+
+static bool trans_tlb_iav(DisasContext *ctx, arg_tlb_iav *a)
+{
+    (void)ctx;
+    (void)a;
+    gen_helper_linx_tlb_iall(tcg_env);
+    return true;
+}
+
+static bool trans_assert(DisasContext *ctx, arg_assert *a)
+{
+    (void)ctx;
+    (void)a;
+    /* TODO(v0.4): wire ASSERT_FAIL trapnum 52 through QEMU's exception path. */
+    return true;
+}
+
+static bool trans_bse(DisasContext *ctx, arg_bse *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_bwe(DisasContext *ctx, arg_bwe *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_bwi(DisasContext *ctx, arg_bwi *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_bwt(DisasContext *ctx, arg_bwt *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_b_iod(DisasContext *ctx, arg_b_iod *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_bc_iall(DisasContext *ctx, arg_bc_iall *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_bc_iva(DisasContext *ctx, arg_bc_iva *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_ic_iall(DisasContext *ctx, arg_ic_iall *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_ic_iva(DisasContext *ctx, arg_ic_iva *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_iall(DisasContext *ctx, arg_dc_iall *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_iva(DisasContext *ctx, arg_dc_iva *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_civa(DisasContext *ctx, arg_dc_civa *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_cva(DisasContext *ctx, arg_dc_cva *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_csw(DisasContext *ctx, arg_dc_csw *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_cisw(DisasContext *ctx, arg_dc_cisw *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_isw(DisasContext *ctx, arg_dc_isw *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dc_zva(DisasContext *ctx, arg_dc_zva *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
 static bool trans_ssrset(DisasContext *ctx, arg_ssrset *a)
 {
     TCGv_i64 src = linx_get_reg(a->SrcL);
@@ -4868,7 +5498,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                    uint8_t brtype = (hw >> 11) & 0x7;
                    if (brtype != 0) {
                        /* Handle C.BSTART.STD with non-zero BrType */
-                       decoded = trans_c_bstart_std(ctx, brtype);
+                       decoded = linx_trans_c_bstart_std(ctx, brtype);
                        if (decoded) {
                            trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                        }
@@ -4885,12 +5515,6 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                } else if ((hw & 0xf83f) == 0x5016) {
                    /* C.SETRET compact alias (decoded outside decodetree due overlap with C.MOVI). */
                    decoded = linx_setret_common(ctx, (int64_t)((hw >> 6) & 0x1fu));
-                   if (decoded) {
-                       trace_linx_insn_exec(pc, insn_val, len, "16-bit");
-                   }
-               } else if (hw == 0x88c0 || hw == 0xc8c0) {
-                   /* C.BSTART.VPAR/VSEQ: fixed fall-through vector block headers. */
-                   decoded = trans_c_bstart_std(ctx, LINX_BR_FALL);
                    if (decoded) {
                        trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                    }

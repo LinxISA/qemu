@@ -1,8 +1,8 @@
 #
 # LinxISA 64-bit (V.*) instruction decoding
 #
-# This file contains the minimal 64-bit SIMT/vector instruction subset needed
-# for v0.3 bring-up tests (MSEQ/MPAR bodies).
+# This file contains the current 64-bit VEC instruction subset used by
+# canonical v0.4 MSEQ/MPAR body decoding in QEMU.
 #
 
 # 10-bit vector register codes are split across the two 32-bit halves:
