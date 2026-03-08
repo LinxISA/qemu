@@ -8,6 +8,7 @@
 # Fields
 %BlockType 6:5
 %BrType 11:3
+%LoopNest3 11:3
 %RegDst 11:5
 %SrcL 6:5
 %SrcR 11:5
@@ -22,13 +23,22 @@
 # Block headers / terminators
 # Note: c_bstop is all zeros - check it first before other block instructions
 c_bstop         0000 0000 0000 0000
-# C.BSTART.STD: mask=0xc7ff, match=0x0000, BrType in bits [13:11]
-# Pattern: bits [15,14,10:0] must be 0, bits [13:11] contain BrType
-# BrType values: 1=FALL, 2=DIRECT, 3=COND, 4=CALL, 5=IND, 6=ICALL, 7=RET
-# Note: BrType=0 matches c_bstop, so c_bstart is handled explicitly in translate.c
-# to avoid overlap with c_bstop
+# C.BSTART.STD: BrType=0 aliases c_bstop, so spell out only the non-zero forms.
 c_bstart_direct .... .... .... 0010 %simm12
 c_bstart_cond   .... .... .... 0100 %simm12
+c_bstart_fp     00.. .000 1000 0000 %BrType
+c_bstart_std_fall   0000 1000 0000 0000
+c_bstart_std_direct 0001 0000 0000 0000
+c_bstart_std_cond   0001 1000 0000 0000
+c_bstart_std_call   0010 0000 0000 0000
+c_bstart_std_ind    0010 1000 0000 0000
+c_bstart_std_icall  0011 0000 0000 0000
+c_bstart_std_ret    0011 1000 0000 0000
+c_bstart_sys    0000 1000 0100 0000
+c_bstart_mpar   0000 1000 1100 0000
+c_bstart_mseq   0100 1000 1100 0000
+c_bstart_vpar   1000 1000 1100 0000
+c_bstart_vseq   1100 1000 1100 0000
 
 # Call/return support
 # Note: c_setc_tgt comes after c_bstop to avoid conflict (c_setc_tgt has bits [3:0]=1100, so doesn't match 0x0000)
@@ -70,9 +80,15 @@ c_slli          0001 0... ..10 1100 %uimm5
 c_srli          0001 1... ..10 1100 %uimm5
 
 # Block dimension immediate (LB0/LB1/LB2)
+# C.B.DIM uses bits[15:14]=11 and loopnest in bits[13:11].
+c_b_dim         11.. .... ..11 1100 loopnest=%LoopNest3 reg=%SrcL
 # Encoding: bits[5:0]=0x3c, imm8 in [13:6], LoopNest in [15:14] (LoopNest!=3).
 c_b_dimi        .... .... ..11 1100 loopnest=%LoopNest imm8=%imm8
 
 # Compare immediate (T-hand == imm ? 1 : 0, result to T-hand)
 c_cmp_eqi       0000 0... ..10 1100 simm5=%simm5_6_s5
 c_cmp_nei       0000 1... ..10 1100 simm5=%simm5_6_s5
+
+# System / debug
+c_ebreak        1100 0... ..10 1100 imm5=%uimm5
+c_ssrget        1000 0... ..10 1100 ssrid=%SrcL
