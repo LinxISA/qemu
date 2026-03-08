@@ -1321,6 +1321,14 @@ static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
     return true;
 }
 
+static bool trans_c_b_dim(DisasContext *ctx, arg_c_b_dim *a)
+{
+    if (a->loopnest > 2u) {
+        return linx_illegal(ctx);
+    }
+    return trans_b_dim_common(ctx, a->reg, 0, a->loopnest);
+}
+
 static bool trans_b_dim_lb0(DisasContext *ctx, arg_b_dim_lb0 *a)
 {
     return trans_b_dim_common(ctx, a->reg, a->uimm, 0);
@@ -5395,6 +5403,447 @@ static bool trans_ebreak(DisasContext *ctx, arg_ebreak *a)
         ctx->base.is_jmp = DISAS_NORETURN;
     }
     return true;
+}
+
+static bool trans_c_ebreak(DisasContext *ctx, arg_c_ebreak *a)
+{
+    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    gen_helper_linx_ebreak(tcg_env, tcg_constant_i32(a->imm5));
+    if (a->imm5 != 1 && a->imm5 != 2 && a->imm5 != 3) {
+        ctx->base.is_jmp = DISAS_NORETURN;
+    }
+    return true;
+}
+
+static bool trans_c_ssrget(DisasContext *ctx, arg_c_ssrget *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_ssr_read(val, tcg_env, tcg_constant_i32(a->ssrid & 0x1f));
+    linx_push_t(val);
+    return true;
+}
+
+static bool trans_lsrget(DisasContext *ctx, arg_lsrget *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_ssr_read(val, tcg_env, tcg_constant_i32(a->lsrid));
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_j(DisasContext *ctx, arg_j *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr target = current_pc + ((int64_t)a->simm22 << 1);
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    tcg_gen_movi_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool trans_jr(DisasContext *ctx, arg_jr *a)
+{
+    TCGv_i64 base = linx_get_reg(a->SrcL);
+    TCGv_i64 target = tcg_temp_new_i64();
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    tcg_gen_addi_i64(target, base, ((int64_t)a->simm12) << 1);
+    gen_helper_linx_check_bstart_target(tcg_env, target);
+    tcg_gen_mov_i64(cpu_pc, target);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool trans_mulu(DisasContext *ctx, arg_mulu *a)
+{
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_mul_i64(out, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR));
+    return trans_alu_binop(ctx, a->RegDst, out);
+}
+
+static bool trans_muluw(DisasContext *ctx, arg_muluw *a)
+{
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_mul_i64(out, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR));
+    return linx_binop_w(ctx, a->RegDst, out);
+}
+
+static bool trans_lhi_u(DisasContext *ctx, arg_lhi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SW);
+}
+
+static bool trans_lhui_u(DisasContext *ctx, arg_lhui_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UW);
+}
+
+static bool trans_lwi_u(DisasContext *ctx, arg_lwi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
+}
+
+static bool trans_lwui_u(DisasContext *ctx, arg_lwui_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UL);
+}
+
+static bool trans_ldi_u(DisasContext *ctx, arg_ldi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UQ);
+}
+
+static bool trans_shi_u(DisasContext *ctx, arg_shi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcR, (int64_t)a->simm12);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UW);
+}
+
+static bool trans_swi_u(DisasContext *ctx, arg_swi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcR, (int64_t)a->simm12);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
+}
+
+static bool trans_sdi_u(DisasContext *ctx, arg_sdi_u *a)
+{
+    TCGv_i64 addr64 = linx_addr_add_imm(ctx, a->SrcR, (int64_t)a->simm12);
+    return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UQ);
+}
+
+static bool trans_prf(DisasContext *ctx, arg_prf *a)
+{
+    (void)a->RegDst;
+    (void)linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return true;
+}
+
+static bool trans_prfi_u(DisasContext *ctx, arg_prfi_u *a)
+{
+    (void)a->RegDst;
+    (void)linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm12);
+    return true;
+}
+
+static bool trans_lr_b(DisasContext *ctx, arg_lr_b *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_lr_b(val, tcg_env, linx_get_reg(a->SrcL));
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_lr_h(DisasContext *ctx, arg_lr_h *a)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+    gen_helper_linx_lr_h(val, tcg_env, linx_get_reg(a->SrcL));
+    linx_set_dest(a->RegDst, val);
+    return true;
+}
+
+static bool trans_sc_b(DisasContext *ctx, arg_sc_b *a)
+{
+    TCGv_i64 res = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL));
+    gen_helper_linx_sc_b(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    linx_set_dest(a->RegDst, res);
+    return true;
+}
+
+static bool trans_sc_h(DisasContext *ctx, arg_sc_h *a)
+{
+    TCGv_i64 res = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL));
+    gen_helper_linx_sc_h(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    linx_set_dest(a->RegDst, res);
+    return true;
+}
+
+static bool trans_swapb(DisasContext *ctx, arg_swapb *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));
+    gen_helper_linx_swapb(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_swaph(DisasContext *ctx, arg_swaph *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 val32 = tcg_temp_new_i32();
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));
+    gen_helper_linx_swaph(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+#define LINX_DEFINE_FETCH32(NAME, HELPER) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    TCGv_i64 old = tcg_temp_new_i64(); \
+    TCGv_i32 val32 = tcg_temp_new_i32(); \
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR)); \
+    gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL), val32); \
+    linx_set_dest(a->RegDst, old); \
+    return true; \
+}
+
+#define LINX_DEFINE_FETCH64(NAME, HELPER) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    TCGv_i64 old = tcg_temp_new_i64(); \
+    gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR)); \
+    linx_set_dest(a->RegDst, old); \
+    return true; \
+}
+
+#define LINX_DEFINE_STORE32(NAME, HELPER) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    TCGv_i32 val32 = tcg_temp_new_i32(); \
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL)); \
+    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcR), val32); \
+    return true; \
+}
+
+#define LINX_DEFINE_STORE64(NAME, HELPER) \
+static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
+{ \
+    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcR), linx_get_reg(a->SrcL)); \
+    return true; \
+}
+
+LINX_DEFINE_FETCH32(lw_and, linx_lw_and)
+LINX_DEFINE_FETCH32(lw_or, linx_lw_or)
+LINX_DEFINE_FETCH32(lw_xor, linx_lw_xor)
+LINX_DEFINE_FETCH32(lw_smax, linx_lw_smax)
+LINX_DEFINE_FETCH32(lw_smin, linx_lw_smin)
+LINX_DEFINE_FETCH32(lw_umax, linx_lw_umax)
+LINX_DEFINE_FETCH32(lw_umin, linx_lw_umin)
+LINX_DEFINE_FETCH64(ld_and, linx_ld_and)
+LINX_DEFINE_FETCH64(ld_or, linx_ld_or)
+LINX_DEFINE_FETCH64(ld_xor, linx_ld_xor)
+LINX_DEFINE_FETCH64(ld_smax, linx_ld_smax)
+LINX_DEFINE_FETCH64(ld_smin, linx_ld_smin)
+LINX_DEFINE_FETCH64(ld_umax, linx_ld_umax)
+LINX_DEFINE_FETCH64(ld_umin, linx_ld_umin)
+LINX_DEFINE_STORE32(sw_add, linx_sw_add)
+LINX_DEFINE_STORE32(sw_and, linx_sw_and)
+LINX_DEFINE_STORE32(sw_or, linx_sw_or)
+LINX_DEFINE_STORE32(sw_xor, linx_sw_xor)
+LINX_DEFINE_STORE32(sw_smax, linx_sw_smax)
+LINX_DEFINE_STORE32(sw_smin, linx_sw_smin)
+LINX_DEFINE_STORE32(sw_umax, linx_sw_umax)
+LINX_DEFINE_STORE32(sw_umin, linx_sw_umin)
+LINX_DEFINE_STORE64(sd_add, linx_sd_add)
+LINX_DEFINE_STORE64(sd_and, linx_sd_and)
+LINX_DEFINE_STORE64(sd_or, linx_sd_or)
+LINX_DEFINE_STORE64(sd_xor, linx_sd_xor)
+LINX_DEFINE_STORE64(sd_smax, linx_sd_smax)
+LINX_DEFINE_STORE64(sd_smin, linx_sd_smin)
+LINX_DEFINE_STORE64(sd_umax, linx_sd_umax)
+LINX_DEFINE_STORE64(sd_umin, linx_sd_umin)
+
+#undef LINX_DEFINE_FETCH32
+#undef LINX_DEFINE_FETCH64
+#undef LINX_DEFINE_STORE32
+#undef LINX_DEFINE_STORE64
+
+static bool trans_hl_setret(DisasContext *ctx, arg_hl_setret *a)
+{
+    return linx_setret_common(ctx, (int64_t)a->imm);
+}
+
+static bool trans_hl_lis(DisasContext *ctx, arg_hl_lis *a)
+{
+    linx_set_dest(a->RegDst, tcg_constant_i64((int64_t)a->simm));
+    return true;
+}
+
+static bool trans_hl_liu(DisasContext *ctx, arg_hl_liu *a)
+{
+    linx_set_dest(a->RegDst, tcg_constant_i64((uint64_t)a->uimm));
+    return true;
+}
+
+static bool trans_hl_miadd(DisasContext *ctx, arg_hl_miadd *a)
+{
+    TCGv_i64 prod = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_mul_i64(prod, linx_get_reg(a->SrcR), tcg_constant_i64((uint64_t)a->uimm19));
+    tcg_gen_add_i64(out, linx_get_reg(a->SrcL), prod);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_misub(DisasContext *ctx, arg_hl_misub *a)
+{
+    TCGv_i64 prod = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+    tcg_gen_mul_i64(prod, linx_get_reg(a->SrcR), tcg_constant_i64((uint64_t)a->uimm19));
+    tcg_gen_sub_i64(out, linx_get_reg(a->SrcL), prod);
+    linx_set_dest(a->RegDst, out);
+    return true;
+}
+
+static bool trans_hl_bfi(DisasContext *ctx, arg_hl_bfi *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_ccat(DisasContext *ctx, arg_hl_ccat *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_ccatw(DisasContext *ctx, arg_hl_ccatw *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_setc_eqi(DisasContext *ctx, arg_hl_setc_eqi *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_EQ, linx_get_reg(a->SrcL),
+                              (int64_t)a->simm << a->shamt);
+}
+
+static bool trans_hl_setc_nei(DisasContext *ctx, arg_hl_setc_nei *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_NE, linx_get_reg(a->SrcL),
+                              (int64_t)a->simm << a->shamt);
+}
+
+static bool trans_hl_setc_lti(DisasContext *ctx, arg_hl_setc_lti *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_LT, linx_get_reg(a->SrcL),
+                              (int64_t)a->simm << a->shamt);
+}
+
+static bool trans_hl_setc_gei(DisasContext *ctx, arg_hl_setc_gei *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_GE, linx_get_reg(a->SrcL),
+                              (int64_t)a->simm << a->shamt);
+}
+
+static bool trans_hl_setc_ltui(DisasContext *ctx, arg_hl_setc_ltui *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_LTU, linx_get_reg(a->SrcL),
+                              (int64_t)((uint64_t)a->uimm << a->shamt));
+}
+
+static bool trans_hl_setc_geui(DisasContext *ctx, arg_hl_setc_geui *a)
+{
+    return trans_setc_cmp_imm(ctx, TCG_COND_GEU, linx_get_reg(a->SrcL),
+                              (int64_t)((uint64_t)a->uimm << a->shamt));
+}
+
+static bool trans_hl_prf(DisasContext *ctx, arg_hl_prf *a)
+{
+    (void)a->RegDst;
+    (void)a->model;
+    (void)linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    return true;
+}
+
+static bool trans_hl_prf_a(DisasContext *ctx, arg_hl_prf_a *a)
+{
+    TCGv_i64 ea = linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
+    (void)a->model;
+    linx_set_dest(a->RegDst, ea);
+    return true;
+}
+
+static bool trans_hl_prfi_u(DisasContext *ctx, arg_hl_prfi_u *a)
+{
+    (void)a->model;
+    (void)linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm);
+    return true;
+}
+
+static bool trans_hl_prfi_ua(DisasContext *ctx, arg_hl_prfi_ua *a)
+{
+    TCGv_i64 ea = linx_addr_add_imm(ctx, a->SrcL, (int64_t)a->simm);
+    (void)a->model;
+    linx_set_dest(a->RegDst, ea);
+    return true;
+}
+
+static bool trans_hl_qmt(DisasContext *ctx, arg_hl_qmt *a)
+{
+    (void)a->SrcL;
+    (void)a->SrcR;
+    (void)a->e;
+    (void)a->i;
+    (void)a->r;
+    (void)a->s;
+    linx_set_dest(a->RegDst, tcg_constant_i64(0));
+    return true;
+}
+
+static bool trans_hl_qpush(DisasContext *ctx, arg_hl_qpush *a)
+{
+    (void)a->SrcL;
+    (void)a->SrcR;
+    (void)a->e;
+    (void)a->h;
+    (void)a->r;
+    linx_set_dest(a->RegDst, tcg_constant_i64(0));
+    return true;
+}
+
+static bool trans_hl_qpop(DisasContext *ctx, arg_hl_qpop *a)
+{
+    (void)a->SrcL;
+    (void)a->SrcR;
+    (void)a->e;
+    (void)a->r;
+    linx_set_dest(a->RegDst0, tcg_constant_i64(0));
+    linx_set_dest(a->RegDst1, tcg_constant_i64(0));
+    return true;
+}
+
+static bool trans_hl_casb(DisasContext *ctx, arg_hl_casb *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_cash(DisasContext *ctx, arg_hl_cash *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_casw(DisasContext *ctx, arg_hl_casw *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
+}
+
+static bool trans_hl_casd(DisasContext *ctx, arg_hl_casd *a)
+{
+    (void)a;
+    return linx_illegal(ctx);
 }
 
 static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)

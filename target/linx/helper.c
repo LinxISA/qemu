@@ -1814,6 +1814,20 @@ uint64_t HELPER(linx_lr_w)(CPULinxState *env, uint64_t addr)
     return (uint64_t)v;
 }
 
+uint64_t HELPER(linx_lr_b)(CPULinxState *env, uint64_t addr)
+{
+    uint32_t v = cpu_ldb_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UB), GETPC());
+    linx_lr_set(env, addr, 1);
+    return (uint64_t)v;
+}
+
+uint64_t HELPER(linx_lr_h)(CPULinxState *env, uint64_t addr)
+{
+    uint32_t v = cpu_ldw_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UW), GETPC());
+    linx_lr_set(env, addr, 2);
+    return (uint64_t)v;
+}
+
 uint64_t HELPER(linx_lr_d)(CPULinxState *env, uint64_t addr)
 {
     uint64_t v = cpu_ldq_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UQ), GETPC());
@@ -1836,6 +1850,26 @@ uint64_t HELPER(linx_sc_w)(CPULinxState *env, uint64_t addr, uint32_t value)
     return ok;
 }
 
+uint64_t HELPER(linx_sc_b)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    uint64_t ok = (env->lr_valid && env->lr_addr == addr && env->lr_size == 1) ? 0 : 1;
+    if (ok == 0) {
+        cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), GETPC());
+    }
+    linx_lr_clear(env);
+    return ok;
+}
+
+uint64_t HELPER(linx_sc_h)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    uint64_t ok = (env->lr_valid && env->lr_addr == addr && env->lr_size == 2) ? 0 : 1;
+    if (ok == 0) {
+        cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), GETPC());
+    }
+    linx_lr_clear(env);
+    return ok;
+}
+
 uint64_t HELPER(linx_sc_d)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     uint64_t ok = (env->lr_valid && env->lr_addr == addr && env->lr_size == 8) ? 0 : 1;
@@ -1853,6 +1887,20 @@ uint64_t HELPER(linx_swapw)(CPULinxState *env, uint64_t addr, uint32_t value)
                                             linx_oi_le(MO_UL), GETPC());
 }
 
+uint64_t HELPER(linx_swapb)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    return (uint64_t)cpu_atomic_xchgb_mmu((CPUArchState *)env, addr, value,
+                                          linx_oi_le(MO_UB), GETPC());
+}
+
+uint64_t HELPER(linx_swaph)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    return (uint64_t)cpu_atomic_xchgw_le_mmu((CPUArchState *)env, addr, value,
+                                             linx_oi_le(MO_UW), GETPC());
+}
+
 uint64_t HELPER(linx_swapd)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     linx_lr_clear(env);
@@ -1867,11 +1915,103 @@ uint64_t HELPER(linx_lw_add)(CPULinxState *env, uint64_t addr, uint32_t value)
                                                   linx_oi_le(MO_UL), GETPC());
 }
 
+#define LINX_DEFINE_FETCH32_HELPER(NAME, OP, OI) \
+uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
+{ \
+    linx_lr_clear(env); \
+    return (uint64_t)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+}
+
+#define LINX_DEFINE_FETCH64_HELPER(NAME, OP, OI) \
+uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
+{ \
+    linx_lr_clear(env); \
+    return cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+}
+
+#define LINX_DEFINE_STORE32_HELPER(NAME, OP, OI) \
+void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
+{ \
+    linx_lr_clear(env); \
+    (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+}
+
+#define LINX_DEFINE_STORE64_HELPER(NAME, OP, OI) \
+void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
+{ \
+    linx_lr_clear(env); \
+    (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+}
+
+LINX_DEFINE_FETCH32_HELPER(lw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH32_HELPER(lw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_FETCH64_HELPER(ld_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH64_HELPER(ld_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE32_HELPER(sw_add, fetch_addl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE32_HELPER(sw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL))
+LINX_DEFINE_STORE64_HELPER(sd_add, fetch_addq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
+
+#undef LINX_DEFINE_FETCH32_HELPER
+#undef LINX_DEFINE_FETCH64_HELPER
+#undef LINX_DEFINE_STORE32_HELPER
+#undef LINX_DEFINE_STORE64_HELPER
+
 uint64_t HELPER(linx_ld_add)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     linx_lr_clear(env);
     return cpu_atomic_fetch_addq_le_mmu((CPUArchState *)env, addr, value,
                                         linx_oi_le(MO_UQ), GETPC());
+}
+
+uint64_t HELPER(linx_casb)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint32_t newv)
+{
+    linx_lr_clear(env);
+    return (uint64_t)cpu_atomic_cmpxchgb_mmu((CPUArchState *)env, addr, cmpv, newv,
+                                             linx_oi_le(MO_UB), GETPC());
+}
+
+uint64_t HELPER(linx_cash)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint32_t newv)
+{
+    linx_lr_clear(env);
+    return (uint64_t)cpu_atomic_cmpxchgw_le_mmu((CPUArchState *)env, addr, cmpv, newv,
+                                                linx_oi_le(MO_UW), GETPC());
+}
+
+uint64_t HELPER(linx_casw)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint32_t newv)
+{
+    linx_lr_clear(env);
+    return (uint64_t)cpu_atomic_cmpxchgl_le_mmu((CPUArchState *)env, addr, cmpv, newv,
+                                                linx_oi_le(MO_UL), GETPC());
+}
+
+uint64_t HELPER(linx_casd)(CPULinxState *env, uint64_t addr, uint64_t cmpv, uint64_t newv)
+{
+    linx_lr_clear(env);
+    return cpu_atomic_cmpxchgq_le_mmu((CPUArchState *)env, addr, cmpv, newv,
+                                      linx_oi_le(MO_UQ), GETPC());
 }
 
 /* ------------------------------------------------------------------------- */
