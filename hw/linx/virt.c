@@ -353,6 +353,47 @@ static hwaddr linx_align_up(hwaddr v, hwaddr align)
     return (v + align - 1) & ~(align - 1);
 }
 
+static void linx_set_body_ranges(CPULinxState *env,
+                                 LinxBodyRange *ranges,
+                                 uint32_t count)
+{
+    if (!env) {
+        g_free(ranges);
+        return;
+    }
+    g_free(env->body_ranges);
+    env->body_ranges = ranges;
+    env->body_range_count = count;
+}
+
+static bool linx_body_end_name_to_start_name(const char *name,
+                                             char *out,
+                                             size_t out_size)
+{
+    size_t len;
+    size_t trim;
+
+    if (!name || !out || out_size == 0) {
+        return false;
+    }
+
+    len = strlen(name);
+    if (len > 4 && !strcmp(name + len - 4, "_end")) {
+        trim = 4;
+    } else if (len > 4 && !strcmp(name + len - 4, ".end")) {
+        trim = 4;
+    } else {
+        return false;
+    }
+
+    if (len - trim + 1 > out_size) {
+        return false;
+    }
+    memcpy(out, name, len - trim);
+    out[len - trim] = '\0';
+    return true;
+}
+
 static void *linx_virt_build_fdt(MachineState *machine,
                                  hwaddr mem_size,
                                  hwaddr initrd_base, hwaddr initrd_size,
@@ -1297,8 +1338,96 @@ static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
 }
 
 #if TARGET_LONG_BITS == 32
+static void linx_collect_body_ranges_elf32(const uint8_t *buf, size_t len,
+                                           const Elf32_Shdr *strtab_sh,
+                                           const Elf32_Sym *syms,
+                                           size_t nsyms,
+                                           const hwaddr *sym_addr,
+                                           CPULinxState *env)
+{
+    LinxBodyRange *ranges;
+    uint32_t count = 0;
+    size_t i;
+
+    if (!env) {
+        return;
+    }
+
+    for (i = 0; i < nsyms; i++) {
+        const Elf32_Sym *end_sym = &syms[i];
+        char start_name[256];
+        size_t j;
+
+        if (end_sym->st_shndx == SHN_UNDEF || end_sym->st_name >= strtab_sh->sh_size) {
+            continue;
+        }
+        if (!linx_body_end_name_to_start_name(
+                linx_elf32_sym_name(buf, len, strtab_sh, end_sym),
+                start_name, sizeof(start_name))) {
+            continue;
+        }
+        for (j = 0; j < nsyms; j++) {
+            const Elf32_Sym *start_sym = &syms[j];
+            if (start_sym->st_shndx == SHN_UNDEF ||
+                start_sym->st_name >= strtab_sh->sh_size) {
+                continue;
+            }
+            if (strcmp(linx_elf32_sym_name(buf, len, strtab_sh, start_sym),
+                       start_name) != 0) {
+                continue;
+            }
+            if (sym_addr[j] < sym_addr[i]) {
+                count++;
+            }
+            break;
+        }
+    }
+
+    if (count == 0) {
+        linx_set_body_ranges(env, NULL, 0);
+        return;
+    }
+
+    ranges = g_new0(LinxBodyRange, count);
+    count = 0;
+    for (i = 0; i < nsyms; i++) {
+        const Elf32_Sym *end_sym = &syms[i];
+        char start_name[256];
+        size_t j;
+
+        if (end_sym->st_shndx == SHN_UNDEF || end_sym->st_name >= strtab_sh->sh_size) {
+            continue;
+        }
+        if (!linx_body_end_name_to_start_name(
+                linx_elf32_sym_name(buf, len, strtab_sh, end_sym),
+                start_name, sizeof(start_name))) {
+            continue;
+        }
+        for (j = 0; j < nsyms; j++) {
+            const Elf32_Sym *start_sym = &syms[j];
+            if (start_sym->st_shndx == SHN_UNDEF ||
+                start_sym->st_name >= strtab_sh->sh_size) {
+                continue;
+            }
+            if (strcmp(linx_elf32_sym_name(buf, len, strtab_sh, start_sym),
+                       start_name) != 0) {
+                continue;
+            }
+            if (sym_addr[j] < sym_addr[i]) {
+                ranges[count].start = sym_addr[j];
+                ranges[count].end = sym_addr[i];
+                count++;
+            }
+            break;
+        }
+    }
+
+    linx_set_body_ranges(env, ranges, count);
+}
+
 static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
+                                CPULinxState *env,
                                 hwaddr load_base,
                                 hwaddr *entry, hwaddr *image_end,
                                 Error **errp)
@@ -1675,6 +1804,8 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
         }
     }
 
+    linx_collect_body_ranges_elf32(buf, len, strtab_sh, syms, nsyms, sym_addr,
+                                   env);
     *image_end = end;
     g_free(sym_addr);
     g_free(sec_addr);
@@ -1836,8 +1967,96 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
 #endif
 
 #if TARGET_LONG_BITS != 32
+static void linx_collect_body_ranges_elf64(const uint8_t *buf, size_t len,
+                                           const Elf64_Shdr *strtab_sh,
+                                           const Elf64_Sym *syms,
+                                           size_t nsyms,
+                                           const hwaddr *sym_addr,
+                                           CPULinxState *env)
+{
+    LinxBodyRange *ranges;
+    uint32_t count = 0;
+    size_t i;
+
+    if (!env) {
+        return;
+    }
+
+    for (i = 0; i < nsyms; i++) {
+        const Elf64_Sym *end_sym = &syms[i];
+        char start_name[256];
+        size_t j;
+
+        if (end_sym->st_shndx == SHN_UNDEF || end_sym->st_name >= strtab_sh->sh_size) {
+            continue;
+        }
+        if (!linx_body_end_name_to_start_name(
+                linx_elf64_sym_name(buf, len, strtab_sh, end_sym),
+                start_name, sizeof(start_name))) {
+            continue;
+        }
+        for (j = 0; j < nsyms; j++) {
+            const Elf64_Sym *start_sym = &syms[j];
+            if (start_sym->st_shndx == SHN_UNDEF ||
+                start_sym->st_name >= strtab_sh->sh_size) {
+                continue;
+            }
+            if (strcmp(linx_elf64_sym_name(buf, len, strtab_sh, start_sym),
+                       start_name) != 0) {
+                continue;
+            }
+            if (sym_addr[j] < sym_addr[i]) {
+                count++;
+            }
+            break;
+        }
+    }
+
+    if (count == 0) {
+        linx_set_body_ranges(env, NULL, 0);
+        return;
+    }
+
+    ranges = g_new0(LinxBodyRange, count);
+    count = 0;
+    for (i = 0; i < nsyms; i++) {
+        const Elf64_Sym *end_sym = &syms[i];
+        char start_name[256];
+        size_t j;
+
+        if (end_sym->st_shndx == SHN_UNDEF || end_sym->st_name >= strtab_sh->sh_size) {
+            continue;
+        }
+        if (!linx_body_end_name_to_start_name(
+                linx_elf64_sym_name(buf, len, strtab_sh, end_sym),
+                start_name, sizeof(start_name))) {
+            continue;
+        }
+        for (j = 0; j < nsyms; j++) {
+            const Elf64_Sym *start_sym = &syms[j];
+            if (start_sym->st_shndx == SHN_UNDEF ||
+                start_sym->st_name >= strtab_sh->sh_size) {
+                continue;
+            }
+            if (strcmp(linx_elf64_sym_name(buf, len, strtab_sh, start_sym),
+                       start_name) != 0) {
+                continue;
+            }
+            if (sym_addr[j] < sym_addr[i]) {
+                ranges[count].start = sym_addr[j];
+                ranges[count].end = sym_addr[i];
+                count++;
+            }
+            break;
+        }
+    }
+
+    linx_set_body_ranges(env, ranges, count);
+}
+
 static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
+                                CPULinxState *env,
                                 hwaddr load_base,
                                 hwaddr *entry, hwaddr *image_end,
                                 Error **errp)
@@ -2215,6 +2434,8 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
         }
     }
 
+    linx_collect_body_ranges_elf64(buf, len, strtab_sh, syms, nsyms, sym_addr,
+                                   env);
     *image_end = end;
     g_free(sym_addr);
     g_free(sec_addr);
@@ -2377,6 +2598,7 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
 
 static bool linx_load_elf(const char *filename,
                           uint8_t *ram, size_t ram_size,
+                          CPULinxState *env,
                           hwaddr load_base,
                           hwaddr *entry, hwaddr *image_end,
                           Error **errp)
@@ -2394,17 +2616,19 @@ static bool linx_load_elf(const char *filename,
 
 #if TARGET_LONG_BITS == 32
     if (len >= sizeof(Elf32_Ehdr) && ((const Elf32_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf32_rel(buf, len, ram, ram_size, load_base,
+        ok = linx_load_elf32_rel(buf, len, ram, ram_size, env, load_base,
                                  entry, image_end, errp);
     } else {
+        linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf32_exec(buf, len, ram, ram_size, load_base,
                                   entry, image_end, errp);
     }
 #else
     if (len >= sizeof(Elf64_Ehdr) && ((const Elf64_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf64_rel(buf, len, ram, ram_size, load_base,
+        ok = linx_load_elf64_rel(buf, len, ram, ram_size, env, load_base,
                                  entry, image_end, errp);
     } else {
+        linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf64_exec(buf, len, ram, ram_size, load_base,
                                   entry, image_end, errp);
     }
@@ -2724,6 +2948,7 @@ static void linx_virt_init(MachineState *machine)
 
     ram = s->dfx_ram_ptr;
     if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
+                       &s->cpu->env,
                        load_base, &entry, &image_end, &error_fatal)) {
         exit(1);
     }

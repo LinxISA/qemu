@@ -1105,9 +1105,10 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     int i;
 
     qemu_fprintf(f,
-                 "pc=0x%016" PRIx64 " brtype=%u carg=0x%08x cond=%u tgt=0x%016" PRIx64
+                 "pc=0x%016" PRIx64 " brtype=%u carg=0x%08x cond=%u vec_p=%" PRIu64 " tgt=0x%016" PRIx64
                  " fcsr=0x%08x\n",
-                 env->pc, env->brtype, env->carg, env->cond, env->tgt, env->fcsr);
+                 env->pc, env->brtype, env->carg, env->cond, env->vec_p,
+                 env->tgt, env->fcsr);
     for (i = 0; i < LINX_GPR_COUNT; i += 4) {
         qemu_fprintf(f,
                      "r%-2d=0x%016" PRIx64 " r%-2d=0x%016" PRIx64
@@ -1125,11 +1126,12 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
                  " acr=%u mgr_acr=%u fcsr=0x%08x\n",
                  flags, env->ssr[LINX_SSR_CSTATE], cur_acr, mgr_acr, env->fcsr);
     qemu_fprintf(f,
-                 "debug.bstate.live: blocktype=%u brtype=%u carg=0x%08x cond=%u"
+                 "debug.bstate.live: blocktype=%u brtype=%u carg=0x%08x cond=%u vec_p=%" PRIu64
                  " tgt=0x%016" PRIx64 " bpc=0x%016" PRIx64
                  " in_body=%u body_tpc=0x%016" PRIx64
                  " return_pc=0x%016" PRIx64 "\n",
-                 env->blocktype, env->brtype, env->carg, env->cond, env->tgt,
+                 env->blocktype, env->brtype, env->carg, env->cond, env->vec_p,
+                 env->tgt,
                  env->bpc, env->in_body, env->body_tpc, env->return_pc);
     qemu_fprintf(f,
                  "debug.bstate.live.lb=[0x%016" PRIx64 ",0x%016" PRIx64
@@ -1311,11 +1313,12 @@ static const TCGCPUOps linx_tcg_ops = {
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 10,
-    .minimum_version_id = 10,
+    .version_id = 11,
+    .minimum_version_id = 11,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(env.pc, LinxCPU),
         VMSTATE_UINT32(env.cond, LinxCPU),
+        VMSTATE_UINT64(env.vec_p, LinxCPU),
         VMSTATE_UINT64(env.tgt, LinxCPU),
         VMSTATE_UINT32(env.carg, LinxCPU),
         VMSTATE_UINT32(env.brtype, LinxCPU),

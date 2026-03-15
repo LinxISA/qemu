@@ -127,6 +127,11 @@ b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 
 # Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
 b_arg          0000 0000 0000 0000 0011 .... .100 0011 format=%TileFormat
+b_arg_norm     0000 0000 0000 1111 1010 0000 0010 0011
+b_arg_nz2dn    0000 0010 0000 1111 1010 1110 0010 0011
+b_arg_nd2zn    0001 1000 0000 0010 0010 0001 1010 0011
+b_arg_dn2nz    0001 1000 0000 0000 1010 0100 1010 0011
+b_arg_dn2zn    0001 1000 0000 0010 0010 0100 0010 0011
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl
@@ -312,10 +317,30 @@ fmul          0000 0... .... .... .010 .... .100 1011 %RegDst %SrcL %SrcR %SrcTy
 fdiv          0000 0... .... .... .011 .... .100 1011 %RegDst %SrcL %SrcR %SrcType
 
 feq           0000 0... .... .... .000 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fne           0000 0... .... .... .001 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
 flt           0000 0... .... .... .010 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
 fge           0000 0... .... .... .011 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+feqs          0000 1... .... .... .000 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fnes          0000 1... .... .... .001 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+flts          0000 1... .... .... .010 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fges          0000 1... .... .... .011 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fmax          0000 0... .... .... .110 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fmin          0000 0... .... .... .111 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+
+fmadd         .... .... .... .... .100 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fmsub         .... .... .... .... .101 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fnmadd        .... .... .... .... .110 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fnmsub        .... .... .... .... .111 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+
+fsqrt         0000 0..0 0000 .... .001 .... .111 1011 %RegDst %SrcL %SrcType
+frecip        0000 0..0 0000 .... .010 .... .111 1011 %RegDst %SrcL %SrcType
+fexp          0000 0..0 0000 .... .011 .... .111 1011 %RegDst %SrcL %SrcType
 
 fcvt          .... ...0 0000 .... .000 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvta         .... ...0 0000 .... .001 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtm         .... ...0 0000 .... .010 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtn         .... ...0 0000 .... .011 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtp         .... ...0 0000 .... .100 .... .110 1011 %DstType %RegDst %SrcL %SrcType
 fcvtz         .... ...0 0000 .... .101 .... .110 1011 %DstType %RegDst %SrcL %SrcType
 scvtf         .... ...0 0000 .... .110 .... .110 1011 %DstType %RegDst %SrcL %SrcType
 ucvtf         .... ...0 0000 .... .111 .... .110 1011 %DstType %RegDst %SrcL %SrcType
