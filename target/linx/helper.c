@@ -5,6 +5,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "cpu.h"
 #include "trace.h"
 #include "opcode_meta.h"
@@ -23,6 +24,7 @@
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include <inttypes.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -39,6 +41,10 @@ static bool linx_print_insn_count_inited;
 static bool linx_print_insn_count_enabled;
 static bool linx_semihost_inited;
 static bool linx_semihost_enabled;
+static bool linx_debug_local_inited;
+static bool linx_debug_local_enabled;
+static bool linx_debug_body_replay_inited;
+static bool linx_debug_body_replay_enabled;
 
 static inline bool linx_print_insn_count(void)
 {
@@ -58,6 +64,26 @@ static inline bool linx_semihost_enabled_p(void)
         linx_semihost_inited = true;
     }
     return linx_semihost_enabled;
+}
+
+static inline bool linx_debug_local_enabled_p(void)
+{
+    if (!linx_debug_local_inited) {
+        const char *v = getenv("LINX_DEBUG_LOCAL");
+        linx_debug_local_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_debug_local_inited = true;
+    }
+    return linx_debug_local_enabled;
+}
+
+static inline bool linx_debug_body_replay_enabled_p(void)
+{
+    if (!linx_debug_body_replay_inited) {
+        const char *v = getenv("LINX_DEBUG_BODY_REPLAY");
+        linx_debug_body_replay_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_debug_body_replay_inited = true;
+    }
+    return linx_debug_body_replay_enabled;
 }
 
 const LinxOpcodeMeta *linx_opcode_meta_lookup(uint64_t insn_word, unsigned insn_len)
@@ -1726,7 +1752,9 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->blocktype = 0;
         env->call_ra_set = 0;
         env->call_setret_pending = 0;
+        env->vec_p = 0;
         env->body_tpc = 0;
+        env->body_end = 0;
         env->return_pc = 0;
         env->in_body = 0;
         env->tmpl_pc = 0;
@@ -2119,6 +2147,14 @@ static uint64_t linx_fp_unop_fabs(CPULinxState *env, uint64_t a, uint32_t srctyp
     return res;
 }
 
+static uint64_t linx_fp_unop_sqrt(CPULinxState *env, uint64_t a, uint32_t srctype);
+static uint64_t linx_fp_unop_recip(CPULinxState *env, uint64_t a, uint32_t srctype);
+static uint64_t linx_fp_unop_exp(CPULinxState *env, uint64_t a, uint32_t srctype);
+static uint64_t linx_fp_binop_max(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype);
+static uint64_t linx_fp_binop_min(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype);
+static uint64_t linx_fp_ternop_muladd(CPULinxState *env, uint64_t a, uint64_t b,
+                                      uint64_t c, uint32_t srctype, int flags);
+
 static uint64_t linx_fp_binop_add(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
 {
     linx_fp_sync_from_fcsr(env);
@@ -2314,6 +2350,152 @@ static uint64_t linx_fp_fcvt(CPULinxState *env, uint64_t a, uint32_t dsttype, ui
     return res;
 }
 
+static unsigned linx_int_type_width(uint32_t type)
+{
+    switch (type & 0x1fu) {
+    case 0:
+    case 8:
+        return 64;
+    case 1:
+    case 9:
+        return 32;
+    case 2:
+    case 10:
+        return 16;
+    case 3:
+    case 11:
+        return 8;
+    case 4:
+    case 12:
+        return 4;
+    case 5:
+    case 13:
+        return 2;
+    case 6:
+    case 7:
+    case 14:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static bool linx_int_type_is_signed(uint32_t type)
+{
+    const unsigned t = type & 0x1fu;
+    return t >= 8u && t <= 14u;
+}
+
+static uint64_t linx_int_mask(unsigned width)
+{
+    return width >= 64u ? UINT64_MAX : ((1ULL << width) - 1u);
+}
+
+static uint64_t linx_int_canonicalize(uint64_t value, uint32_t type)
+{
+    const unsigned width = linx_int_type_width(type);
+
+    if (width == 0u) {
+        return UINT64_MAX;
+    }
+
+    value &= linx_int_mask(width);
+    if (linx_int_type_is_signed(type) && width < 64u) {
+        value = (uint64_t)(((int64_t)(value << (64u - width))) >> (64u - width));
+    }
+    return value;
+}
+
+static uint64_t linx_fp_fcvti(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    const unsigned width = linx_int_type_width(dsttype);
+    uint64_t res = 0;
+
+    if (width == 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_from_fcsr(env);
+    switch (srctype & 0x1fu) {
+    case 0: {
+        const float64 v = (float64)a;
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float64_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float64_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float64_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float64_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
+    case 1: {
+        const float32 v = (float32)(uint32_t)a;
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float32_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float32_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float32_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float32_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_to_fcsr(env);
+    return linx_int_canonicalize(res, dsttype);
+}
+
+static uint64_t linx_fp_fcvti_round(CPULinxState *env, uint64_t a, uint32_t dsttype,
+                                    uint32_t srctype, FloatRoundMode round_mode)
+{
+    const unsigned width = linx_int_type_width(dsttype);
+    const FloatRoundMode prev_mode = linx_fcsr_rounding_mode(env->fcsr);
+    uint64_t res = 0;
+
+    if (width == 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_from_fcsr(env);
+    set_float_rounding_mode(round_mode, &env->fp_status);
+    switch (srctype & 0x1fu) {
+    case 0: {
+        const float64 v = (float64)a;
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float64_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float64_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float64_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float64_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
+    case 1: {
+        const float32 v = (float32)(uint32_t)a;
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float32_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float32_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float32_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float32_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    set_float_rounding_mode(prev_mode, &env->fp_status);
+    linx_fp_sync_to_fcsr(env);
+    return linx_int_canonicalize(res, dsttype);
+}
+
 static uint64_t linx_fp_fcvtz(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
 {
     linx_fp_sync_from_fcsr(env);
@@ -2373,6 +2555,15 @@ static uint64_t linx_fp_fcvtz(CPULinxState *env, uint64_t a, uint32_t dsttype, u
     return res;
 }
 
+static uint64_t linx_int_icvt(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    if (linx_int_type_width(srctype) == 0u || linx_int_type_width(dsttype) == 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+    return linx_int_canonicalize(linx_int_canonicalize(a, srctype), dsttype);
+}
+
 static uint64_t linx_fp_scvtf(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
 {
     linx_fp_sync_from_fcsr(env);
@@ -2404,6 +2595,50 @@ static uint64_t linx_fp_scvtf(CPULinxState *env, uint64_t a, uint32_t dsttype, u
         }
         break;
     }
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_to_fcsr(env);
+    return res;
+}
+
+static uint64_t linx_int_icvtf(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    const unsigned width = linx_int_type_width(srctype);
+    const uint64_t canon = linx_int_canonicalize(a, srctype);
+    uint64_t res = 0;
+
+    if (width == 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_from_fcsr(env);
+    switch (dsttype & 0x1fu) {
+    case 0:
+        if (linx_int_type_is_signed(srctype)) {
+            res = width > 32u ? (uint64_t)int64_to_float64((int64_t)canon, &env->fp_status)
+                              : (uint64_t)int32_to_float64((int32_t)canon, &env->fp_status);
+        } else {
+            res = width > 32u ? (uint64_t)uint64_to_float64(canon, &env->fp_status)
+                              : (uint64_t)uint32_to_float64((uint32_t)canon, &env->fp_status);
+        }
+        break;
+    case 1:
+        if (linx_int_type_is_signed(srctype)) {
+            res = width > 32u ? (uint64_t)(uint32_t)int64_to_float32((int64_t)canon,
+                                                                     &env->fp_status)
+                              : (uint64_t)(uint32_t)int32_to_float32((int32_t)canon,
+                                                                     &env->fp_status);
+        } else {
+            res = width > 32u ? (uint64_t)(uint32_t)uint64_to_float32(canon,
+                                                                      &env->fp_status)
+                              : (uint64_t)(uint32_t)uint32_to_float32((uint32_t)canon,
+                                                                      &env->fp_status);
+        }
+        break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -2493,9 +2728,104 @@ uint64_t HELPER(linx_fge)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t sr
     return linx_fp_cmp_ge(env, a, b, srctype);
 }
 
+uint64_t HELPER(linx_fne)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_cmp_eq(env, a, b, srctype) ? 0 : 1;
+}
+
+uint64_t HELPER(linx_feqs)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_cmp_eq(env, a, b, srctype);
+}
+
+uint64_t HELPER(linx_fnes)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_cmp_eq(env, a, b, srctype) ? 0 : 1;
+}
+
+uint64_t HELPER(linx_flts)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_cmp_lt(env, a, b, srctype);
+}
+
+uint64_t HELPER(linx_fges)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_cmp_ge(env, a, b, srctype);
+}
+
+uint64_t HELPER(linx_fmax)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_binop_max(env, a, b, srctype);
+}
+
+uint64_t HELPER(linx_fmin)(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    return linx_fp_binop_min(env, a, b, srctype);
+}
+
+uint64_t HELPER(linx_fmadd)(CPULinxState *env, uint64_t a, uint64_t b,
+                            uint64_t c, uint32_t srctype)
+{
+    return linx_fp_ternop_muladd(env, a, b, c, srctype, 0);
+}
+
+uint64_t HELPER(linx_fmsub)(CPULinxState *env, uint64_t a, uint64_t b,
+                            uint64_t c, uint32_t srctype)
+{
+    return linx_fp_ternop_muladd(env, a, b, c, srctype, float_muladd_negate_c);
+}
+
+uint64_t HELPER(linx_fnmadd)(CPULinxState *env, uint64_t a, uint64_t b,
+                             uint64_t c, uint32_t srctype)
+{
+    return linx_fp_ternop_muladd(env, a, b, c, srctype, float_muladd_negate_product);
+}
+
+uint64_t HELPER(linx_fnmsub)(CPULinxState *env, uint64_t a, uint64_t b,
+                             uint64_t c, uint32_t srctype)
+{
+    return linx_fp_ternop_muladd(env, a, b, c, srctype,
+                                 float_muladd_negate_product | float_muladd_negate_c);
+}
+
+uint64_t HELPER(linx_fsqrt)(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    return linx_fp_unop_sqrt(env, a, srctype);
+}
+
+uint64_t HELPER(linx_frecip)(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    return linx_fp_unop_recip(env, a, srctype);
+}
+
+uint64_t HELPER(linx_fexp)(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    return linx_fp_unop_exp(env, a, srctype);
+}
+
 uint64_t HELPER(linx_fcvt)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
 {
     return linx_fp_fcvt(env, a, dsttype, srctype);
+}
+
+uint64_t HELPER(linx_fcvta)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    return linx_fp_fcvti_round(env, a, dsttype, srctype, float_round_ties_away);
+}
+
+uint64_t HELPER(linx_fcvtm)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    return linx_fp_fcvti_round(env, a, dsttype, srctype, float_round_down);
+}
+
+uint64_t HELPER(linx_fcvtn)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    return linx_fp_fcvti_round(env, a, dsttype, srctype, float_round_nearest_even);
+}
+
+uint64_t HELPER(linx_fcvtp)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
+{
+    return linx_fp_fcvti_round(env, a, dsttype, srctype, float_round_up);
 }
 
 uint64_t HELPER(linx_fcvtz)(CPULinxState *env, uint64_t a, uint32_t dsttype, uint32_t srctype)
@@ -2649,6 +2979,34 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
     d.size = (packed >> LINX_TILE_IOT_SIZE_SHIFT) & 0x1fu;
     d.has_size = ((packed >> LINX_TILE_IOT_HAS_SIZE_SHIFT) & 0x1u) != 0;
     return d;
+}
+
+static bool linx_tile_resolve_output_hint(uint32_t encoded, unsigned *tile_out)
+{
+    switch (encoded & 0x1fu) {
+    case 1u: /* ->t */
+        *tile_out = 0u;
+        return true;
+    case 2u: /* ->u */
+        *tile_out = 8u;
+        return true;
+    case 3u: /* ->m */
+        *tile_out = 16u;
+        return true;
+    case 4u: /* ->n / acc compatibility */
+        *tile_out = 24u;
+        return true;
+    default:
+        /*
+         * Compatibility: older bring-up streams may already carry a concrete
+         * tile-ref code in the absent source slot.
+         */
+        if ((encoded & 0x1fu) < 32u) {
+            *tile_out = encoded & 0x1fu;
+            return true;
+        }
+        return false;
+    }
 }
 
 typedef enum LinxTileLayout {
@@ -3667,6 +4025,57 @@ static inline bool linx_tile_get_elem(const CPULinxState *env, unsigned tile,
     }
 }
 
+static bool linx_tile_resolve_transfer_shape(const CPULinxState *env,
+                                             uint32_t tile_elems,
+                                             uint32_t *tr_outer_out,
+                                             uint32_t *tr_inner_out,
+                                             uint32_t *gm_outer_out,
+                                             uint32_t *gm_inner_out)
+{
+    uint32_t gm_inner = (uint32_t)(env->lb[0] & 0xffffffffu);
+    uint32_t gm_outer = (uint32_t)(env->lb[1] & 0xffffffffu);
+    uint32_t tr_inner = (uint32_t)(env->lb[2] & 0xffffffffu);
+    uint32_t tr_outer = 0;
+
+    /*
+     * The size code allocates the carrier tile footprint, but LB0/LB1 still
+     * define the logical 2D transfer rectangle when LB2 is absent.
+     */
+    if (tr_inner != 0u) {
+        if ((tile_elems % tr_inner) != 0u) {
+            return false;
+        }
+        tr_outer = tile_elems / tr_inner;
+    } else if (gm_inner != 0u && gm_outer != 0u &&
+               (uint64_t)gm_inner * (uint64_t)gm_outer <= (uint64_t)tile_elems) {
+        tr_inner = gm_inner;
+        tr_outer = gm_outer;
+    } else {
+        tr_inner = tile_elems;
+        tr_outer = 1u;
+    }
+
+    if (tr_inner == 0u || tr_outer == 0u) {
+        return false;
+    }
+    if (gm_inner == 0u) {
+        gm_inner = tr_inner;
+    }
+    if (gm_outer == 0u) {
+        gm_outer = tr_outer;
+    }
+    if ((uint64_t)gm_inner * (uint64_t)gm_outer >
+        (uint64_t)tr_inner * (uint64_t)tr_outer) {
+        return false;
+    }
+
+    *tr_outer_out = tr_outer;
+    *tr_inner_out = tr_inner;
+    *gm_outer_out = gm_outer;
+    *gm_inner_out = gm_inner;
+    return true;
+}
+
 static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_reg,
                            unsigned size_code)
 {
@@ -3695,24 +4104,12 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
         return;
     }
 
-    uint32_t tr_inner = (uint32_t)(env->lb[2] & 0xffffffffu);
-    if (tr_inner == 0u) {
-        tr_inner = tile_elems;
-    }
-    if (tr_inner == 0u || (tile_elems % tr_inner) != 0u) {
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return;
-    }
-    const uint32_t tr_outer = tile_elems / tr_inner;
-    uint32_t gm_inner = (uint32_t)(env->lb[0] & 0xffffffffu);
-    uint32_t gm_outer = (uint32_t)(env->lb[1] & 0xffffffffu);
-    if (gm_inner == 0u) {
-        gm_inner = tr_inner;
-    }
-    if (gm_outer == 0u) {
-        gm_outer = tr_outer;
-    }
-    if ((uint64_t)gm_inner * (uint64_t)gm_outer > (uint64_t)tr_inner * (uint64_t)tr_outer) {
+    uint32_t tr_outer = 0;
+    uint32_t tr_inner = 0;
+    uint32_t gm_outer = 0;
+    uint32_t gm_inner = 0;
+    if (!linx_tile_resolve_transfer_shape(env, tile_elems, &tr_outer, &tr_inner,
+                                          &gm_outer, &gm_inner)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -3785,24 +4182,12 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_
         return;
     }
 
-    uint32_t tr_inner = (uint32_t)(env->lb[2] & 0xffffffffu);
-    if (tr_inner == 0u) {
-        tr_inner = tile_elems;
-    }
-    if (tr_inner == 0u || (tile_elems % tr_inner) != 0u) {
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return;
-    }
-    const uint32_t tr_outer = tile_elems / tr_inner;
-    uint32_t gm_inner = (uint32_t)(env->lb[0] & 0xffffffffu);
-    uint32_t gm_outer = (uint32_t)(env->lb[1] & 0xffffffffu);
-    if (gm_inner == 0u) {
-        gm_inner = tr_inner;
-    }
-    if (gm_outer == 0u) {
-        gm_outer = tr_outer;
-    }
-    if ((uint64_t)gm_inner * (uint64_t)gm_outer > (uint64_t)tr_inner * (uint64_t)tr_outer) {
+    uint32_t tr_outer = 0;
+    uint32_t tr_inner = 0;
+    uint32_t gm_outer = 0;
+    uint32_t gm_inner = 0;
+    if (!linx_tile_resolve_transfer_shape(env, tile_elems, &tr_outer, &tr_inner,
+                                          &gm_outer, &gm_inner)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -4118,11 +4503,11 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         bool have_dst_tile = false;
         unsigned dst_tile = 0;
         if (!src1_present) {
-            dst_tile = desc.src1 & 0x1f;
-            have_dst_tile = true;
+            have_dst_tile = linx_tile_resolve_output_hint(desc.src1 & 0x1f,
+                                                          &dst_tile);
         } else if (!src0_present) {
-            dst_tile = desc.src0 & 0x1f;
-            have_dst_tile = true;
+            have_dst_tile = linx_tile_resolve_output_hint(desc.src0 & 0x1f,
+                                                          &dst_tile);
         }
 
         if (have_dst_tile && dst_tile < 32) {
@@ -4179,9 +4564,17 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                 const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
                 unsigned dst_tile = 0;
                 if (!src1_present) {
-                    dst_tile = d.src1 & 0x1f;
+                    if (!linx_tile_resolve_output_hint(d.src1 & 0x1f,
+                                                       &dst_tile)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                        break;
+                    }
                 } else if (!src0_present) {
-                    dst_tile = d.src0 & 0x1f;
+                    if (!linx_tile_resolve_output_hint(d.src0 & 0x1f,
+                                                       &dst_tile)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                        break;
+                    }
                 } else {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
@@ -4261,9 +4654,17 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
 
                 unsigned dst_tile = 0;
                 if (!src1_present) {
-                    dst_tile = d.src1 & 0x1f;
+                    if (!linx_tile_resolve_output_hint(d.src1 & 0x1f,
+                                                       &dst_tile)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                        break;
+                    }
                 } else if (!src0_present) {
-                    dst_tile = d.src0 & 0x1f;
+                    if (!linx_tile_resolve_output_hint(d.src0 & 0x1f,
+                                                       &dst_tile)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                        break;
+                    }
                 } else {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
@@ -4400,12 +4801,17 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
 
 enum {
     LINX_VEC_REGCLASS_RI = 1,
+    LINX_VEC_REGCLASS_P = 2,
     LINX_VEC_REGCLASS_LC = 3,
     LINX_VEC_REGCLASS_VT = 4,
     LINX_VEC_REGCLASS_VU = 5,
     LINX_VEC_REGCLASS_VM = 6,
     LINX_VEC_REGCLASS_VN = 7,
     LINX_VEC_REGCLASS_TBASE = 8,
+};
+
+enum {
+    LINX_VEC_P_REG_INDEX = 28,
 };
 
 static inline unsigned linx_vec_reg_class(uint32_t code)
@@ -4463,11 +4869,11 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
         bool have_dst_tile = false;
         unsigned dst_tile = 0;
         if (!src1_present) {
-            dst_tile = d.src1 & 0x1f;
-            have_dst_tile = true;
+            have_dst_tile = linx_tile_resolve_output_hint(d.src1 & 0x1f,
+                                                          &dst_tile);
         } else if (!src0_present) {
-            dst_tile = d.src0 & 0x1f;
-            have_dst_tile = true;
+            have_dst_tile = linx_tile_resolve_output_hint(d.src0 & 0x1f,
+                                                          &dst_tile);
         }
         if (have_dst_tile && output_count < 2) {
             outputs[output_count++] = dst_tile & 0x1f;
@@ -4533,6 +4939,12 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
         }
         return env->gpr[gpr];
     }
+    case LINX_VEC_REGCLASS_P:
+        if (idx == LINX_VEC_P_REG_INDEX) {
+            return env->vec_p != 0 ? 1u : 0u;
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
     case LINX_VEC_REGCLASS_LC:
         if (idx < 3) {
             return env->lc[idx];
@@ -4652,12 +5064,28 @@ void HELPER(linx_vec_body_begin)(CPULinxState *env)
     env->lc[0] = 0;
     env->lc[1] = 0;
     env->lc[2] = 0;
+    env->vec_p = 0;
+    env->body_end = linx_lookup_body_end(env, env->body_tpc);
     linx_vec_capture_ri_values(env);
     for (unsigned i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = 0;
         env->vuq[i] = 0;
         env->vmq[i] = 0;
         env->vnq[i] = 0;
+    }
+    if (linx_debug_body_replay_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body replay begin: tpc=0x%" PRIx64
+                      " end=0x%" PRIx64
+                      " lb=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]\n",
+                      env->body_tpc, env->body_end,
+                      env->lb[0], env->lb[1], env->lb[2]);
+        for (unsigned i = 0; i < env->vec_ri_count; i++) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx body replay ri: tpc=0x%" PRIx64
+                          " ri%u=0x%" PRIx64 "\n",
+                          env->body_tpc, i, env->vec_ri_value[i]);
+        }
     }
 }
 
@@ -4666,6 +5094,10 @@ uint32_t HELPER(linx_vec_body_next)(CPULinxState *env)
     const uint64_t lb0 = env->lb[0];
     const uint64_t lb1 = env->lb[1] ? env->lb[1] : 1;
     const uint64_t lb2 = env->lb[2] ? env->lb[2] : 1;
+    const uint64_t prev_lc0 = env->lc[0];
+    const uint64_t prev_lc1 = env->lc[1];
+    const uint64_t prev_lc2 = env->lc[2];
+    uint32_t cont;
 
     if (lb0 == 0) {
         return 0;
@@ -4673,22 +5105,65 @@ uint32_t HELPER(linx_vec_body_next)(CPULinxState *env)
 
     env->lc[0]++;
     if (env->lc[0] < lb0) {
-        return 1;
+        cont = 1;
+        goto out;
     }
     env->lc[0] = 0;
 
     env->lc[1]++;
     if (env->lc[1] < lb1) {
-        return 1;
+        cont = 1;
+        goto out;
     }
     env->lc[1] = 0;
 
     env->lc[2]++;
     if (env->lc[2] < lb2) {
-        return 1;
+        cont = 1;
+        goto out;
     }
     env->lc[2] = 0;
-    return 0;
+    cont = 0;
+
+out:
+    if (linx_debug_body_replay_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body replay next: tpc=0x%" PRIx64
+                      " prev_lc=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]"
+                      " next_lc=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]"
+                      " lb=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]"
+                      " cont=%u\n",
+                      env->body_tpc,
+                      prev_lc0, prev_lc1, prev_lc2,
+                      env->lc[0], env->lc[1], env->lc[2],
+                      lb0, lb1, lb2,
+                      cont);
+    }
+    return cont;
+}
+
+void HELPER(linx_debug_body_pred_branch)(CPULinxState *env, uint64_t current_pc,
+                                         uint64_t target, uint64_t fallthrough,
+                                         uint32_t take_on_zero)
+{
+    bool taken;
+
+    if (!linx_debug_body_replay_enabled_p()) {
+        return;
+    }
+
+    taken = take_on_zero ? (env->vec_p == 0) : (env->vec_p != 0);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx body replay branch: pc=0x%" PRIx64
+                  " vec_p=0x%" PRIx64
+                  " lc=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]"
+                  " mode=%s taken=%u target=0x%" PRIx64
+                  " fallthrough=0x%" PRIx64 "\n",
+                  current_pc, env->vec_p,
+                  env->lc[0], env->lc[1], env->lc[2],
+                  take_on_zero ? "b.z" : "b.nz",
+                  taken ? 1u : 0u,
+                  target, fallthrough);
 }
 
 static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
@@ -4697,6 +5172,13 @@ static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
     const unsigned didx = linx_vec_reg_index(dst);
 
     switch (cls) {
+    case LINX_VEC_REGCLASS_P:
+        if (didx == LINX_VEC_P_REG_INDEX) {
+            env->vec_p = value != 0 ? 1u : 0u;
+            return;
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
     case LINX_VEC_REGCLASS_VT:
         linx_vec_write_vt(env, didx, value);
         return;
@@ -4753,60 +5235,302 @@ static void linx_vec_write_reduce_dst(CPULinxState *env, uint32_t dst, uint64_t 
     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
 }
 
-void HELPER(linx_v_add)(CPULinxState *env, uint32_t dst, uint32_t srcL,
-                        uint32_t srcR, uint32_t srctype, uint32_t shamt)
+static uint64_t linx_vec_rhs_addsub(uint64_t rhs, uint32_t srctype, uint32_t shamt)
 {
-    const uint64_t lhs = linx_vec_read_reg(env, srcL);
-    uint64_t rhs = linx_vec_read_reg(env, srcR);
-
     switch (srctype & 0x3u) {
-    case 0: /* .sw */
+    case 0:
         rhs = (uint64_t)(int64_t)(int32_t)rhs;
         break;
-    case 1: /* .uw */
+    case 1:
         rhs = (uint64_t)(uint32_t)rhs;
         break;
-    case 2: /* .neg */
+    case 2:
         rhs = (uint64_t)(-(int64_t)rhs);
         break;
     default:
         break;
     }
-
     if (shamt) {
         rhs <<= (shamt & 0x3fu);
     }
+    return rhs;
+}
+
+static uint64_t linx_vec_rhs_logic(uint64_t rhs, uint32_t srctype, uint32_t shamt)
+{
+    if ((srctype & 0x3u) == 2u) {
+        rhs = ~rhs;
+    }
+    if (shamt) {
+        rhs <<= (shamt & 0x3fu);
+    }
+    return rhs;
+}
+
+static inline uint32_t linx_vec_mask_low_n32(uint32_t n)
+{
+    return n >= 32u ? UINT32_MAX : ((1u << n) - 1u);
+}
+
+static inline uint32_t linx_vec_rol32(uint32_t x, uint32_t sh)
+{
+    sh &= 31u;
+    return sh ? ((x << sh) | (x >> (32u - sh))) : x;
+}
+
+static inline uint32_t linx_vec_ror32(uint32_t x, uint32_t sh)
+{
+    sh &= 31u;
+    return sh ? ((x >> sh) | (x << (32u - sh))) : x;
+}
+
+static uint32_t linx_vec_bitfield_wrap32(uint32_t x, uint32_t lsb, uint32_t width)
+{
+    return linx_vec_ror32(x, lsb) & linx_vec_mask_low_n32(width);
+}
+
+static uint32_t linx_vec_sign_extend32(uint32_t x, uint32_t width)
+{
+    if (width >= 32u) {
+        return x;
+    }
+    if (width == 0u) {
+        return 0u;
+    }
+    return (uint32_t)(((int32_t)(x << (32u - width))) >> (32u - width));
+}
+
+static uint32_t linx_vec_normalize_width(uint32_t nminus1)
+{
+    uint32_t width = (nminus1 & 0x3fu) + 1u;
+    return width > 32u ? 32u : width;
+}
+
+static uint64_t linx_vec_cmp_bool(bool pred)
+{
+    return pred ? 1u : 0u;
+}
+
+static uint64_t linx_fp_unop_sqrt(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    linx_fp_sync_from_fcsr(env);
+    switch (srctype & 0x3u) {
+    case 0:
+        a = (uint64_t)float64_sqrt((float64)a, &env->fp_status);
+        break;
+    case 1:
+        a = (uint64_t)(uint32_t)float32_sqrt((float32)(uint32_t)a, &env->fp_status);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+    linx_fp_sync_to_fcsr(env);
+    return a;
+}
+
+static uint64_t linx_fp_unop_recip(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    linx_fp_sync_from_fcsr(env);
+    switch (srctype & 0x3u) {
+    case 0: {
+        union {
+            uint64_t u;
+            double f;
+        } cvt = { .u = a };
+        cvt.f = 1.0 / cvt.f;
+        a = cvt.u;
+        break;
+    }
+    case 1: {
+        union {
+            uint32_t u;
+            float f;
+        } cvt = { .u = (uint32_t)a };
+        cvt.f = 1.0f / cvt.f;
+        a = (uint64_t)cvt.u;
+        break;
+    }
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+    linx_fp_sync_to_fcsr(env);
+    return a;
+}
+
+static uint64_t linx_fp_unop_exp(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    linx_fp_sync_from_fcsr(env);
+    switch (srctype & 0x3u) {
+    case 0: {
+        union {
+            uint64_t u;
+            double d;
+        } cvt = { .u = a };
+        cvt.d = exp(cvt.d);
+        a = cvt.u;
+        break;
+    }
+    case 1: {
+        union {
+            uint32_t u;
+            float f;
+        } cvt = { .u = (uint32_t)a };
+        cvt.f = expf(cvt.f);
+        a = (uint64_t)cvt.u;
+        break;
+    }
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+    linx_fp_sync_to_fcsr(env);
+    return a;
+}
+
+static uint64_t linx_fp_unop_class(CPULinxState *env, uint64_t a, uint32_t srctype)
+{
+    uint64_t res = 0;
+
+    switch (srctype & 0x3u) {
+    case 1: {
+        const uint32_t bits = (uint32_t)a;
+        const bool sign = (bits >> 31) != 0;
+        const uint32_t exp = (bits >> 23) & 0xffu;
+        const uint32_t frac = bits & 0x7fffffu;
+
+        if (exp == 0xffu) {
+            if (frac == 0) {
+                res = sign ? (1u << 0) : (1u << 7);
+            } else {
+                res = (frac & (1u << 22)) ? (1u << 9) : (1u << 8);
+            }
+        } else if (exp == 0) {
+            if (frac == 0) {
+                res = sign ? (1u << 3) : (1u << 4);
+            } else {
+                res = sign ? (1u << 2) : (1u << 5);
+            }
+        } else {
+            res = sign ? (1u << 1) : (1u << 6);
+        }
+        break;
+    }
+    default:
+        /* Keep current bring-up vector FP classification scoped to float32. */
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    return res;
+}
+
+static uint64_t linx_fp_binop_max(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    if (linx_fp_cmp_lt(env, a, b, srctype)) {
+        return b;
+    }
+    return a;
+}
+
+static uint64_t linx_fp_binop_min(CPULinxState *env, uint64_t a, uint64_t b, uint32_t srctype)
+{
+    if (linx_fp_cmp_lt(env, b, a, srctype)) {
+        return b;
+    }
+    return a;
+}
+
+static uint64_t linx_fp_ternop_muladd(CPULinxState *env, uint64_t a, uint64_t b,
+                                      uint64_t c, uint32_t srctype, int flags)
+{
+    linx_fp_sync_from_fcsr(env);
+
+    switch (srctype & 0x3u) {
+    case 0:
+        a = (uint64_t)float64_muladd((float64)a, (float64)b, (float64)c, flags, &env->fp_status);
+        break;
+    case 1:
+        a = (uint64_t)(uint32_t)float32_muladd((float32)(uint32_t)a, (float32)(uint32_t)b,
+                                               (float32)(uint32_t)c, flags, &env->fp_status);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return 0;
+    }
+
+    linx_fp_sync_to_fcsr(env);
+    return a;
+}
+
+void HELPER(linx_v_add)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR, uint32_t srctype, uint32_t shamt)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    uint64_t rhs = linx_vec_rhs_addsub(linx_vec_read_reg(env, srcR), srctype, shamt);
 
     const uint64_t res = lhs + rhs;
     linx_vec_write_dst(env, dst, res);
+}
+
+void HELPER(linx_v_addi)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t imm)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) + (uint64_t)imm);
 }
 
 void HELPER(linx_v_sub)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                         uint32_t srcR, uint32_t srctype, uint32_t shamt)
 {
     const uint64_t lhs = linx_vec_read_reg(env, srcL);
-    uint64_t rhs = linx_vec_read_reg(env, srcR);
-
-    switch (srctype & 0x3u) {
-    case 0: /* .sw */
-        rhs = (uint64_t)(int64_t)(int32_t)rhs;
-        break;
-    case 1: /* .uw */
-        rhs = (uint64_t)(uint32_t)rhs;
-        break;
-    case 2: /* .neg */
-        rhs = (uint64_t)(-(int64_t)rhs);
-        break;
-    default:
-        break;
-    }
-
-    if (shamt) {
-        rhs <<= (shamt & 0x3fu);
-    }
+    uint64_t rhs = linx_vec_rhs_addsub(linx_vec_read_reg(env, srcR), srctype, shamt);
 
     const uint64_t res = lhs - rhs;
     linx_vec_write_dst(env, dst, res);
+}
+
+void HELPER(linx_v_subi)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t imm)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) - (uint64_t)imm);
+}
+
+void HELPER(linx_v_and)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR, uint32_t srctype, uint32_t shamt)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_rhs_logic(linx_vec_read_reg(env, srcR), srctype, shamt);
+    linx_vec_write_dst(env, dst, lhs & rhs);
+}
+
+void HELPER(linx_v_andi)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t imm)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) & (uint64_t)(int32_t)imm);
+}
+
+void HELPER(linx_v_or)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                       uint32_t srcR, uint32_t srctype, uint32_t shamt)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_rhs_logic(linx_vec_read_reg(env, srcR), srctype, shamt);
+    linx_vec_write_dst(env, dst, lhs | rhs);
+}
+
+void HELPER(linx_v_ori)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t imm)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) | (uint64_t)(int32_t)imm);
+}
+
+void HELPER(linx_v_xor)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t srcR, uint32_t srctype, uint32_t shamt)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_rhs_logic(linx_vec_read_reg(env, srcR), srctype, shamt);
+    linx_vec_write_dst(env, dst, lhs ^ rhs);
+}
+
+void HELPER(linx_v_xori)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t imm)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) ^ (uint64_t)(int32_t)imm);
 }
 
 void HELPER(linx_v_mul)(CPULinxState *env, uint32_t dst, uint32_t srcL,
@@ -4816,6 +5540,77 @@ void HELPER(linx_v_mul)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     const uint64_t rhs = linx_vec_read_reg(env, srcR);
     const uint64_t res = lhs * rhs;
     linx_vec_write_dst(env, dst, res);
+}
+
+void HELPER(linx_v_sll)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_vec_read_reg(env, srcL) << (linx_vec_read_reg(env, srcR) & 0x3fu));
+}
+
+void HELPER(linx_v_slli)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t shamt)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) << (shamt & 0x3fu));
+}
+
+void HELPER(linx_v_srl)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_vec_read_reg(env, srcL) >> (linx_vec_read_reg(env, srcR) & 0x3fu));
+}
+
+void HELPER(linx_v_srli)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t shamt)
+{
+    linx_vec_write_dst(env, dst, linx_vec_read_reg(env, srcL) >> (shamt & 0x3fu));
+}
+
+void HELPER(linx_v_sra)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR) & 0x3fu;
+    linx_vec_write_dst(env, dst, (uint64_t)(lhs >> rhs));
+}
+
+void HELPER(linx_v_srai)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t shamt)
+{
+    linx_vec_write_dst(env, dst, (uint64_t)((int64_t)linx_vec_read_reg(env, srcL) >> (shamt & 0x3fu)));
+}
+
+void HELPER(linx_v_max)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, (uint64_t)(lhs > rhs ? lhs : rhs));
+}
+
+void HELPER(linx_v_min)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, (uint64_t)(lhs < rhs ? lhs : rhs));
+}
+
+void HELPER(linx_v_madd)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR, uint32_t srcD)
+{
+    const uint64_t lhs = linx_vec_read_reg(env, srcL);
+    const uint64_t rhs = linx_vec_read_reg(env, srcR);
+    const uint64_t acc = linx_vec_read_reg(env, srcD);
+    linx_vec_write_dst(env, dst, lhs * rhs + acc);
+}
+
+void HELPER(linx_v_div)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, rhs == 0 ? UINT64_MAX : (uint64_t)(lhs / rhs));
+}
+
+void HELPER(linx_v_rem)(CPULinxState *env, uint32_t dst, uint32_t srcL, uint32_t srcR)
+{
+    const int64_t lhs = (int64_t)linx_vec_read_reg(env, srcL);
+    const int64_t rhs = (int64_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, rhs == 0 ? (uint64_t)lhs : (uint64_t)(lhs % rhs));
 }
 
 void HELPER(linx_v_cmp_eq)(CPULinxState *env, uint32_t dst, uint32_t srcL,
@@ -4866,6 +5661,144 @@ void HELPER(linx_v_cmp_geu)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, lhs >= rhs ? 1u : 0u);
 }
 
+void HELPER(linx_v_cmp_and)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t srcR)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    const uint32_t rhs = (uint32_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs != 0u && rhs != 0u));
+}
+
+void HELPER(linx_v_cmp_or)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    const uint32_t rhs = (uint32_t)linx_vec_read_reg(env, srcR);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs != 0u || rhs != 0u));
+}
+
+void HELPER(linx_v_cmp_andi)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                             uint32_t imm)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs != 0u && (int32_t)imm != 0));
+}
+
+void HELPER(linx_v_cmp_eqi)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t imm)
+{
+    const int32_t lhs = (int32_t)(uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs == (int32_t)imm));
+}
+
+void HELPER(linx_v_cmp_gei)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t imm)
+{
+    const int32_t lhs = (int32_t)(uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs >= (int32_t)imm));
+}
+
+void HELPER(linx_v_cmp_geui)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                             uint32_t imm)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs >= imm));
+}
+
+void HELPER(linx_v_cmp_lti)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t imm)
+{
+    const int32_t lhs = (int32_t)(uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs < (int32_t)imm));
+}
+
+void HELPER(linx_v_cmp_ltui)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                             uint32_t imm)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs < imm));
+}
+
+void HELPER(linx_v_cmp_nei)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t imm)
+{
+    const int32_t lhs = (int32_t)(uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs != (int32_t)imm));
+}
+
+void HELPER(linx_v_cmp_ori)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t imm)
+{
+    const uint32_t lhs = (uint32_t)linx_vec_read_reg(env, srcL);
+    linx_vec_write_dst(env, dst, linx_vec_cmp_bool(lhs != 0u || (int32_t)imm != 0));
+}
+
+void HELPER(linx_v_bcnt)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t field = linx_vec_bitfield_wrap32((uint32_t)linx_vec_read_reg(env, srcL),
+                                                    lsb, width);
+    linx_vec_write_dst(env, dst, __builtin_popcount(field));
+}
+
+void HELPER(linx_v_bic)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t src = (uint32_t)linx_vec_read_reg(env, srcL);
+    const uint32_t cleared = linx_vec_ror32(src, lsb) & ~linx_vec_mask_low_n32(width);
+    linx_vec_write_dst(env, dst, linx_vec_rol32(cleared, lsb));
+}
+
+void HELPER(linx_v_bis)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t src = (uint32_t)linx_vec_read_reg(env, srcL);
+    const uint32_t setv = linx_vec_ror32(src, lsb) | linx_vec_mask_low_n32(width);
+    linx_vec_write_dst(env, dst, linx_vec_rol32(setv, lsb));
+}
+
+void HELPER(linx_v_bxs)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t field = linx_vec_bitfield_wrap32((uint32_t)linx_vec_read_reg(env, srcL),
+                                                    lsb, width);
+    linx_vec_write_dst(env, dst, linx_vec_sign_extend32(field, width));
+}
+
+void HELPER(linx_v_bxu)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t field = linx_vec_bitfield_wrap32((uint32_t)linx_vec_read_reg(env, srcL),
+                                                    lsb, width);
+    linx_vec_write_dst(env, dst, field);
+}
+
+void HELPER(linx_v_clz)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t field = linx_vec_bitfield_wrap32((uint32_t)linx_vec_read_reg(env, srcL),
+                                                    lsb, width);
+    const uint32_t count = field == 0u ? width
+                                       : (uint32_t)__builtin_clz(field) - (32u - width);
+    linx_vec_write_dst(env, dst, count);
+}
+
+void HELPER(linx_v_ctz)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t nminus1, uint32_t lsb)
+{
+    const uint32_t width = linx_vec_normalize_width(nminus1);
+    const uint32_t field = linx_vec_bitfield_wrap32((uint32_t)linx_vec_read_reg(env, srcL),
+                                                    lsb, width);
+    const uint32_t count = field == 0u ? width : (uint32_t)__builtin_ctz(field);
+    linx_vec_write_dst(env, dst, count);
+}
+
 void HELPER(linx_v_feq)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                         uint32_t srcR)
 {
@@ -4902,6 +5835,30 @@ void HELPER(linx_v_fge)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     linx_vec_write_dst(env, dst, res ? 1u : 0u);
 }
 
+void HELPER(linx_v_feqs)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    HELPER(linx_v_feq)(env, dst, srcL, srcR);
+}
+
+void HELPER(linx_v_fnes)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    HELPER(linx_v_fne)(env, dst, srcL, srcR);
+}
+
+void HELPER(linx_v_flts)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    HELPER(linx_v_flt)(env, dst, srcL, srcR);
+}
+
+void HELPER(linx_v_fges)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    HELPER(linx_v_fge)(env, dst, srcL, srcR);
+}
+
 void HELPER(linx_v_csel)(CPULinxState *env, uint32_t dst, uint32_t srcP,
                          uint32_t srcL, uint32_t srcR, uint32_t srctype)
 {
@@ -4913,6 +5870,13 @@ void HELPER(linx_v_csel)(CPULinxState *env, uint32_t dst, uint32_t srcP,
         rhs = (uint64_t)(-(int64_t)rhs);
     }
     linx_vec_write_dst(env, dst, pred != 0 ? lhs : rhs);
+}
+
+void HELPER(linx_v_psel)(CPULinxState *env, uint32_t dst, uint32_t srcP,
+                         uint32_t srcL, uint32_t srcR, uint32_t srctype)
+{
+    (void)srcR;
+    HELPER(linx_v_csel)(env, dst, srcP, srcL, /*srcR=*/0, srctype);
 }
 
 void HELPER(linx_v_fadd)(CPULinxState *env, uint32_t dst, uint32_t srcL,
@@ -4956,6 +5920,115 @@ void HELPER(linx_v_fabs)(CPULinxState *env, uint32_t dst, uint32_t srcL)
     const uint64_t src = linx_vec_read_reg(env, srcL);
     const uint64_t res = linx_fp_unop_fabs(env, src, /*srctype=*/1);
     linx_vec_write_dst(env, dst, res);
+}
+
+void HELPER(linx_v_fmadd)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                          uint32_t srcR, uint32_t srcA)
+{
+    linx_vec_write_dst(env, dst, linx_fp_ternop_muladd(env, linx_vec_read_reg(env, srcL),
+                                                       linx_vec_read_reg(env, srcR),
+                                                       linx_vec_read_reg(env, srcA), 1, 0));
+}
+
+void HELPER(linx_v_fmsub)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                          uint32_t srcR, uint32_t srcA)
+{
+    linx_vec_write_dst(env, dst, linx_fp_ternop_muladd(env, linx_vec_read_reg(env, srcL),
+                                                       linx_vec_read_reg(env, srcR),
+                                                       linx_vec_read_reg(env, srcA), 1,
+                                                       float_muladd_negate_c));
+}
+
+void HELPER(linx_v_fnmadd)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR, uint32_t srcA)
+{
+    linx_vec_write_dst(env, dst, linx_fp_ternop_muladd(env, linx_vec_read_reg(env, srcL),
+                                                       linx_vec_read_reg(env, srcR),
+                                                       linx_vec_read_reg(env, srcA), 1,
+                                                       float_muladd_negate_product));
+}
+
+void HELPER(linx_v_fnmsub)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR, uint32_t srcA)
+{
+    linx_vec_write_dst(env, dst, linx_fp_ternop_muladd(env, linx_vec_read_reg(env, srcL),
+                                                       linx_vec_read_reg(env, srcR),
+                                                       linx_vec_read_reg(env, srcA), 1,
+                                                       float_muladd_negate_product |
+                                                       float_muladd_negate_c));
+}
+
+void HELPER(linx_v_fsqrt)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    linx_vec_write_dst(env, dst, linx_fp_unop_sqrt(env, linx_vec_read_reg(env, srcL), 1));
+}
+
+void HELPER(linx_v_frecip)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    linx_vec_write_dst(env, dst, linx_fp_unop_recip(env, linx_vec_read_reg(env, srcL), 1));
+}
+
+void HELPER(linx_v_fexp)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    linx_vec_write_dst(env, dst, linx_fp_unop_exp(env, linx_vec_read_reg(env, srcL), 1));
+}
+
+void HELPER(linx_v_fclass)(CPULinxState *env, uint32_t dst, uint32_t srcL)
+{
+    linx_vec_write_dst(env, dst, linx_fp_unop_class(env, linx_vec_read_reg(env, srcL), 1));
+}
+
+void HELPER(linx_v_fcvt)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t dsttype, uint32_t srctype)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_fp_fcvt(env, linx_vec_read_reg(env, srcL), dsttype, srctype));
+}
+
+void HELPER(linx_v_fcvti)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                          uint32_t dsttype, uint32_t srctype)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_fp_fcvti(env, linx_vec_read_reg(env, srcL), dsttype, srctype));
+}
+
+void HELPER(linx_v_fmax)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_fp_binop_max(env, linx_vec_read_reg(env, srcL),
+                                         linx_vec_read_reg(env, srcR), 1));
+}
+
+void HELPER(linx_v_fmin)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t srcR)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_fp_binop_min(env, linx_vec_read_reg(env, srcL),
+                                         linx_vec_read_reg(env, srcR), 1));
+}
+
+void HELPER(linx_v_icvt)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                         uint32_t dsttype, uint32_t srctype)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_int_icvt(env, linx_vec_read_reg(env, srcL), dsttype, srctype));
+}
+
+void HELPER(linx_v_icvtf)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                          uint32_t dsttype, uint32_t srctype)
+{
+    linx_vec_write_dst(env, dst,
+                       linx_int_icvtf(env, linx_vec_read_reg(env, srcL), dsttype, srctype));
+}
+
+void HELPER(linx_v_rev)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                        uint32_t imml, uint32_t immr)
+{
+    (void)imml;
+    (void)immr;
+    /* Bring-up profile currently follows Sail's per-lane 32-bit byte reverse. */
+    linx_vec_write_dst(env, dst, (uint64_t)bswap32((uint32_t)linx_vec_read_reg(env, srcL)));
 }
 
 void HELPER(linx_v_rdadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
@@ -5026,6 +6099,206 @@ void HELPER(linx_v_rdxor)(CPULinxState *env, uint32_t dst, uint32_t srcL)
     linx_vec_write_reduce_dst(env, dst, acc ^ src);
 }
 
+void HELPER(linx_v_lb_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_lb_local)(env, dst, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + lane + (idx << (shamt & 0x3fu));
+
+    linx_lr_clear(env);
+    const int8_t signed_value =
+        (int8_t)cpu_ldb_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UB),
+                            GETPC());
+    const uint64_t value = (uint64_t)(int64_t)signed_value;
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem lb.resolved: tpc=0x%" PRIx64
+                      " dst=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, dst, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+    linx_vec_write_dst(env, dst, value);
+}
+
+void HELPER(linx_v_lh_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                           uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_lh_local)(env, dst, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + (lane << 1) + (idx << (shamt & 0x3fu));
+
+    linx_lr_clear(env);
+    const int16_t signed_value =
+        (int16_t)cpu_ldw_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UW),
+                             GETPC());
+    const uint64_t value = (uint64_t)(int64_t)signed_value;
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem lh.resolved: tpc=0x%" PRIx64
+                      " dst=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, dst, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+    linx_vec_write_dst(env, dst, value);
+}
+
+void HELPER(linx_v_lbu_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_lbu_local)(env, dst, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + lane + (idx << (shamt & 0x3fu));
+
+    linx_lr_clear(env);
+    const uint32_t value =
+        cpu_ldb_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UB), GETPC());
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem lbu.resolved: tpc=0x%" PRIx64
+                      " dst=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, dst, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+    linx_vec_write_dst(env, dst, value);
+}
+
+void HELPER(linx_v_lhu_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                            uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_lhu_local)(env, dst, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + (lane << 1) + (idx << (shamt & 0x3fu));
+
+    linx_lr_clear(env);
+    const uint32_t value =
+        cpu_ldw_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UW), GETPC());
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem lhu.resolved: tpc=0x%" PRIx64
+                      " dst=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, dst, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+    linx_vec_write_dst(env, dst, value);
+}
+
+void HELPER(linx_v_sb_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
+                           uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_sb_local)(env, srcD, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + lane + (idx << (shamt & 0x1fu));
+    const uint8_t value = (uint8_t)linx_vec_read_reg(env, srcD);
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem sb.resolved: tpc=0x%" PRIx64
+                      " srcD=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, srcD, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+
+    linx_lr_clear(env);
+    cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), GETPC());
+}
+
+void HELPER(linx_v_sh_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
+                           uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local != 0) {
+        HELPER(linx_v_sh_local)(env, srcD, srcL, srcR, shamt, local);
+        return;
+    }
+    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    const uint64_t base = linx_vec_read_reg(env, srcL);
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t addr = base + (lane << 1) + (idx << (1u + (shamt & 0x1fu)));
+    const uint16_t value = (uint16_t)linx_vec_read_reg(env, srcD);
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem sh.resolved: tpc=0x%" PRIx64
+                      " srcD=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, srcD, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+
+    linx_lr_clear(env);
+    cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), GETPC());
+}
+
 void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
@@ -5041,8 +6314,19 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 2) + (idx << (shamt & 0x3fu));
+    const uint64_t addr = base + (lane << 2) + (idx << (2u + (shamt & 0x1fu)));
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
+
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem sw.resolved: tpc=0x%" PRIx64
+                      " srcD=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, srcD, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
 
     linx_lr_clear(env);
     cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), GETPC());
@@ -5070,6 +6354,17 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     const uint32_t value =
         cpu_ldl_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UL), GETPC());
 
+    if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx body mem lw.resolved: tpc=0x%" PRIx64
+                      " dst=0x%x srcL=0x%x srcR=0x%x"
+                      " srcL_val=0x%" PRIx64 " srcR_val=0x%" PRIx64
+                      " lc0=%" PRIu64 " shamt=%u resolved_addr=0x%" PRIx64
+                      " value=0x%x lc1=%" PRIu64 "\n",
+                      env->body_tpc, dst, srcL, srcR,
+                      base, idx, lane, shamt, addr, value, env->lc[1]);
+    }
+
     const unsigned cls = linx_vec_reg_class(dst);
     const unsigned didx = linx_vec_reg_index(dst);
     switch (cls) {
@@ -5095,24 +6390,287 @@ static bool linx_vec_resolve_local_tile(CPULinxState *env, uint32_t base_code,
                                         unsigned *tile_out)
 {
     if (linx_vec_reg_class(base_code) != LINX_VEC_REGCLASS_TBASE) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local: base class mismatch code=0x%x class=%u idx=%u body_tpc=0x%" PRIx64 " lc0=%" PRIu64 " lc1=%" PRIu64 "\n",
+                          base_code, linx_vec_reg_class(base_code),
+                          linx_vec_reg_index(base_code), env->body_tpc,
+                          env->lc[0], env->lc[1]);
+        }
         return false;
     }
     unsigned idx = linx_vec_reg_index(base_code);
     unsigned tile = 0;
     if (!linx_vec_resolve_tile_base(env, idx, &tile)) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local: unresolved tile base code=0x%x idx=%u body_tpc=0x%" PRIx64 " iot_count=%u valid=%u lc0=%" PRIu64 " lc1=%" PRIu64 "\n",
+                          base_code, idx, env->body_tpc, env->tile_iot_count,
+                          env->tile_iot_valid, env->lc[0], env->lc[1]);
+        }
         return false;
     }
     if (tile >= 32) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local: tile out of range code=0x%x idx=%u tile=%u body_tpc=0x%" PRIx64 "\n",
+                          base_code, idx, tile, env->body_tpc);
+        }
         return false;
     }
     *tile_out = tile;
     return true;
 }
 
+void HELPER(linx_v_lbu_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                              uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = lane + (idx << (shamt & 0x3fu));
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 1u > bytes) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x3u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint32_t packed = env->tile_reg[tile][word];
+    linx_vec_write_dst(env, dst, (packed >> bit) & 0xffu);
+}
+
+void HELPER(linx_v_lb_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                             uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = lane + (idx << (shamt & 0x3fu));
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 1u > bytes) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x3u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint32_t packed = env->tile_reg[tile][word];
+    const int8_t signed_value = (int8_t)((packed >> bit) & 0xffu);
+    linx_vec_write_dst(env, dst, (uint64_t)(int64_t)signed_value);
+}
+
+void HELPER(linx_v_lhu_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                              uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = (lane << 1) + (idx << (shamt & 0x3fu));
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 2u > bytes || (off & 1u) != 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x2u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint32_t packed = env->tile_reg[tile][word];
+    linx_vec_write_dst(env, dst, (packed >> bit) & 0xffffu);
+}
+
+void HELPER(linx_v_lh_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
+                             uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = (lane << 1) + (idx << (shamt & 0x3fu));
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 2u > bytes || (off & 1u) != 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x2u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint32_t packed = env->tile_reg[tile][word];
+    const int16_t signed_value = (int16_t)((packed >> bit) & 0xffffu);
+    linx_vec_write_dst(env, dst, (uint64_t)(int64_t)signed_value);
+}
+
+void HELPER(linx_v_sb_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
+                             uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sb: local bit clear srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          srcD, srcL, srcR, shamt, env->body_tpc);
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = lane + (idx << (shamt & 0x1fu));
+    const uint8_t value = (uint8_t)linx_vec_read_reg(env, srcD);
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 1u > bytes) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sb: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
+                          tile, bytes, off, idx, lane, srcD, srcL, srcR, shamt,
+                          env->body_tpc, env->lc[1]);
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x3u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    uint32_t old = env->tile_reg[tile][word];
+    old = (old & ~(0xffu << bit)) | ((uint32_t)value << bit);
+    env->tile_reg[tile][word] = old;
+}
+
+void HELPER(linx_v_sh_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
+                             uint32_t srcR, uint32_t shamt, uint32_t local)
+{
+    if (local == 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sh: local bit clear srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          srcD, srcL, srcR, shamt, env->body_tpc);
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    unsigned tile = 0;
+    if (!linx_vec_resolve_local_tile(env, srcL, &tile)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const uint64_t idx = linx_vec_read_reg(env, srcR);
+    const uint64_t lane = env->lc[0];
+    const uint64_t off = (lane << 1) + (idx << (1u + (shamt & 0x1fu)));
+    const uint16_t value = (uint16_t)linx_vec_read_reg(env, srcD);
+
+    const uint32_t bytes = env->tile_reg_bytes[tile];
+    if (bytes == 0 || off + 2u > bytes) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sh: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
+                          tile, bytes, off, idx, lane, srcD, srcL, srcR, shamt,
+                          env->body_tpc, env->lc[1]);
+        }
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if ((off & 1u) != 0) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    const unsigned word = (unsigned)(off >> 2);
+    const unsigned bit = (unsigned)(off & 0x2u) * 8u;
+    if (word >= LINX_TILE_MAX_WORDS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    uint32_t old = env->tile_reg[tile][word];
+    old = (old & ~(0xffffu << bit)) | ((uint32_t)value << bit);
+    env->tile_reg[tile][word] = old;
+}
+
 void HELPER(linx_v_sw_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                              uint32_t srcR, uint32_t shamt, uint32_t local)
 {
     if (local == 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sw: local bit clear srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          srcD, srcL, srcR, shamt, env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -5130,16 +6688,33 @@ void HELPER(linx_v_sw_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 4u > bytes) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sw: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
+                          tile, bytes, off, idx, lane, srcD, srcL, srcR, shamt,
+                          env->body_tpc, env->lc[1]);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     if ((off & 3u) != 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sw: unaligned off tile=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          tile, off, idx, lane, srcL, srcR, shamt,
+                          env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
 
     const unsigned word = (unsigned)(off >> 2);
     if (word >= LINX_TILE_MAX_WORDS) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local sw: word out of range tile=%u word=%u off=0x%" PRIx64 " bytes=%u body_tpc=0x%" PRIx64 "\n",
+                          tile, word, off, bytes, env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -5150,6 +6725,11 @@ void HELPER(linx_v_lw_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                              uint32_t srcR, uint32_t shamt, uint32_t local)
 {
     if (local == 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local lw: local bit clear dst=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          dst, srcL, srcR, shamt, env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -5166,16 +6746,33 @@ void HELPER(linx_v_lw_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 4u > bytes) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local lw: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " dst=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
+                          tile, bytes, off, idx, lane, dst, srcL, srcR, shamt,
+                          env->body_tpc, env->lc[1]);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     if ((off & 3u) != 0) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local lw: unaligned off tile=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 "\n",
+                          tile, off, idx, lane, srcL, srcR, shamt,
+                          env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
 
     const unsigned word = (unsigned)(off >> 2);
     if (word >= LINX_TILE_MAX_WORDS) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local lw: word out of range tile=%u word=%u off=0x%" PRIx64 " bytes=%u body_tpc=0x%" PRIx64 "\n",
+                          tile, word, off, bytes, env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -5197,6 +6794,11 @@ void HELPER(linx_v_lw_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         linx_vec_write_vn(env, didx, (uint64_t)value);
         return;
     default:
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx local lw: invalid dst class dst=0x%x class=%u idx=%u tile=%u word=%u value=0x%x body_tpc=0x%" PRIx64 "\n",
+                          dst, cls, didx, tile, word, value, env->body_tpc);
+        }
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -5209,6 +6811,25 @@ static unsigned linx_insn_len(uint16_t hw)
         return ((hw & 0xf) == 0xe) ? 6 : 2;
     }
     return ((hw & 0xf) == 0xf) ? 8 : 4;
+}
+
+static bool linx_is_legacy_ret_j_wrapper_target(CPULinxState *env, uint64_t pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+    uint32_t insn;
+
+    if (pc < 2) {
+        return false;
+    }
+    if (cpu_memory_rw_debug(cs, pc - 2, buf, sizeof(buf), 0) != 0) {
+        return false;
+    }
+
+    insn = ldl_le_p(buf + 2);
+    return lduw_le_p(buf) == 0x3800 &&
+           (insn & 0x0000707fu) == 0x00000037u &&
+           lduw_le_p(buf + 6) == 0x0000;
 }
 
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
@@ -5256,6 +6877,10 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
         }
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
                               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+
+        if (linx_is_legacy_ret_j_wrapper_target(env, pc)) {
+            return true;
+        }
 
         /* BSTART.*: bits[6:0]=0x01, branch kind in bits [14:12] is non-zero. */
         if ((insn & 0x7f) == 0x01 && ((insn >> 12) & 0x7) != 0) {

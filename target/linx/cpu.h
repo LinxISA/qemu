@@ -211,6 +211,7 @@ typedef struct LinxAcrBlockState {
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vnq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vec_p;
 
     uint64_t bpc;
 
@@ -224,6 +225,7 @@ typedef struct LinxAcrBlockState {
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
+    uint64_t body_end;
     uint64_t return_pc;
     uint32_t in_body;
 
@@ -272,6 +274,11 @@ typedef struct LinxCosimRange {
     uint64_t size;
 } LinxCosimRange;
 
+typedef struct LinxBodyRange {
+    uint64_t start;
+    uint64_t end;
+} LinxBodyRange;
+
 typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
@@ -280,6 +287,7 @@ typedef struct CPUArchState {
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vnq[LINX_VEC_QUEUE_DEPTH];
+    uint64_t vec_p;
 
     /*
      * System Status Registers (SSR).
@@ -311,6 +319,7 @@ typedef struct CPUArchState {
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
+    uint64_t body_end;
     uint64_t return_pc;
     uint32_t in_body;
 
@@ -447,6 +456,10 @@ typedef struct CPUArchState {
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
 
+    /* Loader-provided B.TEXT body extent metadata. Not reset-cleared. */
+    uint32_t body_range_count;
+    LinxBodyRange *body_ranges;
+
     /* JSONL commit tracing (bring-up difftest). Not reset-cleared. */
     struct {
         uint8_t inited;
@@ -539,6 +552,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->vmq[i] = env->vmq[i];
         s->vnq[i] = env->vnq[i];
     }
+    s->vec_p = env->vec_p;
 
     s->bpc = env->bpc;
 
@@ -551,6 +565,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->call_setret_pending = env->call_setret_pending;
 
     s->body_tpc = env->body_tpc;
+    s->body_end = env->body_end;
     s->return_pc = env->return_pc;
     s->in_body = env->in_body;
 
@@ -621,6 +636,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->vmq[i] = s->vmq[i];
         env->vnq[i] = s->vnq[i];
     }
+    env->vec_p = s->vec_p;
 
     env->bpc = s->bpc;
 
@@ -633,6 +649,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->call_setret_pending = s->call_setret_pending;
 
     env->body_tpc = s->body_tpc;
+    env->body_end = s->body_end;
     env->return_pc = s->return_pc;
     env->in_body = s->in_body;
 
@@ -708,5 +725,21 @@ struct LinxCPUClass {
 void linx_translate_init(void);
 void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
+
+static inline uint64_t linx_lookup_body_end(const CPULinxState *env,
+                                            uint64_t body_tpc)
+{
+    uint32_t i;
+
+    if (!env->body_ranges) {
+        return 0;
+    }
+    for (i = 0; i < env->body_range_count; i++) {
+        if (env->body_ranges[i].start == body_tpc) {
+            return env->body_ranges[i].end;
+        }
+    }
+    return 0;
+}
 
 #endif
