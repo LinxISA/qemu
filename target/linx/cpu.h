@@ -181,6 +181,8 @@ typedef enum LinxTemplateKind {
 #define LINX_COSIM_PATH_MAX 512u
 #define LINX_BSTART_CACHE_SIZE 64u
 
+#define LINX_TB_FLAG_IN_BODY (1u << 0)
+
 /*
  * EBARG preservation stack (bring-up).
  *
@@ -471,6 +473,21 @@ typedef struct CPUArchState {
         uint64_t cycle;
         FILE *fp;
     } commit_trace;
+
+    struct {
+        uint8_t inited;
+        uint8_t enabled;
+        uint8_t pc_filter_enabled;
+        uint8_t stop_after_commit;
+        uint8_t pc_bias_valid;
+        uint8_t pending_block_kind;
+        uint8_t active_block_kind;
+        uint64_t pc_lo;
+        uint64_t pc_hi;
+        uint64_t pc_bias;
+        uint64_t cycle;
+        FILE *fp;
+    } minst_trace;
 
     /* QEMU <-> Janus lockstep co-simulation state (M1 bring-up). */
     struct {
