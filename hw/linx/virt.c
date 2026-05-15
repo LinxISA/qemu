@@ -130,6 +130,8 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define R_LINX_64_BNEXT 33
 #define R_LINX_PCR17_LOAD 38
 #define R_LINX_PCR17_STORE 39
+#define R_LINX_BRANCH 40
+#define R_LINX_BRANCH_22 43
 #define R_LINX_HL_PCR29_LOAD 46
 #define R_LINX_HL_PCR29_STORE 47
 #define R_LINX_CSETRET5_PCREL 21
@@ -1400,6 +1402,84 @@ static bool linx_patch_b_text_pcrel(uint8_t *ram, size_t ram_size,
     return true;
 }
 
+static bool linx_patch_branch_pcrel(uint8_t *ram, size_t ram_size,
+                                    hwaddr patch_addr, hwaddr target_addr,
+                                    int64_t addend, Error **errp)
+{
+    uint32_t insn;
+    int64_t delta;
+    int64_t simm13;
+    uint32_t imm12;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "BRANCH relocation out of bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned BRANCH target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    simm13 = delta >> 1;
+    if (simm13 < -(1 << 12) || simm13 >= (1 << 12)) {
+        error_setg(errp,
+                   "BRANCH target out of range @ 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   patch_addr, delta);
+        return false;
+    }
+
+    imm12 = ((uint32_t)(simm13 & 0x0ff) << 25) |
+            ((uint32_t)((simm13 >> 8) & 0x1f) << 7);
+    insn = (insn & ~((0xffu << 25) | (0x1fu << 7))) | imm12;
+    stl_le_p(ram + patch_addr, insn);
+    return true;
+}
+
+static bool linx_patch_branch22_pcrel(uint8_t *ram, size_t ram_size,
+                                      hwaddr patch_addr, hwaddr target_addr,
+                                      int64_t addend, Error **errp)
+{
+    uint32_t insn;
+    int64_t delta;
+    int64_t simm23;
+    uint32_t imm22;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "BRANCH_22 relocation out of bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
+    if (delta & 1) {
+        error_setg(errp,
+                   "unaligned BRANCH_22 target: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx,
+                   patch_addr, target_addr);
+        return false;
+    }
+
+    simm23 = delta >> 1;
+    if (simm23 < -(1 << 22) || simm23 >= (1 << 22)) {
+        error_setg(errp,
+                   "BRANCH_22 target out of range @ 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   patch_addr, delta);
+        return false;
+    }
+
+    imm22 = ((uint32_t)(simm23 & 0x1ffff) << 15) |
+            ((uint32_t)((simm23 >> 17) & 0x1f) << 7);
+    insn = (insn & ~((0x1ffffu << 15) | (0x1fu << 7))) | imm22;
+    stl_le_p(ram + patch_addr, insn);
+    return true;
+}
+
 /* Generic relocation handler that dispatches based on instruction type */
 static bool linx_patch_reloc(uint8_t *ram, size_t ram_size,
                              hwaddr patch_addr, hwaddr target_addr,
@@ -1892,6 +1972,18 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                 continue;
             } else if (rtype == R_LINX_SETRET20_PCREL) {
                 if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
+                                               (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_BRANCH) {
+                if (!linx_patch_branch_pcrel(ram, ram_size, patch_addr, target,
+                                             (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_BRANCH_22) {
+                if (!linx_patch_branch22_pcrel(ram, ram_size, patch_addr, target,
                                                (int64_t)rela[j].r_addend, errp)) {
                     goto fail;
                 }
@@ -2544,6 +2636,18 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 continue;
             } else if (rtype == R_LINX_SETRET20_PCREL) {
                 if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
+                                               rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_BRANCH) {
+                if (!linx_patch_branch_pcrel(ram, ram_size, patch_addr, target,
+                                             rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                continue;
+            } else if (rtype == R_LINX_BRANCH_22) {
+                if (!linx_patch_branch22_pcrel(ram, ram_size, patch_addr, target,
                                                rela[j].r_addend, errp)) {
                     goto fail;
                 }
