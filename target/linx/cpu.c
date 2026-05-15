@@ -439,8 +439,6 @@ static vaddr linx_cpu_get_pc(CPUState *cs)
     return cpu->env.pc;
 }
 
-#define LINX_TB_FLAG_IN_BODY (1u << 0)
-
 static TCGTBCPUState linx_get_tb_cpu_state(CPUState *cs)
 {
     CPULinxState *env = cpu_env(cs);

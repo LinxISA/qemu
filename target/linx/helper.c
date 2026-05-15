@@ -5,6 +5,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "../../../../tools/model/include/linx/model/emulator/minst_record_c.h"
 #include "qemu/bswap.h"
 #include "cpu.h"
 #include "trace.h"
@@ -691,10 +692,69 @@ static inline bool linx_commit_trace_active(CPULinxState *env)
     return env->commit_trace.enabled && env->commit_trace.fp;
 }
 
+static void linx_minst_trace_init(CPULinxState *env)
+{
+    if (env->minst_trace.inited) {
+        return;
+    }
+    env->minst_trace.inited = 1;
+
+    const char *path = getenv("LINX_MINST_TRACE");
+    if (!path || !path[0] || strcmp(path, "0") == 0) {
+        env->minst_trace.enabled = 0;
+        return;
+    }
+
+    env->minst_trace.fp = fopen(path, "w");
+    if (!env->minst_trace.fp) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: failed to open LINX_MINST_TRACE='%s'\n",
+                      path);
+        env->minst_trace.enabled = 0;
+        return;
+    }
+
+    env->minst_trace.enabled = 1;
+    env->minst_trace.stop_after_commit = 0;
+    env->minst_trace.cycle = 0;
+    env->minst_trace.pc_bias_valid = 0;
+    env->minst_trace.pending_block_kind = 0;
+    env->minst_trace.active_block_kind = 0;
+    env->minst_trace.pc_bias = 0;
+
+    const char *lo_s = getenv("LINX_COMMIT_TRACE_FILTER_PC_LO");
+    if (lo_s && lo_s[0] && strcmp(lo_s, "0") != 0) {
+        char *endp = NULL;
+        errno = 0;
+        uint64_t lo = strtoull(lo_s, &endp, 0);
+        if (errno == 0 && endp && endp != lo_s && *endp == '\0') {
+            uint64_t hi = lo;
+            const char *hi_s = getenv("LINX_COMMIT_TRACE_FILTER_PC_HI");
+            if (hi_s && hi_s[0] && strcmp(hi_s, "0") != 0) {
+                char *endp2 = NULL;
+                errno = 0;
+                uint64_t parsed = strtoull(hi_s, &endp2, 0);
+                if (errno == 0 && endp2 && endp2 != hi_s && *endp2 == '\0') {
+                    hi = parsed;
+                }
+            }
+            env->minst_trace.pc_lo = MIN(lo, hi);
+            env->minst_trace.pc_hi = MAX(lo, hi);
+            env->minst_trace.pc_filter_enabled = 1;
+        }
+    }
+}
+
+static inline bool linx_minst_trace_active(CPULinxState *env)
+{
+    linx_minst_trace_init(env);
+    return env->minst_trace.enabled && env->minst_trace.fp;
+}
+
 static inline bool linx_trace_capture_active(CPULinxState *env)
 {
     linx_cosim_init(env);
-    return linx_commit_trace_active(env) || env->cosim.active;
+    return linx_commit_trace_active(env) || linx_minst_trace_active(env) || env->cosim.active;
 }
 
 static inline uint32_t linx_trace_len_to_meta_len(uint32_t len)
@@ -706,6 +766,22 @@ static inline uint32_t linx_trace_len_to_meta_len(uint32_t len)
         return 32;
     case 6:
         return 64;
+    case 8:
+        return 64;
+    default:
+        return 0;
+    }
+}
+
+static inline uint32_t linx_trace_len_to_bits(uint32_t len)
+{
+    switch (len) {
+    case 2:
+        return 16;
+    case 4:
+        return 32;
+    case 6:
+        return 48;
     case 8:
         return 64;
     default:
@@ -799,6 +875,7 @@ void HELPER(linx_trace_operands_begin)(CPULinxState *env, uint64_t insn_raw, uin
         env->trace_src1_data = env->gpr[rs2];
     }
     if (linx_trace_kind_is_reg(meta->rd_kind)) {
+        env->trace_dst_valid = 1;
         env->trace_dst_reg = rd;
     }
 }
@@ -834,6 +911,16 @@ static inline void linx_trace_mem(CPULinxState *env, bool is_store,
     env->trace_mem_rdata = is_store ? 0 : rdata;
 }
 
+static inline void linx_trace_mem_clear(CPULinxState *env)
+{
+    env->trace_mem_valid = 0;
+    env->trace_mem_is_store = 0;
+    env->trace_mem_addr = 0;
+    env->trace_mem_size = 0;
+    env->trace_mem_wdata = 0;
+    env->trace_mem_rdata = 0;
+}
+
 static inline void linx_template_commit_and_exit(CPULinxState *env,
                                                  CPUState *cs,
                                                  uint64_t next_pc)
@@ -841,6 +928,12 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
     if (linx_trace_capture_active(env)) {
         HELPER(linx_commit_trace)(env, next_pc);
     }
+    cpu_loop_exit_noexc(cs);
+}
+
+static inline void linx_template_exit_without_commit(CPULinxState *env, CPUState *cs)
+{
+    (void)env;
     cpu_loop_exit_noexc(cs);
 }
 
@@ -918,20 +1011,13 @@ static uint64_t linx_trace_canonical_insn(uint64_t insn_raw, uint32_t len,
                                           const LinxOpcodeMeta *meta)
 {
     uint64_t v = insn_raw;
+    (void)meta;
 
     if (len == 2) {
         return v & 0xffffu;
     }
     if (len == 4) {
         v &= 0xffffffffu;
-        if (meta && meta->mnemonic &&
-            strncmp(meta->mnemonic, "bstart_", 7) == 0) {
-            /*
-             * Commit trace normalization: block-start opcodes are compared
-             * against golden fixtures that store the low opcode payload.
-             */
-            v &= 0x00ffffffu;
-        }
         return v;
     }
     if (len == 6) {
@@ -995,6 +1081,358 @@ static int32_t linx_trace_lane_id_for_kind(const char *block_kind)
         return 0;
     }
     return -1;
+}
+
+static const char *linx_minst_opcode_class_name(const LinxOpcodeMeta *meta)
+{
+    if (!meta) {
+        return "invalid";
+    }
+    switch (meta->major_cat) {
+    case LINX_CAT_LOAD:
+        return "load";
+    case LINX_CAT_STORE:
+        return "store";
+    case LINX_CAT_BRU_SETC_CMP:
+        return "branch";
+    case LINX_CAT_CMD_PIPE:
+    case LINX_CAT_MACRO_TEMPLATE:
+    case LINX_CAT_FP_SYS:
+        return "system";
+    case LINX_CAT_VECTOR:
+        return "int";
+    case LINX_CAT_ALU_INT:
+    case LINX_CAT_COMPRESSED:
+    case LINX_CAT_BLOCK_BOUNDARY:
+    case LINX_CAT_BLOCK_ARGS_DESC:
+    case LINX_CAT_MISC:
+    case LINX_CAT_HL_PCR:
+    default:
+        return "int";
+    }
+}
+
+typedef struct LinxMinstCanonicalInfo {
+    const char *mnemonic;
+    const char *form_id;
+    const char *opcode_class;
+    const char *block_kind_override;
+} LinxMinstCanonicalInfo;
+
+static LinxMinstCanonicalInfo linx_minst_canonical_info(const LinxOpcodeMeta *meta)
+{
+    const char *mnemonic = meta && meta->mnemonic ? meta->mnemonic : "";
+
+    if (strcmp(mnemonic, "addi") == 0) {
+        return (LinxMinstCanonicalInfo){ "ADDI", "2decd0a93a0a", "int", NULL };
+    }
+    if (strcmp(mnemonic, "b_text") == 0) {
+        return (LinxMinstCanonicalInfo){ "B.TEXT", "1ce09f50e5dd", "system", "tma" };
+    }
+    if (strcmp(mnemonic, "bstart_tma") == 0) {
+        return (LinxMinstCanonicalInfo){ "BSTART.TLOAD", "d0c18bb0ab15", "system", "tma" };
+    }
+    if (strcmp(mnemonic, "c_bstart_cond") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTART", "c4e238a9227a", "system", NULL };
+    }
+    if (strcmp(mnemonic, "c_bstart_direct") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTART", "f833d2a4753c", "system", NULL };
+    }
+    if (strcmp(mnemonic, "c_bstart_std_fall") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTART.STD", "8b40f078c14a", "invalid", NULL };
+    }
+    if (strcmp(mnemonic, "c_bstart_vpar") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTART.VPAR", "c4d89efc71ea", "invalid", NULL };
+    }
+    if (strcmp(mnemonic, "c_bstart_vseq") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTART.VSEQ", "50d70de3f84f", "invalid", NULL };
+    }
+    if (strcmp(mnemonic, "c_bstop") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.BSTOP", "ca4743d8a95e", "system", NULL };
+    }
+    if (strcmp(mnemonic, "c_movi") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.MOVI", "2c84faf1bc72", "int", NULL };
+    }
+    if (strcmp(mnemonic, "c_movr") == 0) {
+        return (LinxMinstCanonicalInfo){ "C.MOVR", "80d2b5f3580b", "int", NULL };
+    }
+    if (strcmp(mnemonic, "hl_lui") == 0) {
+        return (LinxMinstCanonicalInfo){ "HL.LUI", "255991889818", "int", NULL };
+    }
+    if (strcmp(mnemonic, "lui") == 0) {
+        return (LinxMinstCanonicalInfo){ "LUI", "982113b541d6", "int", NULL };
+    }
+    if (strcmp(mnemonic, "lwi") == 0) {
+        return (LinxMinstCanonicalInfo){ "LWI", "7085c98058fa", "load", NULL };
+    }
+    if (strcmp(mnemonic, "mcopy") == 0) {
+        return (LinxMinstCanonicalInfo){ "MCOPY", "4fc4a803e995", "system", NULL };
+    }
+    if (strcmp(mnemonic, "mset") == 0) {
+        return (LinxMinstCanonicalInfo){ "MSET", "0b932f291932", "system", NULL };
+    }
+    if (strcmp(mnemonic, "setc_ltu") == 0) {
+        return (LinxMinstCanonicalInfo){ "SETC.LTU", "4a1ff65ecafb", "branch", NULL };
+    }
+    if (strcmp(mnemonic, "setc_ne") == 0) {
+        return (LinxMinstCanonicalInfo){ "SETC.NE", "77576a5c690c", "branch", NULL };
+    }
+    if (strcmp(mnemonic, "ssrset") == 0) {
+        return (LinxMinstCanonicalInfo){ "SSRSET", "4dd3b71802c6", "system", NULL };
+    }
+    if (strcmp(mnemonic, "swi") == 0) {
+        return (LinxMinstCanonicalInfo){ "SWI", "147e55489c41", "store", NULL };
+    }
+
+    return (LinxMinstCanonicalInfo){ mnemonic, "", linx_minst_opcode_class_name(meta), NULL };
+}
+
+static inline uint64_t linx_minst_canonical_pc(CPULinxState *env, uint64_t pc)
+{
+    if (!env->minst_trace.pc_bias_valid) {
+        env->minst_trace.pc_bias = pc;
+        env->minst_trace.pc_bias_valid = 1;
+    }
+    return pc - env->minst_trace.pc_bias;
+}
+
+static const char *linx_trace_context_block_kind(const CPULinxState *env)
+{
+    switch (env->blocktype) {
+    case 1:
+        return "sys";
+    case 2:
+        return "tma";
+    case 4:
+        return "vpar";
+    case 5:
+        return "vseq";
+    case 6:
+        return "cube";
+    case 7:
+        return "tepl";
+    default:
+        return NULL;
+    }
+}
+
+static inline uint8_t linx_minst_block_kind_code(const char *block_kind)
+{
+    if (!block_kind || strcmp(block_kind, "scalar") == 0) {
+        return 0;
+    }
+    if (strcmp(block_kind, "sys") == 0) {
+        return 1;
+    }
+    if (strcmp(block_kind, "tma") == 0) {
+        return 2;
+    }
+    if (strcmp(block_kind, "vpar") == 0) {
+        return 3;
+    }
+    if (strcmp(block_kind, "vseq") == 0) {
+        return 4;
+    }
+    if (strcmp(block_kind, "cube") == 0) {
+        return 5;
+    }
+    if (strcmp(block_kind, "tepl") == 0) {
+        return 6;
+    }
+    return 0;
+}
+
+static inline const char *linx_minst_block_kind_name_from_code(uint8_t code)
+{
+    switch (code) {
+    case 1:
+        return "sys";
+    case 2:
+        return "tma";
+    case 3:
+        return "vpar";
+    case 4:
+        return "vseq";
+    case 5:
+        return "cube";
+    case 6:
+        return "tepl";
+    default:
+        return "scalar";
+    }
+}
+
+#define LINX_VIRT_EXIT_REG UINT64_C(0x10000004)
+
+static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
+{
+    bool emit_file = false;
+    uint64_t pc;
+    uint64_t pc_out;
+    uint64_t next_pc_out;
+    uint64_t cycle;
+    uint32_t trap_valid;
+    uint32_t trap_cause;
+    uint32_t dst_valid;
+    uint32_t dst_reg;
+    uint64_t dst_data_raw;
+    uint64_t dst_data;
+    uint32_t len_meta;
+    const LinxOpcodeMeta *meta;
+    uint64_t canonical_insn;
+    const char *block_kind;
+    int32_t lane_id;
+    uint32_t len_bits;
+    LinxMinstCanonicalInfo info;
+    bool is_macro_template;
+    uint32_t src0_valid;
+    uint32_t src1_valid;
+    uint32_t mem_valid;
+    uint32_t mem_is_load;
+    uint32_t mem_is_store;
+    uint64_t mem_addr;
+    uint32_t mem_size;
+    uint64_t mem_rdata;
+    const char *context_block_kind;
+    const uint32_t trace_rs2 = linx_trace_extract_rs2(env->trace_insn, env->trace_len);
+    uint8_t emitted_block_kind_code;
+    bool consume_pending_non_scalar = false;
+    bool activate_sys_context = false;
+    bool terminal_store = false;
+
+    linx_minst_trace_init(env);
+    emit_file = env->minst_trace.enabled && env->minst_trace.fp;
+    if (!emit_file) {
+        return;
+    }
+
+    pc = env->trace_pc;
+    if (env->minst_trace.pc_filter_enabled &&
+        (pc < env->minst_trace.pc_lo || pc > env->minst_trace.pc_hi)) {
+        return;
+    }
+
+    trap_valid = env->trace_trap_valid;
+    trap_cause = env->trace_trap_cause;
+    dst_valid = env->trace_wb_valid ? 1u : env->trace_dst_valid;
+    dst_reg = env->trace_wb_valid ? env->trace_wb_rd : env->trace_dst_reg;
+    dst_data_raw = env->trace_wb_valid ? env->trace_wb_data : env->trace_dst_data;
+    len_meta = linx_trace_len_to_meta_len(env->trace_len);
+    meta = linx_opcode_meta_lookup(env->trace_insn, len_meta);
+    if (!meta) {
+        meta = linx_opcode_meta_lookup(env->trace_insn, 0);
+    }
+    canonical_insn = linx_trace_canonical_insn(env->trace_insn, env->trace_len, meta);
+    block_kind = linx_trace_block_kind_name(meta, canonical_insn, env->trace_len);
+    info = linx_minst_canonical_info(meta);
+    if (info.block_kind_override) {
+        block_kind = info.block_kind_override;
+    }
+    context_block_kind = linx_trace_context_block_kind(env);
+    if (context_block_kind &&
+        strcmp(block_kind, "scalar") == 0 &&
+        strcmp(info.mnemonic, "C.BSTART.STD") != 0) {
+        block_kind = context_block_kind;
+    }
+    if (strcmp(info.mnemonic, "C.BSTART.STD") == 0 &&
+        strcmp(block_kind, "scalar") == 0 &&
+        env->minst_trace.pending_block_kind != 0) {
+        block_kind = linx_minst_block_kind_name_from_code(env->minst_trace.pending_block_kind);
+        consume_pending_non_scalar = true;
+    } else if (strcmp(block_kind, "scalar") == 0 &&
+               env->minst_trace.active_block_kind == 1) {
+        block_kind = "sys";
+    }
+    lane_id = linx_trace_lane_id_for_kind(block_kind);
+    len_bits = linx_trace_len_to_bits(env->trace_len);
+    pc_out = linx_minst_canonical_pc(env, pc);
+    next_pc_out = linx_minst_canonical_pc(env, next_pc);
+    is_macro_template = meta && meta->major_cat == LINX_CAT_MACRO_TEMPLATE;
+    src0_valid = env->trace_src0_valid;
+    src1_valid = env->trace_src1_valid;
+    if (strcmp(info.mnemonic, "SWI") == 0) {
+        src1_valid = 1;
+    }
+    mem_valid = is_macro_template ? 0u : env->trace_mem_valid;
+    mem_is_load = mem_valid && !env->trace_mem_is_store;
+    mem_is_store = mem_valid && env->trace_mem_is_store;
+    mem_addr = mem_valid ? env->trace_mem_addr : 0;
+    mem_size = mem_valid ? env->trace_mem_size : 0;
+    mem_rdata = mem_is_load ? env->trace_mem_rdata : 0;
+    terminal_store = mem_is_store && env->trace_mem_addr == LINX_VIRT_EXIT_REG;
+    dst_data = dst_valid ? dst_data_raw : 0;
+    if (trap_valid && strcmp(info.mnemonic, "C.BSTOP") == 0) {
+        return;
+    }
+    if (next_pc_out == pc_out &&
+        (strncmp(info.mnemonic, "BSTART.", 7) == 0 ||
+         strncmp(info.mnemonic, "C.BSTART", 8) == 0)) {
+        return;
+    }
+    cycle = env->minst_trace.cycle++;
+    emitted_block_kind_code = linx_minst_block_kind_code(block_kind);
+    activate_sys_context = emitted_block_kind_code == 1;
+
+    fprintf(env->minst_trace.fp,
+            "{\"schema_version\":\"1.0\""
+            ",\"cycle\":%" PRIu64
+            ",\"pc\":%" PRIu64
+            ",\"next_pc\":%" PRIu64
+            ",\"insn\":%" PRIu64
+            ",\"len\":%u"
+            ",\"lane_id\":%d"
+            ",\"mnemonic\":\"%s\""
+            ",\"form_id\":\"%s\""
+            ",\"opcode_class\":\"%s\""
+            ",\"lifecycle\":\"retired\""
+            ",\"block_kind\":\"%s\""
+            ",\"src0_valid\":%u,\"src0_kind\":%u,\"src0_value\":%u,\"src0_data\":%" PRIu64
+            ",\"src1_valid\":%u,\"src1_kind\":%u,\"src1_value\":%u,\"src1_data\":%" PRIu64
+            ",\"dst0_valid\":%u,\"dst0_kind\":%u,\"dst0_value\":%u,\"dst0_data\":%" PRIu64
+            ",\"mem_valid\":%u,\"mem_is_load\":%u,\"mem_is_store\":%u,\"mem_addr\":%" PRIu64
+            ",\"mem_size\":%u,\"mem_wdata\":%" PRIu64 ",\"mem_rdata\":%" PRIu64
+            ",\"trap_valid\":%u,\"trap_cause\":%u,\"traparg0\":%" PRIu64 "}\n",
+            cycle,
+            pc_out,
+            next_pc_out,
+            canonical_insn,
+            len_bits,
+            lane_id,
+            info.mnemonic,
+            info.form_id,
+            info.opcode_class,
+            block_kind,
+            src0_valid, src0_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
+            src0_valid ? env->trace_src0_reg : 0u, 0ull,
+            src1_valid, src1_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
+            src1_valid ? (strcmp(info.mnemonic, "SWI") == 0 ? trace_rs2 : env->trace_src1_reg) : 0u, 0ull,
+            dst_valid, dst_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
+            dst_valid ? dst_reg : 0u, dst_data,
+            mem_valid, mem_is_load, mem_is_store, mem_addr,
+            mem_size, 0ull, mem_rdata,
+            trap_valid, trap_cause, env->trace_traparg0);
+    fflush(env->minst_trace.fp);
+
+    if (consume_pending_non_scalar) {
+        env->minst_trace.pending_block_kind = 0;
+    }
+    if (activate_sys_context) {
+        env->minst_trace.active_block_kind = 1;
+    } else if (strcmp(info.mnemonic, "C.BSTOP") == 0 ||
+               strncmp(info.mnemonic, "BSTART.", 7) == 0 ||
+               strncmp(info.mnemonic, "C.BSTART.", 9) == 0 ||
+               strcmp(info.mnemonic, "C.BSTART") == 0) {
+        env->minst_trace.active_block_kind = 0;
+    }
+    if (emitted_block_kind_code >= 2 && !consume_pending_non_scalar) {
+        env->minst_trace.pending_block_kind = emitted_block_kind_code;
+    }
+    if (env->minst_trace.stop_after_commit || terminal_store) {
+        fclose(env->minst_trace.fp);
+        env->minst_trace.fp = NULL;
+        env->minst_trace.enabled = 0;
+        env->minst_trace.stop_after_commit = 0;
+    }
 }
 
 void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
@@ -1079,6 +1517,9 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
 
     if (env->cosim.active) {
         linx_cosim_send_commit_and_wait_ack(env, next_pc);
+    }
+    if (linx_minst_trace_active(env)) {
+        linx_emit_minst_trace(env, next_pc);
     }
 }
 
@@ -1203,6 +1644,79 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
             return 0;
         }
         return env->ssr[idx];
+    }
+}
+
+uint64_t HELPER(linx_scalar_read_reg)(CPULinxState *env, uint32_t code)
+{
+    if (code == LINX_REG_ZERO) {
+        return 0;
+    }
+    if (code < LINX_GPR_COUNT) {
+        return env->gpr[code];
+    }
+    if (code < 28u) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx scalar read pc=0x%" PRIx64 " code=%u tq[%u]=0x%" PRIx64 "\n",
+                          env->pc, code, code - 24u, env->tq[code - 24u]);
+        }
+        return env->tq[code - 24u];
+    }
+    if (code < 32u) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx scalar read pc=0x%" PRIx64 " code=%u uq[%u]=0x%" PRIx64 "\n",
+                          env->pc, code, code - 28u, env->uq[code - 28u]);
+        }
+        return env->uq[code - 28u];
+    }
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    return 0;
+}
+
+uint64_t HELPER(linx_scalar_addi)(CPULinxState *env, uint32_t code, uint64_t imm)
+{
+    return HELPER(linx_scalar_read_reg)(env, code) + imm;
+}
+
+void HELPER(linx_tq_push)(CPULinxState *env, uint64_t value)
+{
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx tq push pc=0x%" PRIx64 " val=0x%" PRIx64
+                      " before=[0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 "]\n",
+                      env->pc, value, env->tq[0], env->tq[1], env->tq[2], env->tq[3]);
+    }
+    env->tq[3] = env->tq[2];
+    env->tq[2] = env->tq[1];
+    env->tq[1] = env->tq[0];
+    env->tq[0] = value;
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx tq push after  pc=0x%" PRIx64
+                      " tq=[0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 "]\n",
+                      env->pc, env->tq[0], env->tq[1], env->tq[2], env->tq[3]);
+    }
+}
+
+void HELPER(linx_uq_push)(CPULinxState *env, uint64_t value)
+{
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx uq push pc=0x%" PRIx64 " val=0x%" PRIx64
+                      " before=[0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 "]\n",
+                      env->pc, value, env->uq[0], env->uq[1], env->uq[2], env->uq[3]);
+    }
+    env->uq[3] = env->uq[2];
+    env->uq[2] = env->uq[1];
+    env->uq[1] = env->uq[0];
+    env->uq[0] = value;
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx uq push after  pc=0x%" PRIx64
+                      " uq=[0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 ",0x%" PRIx64 "]\n",
+                      env->pc, env->uq[0], env->uq[1], env->uq[2], env->uq[3]);
     }
 }
 
@@ -2912,6 +3426,14 @@ void HELPER(linx_ebreak)(CPULinxState *env, uint32_t imm)
 void HELPER(raise_exception)(CPULinxState *env, uint32_t exception)
 {
     CPUState *cs = env_cpu(env);
+    if (exception == LINX_EXCP_ILLEGAL_INST && env->pc == 0x1b536) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: helper illegal pc=0x%" PRIx64
+                      " next=0x%" PRIx64 " ri_count=%u"
+                      " lc=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]\n",
+                      env->pc, env->insn_pc_next, env->vec_ri_count,
+                      env->lc[0], env->lc[1], env->lc[2]);
+    }
     cs->exception_index = exception;
     cpu_loop_exit_restore(cs, GETPC());
 }
@@ -3601,6 +4123,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
             linx_template_commit_and_exit(env, cs, env->pc);
         }
 
@@ -3652,10 +4175,12 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
+            linx_template_commit_and_exit(env, cs, env->pc);
         } else {
             env->pc = cur_pc;
+            linx_template_exit_without_commit(env, cs);
         }
-        linx_template_commit_and_exit(env, cs, env->pc);
         break;
     }
 
@@ -3667,6 +4192,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
             linx_template_commit_and_exit(env, cs, env->pc);
         }
 
@@ -3708,10 +4234,12 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
+            linx_template_commit_and_exit(env, cs, env->pc);
         } else {
             env->pc = cur_pc;
+            linx_template_exit_without_commit(env, cs);
         }
-        linx_template_commit_and_exit(env, cs, env->pc);
         break;
     }
 
@@ -3725,6 +4253,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
             linx_template_commit_and_exit(env, cs, env->pc);
         }
 
@@ -3761,10 +4290,12 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         if (remaining == 0) {
             linx_template_clear(env);
             env->pc = next_pc;
+            linx_trace_mem_clear(env);
+            linx_template_commit_and_exit(env, cs, env->pc);
         } else {
             env->pc = cur_pc;
+            linx_template_exit_without_commit(env, cs);
         }
-        linx_template_commit_and_exit(env, cs, env->pc);
         break;
     }
 
@@ -4906,6 +5437,13 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
 
 static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
 {
+    if (env->pc == 0x1b536) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: vec read pc=0x%" PRIx64
+                      " code=%u class=%u idx=%u ri_count=%u\n",
+                      env->pc, code, linx_vec_reg_class(code),
+                      linx_vec_reg_index(code), env->vec_ri_count);
+    }
     /*
      * v0.3 bring-up: vector bodies may mix scalar and vector operands.
      * Scalar encodings keep the base scalar namespace:
@@ -6422,6 +6960,35 @@ static bool linx_vec_resolve_local_tile(CPULinxState *env, uint32_t base_code,
     return true;
 }
 
+static bool linx_vec_local_ensure_store_bytes(CPULinxState *env, unsigned tile,
+                                              uint64_t off, uint32_t size)
+{
+    if (tile >= 32 || size == 0 || off > UINT64_MAX - size) {
+        return false;
+    }
+
+    const uint64_t required = off + size;
+    if (required > LINX_TILE_MAX_BYTES) {
+        return false;
+    }
+    if (env->tile_reg_bytes[tile] >= required) {
+        return true;
+    }
+
+    const uint32_t old_bytes = env->tile_reg_bytes[tile];
+    const unsigned old_words = (old_bytes + 3u) / 4u;
+    const unsigned new_words = (unsigned)((required + 3u) / 4u);
+    if (new_words > LINX_TILE_MAX_WORDS) {
+        return false;
+    }
+
+    for (unsigned w = old_words; w < new_words; w++) {
+        env->tile_reg[tile][w] = 0;
+    }
+    env->tile_reg_bytes[tile] = (uint32_t)required;
+    return true;
+}
+
 void HELPER(linx_v_lbu_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                               uint32_t srcR, uint32_t shamt, uint32_t local)
 {
@@ -6589,7 +7156,7 @@ void HELPER(linx_v_sb_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint8_t value = (uint8_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
-    if (bytes == 0 || off + 1u > bytes) {
+    if (!linx_vec_local_ensure_store_bytes(env, tile, off, 1u)) {
         if (linx_debug_local_enabled_p()) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx local sb: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
@@ -6636,7 +7203,7 @@ void HELPER(linx_v_sh_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint16_t value = (uint16_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
-    if (bytes == 0 || off + 2u > bytes) {
+    if (!linx_vec_local_ensure_store_bytes(env, tile, off, 2u)) {
         if (linx_debug_local_enabled_p()) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx local sh: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
@@ -6687,7 +7254,7 @@ void HELPER(linx_v_sw_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
-    if (bytes == 0 || off + 4u > bytes) {
+    if (!linx_vec_local_ensure_store_bytes(env, tile, off, 4u)) {
         if (linx_debug_local_enabled_p()) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx local sw: byte range fail tile=%u bytes=%u off=0x%" PRIx64 " idx=0x%" PRIx64 " lane=%" PRIu64 " srcD=0x%x srcL=0x%x srcR=0x%x shamt=%u body_tpc=0x%" PRIx64 " lc1=%" PRIu64 "\n",
