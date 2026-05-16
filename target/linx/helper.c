@@ -3556,6 +3556,39 @@ static bool linx_tile_resolve_output_hint(uint32_t encoded, unsigned *tile_out)
     }
 }
 
+static bool linx_tile_resolve_output_desc(const LinxTileIOTDesc *desc,
+                                          unsigned *tile_out)
+{
+    const bool src0_present = (desc->flags & LINX_IOT_S0V) == 0;
+    const bool src1_present = (desc->flags & LINX_IOT_S1V) == 0;
+
+    if (!src1_present &&
+        linx_tile_resolve_output_hint(desc->src1 & 0x1f, tile_out)) {
+        return true;
+    }
+    if (!src0_present &&
+        linx_tile_resolve_output_hint(desc->src0 & 0x1f, tile_out)) {
+        return true;
+    }
+
+    switch (desc->dst & 0x7u) {
+    case 1u: /* ->t */
+        *tile_out = 0u;
+        return true;
+    case 2u: /* ->u */
+        *tile_out = 8u;
+        return true;
+    case 3u: /* ->m */
+        *tile_out = 16u;
+        return true;
+    case 4u: /* ->n / acc compatibility */
+        *tile_out = 24u;
+        return true;
+    default:
+        return false;
+    }
+}
+
 typedef enum LinxTileLayout {
     LINX_TILE_LAYOUT_ND = 0,
     LINX_TILE_LAYOUT_DN = 1,
@@ -4886,8 +4919,8 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
      * Canonical v0.4 VEC contract: RI registers are an ordered namespace bound
      * by header B.IOR descriptors.
      *
-     * Encoding still carries a RegDst field, but current streams keep it zero
-     * and rely on order rather than explicit slot IDs.
+     * Bring-up streams also use the trailing RegDst field as part of the RI
+     * binding list for pair forms such as `B.IOR [a6],[a7]`.
      */
     if (slot >= LINX_TILE_MAX_IOR) {
         return false;
@@ -4900,18 +4933,14 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
         const unsigned src0 = (desc >> 5) & 0x1fu;  /* RegSrc0 */
         const unsigned src1 = (desc >> 10) & 0x1fu; /* RegSrc1 */
         const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
+        const unsigned dst = desc & 0x1fu;          /* RegDst */
 
         /*
-         * Canonical v0.4 disassembly prints B.IOR sources as `[RegSrc1,
-         * RegSrc0]` (base, stride), with an optional third source (`RegSrc2`)
-         * printed in the second bracket list.
-         *
-         * For VEC bodies, `ri*` maps to this ordered stream of non-zero
-         * sources (RegSrc1 then RegSrc0 then RegSrc2) across the header's
-         * descriptor sequence.
+         * Bring-up launcher streams treat RI bindings as the authored B.IOR
+         * operand-list order across descriptors.
          */
-        const unsigned srcs[3] = { src1, src0, src2 };
-        for (unsigned s = 0; s < 3; s++) {
+        const unsigned srcs[4] = { src0, src1, src2, dst };
+        for (unsigned s = 0; s < 4; s++) {
             const unsigned reg = srcs[s];
             if (reg == 0) {
                 continue;
@@ -4940,9 +4969,10 @@ static void linx_vec_capture_ri_values(CPULinxState *env)
         const unsigned src0 = (desc >> 5) & 0x1fu;  /* RegSrc0 */
         const unsigned src1 = (desc >> 10) & 0x1fu; /* RegSrc1 */
         const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
-        const unsigned srcs[3] = { src1, src0, src2 };
+        const unsigned dst = desc & 0x1fu;          /* RegDst */
+        const unsigned srcs[4] = { src0, src1, src2, dst };
 
-        for (unsigned s = 0; s < 3; s++) {
+        for (unsigned s = 0; s < 4; s++) {
             const unsigned reg = srcs[s];
             if (reg == 0 || reg >= LINX_GPR_COUNT) {
                 continue;
@@ -5053,18 +5083,9 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
             return;
         }
 
-        const bool src0_present = (desc.flags & LINX_IOT_S0V) == 0;
-        const bool src1_present = (desc.flags & LINX_IOT_S1V) == 0;
-
-        bool have_dst_tile = false;
         unsigned dst_tile = 0;
-        if (!src1_present) {
-            have_dst_tile = linx_tile_resolve_output_hint(desc.src1 & 0x1f,
-                                                          &dst_tile);
-        } else if (!src0_present) {
-            have_dst_tile = linx_tile_resolve_output_hint(desc.src0 & 0x1f,
-                                                          &dst_tile);
-        }
+        const bool have_dst_tile =
+            linx_tile_resolve_output_desc(&desc, &dst_tile);
 
         if (have_dst_tile && dst_tile < 32) {
             const uint64_t bytes64 = (desc.size < 60u) ? (1ull << (desc.size + 4u)) : 0ull;
@@ -5116,22 +5137,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                 const unsigned size_code = d.has_size ? (d.size & 0x1f)
                                                       : (env->tile_iot_size & 0x1f);
 
-                const bool src0_present = (d.flags & LINX_IOT_S0V) == 0;
-                const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
                 unsigned dst_tile = 0;
-                if (!src1_present) {
-                    if (!linx_tile_resolve_output_hint(d.src1 & 0x1f,
-                                                       &dst_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else if (!src0_present) {
-                    if (!linx_tile_resolve_output_hint(d.src0 & 0x1f,
-                                                       &dst_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else {
+                if (!linx_tile_resolve_output_desc(&d, &dst_tile)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
@@ -5209,19 +5216,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                 }
 
                 unsigned dst_tile = 0;
-                if (!src1_present) {
-                    if (!linx_tile_resolve_output_hint(d.src1 & 0x1f,
-                                                       &dst_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else if (!src0_present) {
-                    if (!linx_tile_resolve_output_hint(d.src0 & 0x1f,
-                                                       &dst_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else {
+                if (!linx_tile_resolve_output_desc(&d, &dst_tile)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
@@ -5380,6 +5375,94 @@ static inline unsigned linx_vec_reg_index(uint32_t code)
     return (unsigned)(code & 0x1fu);
 }
 
+static inline uint32_t linx_vec_reg_code(unsigned cls, unsigned idx)
+{
+    return ((uint32_t)(cls & 0x1fu) << 5) | (uint32_t)(idx & 0x1fu);
+}
+
+static inline uint32_t linx_vec_normalize_queue_source(uint32_t raw)
+{
+    const unsigned low = raw & 0x1fu;
+    const unsigned bank = (low >> 3) & 0x3u;
+    const unsigned idx = (low & 0x7u) + 1u;
+
+    return linx_vec_reg_code(LINX_VEC_REGCLASS_VT + bank, idx);
+}
+
+/*
+ * Current bring-up toolchain emits typed V.* operand codes that fold the
+ * value width into the register field itself. The vector helpers operate on the
+ * architectural namespace instead, so strip the transient type lane here.
+ */
+static uint32_t linx_vec_normalize_source_code(uint32_t raw)
+{
+    if (raw < 32u || raw == linx_vec_reg_code(LINX_VEC_REGCLASS_P,
+                                              LINX_VEC_P_REG_INDEX)) {
+        return raw;
+    }
+
+    if (raw <= 0x48u && (raw & 0x3u) == 0u) {
+        return linx_vec_reg_code(LINX_VEC_REGCLASS_LC, (raw - 0x40u) >> 2);
+    }
+
+    if (raw >= 0x50u && raw <= 0x59u) {
+        const unsigned low = raw & 0x0fu;
+        if (low <= 3u) {
+            return linx_vec_reg_code(LINX_VEC_REGCLASS_TBASE, low);
+        }
+        if (low == 8u || low == 9u) {
+            return linx_vec_reg_code(LINX_VEC_REGCLASS_TBASE, low - 4u);
+        }
+    }
+
+    if ((raw >= 0x80u && raw < 0xa0u) ||
+        (raw >= 0x200u && raw < 0x220u) ||
+        (raw >= 0x280u && raw < 0x2a0u)) {
+        return linx_vec_normalize_queue_source(raw);
+    }
+
+    if ((raw >= 0xa0u && raw < 0xc0u) ||
+        (raw >= 0x220u && raw < 0x240u) ||
+        (raw >= 0x2a0u && raw < 0x2c0u)) {
+        return linx_vec_reg_code(LINX_VEC_REGCLASS_RI, raw & 0x1fu);
+    }
+
+    if ((raw >= 0xc0u && raw <= 0xc8u) ||
+        (raw >= 0x140u && raw <= 0x148u) ||
+        (raw >= 0x2c0u && raw <= 0x2c8u)) {
+        return linx_vec_reg_code(LINX_VEC_REGCLASS_LC,
+                                 (raw & 0x1fu) >> 2);
+    }
+
+    if (raw == 0xdfu || raw == 0x25fu || raw == 0x2dfu) {
+        return 0u;
+    }
+
+    return raw;
+}
+
+static uint32_t linx_vec_normalize_dst_code(uint32_t raw)
+{
+    if (raw == linx_vec_reg_code(LINX_VEC_REGCLASS_P, LINX_VEC_P_REG_INDEX)) {
+        return raw;
+    }
+    if (raw <= 3u) {
+        return linx_vec_reg_code(LINX_VEC_REGCLASS_VT + raw, 0u);
+    }
+    if (raw >= 0x80u && raw <= 0x83u) {
+        return linx_vec_reg_code(LINX_VEC_REGCLASS_VT + (raw - 0x80u), 0u);
+    }
+    return raw;
+}
+
+static uint32_t linx_vec_normalize_reduce_dst(uint32_t raw)
+{
+    if ((raw & 0x3cu) == 0x3cu) {
+        return 28u + (raw & 0x3u);
+    }
+    return raw;
+}
+
 static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_idx,
                                        unsigned *tile_out)
 {
@@ -5422,15 +5505,8 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
             inputs[input_count++] = d.src1 & 0x1f;
         }
 
-        bool have_dst_tile = false;
         unsigned dst_tile = 0;
-        if (!src1_present) {
-            have_dst_tile = linx_tile_resolve_output_hint(d.src1 & 0x1f,
-                                                          &dst_tile);
-        } else if (!src0_present) {
-            have_dst_tile = linx_tile_resolve_output_hint(d.src0 & 0x1f,
-                                                          &dst_tile);
-        }
+        const bool have_dst_tile = linx_tile_resolve_output_desc(&d, &dst_tile);
         if (have_dst_tile && output_count < 2) {
             outputs[output_count++] = dst_tile & 0x1f;
         }
@@ -5462,6 +5538,8 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
 
 static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
 {
+    code = linx_vec_normalize_source_code(code);
+
     if (env->pc == 0x1b536) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: vec read pc=0x%" PRIx64
@@ -5731,6 +5809,8 @@ void HELPER(linx_debug_body_pred_branch)(CPULinxState *env, uint64_t current_pc,
 
 static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
 {
+    dst = linx_vec_normalize_dst_code(dst);
+
     const unsigned cls = linx_vec_reg_class(dst);
     const unsigned didx = linx_vec_reg_index(dst);
 
@@ -5762,6 +5842,8 @@ static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
 
 static uint64_t linx_vec_read_reduce_dst(CPULinxState *env, uint32_t dst)
 {
+    dst = linx_vec_normalize_reduce_dst(dst);
+
     if (dst == 0) {
         return 0;
     }
@@ -5780,6 +5862,8 @@ static uint64_t linx_vec_read_reduce_dst(CPULinxState *env, uint32_t dst)
 
 static void linx_vec_write_reduce_dst(CPULinxState *env, uint32_t dst, uint64_t value)
 {
+    dst = linx_vec_normalize_reduce_dst(dst);
+
     if (dst == 0) {
         return;
     }
@@ -5872,6 +5956,30 @@ static uint32_t linx_vec_normalize_width(uint32_t nminus1)
 static uint64_t linx_vec_cmp_bool(bool pred)
 {
     return pred ? 1u : 0u;
+}
+
+static inline uint32_t linx_vec_mem_index_shift(uint32_t src_code,
+                                                uint32_t shamt,
+                                                uint32_t zero_base_shift,
+                                                bool add_width_bias)
+{
+    src_code = linx_vec_normalize_source_code(src_code);
+    shamt &= 0x3fu;
+
+    /*
+     * Current bring-up streams encode raw scalar `.sd` address operands
+     * through the typed source lane, which reaches helpers as shamt=30.
+     * Treat that spelling as the zero-shift base form for the element width
+     * carried by the opcode so `[riX.sd, lc0<<2, riY.sd]` lands on the next
+     * word rather than shifting by 30.
+     */
+    if (shamt == 30u &&
+        (src_code == 0u ||
+         linx_vec_reg_class(src_code) == LINX_VEC_REGCLASS_RI)) {
+        return zero_base_shift;
+    }
+
+    return add_width_bias ? (zero_base_shift + shamt) : shamt;
 }
 
 static uint64_t linx_fp_unop_sqrt(CPULinxState *env, uint64_t a, uint32_t srctype)
@@ -6669,14 +6777,16 @@ void HELPER(linx_v_lb_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         HELPER(linx_v_lb_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + lane + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, false);
+    const uint64_t addr = base + lane + (idx << eff_shamt);
 
     linx_lr_clear(env);
     const int8_t signed_value =
@@ -6704,14 +6814,16 @@ void HELPER(linx_v_lh_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         HELPER(linx_v_lh_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 1) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, false);
+    const uint64_t addr = base + (lane << 1) + (idx << eff_shamt);
 
     linx_lr_clear(env);
     const int16_t signed_value =
@@ -6739,14 +6851,16 @@ void HELPER(linx_v_lbu_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         HELPER(linx_v_lbu_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + lane + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, false);
+    const uint64_t addr = base + lane + (idx << eff_shamt);
 
     linx_lr_clear(env);
     const uint32_t value =
@@ -6772,14 +6886,16 @@ void HELPER(linx_v_lhu_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         HELPER(linx_v_lhu_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 1) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, false);
+    const uint64_t addr = base + (lane << 1) + (idx << eff_shamt);
 
     linx_lr_clear(env);
     const uint32_t value =
@@ -6805,14 +6921,16 @@ void HELPER(linx_v_sb_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
         HELPER(linx_v_sb_local)(env, srcD, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + lane + (idx << (shamt & 0x1fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, true);
+    const uint64_t addr = base + lane + (idx << eff_shamt);
     const uint8_t value = (uint8_t)linx_vec_read_reg(env, srcD);
 
     if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
@@ -6837,14 +6955,16 @@ void HELPER(linx_v_sh_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
         HELPER(linx_v_sh_local)(env, srcD, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 1) + (idx << (1u + (shamt & 0x1fu)));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, true);
+    const uint64_t addr = base + (lane << 1) + (idx << eff_shamt);
     const uint16_t value = (uint16_t)linx_vec_read_reg(env, srcD);
 
     if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
@@ -6869,7 +6989,8 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
         HELPER(linx_v_sw_local)(env, srcD, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         /* Canonical v0.4: bridged/global accesses must use ri* base operands. */
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
@@ -6877,7 +6998,8 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 2) + (idx << (2u + (shamt & 0x1fu)));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 2u, true);
+    const uint64_t addr = base + (lane << 2) + (idx << eff_shamt);
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
 
     if (linx_debug_body_replay_enabled_p() && env->body_tpc != 0) {
@@ -6902,7 +7024,8 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
         HELPER(linx_v_lw_local)(env, dst, srcL, srcR, shamt, local);
         return;
     }
-    if (linx_vec_reg_class(srcL) != LINX_VEC_REGCLASS_RI) {
+    if (linx_vec_reg_class(linx_vec_normalize_source_code(srcL)) !=
+        LINX_VEC_REGCLASS_RI) {
         /* Canonical v0.4: bridged/global accesses must use ri* base operands. */
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
@@ -6911,7 +7034,8 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
     const uint64_t base = linx_vec_read_reg(env, srcL);
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t addr = base + (lane << 2) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 2u, false);
+    const uint64_t addr = base + (lane << 2) + (idx << eff_shamt);
 
     linx_lr_clear(env);
     const uint32_t value =
@@ -6928,30 +7052,14 @@ void HELPER(linx_v_lw_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
                       base, idx, lane, shamt, addr, value, env->lc[1]);
     }
 
-    const unsigned cls = linx_vec_reg_class(dst);
-    const unsigned didx = linx_vec_reg_index(dst);
-    switch (cls) {
-    case LINX_VEC_REGCLASS_VT:
-        linx_vec_write_vt(env, didx, (uint64_t)value);
-        return;
-    case LINX_VEC_REGCLASS_VU:
-        linx_vec_write_vu(env, didx, (uint64_t)value);
-        return;
-    case LINX_VEC_REGCLASS_VM:
-        linx_vec_write_vm(env, didx, (uint64_t)value);
-        return;
-    case LINX_VEC_REGCLASS_VN:
-        linx_vec_write_vn(env, didx, (uint64_t)value);
-        return;
-    default:
-        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-        return;
-    }
+    linx_vec_write_dst(env, dst, (uint64_t)value);
 }
 
 static bool linx_vec_resolve_local_tile(CPULinxState *env, uint32_t base_code,
                                         unsigned *tile_out)
 {
+    base_code = linx_vec_normalize_source_code(base_code);
+
     if (linx_vec_reg_class(base_code) != LINX_VEC_REGCLASS_TBASE) {
         if (linx_debug_local_enabled_p()) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -7030,7 +7138,8 @@ void HELPER(linx_v_lbu_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = lane + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, false);
+    const uint64_t off = lane + (idx << eff_shamt);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 1u > bytes) {
@@ -7065,7 +7174,8 @@ void HELPER(linx_v_lb_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = lane + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, false);
+    const uint64_t off = lane + (idx << eff_shamt);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 1u > bytes) {
@@ -7101,7 +7211,8 @@ void HELPER(linx_v_lhu_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = (lane << 1) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, false);
+    const uint64_t off = (lane << 1) + (idx << eff_shamt);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 2u > bytes || (off & 1u) != 0) {
@@ -7136,7 +7247,8 @@ void HELPER(linx_v_lh_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = (lane << 1) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, false);
+    const uint64_t off = (lane << 1) + (idx << eff_shamt);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 2u > bytes || (off & 1u) != 0) {
@@ -7177,7 +7289,8 @@ void HELPER(linx_v_sb_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = lane + (idx << (shamt & 0x1fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 0u, true);
+    const uint64_t off = lane + (idx << eff_shamt);
     const uint8_t value = (uint8_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
@@ -7224,7 +7337,8 @@ void HELPER(linx_v_sh_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = (lane << 1) + (idx << (1u + (shamt & 0x1fu)));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 1u, true);
+    const uint64_t off = (lane << 1) + (idx << eff_shamt);
     const uint16_t value = (uint16_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
@@ -7275,7 +7389,8 @@ void HELPER(linx_v_sw_local)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = (lane << 2) + (idx << (2u + (shamt & 0x1fu)));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 2u, true);
+    const uint64_t off = (lane << 2) + (idx << eff_shamt);
     const uint32_t value = (uint32_t)linx_vec_read_reg(env, srcD);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
@@ -7334,7 +7449,8 @@ void HELPER(linx_v_lw_local)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
     const uint64_t idx = linx_vec_read_reg(env, srcR);
     const uint64_t lane = env->lc[0];
-    const uint64_t off = (lane << 2) + (idx << (shamt & 0x3fu));
+    const uint32_t eff_shamt = linx_vec_mem_index_shift(srcR, shamt, 2u, false);
+    const uint64_t off = (lane << 2) + (idx << eff_shamt);
 
     const uint32_t bytes = env->tile_reg_bytes[tile];
     if (bytes == 0 || off + 4u > bytes) {
