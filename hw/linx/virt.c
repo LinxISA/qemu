@@ -1067,7 +1067,8 @@ static bool linx_patch_lo12_uimm12(uint8_t *ram, size_t ram_size,
     int64_t lo;
     const uint32_t addiMask = 0x707f;
     const uint32_t addiOpcode = 0x15;
-    const uint32_t subiOpcode = 0x2015;
+    const uint32_t addiwOpcode = 0x35;
+    const uint32_t subiBit = 0x1000;
 
     if (patch_addr + 4 > ram_size) {
         error_setg(errp, "LO12 relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
@@ -1092,8 +1093,10 @@ static bool linx_patch_lo12_uimm12(uint8_t *ram, size_t ram_size,
     delta = (int64_t)(target_addr + addend) - (int64_t)patch_addr;
     hi = (delta + 0x800) >> 12;
     lo = delta - (hi << 12);
-    if ((insn & addiMask) == addiOpcode && (delta & 0x800)) {
-        insn |= subiOpcode;
+    if (((insn & addiMask) == addiOpcode ||
+         (insn & addiMask) == addiwOpcode) &&
+        (delta & 0x800)) {
+        insn |= subiBit;
         lo = 0 - lo;
     }
 
@@ -1153,6 +1156,11 @@ static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
                                          int64_t addend, Error **errp)
 {
     uint32_t insn;
+    uint32_t lo12;
+    const uint32_t addiMask = 0x707f;
+    const uint32_t addiOpcode = 0x15;
+    const uint32_t addiwOpcode = 0x35;
+    const uint32_t subiBit = 0x1000;
 
     if (patch_addr + 4 > ram_size) {
         error_setg(errp, "PCREL LO12 relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
@@ -1172,8 +1180,22 @@ static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    stl_le_p(ram + patch_addr,
-             linx_set_lo12_i(insn, (uint32_t)(target_addr + addend) & 0xfff));
+    /*
+     * ADDTPC pairs with a rounded target page. When the final low 12-bit
+     * addend would be negative in the signed page-relative sense, plain ADDI
+     * cannot represent it because ADDI uses a zero-extended uimm12. In that
+     * case rewrite the consumer to SUBI and encode the positive magnitude,
+     * matching the canonical linker split.
+     */
+    lo12 = (uint32_t)(target_addr + addend) & 0xfff;
+    if (((insn & addiMask) == addiOpcode ||
+         (insn & addiMask) == addiwOpcode) &&
+        (lo12 & 0x800)) {
+        insn |= subiBit;
+        lo12 = (uint32_t)((0x1000u - lo12) & 0xfff);
+    }
+
+    stl_le_p(ram + patch_addr, linx_set_lo12_i(insn, lo12));
     return true;
 }
 

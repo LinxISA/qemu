@@ -6704,70 +6704,62 @@ void HELPER(linx_v_rev)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 
 void HELPER(linx_v_rdadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    linx_vec_write_reduce_dst(env, dst, acc + src);
+    /*
+     * The current bring-up replay model presents one active scalar lane to the
+     * V.RD* helpers per body iteration, so the helper input is already the
+     * complete reduction result for that replay step. Do not accumulate across
+     * iterations via the previous destination value.
+     */
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdand)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    linx_vec_write_reduce_dst(env, dst, acc & src);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdfadd)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    const uint64_t res = linx_fp_binop_add(env, acc, src, /*srctype=*/1);
-    linx_vec_write_reduce_dst(env, dst, res);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdfmax)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    const uint64_t res = linx_fp_cmp_lt(env, acc, src, /*srctype=*/1) ? src : acc;
-    linx_vec_write_reduce_dst(env, dst, res);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdfmin)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    const uint64_t res = linx_fp_cmp_lt(env, src, acc, /*srctype=*/1) ? src : acc;
-    linx_vec_write_reduce_dst(env, dst, res);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdmax)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const int64_t acc = (int64_t)linx_vec_read_reduce_dst(env, dst);
-    const int64_t src = (int64_t)linx_vec_read_reg(env, srcL);
-    const uint64_t res = (uint64_t)(acc > src ? acc : src);
-    linx_vec_write_reduce_dst(env, dst, res);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdmin)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const int64_t acc = (int64_t)linx_vec_read_reduce_dst(env, dst);
-    const int64_t src = (int64_t)linx_vec_read_reg(env, srcL);
-    const uint64_t res = (uint64_t)(acc < src ? acc : src);
-    linx_vec_write_reduce_dst(env, dst, res);
+    const uint64_t src = linx_vec_read_reg(env, srcL);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdor)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    linx_vec_write_reduce_dst(env, dst, acc | src);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_rdxor)(CPULinxState *env, uint32_t dst, uint32_t srcL)
 {
-    const uint64_t acc = linx_vec_read_reduce_dst(env, dst);
     const uint64_t src = linx_vec_read_reg(env, srcL);
-    linx_vec_write_reduce_dst(env, dst, acc ^ src);
+    linx_vec_write_reduce_dst(env, dst, src);
 }
 
 void HELPER(linx_v_lb_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
