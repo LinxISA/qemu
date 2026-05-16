@@ -130,6 +130,42 @@ static inline int64_t linx_decode_l_bstart_simm42(uint64_t insn)
     return (hi << 17) | (int64_t)low17;
 }
 
+static inline unsigned linx_tile_relreg_to_id(unsigned relreg)
+{
+    const unsigned hand = (relreg >> 4) & 0x3u;
+    const unsigned depth = relreg & 0xfu;
+
+    return (hand * 8u) + depth;
+}
+
+static void linx_emit_tile_iot_desc(DisasContext *ctx, uint32_t flags,
+                                    uint32_t dst, uint32_t grp,
+                                    uint32_t src0, uint32_t src1,
+                                    uint32_t reg, uint32_t size,
+                                    bool has_size)
+{
+    const uint64_t desc =
+        ((uint64_t)(src0 & 0x1f) << 0) |
+        ((uint64_t)(src1 & 0x1f) << 5) |
+        ((uint64_t)(dst & 0x7) << 10) |
+        ((uint64_t)(grp & 0x1) << 13) |
+        ((uint64_t)(flags & 0xf) << 14) |
+        ((uint64_t)(reg & 0x1f) << 18) |
+        ((uint64_t)(size & 0x1f) << 23) |
+        ((uint64_t)(has_size ? 1u : 0u) << 28);
+
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, dst & 0x7);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, grp & 0x1);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, src0 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, src1 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_reg, reg & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_size, has_size ? (size & 0x1f) : 0);
+
+    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
+}
+
 /*
  * Optional compatibility addend for frame templates.
  *
@@ -1538,12 +1574,45 @@ static bool trans_b_arg_dn2zn(DisasContext *ctx, arg_b_arg_dn2zn *a)
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
+    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
+
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
                                 LINX_BLOCKFMT_FAMILY_IOT);
+    }
+
+    /*
+     * LLVM still emits bring-up-only B.IOT aliases that pack destination hand
+     * and tile size directly into the raw instruction word instead of the
+     * canonical b_iot descriptor fields exposed by decodetree. Reconstruct the
+     * canonical descriptor here so helper.c sees the same shape regardless of
+     * which assembler form produced the instruction.
+     */
+    if ((raw & ~((uint32_t)(0xfu << 15) | (uint32_t)(0x7u << 7) |
+                 (uint32_t)(1u << 19))) == 0x00006013u) {
+        const uint32_t flags = (1u << 0) | (1u << 1);
+        const uint32_t dst = ((raw >> 7) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 19) & 0x1u;
+        const uint32_t size = (raw >> 15) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
+        return true;
+    }
+    if ((raw & ~((uint32_t)(0xfu << 15) | (uint32_t)(0x7u << 7) |
+                 (uint32_t)(1u << 19) | (uint32_t)(0x3fu << 20) |
+                 (uint32_t)(1u << 10))) == 0x00005013u) {
+        const uint32_t src_rel = ((raw >> 20) & 0x3fu) | (((raw >> 10) & 0x1u) << 6);
+        const uint32_t src0 = linx_tile_relreg_to_id(src_rel);
+        const uint32_t flags = ((src_rel & 0x40u) ? (1u << 2) : 0u) | (1u << 1);
+        const uint32_t dst = ((raw >> 7) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 19) & 0x1u;
+        const uint32_t size = (raw >> 15) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
+        return true;
     }
 
     uint32_t flags = 0;
@@ -1560,35 +1629,45 @@ static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
         flags |= 1u << 3;
     }
 
-    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
-    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
-    tcg_gen_movi_i32(cpu_tile_iot_dst, a->dst & 0x7);
-    tcg_gen_movi_i32(cpu_tile_iot_grp, a->grp & 0x1);
-    tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_iot_reg, a->reg & 0x1f);
-
-    const uint64_t desc =
-        ((uint64_t)(a->src0 & 0x1f) << 0) |
-        ((uint64_t)(a->src1 & 0x1f) << 5) |
-        ((uint64_t)(a->dst & 0x7) << 10) |
-        ((uint64_t)(a->grp & 0x1) << 13) |
-        ((uint64_t)(flags & 0xf) << 14) |
-        ((uint64_t)(a->reg & 0x1f) << 18) |
-        ((uint64_t)0 << 23) |
-        ((uint64_t)0 << 28); /* has_size=0 */
-    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
+    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
+                            a->reg, 0, false);
     return true;
 }
 
 static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
 {
+    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
+
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
                                 LINX_BLOCKFMT_FAMILY_IOT);
+    }
+
+    if ((raw & ~((uint32_t)(0xfu << 15) | (uint32_t)(0x7u << 7) |
+                 (uint32_t)(1u << 19))) == 0x00006013u) {
+        const uint32_t flags = (1u << 0) | (1u << 1);
+        const uint32_t dst = ((raw >> 7) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 19) & 0x1u;
+        const uint32_t size = (raw >> 15) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
+        return true;
+    }
+    if ((raw & ~((uint32_t)(0xfu << 15) | (uint32_t)(0x7u << 7) |
+                 (uint32_t)(1u << 19) | (uint32_t)(0x3fu << 20) |
+                 (uint32_t)(1u << 10))) == 0x00005013u) {
+        const uint32_t src_rel = ((raw >> 20) & 0x3fu) | (((raw >> 10) & 0x1u) << 6);
+        const uint32_t src0 = linx_tile_relreg_to_id(src_rel);
+        const uint32_t flags = ((src_rel & 0x40u) ? (1u << 2) : 0u) | (1u << 1);
+        const uint32_t dst = ((raw >> 7) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 19) & 0x1u;
+        const uint32_t size = (raw >> 15) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
+        return true;
     }
 
     uint32_t flags = 0;
@@ -1605,24 +1684,8 @@ static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
         flags |= 1u << 3;
     }
 
-    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
-    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
-    tcg_gen_movi_i32(cpu_tile_iot_dst, a->dst & 0x7);
-    tcg_gen_movi_i32(cpu_tile_iot_grp, a->grp & 0x1);
-    tcg_gen_movi_i32(cpu_tile_iot_src0, a->src0 & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_iot_src1, a->src1 & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_iot_size, a->size & 0x1f);
-
-    const uint64_t desc =
-        ((uint64_t)(a->src0 & 0x1f) << 0) |
-        ((uint64_t)(a->src1 & 0x1f) << 5) |
-        ((uint64_t)(a->dst & 0x7) << 10) |
-        ((uint64_t)(a->grp & 0x1) << 13) |
-        ((uint64_t)(flags & 0xf) << 14) |
-        ((uint64_t)0 << 18) |
-        ((uint64_t)(a->size & 0x1f) << 23) |
-        ((uint64_t)1 << 28); /* has_size=1 */
-    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
+    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
+                            0, a->size, true);
     return true;
 }
 
@@ -7245,8 +7308,29 @@ static bool trans_hl_misub(DisasContext *ctx, arg_hl_misub *a)
 
 static bool trans_hl_bfi(DisasContext *ctx, arg_hl_bfi *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    const unsigned m = a->immr & 0x3f;
+    const unsigned s = a->imms & 0x3f;
+    const unsigned n = (s >= m) ? (s - m + 1) : (s + (64u - m) + 1);
+    TCGv_i64 base = linx_get_reg(a->SrcL);
+    TCGv_i64 src = linx_get_reg(a->SrcR);
+    TCGv_i64 rotated = tcg_temp_new_i64();
+    TCGv_i64 merged = tcg_temp_new_i64();
+    TCGv_i64 out = tcg_temp_new_i64();
+
+    if (n == 64u) {
+        linx_set_dest(a->RegDst, src);
+        return true;
+    }
+
+    tcg_gen_rotri_i64(rotated, base, m);
+    tcg_gen_deposit_i64(merged, rotated, src, 0, n);
+    if (m != 0u) {
+        tcg_gen_rotli_i64(out, merged, m);
+    } else {
+        tcg_gen_mov_i64(out, merged);
+    }
+    linx_set_dest(a->RegDst, out);
+    return true;
 }
 
 static bool trans_hl_ccat(DisasContext *ctx, arg_hl_ccat *a)

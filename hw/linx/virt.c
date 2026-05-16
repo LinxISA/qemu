@@ -1000,9 +1000,8 @@ static bool linx_patch_setret20_pcrel(uint8_t *ram, size_t ram_size,
  * ADDTPC encodes a signed imm20 in bits [31:12] which is scaled by 4KiB
  * (imm20 << 12) and added to the current PC page base.
  *
- * Relocation value:
- *   (S + A) page - (P) page
- * where page(x) = x & ~0xFFF.
+ * Relocation value pairs with signed LO12 consumers, so the HI20 side uses
+ * the rounded 4 KiB page of (S + A) rather than the floor page.
  */
 static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
                                     hwaddr patch_addr, hwaddr target_addr,
@@ -1011,6 +1010,8 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
     uint32_t insn;
     int64_t delta;
     int64_t simm20;
+    int64_t target_page;
+    int64_t patch_page;
     uint32_t imm_bits;
 
     if (patch_addr + 4 > ram_size) {
@@ -1029,10 +1030,14 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /* Calculate page delta in bytes: page(S+A) - page(P) */
-    hwaddr target_page = (target_addr + addend) & ~(hwaddr)0xfff;
-    hwaddr patch_page = patch_addr & ~(hwaddr)0xfff;
-    delta = (int64_t)target_page - (int64_t)patch_page;
+    /*
+     * Match the toolchain's signed LO12 pairing: when bit 11 of the low part
+     * is set, HI20 must advance by one page so base + sext(lo12) still lands
+     * on the final target.
+     */
+    target_page = (((int64_t)target_addr + addend) + 0x800) & ~0xfffLL;
+    patch_page = (int64_t)patch_addr & ~0xfffLL;
+    delta = target_page - patch_page;
 
     simm20 = delta >> 12;
     if (simm20 < -(1LL << 19) || simm20 >= (1LL << 19)) {
