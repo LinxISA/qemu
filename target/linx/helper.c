@@ -5,7 +5,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "../../../../tools/model/include/linx/model/emulator/minst_record_c.h"
+#include "linx/model/emulator/minst_record_c.h"
 #include "qemu/bswap.h"
 #include "cpu.h"
 #include "trace.h"

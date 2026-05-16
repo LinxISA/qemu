@@ -75,6 +75,18 @@ have_user = have_linux_user or have_bsd_user
 sh = find_program('sh')
 python = import('python').find_installation()
 
+linx_model_include = run_command(
+  sh, '-c', 'printf "%s" "${LINX_MODEL_INCLUDE:-}"',
+  check: false,
+).stdout().strip()
+if linx_model_include == ''
+  linx_model_include_candidate = '../../tools/model/include'
+  if fs.exists(meson.project_source_root() + '/' + linx_model_include_candidate +
+               '/linx/model/emulator/minst_record_c.h')
+    linx_model_include = linx_model_include_candidate
+  endif
+endif
+
 cc = meson.get_compiler('c')
 all_languages = ['c']
 if host_os == 'windows' and add_languages('cpp', required: false, native: false)
@@ -3922,6 +3934,9 @@ foreach d, list : target_modules
         if target.endswith('-softmmu')
           config_target = config_target_mak[target]
           target_inc = [include_directories('target' / config_target['TARGET_BASE_ARCH'])]
+          if config_target['TARGET_BASE_ARCH'] == 'linx' and linx_model_include != ''
+            target_inc += include_directories(linx_model_include)
+          endif
           c_args = ['-DCOMPILING_PER_TARGET',
                     '-DCONFIG_TARGET="@0@-config-target.h"'.format(target),
                     '-DCONFIG_DEVICES="@0@-config-devices.h"'.format(target)]
@@ -4221,6 +4236,9 @@ foreach target : target_dirs
   link_args = emulator_link_args
 
   target_inc = [include_directories('target' / config_target['TARGET_BASE_ARCH'])]
+  if config_target['TARGET_BASE_ARCH'] == 'linx' and linx_model_include != ''
+    target_inc += include_directories(linx_model_include)
+  endif
   if host_os == 'linux'
     target_inc += include_directories('linux-headers', is_system: true)
   endif
