@@ -466,6 +466,17 @@ static bool linx_is_c_bstop_at_pc(CPULinxState *env, vaddr pc)
     return lduw_le_p(buf) == 0x0000;
 }
 
+static bool linx_is_bstop32_at_pc(CPULinxState *env, vaddr pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[4];
+
+    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
+        return false;
+    }
+    return ldl_le_p(buf) == 0x00000001u;
+}
+
 static bool linx_is_j_bstop_trailer_at_pc(CPULinxState *env, vaddr pc)
 {
     CPUState *cs = env_cpu(env);
@@ -5808,6 +5819,7 @@ static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
     TCGLabel *have_range = gen_new_label();
     TCGLabel *range_lo_ok = gen_new_label();
     TCGLabel *in_range = gen_new_label();
+    TCGLabel *equal_end = gen_new_label();
     TCGLabel *fault = gen_new_label();
     const uint32_t bfetch_cause = linx_eblock_bfetch_cause();
 
@@ -5822,6 +5834,16 @@ static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
     gen_set_label(range_lo_ok);
     tcg_gen_brcond_i64(TCG_COND_LTU, tcg_constant_i64(target), cpu_body_end,
                        in_range);
+    tcg_gen_brcond_i64(TCG_COND_EQ, tcg_constant_i64(target), cpu_body_end,
+                       equal_end);
+    tcg_gen_br(fault);
+
+    gen_set_label(equal_end);
+    if (ctx->env &&
+        (linx_is_c_bstop_at_pc(ctx->env, target) ||
+         linx_is_bstop32_at_pc(ctx->env, target))) {
+        tcg_gen_br(in_range);
+    }
     tcg_gen_br(fault);
 
     gen_set_label(in_range);
