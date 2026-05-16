@@ -389,6 +389,44 @@ static void linx_set_body_ranges(CPULinxState *env,
     env->body_range_count = count;
 }
 
+static void linx_set_call_continuations(CPULinxState *env,
+                                        uint64_t *targets,
+                                        uint32_t count)
+{
+    if (!env) {
+        g_free(targets);
+        return;
+    }
+    g_free(env->call_continuations);
+    env->call_continuations = targets;
+    env->call_continuation_count = count;
+}
+
+static bool linx_record_call_continuation(uint64_t **targets,
+                                          uint32_t *count,
+                                          uint64_t target,
+                                          Error **errp)
+{
+    uint32_t i;
+    uint64_t *grown;
+
+    for (i = 0; i < *count; i++) {
+        if ((*targets)[i] == target) {
+            return true;
+        }
+    }
+
+    grown = g_renew(uint64_t, *targets, *count + 1);
+    if (!grown) {
+        error_setg(errp, "failed to record call continuation target");
+        return false;
+    }
+    grown[*count] = target;
+    *targets = grown;
+    *count += 1;
+    return true;
+}
+
 static bool linx_body_end_name_to_start_name(const char *name,
                                              char *out,
                                              size_t out_size)
@@ -628,6 +666,19 @@ static bool linx_is_bstart(const uint8_t *ram, size_t ram_size, hwaddr addr)
     /* Frame macro instructions (FENTRY/FEXIT/FRET.*): opcode 0x41 in bits [6:0]. */
     if ((insn & 0x7f) == 0x41) {
         return true;
+    }
+
+    /*
+     * 64-bit L.BSTART.* headers encode a 16-bit trailer first, followed by a
+     * 32-bit BSTART main word. Recognize them explicitly so relocation
+     * fixups do not "repair" valid long-header targets into false positives.
+     */
+    if ((hw & 0x000f) == 0x000f && addr + 8 <= ram_size) {
+        const uint32_t main32 = ldl_le_p(ram + addr + 4);
+
+        if ((main32 & 0x7f) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
+            return true;
+        }
     }
 
     /* 48-bit HL.BSTART.* block markers (prefix + 32-bit main instruction). */
@@ -1091,6 +1142,123 @@ static bool linx_patch_lo12_store(uint8_t *ram, size_t ram_size,
     stl_le_p(ram + patch_addr, linx_set_lo12_s(insn, (uint32_t)lo));
     return true;
 }
+
+static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
+                                         hwaddr patch_addr, hwaddr target_addr,
+                                         int64_t addend, Error **errp)
+{
+    uint32_t insn;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "PCREL LO12 relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    switch (insn & 0x7f) {
+    case 0x15:
+    case 0x35:
+        break;
+    default:
+        error_setg(errp,
+                   "expected ADDI/ADDIW instruction for PCREL LO12 (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   insn, patch_addr);
+        return false;
+    }
+
+    stl_le_p(ram + patch_addr,
+             linx_set_lo12_i(insn, (uint32_t)(target_addr + addend) & 0xfff));
+    return true;
+}
+
+static bool linx_patch_pcrel_lo12_load(uint8_t *ram, size_t ram_size,
+                                       hwaddr patch_addr, hwaddr target_addr,
+                                       int64_t addend, Error **errp)
+{
+    uint32_t insn;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "PCREL LO12 load relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    stl_le_p(ram + patch_addr,
+             linx_set_lo12_i(insn, (uint32_t)(target_addr + addend) & 0xfff));
+    return true;
+}
+
+static bool linx_patch_pcrel_lo12_store(uint8_t *ram, size_t ram_size,
+                                        hwaddr patch_addr, hwaddr target_addr,
+                                        int64_t addend, Error **errp)
+{
+    uint32_t insn;
+
+    if (patch_addr + 4 > ram_size) {
+        error_setg(errp, "PCREL LO12 store relocation patch out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   patch_addr);
+        return false;
+    }
+
+    insn = ldl_le_p(ram + patch_addr);
+    stl_le_p(ram + patch_addr,
+             linx_set_lo12_s(insn, (uint32_t)(target_addr + addend) & 0xfff));
+    return true;
+}
+
+#if TARGET_LONG_BITS == 32
+static bool linx_resolve_pcrel_lo32_pair(const Elf32_Rela *rela, size_t nrela,
+                                         size_t lo_index, const hwaddr *sym_addr,
+                                         hwaddr base, hwaddr *target_out,
+                                         int64_t *addend_out)
+{
+    const hwaddr hi_patch_addr =
+        sym_addr[ELF32_R_SYM(rela[lo_index].r_info)];
+    size_t i;
+
+    for (i = 0; i < nrela; i++) {
+        if (ELF32_R_TYPE(rela[i].r_info) != R_LINX_PCREL_HI20) {
+            continue;
+        }
+        if (base + rela[i].r_offset != hi_patch_addr) {
+            continue;
+        }
+        *target_out = sym_addr[ELF32_R_SYM(rela[i].r_info)];
+        *addend_out = rela[i].r_addend;
+        return true;
+    }
+
+    return false;
+}
+#endif
+
+#if TARGET_LONG_BITS == 64
+static bool linx_resolve_pcrel_lo64_pair(const Elf64_Rela *rela, size_t nrela,
+                                         size_t lo_index, const hwaddr *sym_addr,
+                                         hwaddr base, hwaddr *target_out,
+                                         int64_t *addend_out)
+{
+    const hwaddr hi_patch_addr =
+        sym_addr[ELF64_R_SYM(rela[lo_index].r_info)];
+    size_t i;
+
+    for (i = 0; i < nrela; i++) {
+        if (ELF64_R_TYPE(rela[i].r_info) != R_LINX_PCREL_HI20) {
+            continue;
+        }
+        if (base + rela[i].r_offset != hi_patch_addr) {
+            continue;
+        }
+        *target_out = sym_addr[ELF64_R_SYM(rela[i].r_info)];
+        *addend_out = rela[i].r_addend;
+        return true;
+    }
+
+    return false;
+}
+#endif
 
 /* Patch a PC-relative load instruction (LD.PCR, LW.PCR, etc.)
  * These have opcode 0x39 in bits [6:0], with size in bits [14:12]
@@ -1647,6 +1815,8 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
     const Elf32_Sym *syms = NULL;
     size_t nsyms = 0;
     hwaddr *sym_addr = NULL;
+    uint64_t *call_continuations = NULL;
+    uint32_t call_continuation_count = 0;
     bool found_start = false;
 
     size_t i;
@@ -1969,10 +2139,24 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                                                (int64_t)rela[j].r_addend, errp)) {
                     goto fail;
                 }
+                if (!linx_record_call_continuation(&call_continuations,
+                                                   &call_continuation_count,
+                                                   (uint64_t)((int64_t)target +
+                                                              (int64_t)rela[j].r_addend),
+                                                   errp)) {
+                    goto fail;
+                }
                 continue;
             } else if (rtype == R_LINX_SETRET20_PCREL) {
                 if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
                                                (int64_t)rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                if (!linx_record_call_continuation(&call_continuations,
+                                                   &call_continuation_count,
+                                                   (uint64_t)((int64_t)target +
+                                                              (int64_t)rela[j].r_addend),
+                                                   errp)) {
                     goto fail;
                 }
                 continue;
@@ -2026,12 +2210,15 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
 
     linx_collect_body_ranges_elf32(buf, len, strtab_sh, syms, nsyms, sym_addr,
                                    env);
+    linx_set_call_continuations(env, call_continuations,
+                                call_continuation_count);
     *image_end = end;
     g_free(sym_addr);
     g_free(sec_addr);
     return true;
 
 fail:
+    g_free(call_continuations);
     g_free(sym_addr);
     g_free(sec_addr);
     return false;
@@ -2293,6 +2480,8 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
     const Elf64_Sym *syms = NULL;
     size_t nsyms = 0;
     hwaddr *sym_addr = NULL;
+    uint64_t *call_continuations = NULL;
+    uint32_t call_continuation_count = 0;
     bool found_start = false;
 
     size_t i;
@@ -2606,16 +2795,32 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_64_BNEXT) {
-                hwaddr section_start = load_base;
-                if (target_sym->st_shndx < eh->e_shnum) {
-                    section_start = sec_addr[target_sym->st_shndx];
-                }
-                target = linx_ensure_bstart(ram, ram_size, target, section_start);
-                if (!linx_is_bstart(ram, ram_size, target)) {
-                    error_setg(errp, "relocation target @ 0x%" HWADDR_PRIx
-                               " does not point to BSTART instruction",
-                               sym_addr[symidx]);
-                    goto fail;
+                const uint64_t patch_insn64 = ldq_le_p(ram + patch_addr);
+                const uint32_t patch_main32 = (uint32_t)(patch_insn64 >> 16);
+                const uint32_t patch_kind = patch_main32 & 0x7fff;
+
+                /*
+                 * LLVM currently emits some 64-bit FALL/DIRECT/COND headers to
+                 * mid-block continuation labels. QEMU's translator already
+                 * tolerates those entries, so do not rewrite them here.
+                 *
+                 * CALL targets still need marker validation because they enter
+                 * callable block/function entries rather than continuations.
+                 */
+                if (patch_kind == 0x4001) {
+                    hwaddr section_start = load_base;
+
+                    if (target_sym->st_shndx < eh->e_shnum) {
+                        section_start = sec_addr[target_sym->st_shndx];
+                    }
+                    target = linx_ensure_bstart(ram, ram_size, target,
+                                                section_start);
+                    if (!linx_is_bstart(ram, ram_size, target)) {
+                        error_setg(errp, "relocation target @ 0x%" HWADDR_PRIx
+                                   " does not point to BSTART instruction",
+                                   sym_addr[symidx]);
+                        goto fail;
+                    }
                 }
                 if (!linx_patch_bstart64_pcrel(ram, ram_size, patch_addr, target,
                                                rela[j].r_addend, errp)) {
@@ -2633,10 +2838,24 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                                                rela[j].r_addend, errp)) {
                     goto fail;
                 }
+                if (!linx_record_call_continuation(&call_continuations,
+                                                   &call_continuation_count,
+                                                   (uint64_t)((int64_t)target +
+                                                              rela[j].r_addend),
+                                                   errp)) {
+                    goto fail;
+                }
                 continue;
             } else if (rtype == R_LINX_SETRET20_PCREL) {
                 if (!linx_patch_setret20_pcrel(ram, ram_size, patch_addr, target,
                                                rela[j].r_addend, errp)) {
+                    goto fail;
+                }
+                if (!linx_record_call_continuation(&call_continuations,
+                                                   &call_continuation_count,
+                                                   (uint64_t)((int64_t)target +
+                                                              rela[j].r_addend),
+                                                   errp)) {
                     goto fail;
                 }
                 continue;
@@ -2659,20 +2878,35 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_PCREL_LO12_I) {
-                if (!linx_patch_lo12_uimm12(ram, ram_size, patch_addr, target,
-                                            rela[j].r_addend, errp)) {
+                hwaddr lo_target = target;
+                int64_t lo_addend = rela[j].r_addend;
+
+                linx_resolve_pcrel_lo64_pair(rela, nrela, j, sym_addr, base,
+                                             &lo_target, &lo_addend);
+                if (!linx_patch_pcrel_lo12_uimm12(ram, ram_size, patch_addr,
+                                                  lo_target, lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
             } else if (rtype == R_LINX_PCREL_LO12_L) {
-                if (!linx_patch_lo12_load(ram, ram_size, patch_addr, target,
-                                          rela[j].r_addend, errp)) {
+                hwaddr lo_target = target;
+                int64_t lo_addend = rela[j].r_addend;
+
+                linx_resolve_pcrel_lo64_pair(rela, nrela, j, sym_addr, base,
+                                             &lo_target, &lo_addend);
+                if (!linx_patch_pcrel_lo12_load(ram, ram_size, patch_addr,
+                                                lo_target, lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
             } else if (rtype == R_LINX_PCREL_LO12_S) {
-                if (!linx_patch_lo12_store(ram, ram_size, patch_addr, target,
-                                           rela[j].r_addend, errp)) {
+                hwaddr lo_target = target;
+                int64_t lo_addend = rela[j].r_addend;
+
+                linx_resolve_pcrel_lo64_pair(rela, nrela, j, sym_addr, base,
+                                             &lo_target, &lo_addend);
+                if (!linx_patch_pcrel_lo12_store(ram, ram_size, patch_addr,
+                                                 lo_target, lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
@@ -2714,12 +2948,15 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
 
     linx_collect_body_ranges_elf64(buf, len, strtab_sh, syms, nsyms, sym_addr,
                                    env);
+    linx_set_call_continuations(env, call_continuations,
+                                call_continuation_count);
     *image_end = end;
     g_free(sym_addr);
     g_free(sec_addr);
     return true;
 
 fail:
+    g_free(call_continuations);
     g_free(sym_addr);
     g_free(sec_addr);
     return false;

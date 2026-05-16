@@ -399,6 +399,23 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
         return false;
     }
 
+    if (len == 8) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+            return false;
+        }
+
+        /*
+         * 64-bit L.BSTART.*: 16-bit trailer, 16 bits of padding, then the
+         * 32-bit BSTART main word in bytes [4..7].
+         */
+        const uint32_t main32 = ldl_le_p(buf + 4);
+
+        if ((main32 & 0x7f) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
+            return true;
+        }
+        return false;
+    }
+
     return false;
 }
 
@@ -590,10 +607,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
     case LINX_BR_DIRECT:
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             /*
-             * Fast path: direct/call blocks with a fixed PC-relative target and no
-             * SETC.TGT override can be emitted as a direct TB branch.
+             * LLVM still emits some fixed-target direct branches to mid-block
+             * continuation PCs. Allow those to enter fetch/translation
+             * naturally instead of pre-validating them as BSTART markers.
              */
-            linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget, false);
         } else {
             /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT). */
             gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
@@ -639,8 +657,12 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         gen_set_label(taken);
         /* Condition set: jump to diverted/set target */
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
-            /* Fixed target: enable TB chaining for the taken edge. */
-            linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
+            /*
+             * Fixed-target conditional branches can legally land on mid-block
+             * continuation PCs in current LLVM output. Let fetch/translation
+             * consume those targets instead of enforcing a marker here.
+             */
+            linx_gen_goto_tb(ctx, 0, ctx->brtarget, false);
         } else {
             gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
             if (linx_commit_trace_enabled) {
@@ -751,17 +773,17 @@ static TCGv_i64 linx_srcR_addsub(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* .sw */
+    case 0: /* raw 64-bit register */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 2: /* .neg */
+    default: /* .neg */
         tcg_gen_neg_i64(tmp, r);
-        break;
-    default:
-        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -777,17 +799,17 @@ static TCGv_i64 linx_srcR_logic(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* .sw */
+    case 0: /* raw 64-bit register */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 2: /* .not */
+    default: /* .not */
         tcg_gen_not_i64(tmp, r);
-        break;
-    default:
-        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -2924,17 +2946,17 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
     TCGv_i64 addr = tcg_temp_new_i64();
 
     switch (idx_type & 0x3) {
-    case 0: /* .sw */
+    case 0: /* raw 64-bit register */
+        tcg_gen_mov_i64(t, i);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(t, i);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(t, i);
         break;
-    case 2: /* .neg */
+    default: /* .neg */
         tcg_gen_neg_i64(t, i);
-        break;
-    default: /* raw 64-bit register */
-        tcg_gen_mov_i64(t, i);
         break;
     }
     if (shamt) {
@@ -6473,6 +6495,13 @@ static bool trans_l_bstart_std_cond(DisasContext *ctx, arg_l_bstart_std_cond *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx debug: l.bstart.std.cond pc=0x%" VADDR_PRIx
+                      " insn=0x%016" PRIx64 " simm=0x%" PRIx64 " target=0x%" VADDR_PRIx "\n",
+                      current_pc, ctx->cur_insn_raw, (uint64_t)simm,
+                      linx_pcrel_target(current_pc, simm));
+    }
     return linx_begin_header_target(ctx, LINX_BR_COND,
                                     linx_pcrel_target(current_pc, simm));
 }
@@ -6481,6 +6510,13 @@ static bool trans_l_bstart_std_call(DisasContext *ctx, arg_l_bstart_std_call *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
+    if (linx_debug_local_enabled_p()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx debug: l.bstart.std.call pc=0x%" VADDR_PRIx
+                      " insn=0x%016" PRIx64 " simm=0x%" PRIx64 " target=0x%" VADDR_PRIx "\n",
+                      current_pc, ctx->cur_insn_raw, (uint64_t)simm,
+                      linx_pcrel_target(current_pc, simm));
+    }
     return linx_begin_header_target(ctx, LINX_BR_CALL,
                                     linx_pcrel_target(current_pc, simm));
 }
@@ -7395,6 +7431,12 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
      * libc startup paths). When we enter such a target, stale block metadata
      * from the source block must not be re-applied at the next header boundary.
      */
+    if (linx_is_call_continuation(env, pc)) {
+        ctx->brtype = LINX_BR_FALL;
+        ctx->brtarget = 0;
+        return;
+    }
+
     if ((ctx->brtype == LINX_BR_COND ||
          ctx->brtype == LINX_BR_DIRECT ||
          ctx->brtype == LINX_BR_CALL) &&
