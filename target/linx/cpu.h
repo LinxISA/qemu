@@ -461,6 +461,8 @@ typedef struct CPUArchState {
     /* Loader-provided B.TEXT body extent metadata. Not reset-cleared. */
     uint32_t body_range_count;
     LinxBodyRange *body_ranges;
+    uint32_t call_continuation_count;
+    uint64_t *call_continuations;
 
     /* JSONL commit tracing (bring-up difftest). Not reset-cleared. */
     struct {
@@ -757,6 +759,22 @@ static inline uint64_t linx_lookup_body_end(const CPULinxState *env,
         }
     }
     return 0;
+}
+
+static inline bool linx_is_call_continuation(const CPULinxState *env,
+                                             uint64_t pc)
+{
+    uint32_t i;
+
+    if (!env->call_continuations) {
+        return false;
+    }
+    for (i = 0; i < env->call_continuation_count; i++) {
+        if (env->call_continuations[i] == pc) {
+            return true;
+        }
+    }
+    return false;
 }
 
 #endif

@@ -1612,14 +1612,17 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
     uint32_t idx = linx_ssr_low12(ssrid);
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? ((ssrid >> 12) & 0xFu) : 0u;
+    uint64_t value;
 
     switch (idx) {
     case LINX_SSR_CYCLE:
         /* Bring-up: model CYCLE as the dynamic instruction counter. */
-        return env->insn_count;
+        value = env->insn_count;
+        break;
     case LINX_SSR_TIME:
         /* Virtual time in nanoseconds. */
-        return (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        value = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        break;
     default:
         if (is_manager) {
             /* v0.2: legacy trap-save SSRs are illegal. */
@@ -1630,21 +1633,34 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
                 return 0;
             }
             if (idx == LINX_SSR_TIMER_TIME) {
-                return (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                value = (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+                break;
             }
             if (idx == LINX_SSR_DBGID) {
                 const uint64_t cps_minus1 = 0; /* CPs=1 */
                 const uint64_t bps_minus1 = 3; /* BPs=4 */
                 const uint64_t wps_minus1 = 3; /* WPs=4 */
-                return (cps_minus1 << 0) | (bps_minus1 << 4) | (wps_minus1 << 8);
+                value = (cps_minus1 << 0) | (bps_minus1 << 4) | (wps_minus1 << 8);
+                break;
             }
             if (bank < LINX_ACR_COUNT) {
-                return env->ssr_acr[bank][idx];
+                value = env->ssr_acr[bank][idx];
+                break;
             }
-            return 0;
+            value = 0;
+            break;
         }
-        return env->ssr[idx];
+        value = env->ssr[idx];
+        break;
     }
+
+    if (linx_debug_local_enabled_p() &&
+        (idx == LINX_SSR_TIME || idx == LINX_SSR_CYCLE || idx == LINX_SSR_TIMER_TIME)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx ssr read pc=0x%" PRIx64 " ssrid=0x%x bank=%u val=0x%" PRIx64 "\n",
+                      env->pc, ssrid, bank, value);
+    }
+    return value;
 }
 
 uint64_t HELPER(linx_scalar_read_reg)(CPULinxState *env, uint32_t code)
@@ -3429,10 +3445,19 @@ void HELPER(raise_exception)(CPULinxState *env, uint32_t exception)
     if (exception == LINX_EXCP_ILLEGAL_INST && env->pc == 0x1b536) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: helper illegal pc=0x%" PRIx64
-                      " next=0x%" PRIx64 " ri_count=%u"
+                      " next=0x%" PRIx64 " ri_count=%u ior_count=%u"
+                      " blocktype=%u in_body=%u body_tpc=0x%" PRIx64
+                      " return_pc=0x%" PRIx64
                       " lc=[%" PRIu64 ",%" PRIu64 ",%" PRIu64 "]\n",
                       env->pc, env->insn_pc_next, env->vec_ri_count,
+                      env->tile_ior_count, env->blocktype, env->in_body,
+                      env->body_tpc, env->return_pc,
                       env->lc[0], env->lc[1], env->lc[2]);
+        for (unsigned i = 0; i < env->tile_ior_count && i < LINX_TILE_MAX_IOR; i++) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: helper illegal ior[%u]=0x%016" PRIx64 "\n",
+                          i, env->tile_ior_desc[i]);
+        }
     }
     cs->exception_index = exception;
     cpu_loop_exit_restore(cs, GETPC());
@@ -7485,12 +7510,35 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
         return false;
     }
 
+    if (len == 8) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+            return false;
+        }
+
+        /*
+         * 64-bit L.BSTART.*: 16-bit trailer, 16 bits of padding, then the
+         * 32-bit BSTART main word in bytes [4..7].
+         */
+        const uint32_t main32 = (uint32_t)buf[4] | ((uint32_t)buf[5] << 8) |
+                                ((uint32_t)buf[6] << 16) | ((uint32_t)buf[7] << 24);
+
+        if ((main32 & 0x7f) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
+            return true;
+        }
+
+        return false;
+    }
+
     return false;
 }
 
 void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 {
     const size_t slot = (size_t)((target >> 1) % LINX_BSTART_CACHE_SIZE);
+
+    if (linx_is_call_continuation(env, target)) {
+        return;
+    }
 
     /*
      * This helper is on the hot path for indirect control flow (RET/IND/ICALL
