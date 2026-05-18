@@ -81,3 +81,9 @@ void cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc)
     cpu->exception_index = EXCP_ATOMIC;
     cpu_loop_exit_restore(cpu, pc);
 }
+
+void cpu_loop_exit_atomic_blk(CPUState *cpu, uintptr_t pc)
+{
+    cpu->exception_index = EXCP_ATOMIC_BLK;
+    cpu_loop_exit_restore(cpu, pc);
+}

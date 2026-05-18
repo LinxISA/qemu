@@ -1,0 +1,124 @@
+602.gcc_s功能验证错误分析
+*************************
+作者:zwx1144326(周兵)
+
+问题描述
+========
+602.gcc_s跑完后和specint改子项的预期输出进行比较出现不一致
+通过标准比较工具比较后的结果::
+
+    31428:  	andl	$-2147483648, %edx
+        andb	$0, %dl
+        ^
+    31822:  	andl	$-65521, %ecx
+        andb	$15, %cl
+        ^
+    31881:  	andl	$-65409, %ecx
+        andb	$127, %cl
+        ^
+    79261:  	andl	$-2147483648, %ebx
+        andb	$0, %bl
+        ^
+    98359:  	andl	$-2147483648, %ebx
+        andb	$0, %bl
+        ^
+    98405:  	andl	$-2147483648, %eax
+        andb	$0, %al
+        ^
+    163082:  	andl	$-2147450880, %edx
+        andb	$0, %dl
+        ^
+    220503:  	andw	$-16369, %ax
+        andb	$15, %al
+        ^
+    258572:  	andl	$-1048560, %eax
+        andb	$16, %al
+        ^
+    258581:  	andl	$-268431360, %ecx
+        andb	$0, %cl
+        ^
+    specdiff run completed
+
+问题分析
+========
+20230223
+
+通过几个版本的对比,找出正确的那一版,找到好定位的那一版::
+
+    0.14llvm编译之后,功能验证错误,但是0.14的qemu把trap指令当作nop指令,所以无法知道是否跑的trap;
+    0.14GCC编译之后,是正确的;
+    0.13的llvm编译之后,跑到了trap;
+    0.13的GCC编译之后,顺利执行,未跑到trap;
+
+本来想通过比较0.14GCC和LLVM的执行路径,定位LLVM的问题,但qemu打印日志太大,
+只是打印函数名日志同样太大,所以先找0.13llvm跑错路径的原因,进一步缩小范围;
+
+通过反汇编看到0.13llvm编译之后,有11处trap,找到11个trap的函数,在内部加打印,确定跑到了那个函数
+11个trap所在的函数::
+
+    purge_dead_edges
+    reorg_structs
+    execute_build_cfg
+    find_taken_edge
+    gimple_block_ends_with_call_p
+    chrec_fold_plus_1
+    chrec_component_in_loop_num
+    tree_ssa_forward_propagate_single_use_vars
+    force_expr_to_var_cost
+    vect_do_peeling_for_loop_bound
+    real_to_target
+
+编译之后运行发现无法复现跑到trap问题,注释掉所有自己添加的打印之后,依然无法复现;这个思路不能用;
+
+讨论提供了一个方法:构造小测例直接复现问题
+602.gcc_s这个测例就是一个编译器,构造可能被编译成"andl	$-2147483648, %edx"指令的代码,复现问题
+
+王涛通过从错误推测用例场景,缩减用例到一行C语句::
+
+    int t(int a, int c){
+        return a & 0x80000000;
+    }
+
+预期是:"ndl $-2147483648"指令,但blockisa编出来的用了"andb"
+再通过-fdump-rtl-all确认出错pass为split2,定位到大致源码位置,通过增加嵌入式汇编,控制qemu的日志信息,比较v0.14gcc(正确的)和v0.14llvm(错误的)的
+执行trace不同的地方找到具体出错的位置;
+错误的源码位置::
+
+    static unsigned int
+    rest_of_handle_split_after_reload (void)
+    {
+      /* If optimizing, then go ahead and split insns now.  */
+    #ifndef STACK_REGS
+      if (optimize > 0)
+    #endif
+    //zwx1144326
+    __asm__ __volatile__( 
+    ".align 4 \n\t" \
+    ".4byte 0x0000000B \n\t" \
+    ".4byte 0x00000240 \n\t" \
+    ".4byte 0x00000000 \n\t" \
+    ".4byte 0x00000000");
+    
+        split_all_insns (); // 出错的函数
+    
+    __asm__ __volatile__( \
+    ".align 4 \n\t" \
+    ".4byte 0x0000000B \n\t" \
+    ".4byte 0x00000280 \n\t" \
+    ".4byte 0x00000000 \n\t" \
+    ".4byte 0x00000000");
+    
+      return 0;
+    }
+
+接下来是王涛的分析::
+
+    通过简化后用例的func trace对比gcc与llvm差异,发现llvm编出来的sgcc对于某条set rtx错误进入了gen_split_XX,
+    深入看sgcc中的header块知道某个条件判断错误,走入了非预期分支;
+    深入看body中微指令及与源码对比,分析出立即数不对;
+    依据sgcc中错误微指令推测LLVM的用例场景,简化用例到一条return a < -256的语句;
+    通过print-after-all发现是REWRITE转换sltui的立即数产生了截断,入REWRITE源码得知错误在于使用了unsigned int接收sltui的立即数操作数,即问题根因及解决方案;
+
+结论
+=====
+编译器使用了unsigned int接收sltui的立即数操作数,导致出错

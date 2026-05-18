@@ -53,8 +53,10 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "hw/intc/intc.h"
+#include "hw/core/cpu.h"
 #include "migration/snapshot.h"
 #include "migration/misc.h"
+#include "sysemu/tcg-bp.h"
 
 #ifdef CONFIG_SPICE
 #include <spice/enums.h>
@@ -2220,4 +2222,70 @@ void hmp_info_memory_size_summary(Monitor *mon, const QDict *qdict)
         qapi_free_MemoryInfo(info);
     }
     hmp_handle_error(mon, err);
+}
+
+
+void hmp_tcg_bp(Monitor *mon, const QDict *qdict)
+{
+    gint i, cpu_id, bp_id;
+    char *s;
+    CPUState *cpu;
+    const char *action = qdict_get_try_str(qdict, "action");
+    const char *cpu_str = qdict_get_try_str(qdict, "cpu");
+    const char *spec = qdict_get_try_str(qdict, "spec");
+
+    if (!action)
+        action = "list";
+
+    if (!cpu_str)
+        cpu_str = "*";
+
+
+    if (!strncmp(cpu_str, "*", 2)) {
+        cpu_id = -1;
+    } else {
+        if (qemu_strtoi(cpu_str, NULL, 10, &cpu_id)) {
+            monitor_printf(mon, "cpu id format error: %s\n", cpu_str);
+            return;
+        }
+    }
+
+    if (runstate_is_running()) {
+        monitor_printf(mon, "stop vm to access tcg bp list\n");
+        vm_stop(RUN_STATE_PAUSED);
+    }
+
+    CPU_FOREACH(cpu) {
+        if (cpu_id == cpu->cpu_index || cpu_id == -1) {
+            if (!strncmp(action, "list", 5)) {
+                monitor_printf(mon, "cpu %d:\n", cpu->cpu_index);
+                for (i = 0; i<cpu->bps_sz; i++) {
+                    s = tcg_bp_info(cpu, i);
+                    monitor_printf(mon, "%s", s);
+                    g_free(s);
+                }
+            } else if (!strncmp(action, "add", 4)) {
+                if (!tcg_bp_add(cpu, spec))
+                    monitor_printf(mon, "add bp %s fail\n", spec);
+            }
+            else {
+                 if (!spec) {
+                   monitor_printf(mon, "no bp id specfied\n");
+                   return;
+               }
+                if (qemu_strtoi(spec, NULL, 10, &bp_id) || bp_id >= cpu->bps_sz) {
+                    monitor_printf(mon, "bp id format error: %s\n", spec);
+                    return;
+                }
+
+                if (!strncmp(action, "remove", 7)) {
+                    tcg_bp_remove(cpu, bp_id);
+                } else if (!strncmp(action, "disable", 8)) {
+                    tcg_bp_disable(cpu, bp_id);
+                } else if (!strncmp(action, "enable", 7)) {
+                    tcg_bp_enable(cpu, bp_id);
+                }
+            }
+        }
+    }
 }

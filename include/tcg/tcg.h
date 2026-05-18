@@ -1262,4 +1262,9 @@ static inline const TCGOpcode *tcg_swap_vecop_list(const TCGOpcode *n)
 
 bool tcg_can_emit_vecop_list(const TCGOpcode *, TCGType, unsigned);
 
+extern void tcg_bp_exec_tb(CPUState *cpu, TranslationBlock *tb);
+
+extern bool enable_delay_block_intr;
+extern bool enable_force_tb_chained;
+
 #endif /* TCG_H */

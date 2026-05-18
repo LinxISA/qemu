@@ -715,6 +715,7 @@ SRST
 ``mouse_move`` *dx* *dy* [*dz*]
   Move the active mouse to the specified coordinates *dx* *dy*
   with optional scroll axis *dz*.
+
 ERST
 
     {
@@ -1746,3 +1747,25 @@ ERST
                       "\n\t\t\t -b to specify dirty bitmap as method of calculation)",
         .cmd        = hmp_calc_dirty_rate,
     },
+    {
+        .name       = "tcgbp|tb",
+        .args_type  = "action:s?,cpu:s?,spec:s?",
+        .params     = "[ list | add | remove | disable | enable ] [cpu] [spec]",
+        .help       = "tcg breakpoint command: list|add|remove|disable|enable cpu [spec]",
+        .cmd        = hmp_tcg_bp,
+    },
+
+SRST
+``tcgbp`` or ``tb``
+  tcg break point command. list|add|remove|disable|enable cpu [spec].
+  The cpu can be * or a valid vcpu id.
+
+    The *spec* is in [attr]addr[+num] format for add command. [attr] is
+    combination of R (read), W (write), O (oneshot), N (not stop on hit).
+    addr the breakpoint address. And [+num] is access size of data breakpoint
+    or counter of count-pc breakpoint.
+
+    The *spec* can be anything for list command
+
+    The *spec* is a bp id for remove/disable/enable command.
+ERST

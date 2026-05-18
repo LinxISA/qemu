@@ -1,0 +1,159 @@
+Block ISA块内跳转逻辑整理
+
+-v0.1 2022.8.4 WangZhou init
+-v0.2 2022.8.5 WangZhou 根据甜根review意见做修改
+-v0.3 2022.8.8 WangZhou 根据若愚的信息，增加bls_ptr寄存器
+-v0.4 2022.8.8 WangZhou 增加块内跳转指令的具体定义
+
+简介：Block ISA v0.13增加了块内跳转，本文整理相关逻辑，用于内核/qemu/编译器/OS的
+      同事对齐块内跳转基本逻辑。大家对本文中描述的基本逻辑review没有意见后，我们
+      以此为基础更新LARM，然后依据LARM做开发验证。
+
+需求分析
+---------
+ 
+ 这个需求最初的来源是现有的指令定义无法实现CAS, 原子块加入块内跳转可以实现CAS,
+ v0.12里我们增加了LR/SC微指令，基于LR/SC实现CAS需要两个块，用原子块和块内跳转可以
+ 在一个块内实现CAS，可以减少不必要的块间跳转。进一步分析发现，在没有块内跳转的情
+ 况下，所有跳转都要通过layer1的块间跳转完成，这样会产生很多细碎的块，降低硬件性能。
+ 所以，可以用这个特性支持CAS，但是，这个特性更主要目的是提升硬件性能, 是一个基础
+ 的特性。
+
+ 编译器可以使用这个特性把联系紧密的代码放到一个块里。
+
+特性描述
+---------
+ 
+ 增加块内跳转相关的微指令，包括条件跳转(bcond/bcondi)和直接跳转(j/jr)两类微指令。
+
+ 块内跳转指令定义(已经在LARM):
+  
+  1. j <label>
+
+     跳转到<label>处，具体的计算方法是：cur_tpc + sext(imm8[7:0]:0, XLEN)，所以
+     前后最大的跳转距离是[-256, 254]。
+
+  2. jr <T#M>
+
+     跳转到T#M寄存器指定的地址。具体的计算方法是：cur_tpc + <T#M> * 2，寄存器内容
+     符号位有效。
+
+  3. bcond <T#M>, <T#N>
+
+     条件跳转到指定地址。当<T#M>非0时，跳转到cur_tpc + <T#N> * 2
+
+  4. bcondi <T#M>, <label>
+
+     条件跳转到指定地址。当<T#M>非0时，跳转到cur_tpc + sext(imm5[4:0]:0, XLEN)
+
+ 如上跳转指令，跳转的目的地址只能是块内部微指令tpc，当跳转的目的地址在block外部
+ 时，本条跳转指令触发非法指令异常，当跳转的目的地址在block内部，但是不是一条微
+ 指令的地址时，执行目的地址指令的时候触发非法指令异常。原子块内可以做块内跳转。
+ 块内跳转可能导致在一个块内死循环，我们认为这是软件编写问题。
+
+ 微指令按照程序运行顺序引用T寄存器，v0.12 Block ISA的定义中，块内微指令顺序执行，
+ T寄存器程序运行顺序是顺序增加的，块内跳转加入后，依然按照程序运行顺序引用T寄存
+ 器，编程接口会变的非常不友好。为此，我们和块内跳转一起引入块本地内存特性，引入
+ 这个特性的目的是简化编程接口，按照程序运行顺序引用T寄存器的逻辑依然成立。
+
+ 每个CPU core增加块本地内存相关的系统寄存器：块本地内存基地址寄存器(bls_base), 
+ 块本地内存大小寄存器(bls_size), 块引擎个数寄存器(nblk)。bls_base定义本CPU core
+ 上块本地内存的基地址，bls_size定义每个块引擎的块本地内存的大小，nblk是一个只读寄
+ 存器，表示CPU core块引擎的个数。
+
+ 新增bls_ptr bstate寄存器，当块内发生中断或异常时，硬件把正在使用的块本地内存信息
+ 保存到bls_ptr寄存器，硬件根据bls_ptr中的信息在恢复被中断块的时候恢复块本地内存信息。
+ bls_ptr中的信息对软件无意义。
+
+ 配置给bls_base的内存大小，最小为bls_size * nblk。配置给bls_base的内存小于最小值
+ 时，由于ldl/sdl可能会访问非法内存，系统行为未定义。
+
+ 新增块本地内存访问微指令(ldl/sdl等)，只能在块内使用ldl/sdl访问块本地内存，除此之外
+ 没有其他改变块本地内存的方式。ldl/sdl使用相对地址访问块本地内存，即ldl/sdl可访问
+ 的块本地内存的范围是[0, bls_size)，ldl/sdl访问超出范围时触发Load page fault/store
+ page fault。页表寄存器(satp)决定ldl/sdl的访存行为是否需要做地址翻译。
+
+ 块本地内存访问指令定义已经在LARM，按照定义lbl/lhl/lwl/ldl可以访问的最大块内存大小
+ 为：256B/512B/1024B/2048B。
+ 
+验证实施
+---------
+
+ 块内跳转以及块本地内存需要修改有：
+
+ 1. qemu需要修改T寄存器访问的基本逻辑，增加local内存的支持
+ 2. 编译器增加相关指令的支持，以及优化代码生成的逻辑
+ 3. Kernel优化手写汇编，还需要考虑整个块本地内存管理方案(参考甜根文档)
+ 4. OS优化手写汇编
+
+附录
+-----
+
+1. 目前使用lr/sc(无块内跳转)的CAS实现：
+
+    r3                   r0        r1     r2
+   ret = atomic_cmpxchg(cmp_data, *addr, data);
+
+   如上函数的语义是：原子的实现这个操作，如果cmp_data和addr上的数据相等，
+   就把data的值写入addr，反之不写入，ret保存addr上的旧址。
+   
+
+   .ld_reserve:
+   bstart .ld_reserve_start
+   battr sys
+   bnext.cond fail_path
+       get r0   // compare_data
+       get r1   // addr
+       lr.d.aq [t#1,0]
+       setbpc.ne t#1, t#3
+       set r3, t#2
+   bstop .ld_reserve_stop
+   
+   .sd_condition:
+   bstart .st_cond_start
+   battr sys
+   bnext.cond .ld_reserve
+       get r2  // data
+       get r1  // addr
+       sc.d.rl [t#1], t#2  // if success, treg of sc is 0
+       setbpc.neqi t#1, 0  // if sc fail, retry all
+   bstop .st_cond_stop
+
+2. 尝试用原子块和块内跳转实现CAS：
+
+   bstart cmpxchg_one
+   battr atomic
+   bnext.cond fail_path
+       get r0   // compare_data
+       get r1   // addr
+       get r2   // data
+       ld [t#2, 0] 
+       set r3, t#1
+       cmp.eq t#2, t#5
+       bcondi t#1, 1
+       j 2      // next pc of last mini code means to jump to commit stage?
+   1f:
+       sd [t#6], t#5 // 按照程序循序索引T寄存器
+   2f:
+   bstop cmpxchg_one
+
+   使用块本地内存的方式：
+   bstart cmpxchg_one
+   battr atomic
+   bnext.cond fail_path
+       get r0   // compare_data
+       get r1   // addr
+       get r2   // data
+       sdl t#1, [0] // 把data存入块本地内存
+       sdl t#2, [1] // 把addr存入块本地内存
+       ld [t#4, 0] 
+       set r3, t#1
+       cmp.eq t#2, t#7
+       bcondi t#1, 1
+       j 2      // next pc of last mini code means to jump to commit stage?
+   1f:
+       ldl [0]
+       ldl [1]
+       sd [t#1], t#2 // 使用块本地内存传递数据
+   2f:
+   bstop cmpxchg_one

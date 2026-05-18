@@ -42,6 +42,7 @@
 #include "exec/exec-all.h"
 #include "exec/gdbstub.h"
 #include "tcg/tcg.h"
+#include "sysemu/tcg-bp.h"
 #include "qemu/timer.h"
 #include "qemu/envlist.h"
 #include "qemu/guest-random.h"
@@ -116,6 +117,23 @@ static int last_log_mask;
 unsigned long reserved_va;
 
 static void usage(int exitcode);
+
+/* linx_debug global options */
+uint64_t cpus_stop_on_pc;
+uint64_t cpus_stop_on_count;
+uint64_t cpus_start_count_pc;
+
+bool cs_call = false;
+uint64_t cs_call_skipspace_cur = 0;
+uint64_t cs_call_skipspace = 1;
+bool cs_call_cpu = false;
+bool cs_call_pc = false;
+bool cs_call_func = false;
+bool cs_call_brhtype = false;
+bool cs_call_onlycall = false;
+
+/* tcgbp global options */
+static char* spec = NULL;
 
 static const char *interp_prefix = CONFIG_QEMU_INTERP_PREFIX;
 const char *qemu_uname_release;
@@ -394,6 +412,67 @@ static void handle_arg_strace(const char *arg)
     enable_strace = true;
 }
 
+#if defined(TARGET_LINX)
+static void handle_arg_blk_optimize(const char *arg)
+{
+    int i;
+    gchar **opts = g_strsplit(arg, ",", 0);
+    Error **errp = &error_fatal;
+
+    enable_force_tb_chained = false;
+
+    for (i = 0; opts[i]; i++) {
+        if (g_str_equal(opts[i], "force_tb_chained")) {
+            enable_force_tb_chained = true;
+        } else {
+            error_setg(errp, "Invalid option of block optimize");
+            break;
+        }
+    }
+    g_strfreev(opts);
+}
+#endif
+
+static void handle_arg_cs_call(const char *arg)
+{
+    int i;
+    gchar **opts = g_strsplit(arg, ",", 0), **opt;
+    Error **errp = &error_fatal;
+    const char *error;
+
+    cs_call = true;
+
+    for (i = 0; opts[i]; i++) {
+        opt = g_strsplit(opts[i], "=", 0);
+
+        if (g_str_equal(opt[0], "skip")) {
+            if (qemu_strtou64(opt[1], &error, 0, &cs_call_skipspace)) {
+                error_setg(errp, "Invalid number of skip");
+                goto out;
+            }
+        } else if (g_str_equal(opt[0], "cpu")) {
+            cs_call_cpu = true;
+        } else if (g_str_equal(opt[0], "pc")) {
+            cs_call_pc = true;
+        } else if (g_str_equal(opt[0], "func")) {
+            cs_call_func = true;
+        } else if (g_str_equal(opt[0], "brhtype")) {
+            cs_call_brhtype = true;
+        } else if (g_str_equal(opt[0], "onlycall")) {
+            cs_call_onlycall = true;
+        }else {
+            error_setg(errp, "use like -cs_call cpu,pc,func,brhtype,onlycall,skip=1");
+            break;
+        }
+    if (cs_call_skipspace == 0) {
+        error_setg(errp, "Invalid number of skip");
+    }
+out:
+        g_strfreev(opt);
+    }
+    g_strfreev(opts);
+}
+
 static void handle_arg_version(const char *arg)
 {
     printf("qemu-" TARGET_NAME " version " QEMU_FULL_VERSION
@@ -404,6 +483,54 @@ static void handle_arg_version(const char *arg)
 static void handle_arg_trace(const char *arg)
 {
     trace_opt_parse(arg);
+}
+
+static void handle_arg_tcgbp(const char *arg)
+{
+   spec = (char*)malloc(strlen(arg)+1);
+   strcpy(spec,arg);
+}
+
+static void handle_arg_linx_debug(const char *arg)
+{
+    int i;
+    gchar **opts = g_strsplit(arg, ",", 0), **opt;
+    Error **errp = &error_fatal;
+    const char *error;
+
+    cpus_stop_on_pc = 0;
+    cpus_stop_on_count = 0;
+    cpus_start_count_pc = 0;
+
+    for (i = 0; opts[i]; i++) {
+        opt = g_strsplit(opts[i], "=", 0);
+
+        if (g_strv_length(opt) != 2) {
+            error_setg(errp, "Invalid option, there is need a value of %s",
+                       opt[0]);
+            goto out;
+        }
+
+        if (strcmp(opt[0], "pc_stop") == 0) {
+            if (qemu_strtou64(opt[1], &error, 0, &cpus_stop_on_pc)) {
+                error_setg(errp, "Invalid number of pc_stop");
+                goto out;
+            }
+        } else if (strcmp(opt[0], "pc_count_begin") == 0) {
+            if (qemu_strtou64(opt[1], &error, 0, &cpus_start_count_pc)) {
+                error_setg(errp, "Invalid number of pc_count_begin");
+                goto out;
+            }
+        } else if (strcmp(opt[0], "max_insn") == 0) {
+            if (qemu_strtou64(opt[1], &error, 0, &cpus_stop_on_count)) {
+                error_setg(errp, "Invalid number of max_insn");
+                goto out;
+            }
+        }
+out:
+        g_strfreev(opt);
+    }
+    g_strfreev(opts);
 }
 
 #if defined(TARGET_XTENSA)
@@ -469,6 +596,13 @@ static const struct qemu_argument arg_table[] = {
      "",           "run in singlestep mode"},
     {"strace",     "QEMU_STRACE",      false, handle_arg_strace,
      "",           "log system calls"},
+    {"cs_call",    "",                 true, handle_arg_cs_call,
+     "",           "cpu dump every skip call/ret"},
+#if defined(TARGET_LINX)
+    {"blk_optimize",     "",      true, handle_arg_blk_optimize,
+     "",
+     "[enable_force_tb_chained]"},
+#endif
     {"seed",       "QEMU_RAND_SEED",   true,  handle_arg_seed,
      "",           "Seed for pseudo-random number generator"},
     {"trace",      "QEMU_TRACE",       true,  handle_arg_trace,
@@ -483,6 +617,10 @@ static const struct qemu_argument arg_table[] = {
     {"xtensa-abi-call0", "QEMU_XTENSA_ABI_CALL0", false, handle_arg_abi_call0,
      "",           "assume CALL0 Xtensa ABI"},
 #endif
+    {"linx_debug",  "",                true,  handle_arg_linx_debug,
+     "",           "[pc_stop=addr][,pc_count_begin-addr][,max_insn=#]"},
+    {"tcgbp",  "",                true,  handle_arg_tcgbp,
+     "",           "[spec]"},
     {NULL, NULL, false, NULL, NULL, NULL}
 };
 
@@ -745,6 +883,23 @@ int main(int argc, char **argv, char **envp)
     cpu_reset(cpu);
     thread_cpu = cpu;
 
+    /* linx debug feature */
+    if (cpus_stop_on_count) {
+        cpu->do_insn_count = !cpus_start_count_pc;
+        cpu->insn_count = 0;
+        cpu->count_start_pc = cpus_start_count_pc;
+        cpu->max_insn_count = cpus_stop_on_count;
+    }
+
+    cpu->stop_on_pc = cpus_stop_on_pc;
+
+    /* tcgbp feature */
+
+    if(spec!=NULL) {
+        cpu->bps_sz = 0;
+        tcg_bp_set_static_bp(spec);
+        cpu->bps = tcg_bps_init(&cpu->bps_sz);
+    }
     /*
      * Reserving too much vm space via mmap can run into problems
      * with rlimits, oom due to page table creation, etc.  We will

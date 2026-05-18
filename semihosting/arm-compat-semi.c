@@ -243,7 +243,7 @@ common_semi_sys_exit_extended(CPUState *cs, int nr)
 
 #endif /* TARGET_ARM */
 
-#ifdef TARGET_RISCV
+#if defined(TARGET_RISCV)
 static inline target_ulong
 common_semi_arg(CPUState *cs, int argno)
 {
@@ -265,6 +265,42 @@ common_semi_sys_exit_extended(CPUState *cs, int nr)
 {
     return (nr == TARGET_SYS_EXIT_EXTENDED || sizeof(target_ulong) == 8);
 }
+
+#endif
+
+#if defined(TARGET_LINX)
+static inline target_ulong
+common_semi_arg(CPUState *cs, int argno)
+{
+    LINXCPU *cpu = LINX_CPU(cs);
+    CPULINXState *env = &cpu->env;
+    return env->gpr[xA0 + argno];
+}
+
+static inline void
+common_semi_set_ret(CPUState *cs, target_ulong ret)
+{
+    LINXCPU *cpu = LINX_CPU(cs);
+    CPULINXState *env = &cpu->env;
+    env->gpr[xA0] = ret;
+}
+
+static inline bool
+common_semi_sys_exit_extended(CPUState *cs, int nr)
+{
+    return (nr == TARGET_SYS_EXIT_EXTENDED || sizeof(target_ulong) == 8);
+}
+
+#ifndef CONFIG_USER_ONLY
+
+static inline target_ulong
+common_semi_rambase(CPUState *cs)
+{
+    LINXCPU *cpu = LINX_CPU(cs);
+    CPULINXState *env = &cpu->env;
+    return common_semi_find_region_base(env->gpr[xSP]);
+}
+#endif
 
 #endif
 
@@ -444,9 +480,15 @@ static target_ulong common_semi_flen_buf(CPUState *cs)
         sp = env->regs[13];
     }
 #endif
-#ifdef TARGET_RISCV
+#if defined(TARGET_RISCV)
     RISCVCPU *cpu = RISCV_CPU(cs);
     CPURISCVState *env = &cpu->env;
+
+    sp = env->gpr[xSP];
+#endif
+#if defined(TARGET_LINX)
+    LINXCPU *cpu = LINX_CPU(cs);
+    CPULINXState *env = &cpu->env;
 
     sp = env->gpr[xSP];
 #endif
@@ -780,6 +822,8 @@ static inline bool is_64bit_semihosting(CPUArchState *env)
     return is_a64(env);
 #elif defined(TARGET_RISCV)
     return riscv_cpu_mxl(env) != MXL_RV32;
+#elif defined(TARGET_LINX)
+    return true;
 #else
 #error un-handled architecture
 #endif
@@ -1280,7 +1324,7 @@ target_ulong do_common_semihosting(CPUState *cs)
             return 0;
         }
 #endif
-#ifdef TARGET_RISCV
+#if defined(TARGET_RISCV) || defined(TARGET_LINX)
         return 0;
 #endif
         /* fall through -- invalid for A32/T32 */

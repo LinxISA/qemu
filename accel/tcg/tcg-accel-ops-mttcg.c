@@ -114,6 +114,11 @@ static void *mttcg_cpu_thread_fn(void *arg)
                 qemu_mutex_unlock_iothread();
                 cpu_exec_step_atomic(cpu);
                 qemu_mutex_lock_iothread();
+                break;
+            case EXCP_ATOMIC_BLK:
+                qemu_mutex_unlock_iothread();
+                cpu_exec_multi_steps_atomic(cpu);
+                qemu_mutex_lock_iothread();
             default:
                 /* Ignore everything else? */
                 break;

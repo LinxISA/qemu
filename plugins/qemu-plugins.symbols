@@ -42,4 +42,17 @@
   qemu_plugin_tb_vaddr;
   qemu_plugin_uninstall;
   qemu_plugin_vcpu_for_each;
+  qemu_plugin_ext_vcpu_get_system_status;
+  qemu_plugin_ext_vcpu_read_gpr;
+  qemu_plugin_ext_vcpu_get_src_reg;
+  qemu_plugin_ext_vcpu_get_simt_predm;
+  qemu_plugin_ext_vcpu_get_src_fvec_reg;
+  qemu_plugin_ext_vcpu_get_src_fvec_ri_gpr_idx;
+  qemu_plugin_ext_vcpu_get_dst_fvec_ro_gpr_idx;
+  qemu_plugin_ext_vcpu_get_src_fvec_sys_reg;
+  qemu_plugin_ext_vcpu_get_dst_fvec_ro_reg;
+  qemu_plugin_ext_vcpu_memory_read_vaddr;
+  qemu_plugin_ext_vcpu_read_sys_reg;
+  qemu_plugin_ext_vcpu_get_header_info;
+  qemu_plugin_ext_vcpu_get_tileop_info;
 };

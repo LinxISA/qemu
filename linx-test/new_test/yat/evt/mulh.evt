@@ -1,0 +1,2 @@
+NEW_EVENT(blk_mulh)
+#define TEST_DRIVER testDriver_2_64

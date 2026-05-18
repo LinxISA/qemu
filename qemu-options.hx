@@ -22,6 +22,19 @@ SRST
     Display version information and exit
 ERST
 
+DEF("linx_debug", HAS_ARG, QEMU_OPTION_linx_debug, \
+    "-linx_debug pc_stop=addr                stop qemu at addr (default 0 for disable)\n"
+    "            pc_count_begin=addr         start count insn at addr (default 0 for disable)\n"
+    "            max_insn=#                  stop qemu after # guest insn (default 0 for disable)\n",
+    QEMU_ARCH_ALL)
+SRST
+``-linx_debug pc_stop=addr,pc_count_begin=addr,max_insn=#``
+    enable linx debug feature.
+        pc_stop=addr                stop qemu at addr (default 0 for disable)
+        pc_count_begin=addr         start count insn at addr (default 0 for disable)
+        max_insn=#                  stop qemu after # guest insn (default 0 for disable)
+ERST
+
 DEF("machine", HAS_ARG, QEMU_OPTION_machine, \
     "-machine [type=]name[,prop[=value][,...]]\n"
     "                selects emulated machine ('-machine help' for list)\n"
@@ -4148,6 +4161,22 @@ SRST
     another 0x1000 sized block starting at 0xffffffc00005f000.
 ERST
 
+DEF("start_exec", HAS_ARG, QEMU_OPTION_START_EXEC, \
+    "-start_exec pc,  start exec log from specified pc \n",
+    QEMU_ARCH_ALL)
+SRST
+``start_exec pc``
+    Start qemu exec log from specified pc.
+    example:
+
+    ::
+
+            -start_exec 0x102810
+
+    After 0x102810, exec log start.
+ERST
+
+
 DEF("seed", HAS_ARG, QEMU_OPTION_seed, \
     "-seed number       seed the pseudo-random number generator\n",
     QEMU_ARCH_ALL)
@@ -4528,7 +4557,7 @@ ERST
 DEF("semihosting", 0, QEMU_OPTION_semihosting,
     "-semihosting    semihosting mode\n",
     QEMU_ARCH_ARM | QEMU_ARCH_M68K | QEMU_ARCH_XTENSA |
-    QEMU_ARCH_MIPS | QEMU_ARCH_NIOS2 | QEMU_ARCH_RISCV)
+    QEMU_ARCH_MIPS | QEMU_ARCH_NIOS2 | QEMU_ARCH_RISCV | QEMU_ARCH_LINX)
 SRST
 ``-semihosting``
     Enable semihosting mode (ARM, M68K, Xtensa, MIPS, Nios II, RISC-V only).
@@ -4543,7 +4572,7 @@ DEF("semihosting-config", HAS_ARG, QEMU_OPTION_semihosting_config,
     "-semihosting-config [enable=on|off][,target=native|gdb|auto][,chardev=id][,arg=str[,...]]\n" \
     "                semihosting configuration\n",
 QEMU_ARCH_ARM | QEMU_ARCH_M68K | QEMU_ARCH_XTENSA |
-QEMU_ARCH_MIPS | QEMU_ARCH_NIOS2 | QEMU_ARCH_RISCV)
+QEMU_ARCH_MIPS | QEMU_ARCH_NIOS2 | QEMU_ARCH_RISCV | QEMU_ARCH_LINX)
 SRST
 ``-semihosting-config [enable=on|off][,target=native|gdb|auto][,chardev=id][,arg=str[,...]]``
     Enable and configure semihosting (ARM, M68K, Xtensa, MIPS, Nios II, RISC-V
@@ -5480,7 +5509,40 @@ SRST
             (qemu) qom-set /objects/iothread1 poll-max-ns 100000
 ERST
 
+DEF("symfile", HAS_ARG, QEMU_OPTION_symfile, \
+    "-symfile symfile use symfile for disassmbling\n", QEMU_ARCH_ALL)
+SRST
+``-symfile symfile``
+    Load symfile as symbol of the guest image (such as vmlinux).
+ERST
 
+DEF("tcgbp", HAS_ARG, QEMU_OPTION_tcgbp, \
+    "-tcgbp bplist set a list of breakpoint\n", QEMU_ARCH_ALL)
+SRST
+``-tcgbp bp1[,...]``
+    Set breakpoints to stop the guest (for system emulation, it is just like
+    run stop in monitor. for user emulation, it is a exit of the application.)
+    The breakpoint spec can be either pc, pc+num_insn, or data (todo).
+    For example:
+
+    ::
+
+            -tcgbp 0xffffffc000080000+1000,0xffffffc000060000,r0xffffffc100000000+2
+
+    will break after a tb contain instruction on 0xffffffc000060000, or after
+    1000 instructions after 00xffffffc000080000 is hit, or 0xffffffc100000000
+    to 0xffffffc100000000 is read.
+ERST
+
+DEF("enable_delay_block_intr", 0, QEMU_OPTION_enable_delay_block_intr,
+    "-enable_delay_block_intr\n"
+    "                enable delay interrupt mode for Linx BlockISA\n",
+    QEMU_ARCH_ALL)
+SRST
+``-enable_delay_block_intr``
+    Enable delay interrupt mode for Linx BlockISA. In this mode, the a block
+    instruction will not take external interrupt in the middle.
+ERST
 HXCOMM This is the last statement. Insert new options before this line!
 
 #undef DEF

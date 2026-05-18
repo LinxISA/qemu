@@ -42,10 +42,19 @@
 #include "sysemu/cpu-timers.h"
 #include "sysemu/replay.h"
 #include "sysemu/tcg.h"
+#include "sysemu/tcg-bp.h"
 #include "exec/helper-proto.h"
 #include "tb-hash.h"
 #include "tb-context.h"
 #include "internal.h"
+#include "sysemu/runstate.h"
+#include "sysemu/runstate-action.h"
+#include "qemu/timer.h"
+
+uint64_t kenny_tb_exec = 0;
+uint64_t kenny_tb_trans = 0;
+
+bool enable_delay_block_intr = false;
 
 /* -icount align implementation. */
 
@@ -204,14 +213,34 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, target_ulong pc,
 static inline void log_cpu_exec(target_ulong pc, CPUState *cpu,
                                 const TranslationBlock *tb)
 {
+    kenny_tb_exec++;
+
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC))
         && qemu_log_in_addr_range(pc)) {
 
+#ifndef CONFIG_USER_ONLY
+        struct tm tm;
+        qemu_get_timedate(&tm, 0);
+        char cpu_state_mask[] = "XX";
+        if (cpu->debug_state_mask & CPU_DSM_INTRE)
+            cpu_state_mask[0] = '_';
+        if (cpu->debug_state_mask & CPU_DSM_PREEMPT)
+            cpu_state_mask[1] = '_';
+        qemu_log_mask(CPU_LOG_EXEC,
+                      "Trace-%s %d(%02d:%02d:%02d): %p [" TARGET_FMT_lx
+                      "/" TARGET_FMT_lx "/%08x/%08x] %s\n",
+                      cpu_state_mask,
+                      cpu->cpu_index,
+                      tm.tm_hour, tm.tm_min, tm.tm_sec,
+                      tb->tc.ptr, tb->cs_base, pc,
+                      tb->flags, tb->cflags, lookup_symbol(pc));
+#else
         qemu_log_mask(CPU_LOG_EXEC,
                       "Trace %d: %p [" TARGET_FMT_lx
                       "/" TARGET_FMT_lx "/%08x/%08x] %s\n",
                       cpu->cpu_index, tb->tc.ptr, tb->cs_base, pc,
                       tb->flags, tb->cflags, lookup_symbol(pc));
+#endif
 
 #if defined(DEBUG_DISAS)
         if (qemu_loglevel_mask(CPU_LOG_TB_CPU)) {
@@ -350,12 +379,18 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     uintptr_t ret;
     TranslationBlock *last_tb;
     const void *tb_ptr = itb->tc.ptr;
+    if (itb->pc == start_exec_from_pc) {
+        qemu_enable_log();
+        qemu_loglevel |= CPU_LOG_EXEC;
+    }
 
     log_cpu_exec(itb->pc, cpu, itb);
 
     qemu_thread_jit_execute();
     ret = tcg_qemu_tb_exec(env, tb_ptr);
     cpu->can_do_io = 1;
+
+    tcg_bp_exec_tb(cpu, itb);
     /*
      * TODO: Delay swapping back to the read-write region of the TB
      * until we actually need to modify the TB.  The read-only copy,
@@ -472,6 +507,79 @@ void cpu_exec_step_atomic(CPUState *cpu)
         if (qemu_mutex_iothread_locked()) {
             qemu_mutex_unlock_iothread();
         }
+        assert_no_pages_locked();
+        qemu_plugin_disable_mem_helpers(cpu);
+    }
+
+    /*
+     * As we start the exclusive region before codegen we must still
+     * be in the region if we longjump out of either the codegen or
+     * the execution.
+     */
+    g_assert(cpu_in_exclusive_context(cpu));
+    cpu->running = false;
+    end_exclusive();
+}
+
+/* copy from cpu_exec_step_atomic, and modify for atomic block */
+void cpu_exec_multi_steps_atomic(CPUState *cpu)
+{
+    CPUArchState *env = (CPUArchState *)cpu->env_ptr;
+    TranslationBlock *tb;
+    target_ulong cs_base, pc;
+    uint32_t flags, cflags;
+    int tb_exit;
+
+    if (sigsetjmp(cpu->jmp_env, 0) == 0) {
+        start_exclusive();
+        g_assert(cpu == current_cpu);
+        g_assert(!cpu->running);
+        cpu->running = true;
+        cpu->cflags_next_tb = cpu->cflags_next_tb | CF_ATOMIC;
+
+        cpu_exec_enter(cpu);
+        while (cpu->cflags_next_tb & CF_ATOMIC) {
+            cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+
+            cpu->cflags_next_tb &= ~CF_ATOMIC;
+
+            cflags = curr_cflags(cpu);
+            /* Execute in a serial context. */
+            cflags &= ~CF_PARALLEL;
+            /*
+             * Note: One block may has multiple instructions, we add a new
+             *       CF_ATOMIC cflag. We must have CF_NOIRQ, otherwise tb
+             *       operation will be skipped by interrupt.
+             *
+             *       Let's suppose there is no brk instruction in atomic block.
+             */
+            cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | CF_NOIRQ | CF_ATOMIC;
+
+            tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
+            if (tb == NULL) {
+                mmap_lock();
+                tb = tb_gen_code(cpu, pc, cs_base, flags, cflags);
+                mmap_unlock();
+            }
+
+            /* execute the generated code */
+            trace_exec_tb(tb, pc);
+            cpu_tb_exec(cpu, tb, &tb_exit);
+        }
+        cpu_exec_exit(cpu);
+    } else {
+        /*
+         * The mmap_lock is dropped by tb_gen_code if it runs out of
+         * memory.
+         */
+#ifndef CONFIG_SOFTMMU
+        clear_helper_retaddr();
+        tcg_debug_assert(!have_mmap_lock());
+#endif
+        if (qemu_mutex_iothread_locked()) {
+            qemu_mutex_unlock_iothread();
+        }
+
         assert_no_pages_locked();
         qemu_plugin_disable_mem_helpers(cpu);
     }
@@ -838,6 +946,48 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
     return false;
 }
 
+static inline void linx_debug_check_tb(CPUState *cpu, TranslationBlock *tb)
+{
+
+	/* for -linx_debug */
+    if (cpu->stop_on_pc !=0 && cpu->stop_on_pc >= tb->pc &&
+        cpu->stop_on_pc < (tb->pc + tb->size)) {
+        printf("cpu %d: linx_debug stop-on-pc(%" PRIx64 ") matched\n",
+                 cpu->cpu_index, cpu->stop_on_pc);
+        cpu->stop_on_pc = 0;
+        goto shutdown;
+    }
+
+    if (cpu->do_insn_count) {
+        cpu->insn_count += tb->icount;
+        if (cpu->insn_count >= cpu->max_insn_count) {
+            cpu->do_insn_count = 0;
+            printf("cpu %d: linx_debug max insn (%lu) reach on %lu\n",
+                     cpu->cpu_index, cpu->max_insn_count, cpu->insn_count);
+            goto shutdown;
+        }
+    } else if (cpu->count_start_pc) {
+        if (cpu->count_start_pc >= tb->pc &&
+            cpu->count_start_pc < (tb->pc + tb->size)) {
+            cpu->do_insn_count = true;
+            qemu_log("cpu %d: linx_debug start insn count\n", cpu->cpu_index);
+        }
+    }
+    return;
+
+shutdown:
+#ifndef CONFIG_USER_ONLY
+    printf("linux_debug: machine paused, try to use gdb or monitor to diagnose\n");
+    vm_stop(RUN_STATE_PAUSED);
+#else
+    printf("linux_debug: process paused, try to use gdb to diagnose if -s is present\n");
+    cpu->interrupt_request &= ~CPU_INTERRUPT_DEBUG;
+    cpu->exception_index = EXCP_DEBUG;
+    cpu_loop_exit(cpu);
+#endif
+    return;
+}
+
 static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
                                     TranslationBlock **last_tb, int *tb_exit)
 {
@@ -1002,6 +1152,8 @@ int cpu_exec(CPUState *cpu)
             if (last_tb) {
                 tb_add_jump(last_tb, tb_exit, tb);
             }
+
+            linx_debug_check_tb(cpu, tb);
 
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
 

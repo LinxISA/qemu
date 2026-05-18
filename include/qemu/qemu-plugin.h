@@ -37,6 +37,24 @@
  */
 typedef uint64_t qemu_plugin_id_t;
 
+typedef struct {
+    uint32_t type;
+    uint32_t datatype_bstart;
+    uint32_t datatype_acc;
+    uint32_t datatype_barg;
+    uint32_t dsttile_size;
+    uint32_t tile_reg_src_num;
+    uint32_t tile_reg_dst_num;
+    uint32_t m;
+    uint32_t n;
+    uint32_t k;
+    uint64_t ta;
+    uint64_t tb;
+    uint64_t tc;
+    uint64_t acc;
+    uint64_t to;
+} plugin_tileop_info;
+
 /*
  * Versioning plugins:
  *

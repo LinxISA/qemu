@@ -1,0 +1,306 @@
+.. Kenneth Lee 版权所有 2021
+
+:Authors: Kenneth Lee
+:Version: 1.0
+:Date: 2021-12-23
+:Status: Draft
+
+qemu-tcg target翻译策略分析
+*********************************
+
+下面基于qemu-system-riscv64@aarch64 对qemu-tcg从riscv代码到aarch64代码的执行过
+程做一个分析。
+
+日志用 -d in_asm,out_asm,op,op_opt生成。我加的注释尽量用中文写，以便区分
+
+::
+
+  kenny: 块前置代码，像是个函数的开头。
+  PROLOGUE: [size=76]
+  0xffff8d572000:  a9ba7bfd  stp      x29, x30, [sp, #-0x60]!   建立帧指针备份到堆栈
+  0xffff8d572004:  910003fd  mov      x29, sp                   帧指针到栈顶
+  0xffff8d572008:  a90153f3  stp      x19, x20, [sp, #0x10]     x19-x28入栈（非易失寄存器）
+  0xffff8d57200c:  a9025bf5  stp      x21, x22, [sp, #0x20]
+  0xffff8d572010:  a90363f7  stp      x23, x24, [sp, #0x30]
+  0xffff8d572014:  a9046bf9  stp      x25, x26, [sp, #0x40]
+  0xffff8d572018:  a90573fb  stp      x27, x28, [sp, #0x50]
+  0xffff8d57201c:  d11203ff  sub      sp, sp, #0x480            堆栈
+  0xffff8d572020:  aa0003f3  mov      x19, x0                   tcg_out_mov(s, TCG_TYPE_PTR, TCG_AREG0, tcg_target_call_iarg_regs[0])，
+                                                                        看起来是进入TB调用者设置了两个参数，一个放cpu_env，一个放目标地址
+  0xffff8d572024:  d61f0020  br       x1                        tcg_out_insn(s, 3207, BR, tcg_target_call_iarg_regs[1])
+  0xffff8d572028:  52800000  movz     w0, #0                    tcg_out_movi(s, TCG_TYPE_REG, TCG_REG_X0, 0)
+  0xffff8d57202c:  911203ff  add      sp, sp, #0x480            退栈
+  0xffff8d572030:  a94153f3  ldp      x19, x20, [sp, #0x10]     x19-x28恢复
+  0xffff8d572034:  a9425bf5  ldp      x21, x22, [sp, #0x20]
+  0xffff8d572038:  a94363f7  ldp      x23, x24, [sp, #0x30]
+  0xffff8d57203c:  a9446bf9  ldp      x25, x26, [sp, #0x40]
+  0xffff8d572040:  a94573fb  ldp      x27, x28, [sp, #0x50]
+  0xffff8d572044:  a8c67bfd  ldp      x29, x30, [sp], #0x60
+  0xffff8d572048:  d65f03c0  ret      
+  
+  kenny: 下面是代码段访问导致的缺页引起了一个tlb操作，才能读到代码段1000
+  riscv_cpu_tlb_fill ad 1000 rw 2 mmu_idx 3
+  riscv_cpu_tlb_fill address=1000 ret 0 physical 0000000000001000 prot 7
+  ----------------
+  kenny: 这是RV的启动代码开头
+  IN: 
+  Priv: 3; Virt: 0
+  0x0000000000001000:  00000297          auipc           t0,0            # 0x1000      t0=pc+0
+  0x0000000000001004:  02828613          addi            a2,t0,40                      a2=t0+40
+  0x0000000000001008:  f1402573          csrrs           a0,mhartid,zero               a0=csr[mhartid] csr[mhartid]|=zero
+  
+  kenny:这是前面三条代码生成的中间代码
+  OP:
+   kenny: 这是是前置代码
+   ld_i32 tmp0,env,$0xfffffffffffffff0     这里引用的就都是TCGv变量了，tmp0 设置成env，后面一个是偏移
+   movi_i32 tmp1,$0x0                      tmp1=0
+   brcond_i32 tmp0,tmp1,lt,$L0             tmp0<tmp1 jump $L0 （这在后面设置的label上）
+  
+   ---- 0000000000001000
+   movi_i64 x5/t0,$0x1000                  翻译auipc，把当时的PC当做立即数编进去了。你看，这里就不用tmp0，而是直接用了寄存器的名字
+  
+   ---- 0000000000001004
+   mov_i64 tmp2,x5/t0                      这里翻译addi，寄存器也是直接认得的
+   movi_i64 tmp3,$0x28
+   add_i64 tmp2,tmp2,tmp3
+   mov_i64 x12/a2,tmp2
+  
+   ---- 0000000000001008
+   movi_i64 tmp2,$0x0
+   movi_i64 pc,$0x1008
+   movi_i64 tmp5,$0x0
+   movi_i64 tmp3,$0xf14
+   movi_i32 tmp0,$0x1
+   st_i32 tmp0,env,$0xfffffffffffff88c
+   call csrrs,$0x0,$1,tmp4,env,tmp2,tmp3,tmp5
+   mov_i64 x10/a0,tmp4
+   movi_i64 pc,$0x100c
+   exit_tb $0x0
+   set_label $L0
+   exit_tb $0xffff5741b003
+  
+  OP after optimization and liveness analysis:
+   ld_i32 tmp0,env,$0xfffffffffffffff0      dead: 1  pref=0xffffffff
+   movi_i32 tmp1,$0x0                       pref=0xffffffff
+   brcond_i32 tmp0,tmp1,lt,$L0              dead: 0 1
+  
+   ---- 0000000000001000                 
+   movi_i64 x5/t0,$0x1000                   sync: 0  dead: 0  pref=0xffffffff
+  
+   ---- 0000000000001004                 
+   movi_i64 tmp2,$0x1028                    pref=0xffffffff     四条指令变两条，看来这个优化主要是在优化tmpX的使用
+   mov_i64 x12/a2,tmp2                      sync: 0  dead: 0 1  pref=0xffffffff
+  
+   ---- 0000000000001008                 
+   movi_i64 tmp2,$0x0                       pref=0x2            这条指令是没有优化出什么来了
+   movi_i64 pc,$0x1008                      sync: 0  dead: 0  pref=0xffffffff
+   movi_i64 tmp5,$0x0                       pref=0x8
+   movi_i64 tmp3,$0xf14                     pref=0x4
+   movi_i32 tmp0,$0x1                       pref=0xffffffff
+   st_i32 tmp0,env,$0xfffffffffffff88c      dead: 0
+   call csrrs,$0x0,$1,tmp4,env,tmp2,tmp3,tmp5  dead: 1 2 3 4  pref=none
+   mov_i64 x10/a0,tmp4                      sync: 0  dead: 0 1  pref=0xffffffff
+   movi_i64 pc,$0x100c                      sync: 0  dead: 0  pref=0xffffffff
+   exit_tb $0x0                           
+   set_label $L0                          
+   exit_tb $0xffff55572083                
+
+  OUT: [size=104]
+  0xffff8f41b0c0:  b85f0274  ldur     w20, [x19, #0xfffffffffffffff0] 翻译ld_i32 tmp0, env, $0xff...f0，可以看到tmp0也换成寄存器了，这个ld不怕缺页
+                                                                      这个tmp到寄存器的映射应该是TCGContext->reg_to_temp[]映射的
+  0xffff8f41b0c4:  7100029f  cmp      w20, #0                         这条加下一条翻译brcond
+  0xffff8f41b0c8:  5400028b  b.lt     #0xffff8f41b118
+  0xffff8f41b0cc:  52820014  movz     w20, #0x1000                    翻译movi_i64 t0, 0x1000
+  0xffff8f41b0d0:  f9001674  str      x20, [x19, #0x28]               x19应该是cpu_env，0x28应该是tmp0所在的位置
+                                                                        所以，生成的代码每次都会同步目标寄存器，这应该是temp_sync()完成的工作
+  0xffff8f41b0d4:  52820514  movz     w20, #0x1028		[guest addr: 0000000000001004] 翻译movi_i64 tmp2, 0x1028
+  0xffff8f41b0d8:  f9003274  str      x20, [x19, #0x60]               
+  0xffff8f41b0dc:  52820114  movz     w20, #0x1008		[guest addr: 0000000000001008]
+  0xffff8f41b0e0:  f9031674  str      x20, [x19, #0x628]
+  0xffff8f41b0e4:  52800034  movz     w20, #0x1
+  0xffff8f41b0e8:  9280ee7e  movn     x30, #0x773
+  0xffff8f41b0ec:  b83e6a74  str      w20, [x19, x30]
+  0xffff8f41b0f0:  aa1303e0  mov      x0, x19
+  0xffff8f41b0f4:  52800001  movz     w1, #0
+  0xffff8f41b0f8:  5281e282  movz     w2, #0xf14
+  0xffff8f41b0fc:  52800003  movz     w3, #0
+  0xffff8f41b100:  5800011e  ldr      x30, #0xffff8f41b120
+  0xffff8f41b104:  d63f03c0  blr      x30
+  0xffff8f41b108:  f9002a60  str      x0, [x19, #0x50]
+  0xffff8f41b10c:  52820194  movz     w20, #0x100c
+  0xffff8f41b110:  f9031674  str      x20, [x19, #0x628]
+  0xffff8f41b114:  97855bc5  bl       #0xffff8d572028                   这是另一个prologues的位置，多做一个返回地址写0的动作
+  0xffff8f41b118:  70fff740  adr      x0, #0xffff8f41b003               这应该是DisasContext的地址
+  0xffff8f41b11c:  97855bc4  bl       #0xffff8d57202c                   这是回到prologues调用完成的位置
+    data: [size=8]
+  0xffff8f41b120:  .quad  0x0000aaaae19f0d58                            这应该是helper函数的地址，跳出去完成操作后跳回来的。
+                                                                           我们注意到，其实target代码的地址体系和qemu本身的地址体系是一体的
+  
+  ----------------
+  IN: 
+  Priv: 3; Virt: 0
+  0x000000000000100c:  0202b583          ld              a1,32(t0)
+  0x0000000000001010:  0182b283          ld              t0,24(t0)
+  0x0000000000001014:  00028067          jr              t0
+  
+  OP:
+   ld_i32 tmp0,env,$0xfffffffffffffff0                  入口代码都是一样的
+   movi_i32 tmp1,$0x0
+   brcond_i32 tmp0,tmp1,lt,$L0
+  
+   ---- 000000000000100c
+   mov_i64 tmp2,x5/t0
+   movi_i64 tmp4,$0x20
+   add_i64 tmp2,tmp2,tmp4
+   qemu_ld_i64 tmp3,tmp2,leq,3                          这里是正式的ld指令
+   mov_i64 x11/a1,tmp3
+  
+   ---- 0000000000001010
+   mov_i64 tmp2,x5/t0
+   movi_i64 tmp4,$0x18
+   add_i64 tmp2,tmp2,tmp4
+   qemu_ld_i64 tmp3,tmp2,leq,3                          同上
+   mov_i64 x5/t0,tmp3
+  
+   ---- 0000000000001014
+   mov_i64 pc,x5/t0
+   movi_i64 tmp3,$0xfffffffffffffffe
+   and_i64 pc,pc,tmp3
+   call lookup_tb_ptr,$0x6,$1,tmp3,env
+   goto_ptr tmp3
+   set_label $L0
+   exit_tb $0xffff5741b143
+  
+  OP after optimization and liveness analysis:
+   ld_i32 tmp0,env,$0xfffffffffffffff0      dead: 1  pref=0xffffffff
+   movi_i32 tmp1,$0x0                       pref=0xffffffff
+   brcond_i32 tmp0,tmp1,lt,$L0              dead: 0 1
+  
+   ---- 000000000000100c                 
+   movi_i64 tmp4,$0x20                      pref=0xffffffff
+   add_i64 tmp2,x5/t0,tmp4                  dead: 2  pref=0xfffffff0
+   qemu_ld_i64 tmp3,tmp2,leq,3              dead: 1  pref=0xffffffff
+   mov_i64 x11/a1,tmp3                      sync: 0  dead: 0 1  pref=0xffffffff
+  
+   ---- 0000000000001010                 
+   movi_i64 tmp4,$0x18                      pref=0xffffffff
+   add_i64 tmp2,x5/t0,tmp4                  dead: 1 2  pref=0xfffffff0
+   qemu_ld_i64 tmp3,tmp2,leq,3              dead: 1  pref=0xffffffff
+   mov_i64 x5/t0,tmp3                       sync: 0  dead: 1  pref=0xffffffff
+  
+   ---- 0000000000001014                 
+   mov_i64 pc,x5/t0                         dead: 1  pref=0xffffffff
+   movi_i64 tmp3,$0xfffffffffffffffe        pref=0xffffffff
+   and_i64 pc,pc,tmp3                       sync: 0  dead: 0 1 2  pref=0xffffffff
+   call lookup_tb_ptr,$0x6,$1,tmp3,env      dead: 1  pref=none
+   goto_ptr tmp3                            dead: 0
+   set_label $L0                          
+   exit_tb $0xffff5741b143                
+
+  OUT: [size=224]
+  0xffff8f41b200:  b85f0274  ldur     w20, [x19, #0xfffffffffffffff0]		[tb header & initial instruction]
+  0xffff8f41b204:  7100029f  cmp      w20, #0
+  0xffff8f41b208:  5400040b  b.lt     #0xffff8f41b288    <-------------到这里为止，是前导代码
+  0xffff8f41b20c:  f9401674  ldr      x20, [x19, #0x28]         把tmp4同步过来，现在x20是tmp4
+  0xffff8f41b210:  91008295  add      x21, x20, #0x20           翻译movi_i64 tmp4,$0x20，现在结果在x21上
+  0xffff8f41b214:  a97e0660  ldp      x0, x1, [x19, #-0x20]
+  0xffff8f41b218:  8a551c00  and      x0, x0, x21, lsr #7
+  0xffff8f41b21c:  8b000021  add      x1, x1, x0
+  0xffff8f41b220:  f9400020  ldr      x0, [x1]
+  0xffff8f41b224:  f9400c21  ldr      x1, [x1, #0x18]
+  0xffff8f41b228:  91001ea3  add      x3, x21, #7
+  0xffff8f41b22c:  9274cc63  and      x3, x3, #0xfffffffffffff000
+  0xffff8f41b230:  eb03001f  cmp      x0, x3
+  0xffff8f41b234:  540002e1  b.ne     #0xffff8f41b290           这里应该就是在TB尾巴产生的tcg_out_qemu_ld_slow_path()生成的桩
+  0xffff8f41b238:  f8756835  ldr      x21, [x1, x21]
+  0xffff8f41b23c:  f9002e75  str      x21, [x19, #0x58]
+  0xffff8f41b240:  91006294  add      x20, x20, #0x18		[guest addr: 0000000000001010]
+  0xffff8f41b244:  a97e0660  ldp      x0, x1, [x19, #-0x20]
+  0xffff8f41b248:  8a541c00  and      x0, x0, x20, lsr #7
+  0xffff8f41b24c:  8b000021  add      x1, x1, x0
+  0xffff8f41b250:  f9400020  ldr      x0, [x1]
+  0xffff8f41b254:  f9400c21  ldr      x1, [x1, #0x18]
+  0xffff8f41b258:  91001e83  add      x3, x20, #7
+  0xffff8f41b25c:  9274cc63  and      x3, x3, #0xfffffffffffff000
+  0xffff8f41b260:  eb03001f  cmp      x0, x3
+  0xffff8f41b264:  54000261  b.ne     #0xffff8f41b2b0           这是另一个ld的桩
+  0xffff8f41b268:  f8746834  ldr      x20, [x1, x20]
+  0xffff8f41b26c:  f9001674  str      x20, [x19, #0x28]
+  0xffff8f41b270:  927ffa94  and      x20, x20, #0xfffffffffffffffe		[guest addr: 0000000000001014]
+  0xffff8f41b274:  f9031674  str      x20, [x19, #0x628]
+  0xffff8f41b278:  aa1303e0  mov      x0, x19
+  0xffff8f41b27c:  580002be  ldr      x30, #0xffff8f41b2d0
+  0xffff8f41b280:  d63f03c0  blr      x30
+  0xffff8f41b284:  d61f0000  br       x0
+  0xffff8f41b288:  70fff5c0  adr      x0, #0xffff8f41b143
+  0xffff8f41b28c:  97855b68  bl       #0xffff8d57202c
+    data: [size=16]
+  0xffff8f41b2d0:  .quad  0x0000aaaae1b0bff8
+  0xffff8f41b2d8:  .quad  0x0000aaaae1b30ae8
+  
+所以，让我总结一下：
+
+PROLOGUE代码是init_machine的时候初始化的（所有CPU一次），init_machine主要就是
+tcg_init()，tcg_init()调用tcg_exec_init()，初始化一个基础的tcg_init_ctx（作为所
+有tcg_ctx的模板），然后调用tcg_prologue_init(tcg_ctx)完成初始化，这个tcg_ctx之
+后作为其他cpu创建tcg_ctx的模板，复制成每个cpu有一份。
+
+target的tcg_target_qemu_prologue()就在tcg_prologue_init()中调用，在这里产生一段
+代码保存了x19-28，也就是说，在TB里面，所有的寄存器都可以使用，反正进去前，不能
+用的已经被保存了。
+
+完成上下文保存后，x19设置成x0，然后绝对跳转到x1，也就是说，这个TB跳入的代码，是
+把TB调用看做是一次函数调用，第一个参数是cpu_env，第二个参数是目标地址。其实就对
+应着这段代码：
+
+  ret = tcg_qemu_tb_exec(env, tb_ptr);
+
+虽然gdb调试qemu本身的时候看不见这段产生的代码，但这段代码的工作上下文是完全站在
+qemu程序的一部分这个视角上的。
+
+TB内的代码直接使用被映射过来的寄存器，就是Guest中，你原来有一个r0，定义成一个
+TCGv，然后你在TB里面用，如果有映射，那么TB里面直接可能就用一个x13来表示，如果这
+个x13被修改了，映射代码中就直接更新一下TCGv，实现两者的数据同步。
+
+Qemu通过temp_load/save()实现这种同步，很多产生寄存器访问的操作，都通过这些函数动态
+分配一个互相同步的实体寄存器，在产生的代码中做这种同步。所以，如果我们要加一些特殊
+的寄存器，只能考虑用TCGv，用普通寄存器很可能不够用。
+
+如果TB里的代码的地址直接放的是一个本地地址，那它要访问本地数据就可以访问本地数
+据，要调用本地函数（比如Helper），就可以调用本地函数，这都没有障碍的。
+
+但如果要在TB里面制造一个guest内的ld，这就要靠tcg_out_ldst_finalize()里面的
+tcg_out_qemu_st/ld_slow_path()产生一个helper调用，真的调用tlb_fill()这个函数去
+产生实际的地址。
+
+而tcg_out_ldst_finalize()是在所有其他代码都生成完的时候，附在后面补充的一段代码。
+
+现在，我们收缩一个更抽象的总结：
+
+1. TCG的执行是通过在TB中产生一段qemu本身执行体系代码来完成的，本质上在调用
+
+        ret = tcg_qemu_tb_exec(env, tb_ptr);
+
+   返回值是上一个tb的地址和一个返回状态的掩码（地址的低位复用过来）。
+
+2. 如果在TCG代码中你访问了TCGv，这会有两种情况，一种是这个TCGv有映射，它就会变
+   成一个target上真正的寄存器的访问，同时如果需要通过，会在线进行同步。另一种情
+   况是TCGv没有映射，这会变成一个内存访问，这些访问都是直接像访问本地变量一样直
+   接访问过去的。
+
+3. 如果你在TCG中访问Guest的地址，那么它会产生一个helper装在TB的后面，把这个访问
+   变成一个函数调用，从而回调tlb_fill来产生这个地址，如果需要缺页，就缺页，如果
+   不缺页，就会返回真正的qemu所分配给这个Guest的地址，让地址访问发生在那个地址
+   上。
+
+
+附录
+====
+
+加helper的方法
+===============
+
+1. target中定义一个helper.c（tcg中有人包含），定义一个DEF_HELPER...()，说明这个
+   helper函数。可以输入输出常数或者TCGv。
+2. target中一个.c包含helper_xxx()函数的实现
+3. 在tran_xxx的时候调用gen_helper_xxx()生成调用代码

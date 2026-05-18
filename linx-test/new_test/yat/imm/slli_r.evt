@@ -1,0 +1,1 @@
+NEW_EVENT(blk_slli_r, yat::slli, offset4)

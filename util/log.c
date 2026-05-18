@@ -31,8 +31,26 @@ static char *logfilename;
 static QemuMutex qemu_logfile_mutex;
 QemuLogFile *qemu_logfile;
 int qemu_loglevel;
+static int qemu_loglevel_save = -1;
 static int log_append = 0;
 static GArray *debug_regions;
+uint64_t start_exec_from_pc;
+
+void qemu_enable_log(void)
+{
+    if (qemu_loglevel_save != -1) {
+        qemu_loglevel = qemu_loglevel_save;
+        qemu_loglevel_save = -1;
+    }
+}
+
+void qemu_disable_log(void)
+{
+    if (qemu_loglevel_save == -1) {
+        qemu_loglevel_save = qemu_loglevel;
+        qemu_loglevel = 0;
+    }
+}
 
 /* Return the number of characters emitted.  */
 int qemu_log(const char *fmt, ...)
@@ -194,6 +212,16 @@ bool qemu_log_in_addr_range(uint64_t addr)
 }
 
 
+void qemu_set_start_exec_pc(const char *spec_str, Error **errp)
+{
+    /* set start exec log pc */
+    if (qemu_strtou64(spec_str, NULL, 0, &start_exec_from_pc)) {
+        error_setg(errp,
+            "Bad specifier! Please: -start_exec specified_pc");
+    }
+
+}
+
 void qemu_set_dfilter_ranges(const char *filter_spec, Error **errp)
 {
     gchar **ranges = g_strsplit(filter_spec, ",", 0);
@@ -326,6 +354,12 @@ const QEMULogItem qemu_log_items[] = {
       "non-existent register)" },
     { CPU_LOG_PAGE, "page",
       "dump pages at beginning of user mode emulation" },
+    { CPU_LOG_CS, "cs",
+      "log context switch" },
+    { CPU_LOG_LINX_DEBUG, "linx_debug",
+      "log linx_debug instruction output" },
+    { CPU_LOG_SSR, "ssr",
+      "log SSR update activities" },
     { CPU_LOG_TB_NOCHAIN, "nochain",
       "do not chain compiled TBs so that \"exec\" and \"cpu\" show\n"
       "complete traces" },
@@ -334,6 +368,10 @@ const QEMULogItem qemu_log_items[] = {
 #endif
     { LOG_STRACE, "strace",
       "log every user-mode syscall, its input, and its result" },
+    { CPU_LOG_CS_NO_M, "cs_nom",
+      "disable cs log in m mode" },
+    { CPU_LOG_LINX_MEM, "linxmem",
+      "log linx mem load/store" },
     { 0, NULL, NULL },
 };
 

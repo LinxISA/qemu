@@ -43,6 +43,7 @@
 #include "sysemu/runstate-action.h"
 #include "sysemu/seccomp.h"
 #include "sysemu/tcg.h"
+#include "sysemu/tcg-bp.h"
 #include "sysemu/xen.h"
 
 #include "qemu/error-report.h"
@@ -127,6 +128,7 @@
 #include "qapi/qmp/qerror.h"
 #include "sysemu/iothread.h"
 #include "qemu/guest-random.h"
+#include "tcg/tcg.h"
 
 #include "config-host.h"
 
@@ -492,6 +494,29 @@ static QemuOptsList qemu_action_opts = {
         },{
             .name = "watchdog",
             .type = QEMU_OPT_STRING,
+        },
+        { /* end of list */ }
+    },
+};
+
+static QemuOptsList qemu_linx_debug_opts = {
+    .name = "linx_debug",
+    .implied_opt_name = "pc_stop",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_linx_debug_opts.head),
+    .merge_lists = true,
+    .desc = {
+        {
+            .name = "pc_stop",
+            .type = QEMU_OPT_NUMBER,
+            .help = "stop qemu at addr"
+        },{
+            .name = "pc_count_begin",
+            .type = QEMU_OPT_NUMBER,
+            .help = "start count insn at addr"
+        },{
+            .name = "max_insn",
+            .type = QEMU_OPT_NUMBER,
+            .help = "stop qemu after # of insn"
         },
         { /* end of list */ }
     },
@@ -2810,6 +2835,7 @@ void qemu_init(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_semihosting_config_opts);
     qemu_add_opts(&qemu_fw_cfg_opts);
     qemu_add_opts(&qemu_action_opts);
+    qemu_add_opts(&qemu_linx_debug_opts);
     module_call_init(MODULE_INIT_OPTS);
 
     error_init(argv[0]);
@@ -3028,6 +3054,17 @@ void qemu_init(int argc, char **argv, char **envp)
                 version();
                 exit(0);
                 break;
+            case QEMU_OPTION_linx_debug:
+                opts = qemu_opts_parse_noisily(qemu_find_opts("linx_debug"),
+                                               optarg, true);
+                if (!opts) {
+                    exit(EXIT_FAILURE);
+                }
+                cpus_stop_on_pc = qemu_opt_get_number(opts, "pc_stop", 0);
+                cpus_start_count_pc = qemu_opt_get_number(opts, "pc_count_begin", 0);
+                cpus_stop_on_count = qemu_opt_get_number(opts, "max_insn", 0);
+
+                break;
             case QEMU_OPTION_m:
                 opts = qemu_opts_parse_noisily(qemu_find_opts("memory"),
                                                optarg, true);
@@ -3056,6 +3093,9 @@ void qemu_init(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_DFILTER:
                 qemu_set_dfilter_ranges(optarg, &error_fatal);
+                break;
+            case QEMU_OPTION_START_EXEC:
+                qemu_set_start_exec_pc(optarg, &error_fatal);
                 break;
             case QEMU_OPTION_seed:
                 qemu_guest_random_seed_main(optarg, &error_fatal);
@@ -3654,6 +3694,15 @@ void qemu_init(int argc, char **argv, char **envp)
                 break;
             case QEMU_OPTION_enable_sync_profile:
                 qsp_enable();
+                break;
+            case QEMU_OPTION_symfile:
+                disas_add_symfile(optarg);
+                break;
+            case QEMU_OPTION_tcgbp:
+                tcg_bp_set_static_bp(optarg);
+                break;
+            case QEMU_OPTION_enable_delay_block_intr:
+                enable_delay_block_intr = true;
                 break;
             case QEMU_OPTION_nouserconfig:
                 /* Nothing to be parsed here. Especially, do not error out below. */

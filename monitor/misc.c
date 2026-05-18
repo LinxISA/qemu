@@ -80,6 +80,7 @@
 #include "sysemu/cpus.h"
 #include "qemu/cutils.h"
 
+#include <string.h>
 #if defined(TARGET_S390X)
 #include "hw/s390x/storage-keys.h"
 #include "hw/s390x/storage-attributes.h"

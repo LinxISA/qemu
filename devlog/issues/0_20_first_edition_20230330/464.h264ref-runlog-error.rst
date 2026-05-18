@@ -1,0 +1,554 @@
+464.h264ref测例分析
+********************
+
+介绍
+======
+SpecInt2006测例中，464.h264ref子项在用LLVM-v0.16编译器编译后，在qemu上运行得到的输出
+log与riscv以及arm的输出不一致（在保证运行命令及输入文件一致的基础上）。
+
+本篇就是用来记录 464.h264ref 分析的情况。
+
+分析
+======
+1、llvm输出与riscv输出对比结果::
+
+	0060:   0045(P)     3144 0 28  36.652  40.889  41.615    0    0    FRM     0
+			0045(P)     3144 0 28  36.652  40.890  41.615    0    0    FRM     0
+												^
+	0061:   0046(P)     3000 0 28  36.628  40.856  41.709    0    0    FRM     0
+			0046(P)     3000 0 28  36.628  40.857  41.709    0    0    FRM     0
+												^
+	0063:   0048(P)     4672 0 28  36.739  40.747  41.464   0    0     FRM     0
+			0048(P)     4672 0 28  36.739  40.748  41.464   0    0     FRM     0
+												^
+	0064:   0049(P)     4120 0 28  36.582  40.477  41.298   0    0     FRM     0
+			0049(P)     4120 0 28  36.582  40.478  41.298   0    0     FRM     0
+												^
+	0068:   0053(P)     4128 0 28  36.379  40.189  41.632   0    0     FRM     1
+			0053(P)     4128 0 28  36.379  40.190  41.632   0    0     FRM     1
+												^
+	0069:   0054(P)     4648 0 28  36.274  40.176  41.669   0    0     FRM     0
+			0054(P)     4648 0 28  36.274  40.175  41.669   0    0     FRM     0
+												^
+	0072:   0057(P)     4080 0 28  36.317  40.328  41.774   0    0     FRM     0
+			0057(P)     4080 0 28  36.317  40.329  41.774   0    0     FRM     0
+												^
+	0074:   0059(P)      3152 0 28  36.398  40.283  41.732   0    0    FRM     0
+			0059(P)      3152 0 28  36.398  40.282  41.732   0    0    FRM     0
+												^
+	0075:   0060(P)      3360 0 28  36.393  40.396  41.880   0    0    FRM     0
+			0060(P)      3360 0 28  36.393  40.398  41.880   0    0    FRM     0
+												^
+	0076:   0061(P)      3816 0 28  36.406  40.335  41.710   0    0    FRM     1
+			0061(P)      3816 0 28  36.406  40.337  41.710   0    0    FRM     1
+												^
+	specdiff run completed
+
+可以看到从循环打印的第45次开始，有一个浮点数的小数位是有差别的，找到源码中打印的位置::
+
+	static void ReportIntra(int tmp_time, int me_time)
+	{	
+	if (img->currentPicture->idr_flag == 1)
+		printf ("%04d(IDR)%8d %1d %2d %7.3f %7.3f %7.3f  %7d   %5d %3s %3d\n",
+		frame_no, stats->bit_ctr - stats->bit_ctr_n, 0,
+		img->qp, snr->snr_y, snr->snr_u, snr->snr_v, tmp_time, me_time,
+		img->fld_flag ? "FLD" : "FRM", intras); 
+	else
+		printf ("%04d(I)  %8d %1d %2d %7.3f %7.3f %7.3f  %7d   %5d %3s %3d\n",
+		frame_no, stats->bit_ctr - stats->bit_ctr_n, 0,
+		img->qp, snr->snr_y, snr->snr_u, snr->snr_v, tmp_time, me_time,
+		img->fld_flag ? "FLD" : "FRM", intras);
+	}
+
+根据打印顺序，找到有差别的值对应到"snr->snr_u"这个变量。
+
+2、继续查找这个值打印前被赋值或被修改的位置::
+
+	//static void find_snr()函数内
+	if (diff_y != 0)
+	{
+		snr->snr_y = (float) (10 * log10 (max_pix_value_sqd    * 
+		(double)((double) impix    / diff_y)));  // luma snr for current frame
+		if (img->yuv_format != YUV400)
+		{
+		printf("%d\n",max_pix_value_sqd_uv);    //添加的打印
+		printf("%7.3lf\n",impix_cr);                      //添加的打印
+		printf("%d\n",diff_u);                               //添加的打印
+		snr->snr_u = (float) (10 * log10 (max_pix_value_sqd_uv * 
+		   (double)((double) impix_cr / diff_u)));   
+		printf("%lf\n",snr->snr_u);                       //添加的打印
+		snr->snr_v = (float) (10 * log10 (max_pix_value_sqd_uv * 
+		  (double)((double) impix_cr / diff_v)));   
+		}
+		else
+		{
+		snr->snr_u = 0;
+		snr->snr_v = 0;
+		}
+	}
+
+“snr->snr_u”的计算结果由max_pix_value_sqd_uv、impix_cr、diff_u决定，所以分别打印
+这几个值。
+
+在该位置添加打印后发现diff_u这个变量的值在bisa和rv编译后有区别。
+同时diff_u变量是该函数内的局部变量，继续找到diff_u被赋值的位置添加打印对比输出。
+
+3、diff_u被赋值的位置::
+
+	for (i = 0; i < input->img_width_cr; i++)
+      {
+        for (j = 0; j < input->img_height_cr; j++)
+        {
+          printf("i: %d,j: %d,enc_picture->imgUV[0][j][i]:%hu,imgUV_org[0][j][i]
+		  :%hu\n",i,j,enc_picture->imgUV[0][j][i],imgUV_org[0][j][i]);
+
+          diff_u += img->quad[imgUV_org[0][j][i] - enc_picture->imgUV[0][j][i]];
+          diff_v += img->quad[imgUV_org[1][j][i] - enc_picture->imgUV[1][j][i]];
+        }
+    }
+
+rv输出::
+
+	i:40,j:0,enc_picture->imgUV[0][j][i]:118,imgUV_org[0][j][i]:121
+	i:40,j:1,enc_picture->imgUV[0][j][i]:119,imgUV_org[0][j][i]:119
+	i:40,j:2,enc_picture->imgUV[0][j][i]:120,imgUV_org[0][j][i]:121
+	i:40,j:3,enc_picture->imgUV[0][j][i]:123,imgUV_org[0][j][i]:126
+	i:40,j:4,enc_picture->imgUV[0][j][i]:125,imgUV_org[0][j][i]:127
+	i:40,j:5,enc_picture->imgUV[0][j][i]:127,imgUV_org[0][j][i]:127
+
+llvm输出::
+	
+	i:40,j:0,enc_picture->imgUV[0][j][i]:119,imgUV_org[0][j][i]:121
+	i:40,j:1,enc_picture->imgUV[0][j][i]:118,imgUV_org[0][j][i]:119
+	i:40,j:2,enc_picture->imgUV[0][j][i]:120,imgUV_org[0][j][i]:121
+	i:40,j:3,enc_picture->imgUV[0][j][i]:123,imgUV_org[0][j][i]:126
+	i:40,j:4,enc_picture->imgUV[0][j][i]:125,imgUV_org[0][j][i]:127
+	i:40,j:5,enc_picture->imgUV[0][j][i]:127,imgUV_org[0][j][i]:127
+
+对比输出可以看到当"i==40,j==0"或"i==40,j==1"时，enc_picture->imgUV数组内的值是不同的。
+
+后面追踪enc_picture->imgUV[0][0][40]和enc_picture->imgUV[0][1][40]的值在哪里被修改
+或初始化的。
+通过加打印的方式找到修改的函数调用链为：frame_picture->code_a_picture->DeblockFrame
+->DeblockMb->EdgeLoop。
+
+然后在EdgeLoop内添加打印，发现在EdgeLoop函数的for循环内，rv和bisa编译后分支进入次数不同。
+
+经过一系列追踪，定位到无论是rv还是bisa，在loopFilter.c文件的EdgeLoop函数内都使用了
+enc->imgUV这个三维数组的超出数组范围的索引，
+比如：enc->imgUV[0][0][-48]和enc->imgUV[0][0][-136]。
+
+EdgeLoop内一段源码::
+
+	......
+	SrcPtrQ = &(Img[pixQ.pos_y][pixQ.pos_x]);
+	SrcPtrP = &(Img[pixP.pos_y][pixP.pos_x]);
+	......
+	L0  = SrcPtrP[0] ;
+	R0  = SrcPtrQ[0] ;
+	L1  = SrcPtrP[-incP] ;
+	R1  = SrcPtrQ[ incQ] ;
+	L2  = SrcPtrP[-incP*2] ;
+	R2  = SrcPtrQ[ incQ*2] ;
+	L3  = SrcPtrP[-incP*3] ;
+	R3  = SrcPtrQ[ incQ*3] ;
+
+Img是函数入参，对应enc->imgY或enc->imgUV[0]或enc->imgUV[1]。
+当确保函数入参是enc->imgUV[0]时，打印pixP.pos_y、pixP.pos_x、incP三个变量的值，发现
+bisa和rv编译后获取到的L1-L3的值完全不同。
+rv输出截取::
+
+    incP: 88,pixP.mb_addr:5,pixQ.pos_y:1,pixQ.pos_x:40,pixP.pos_y:0,pixP.pos_x:40
+    L0: 118,L1: 38096,L2: 34224,L3: 30352,Beta: 7,R0: 119,R1: 120,R2: 122,R3: 126
+	
+bisa输出截取::
+
+    incP: 88,pixP.mb_addr:5,pixQ.pos_y:1,pixQ.pos_x:40,pixP.pos_y:0,pixP.pos_x:40
+    L0: 118,L1: 120,L2: 148,L3: 163,Beta: 7,R0: 119,R1: 120,R2: 122,R3: 126
+
+通过incP、pixP.pos_y、pixP.pos_x三个数组下标，可以看出，程序访问了
+enc->imgUV[0][0][-48]和enc->imgUV[0][0][-136]的值。
+通过gdb调试x86编译后的程序，发现x86编译后在EdgeLoop内并不会出现incP=88且
+pixP.pos_y=0,pixP.pos_x=40。
+
+然后在EdgeLoop函数内添加打印：
+位置1::
+
+    printf("yuv:%d,uv:%d,PelNum:%d\n",yuv,uv,PelNum);
+    for( pel=0 ; pel<PelNum ; pel++ )
+
+	yuv为1对应传入参数为enc->imgUV数组；uv为0对应传入enc->imgUV[0]，
+	为1对应enc->imgUV[1]这个二维数组。
+
+位置2::
+
+    printf("pixP.available:%d,MbQ->LFDisableIdc:%d\n",
+	pixP.available,MbQ->LFDisableIdc);
+    if (pixP.available || (MbQ->LFDisableIdc== 0)) {
+
+	if判断前，打印判断条件变量。
+
+位置3::
+
+    L0  = SrcPtrP[0] ;
+    ......
+    R3  = SrcPtrQ[ incQ*3] ;
+    printf("incP:%d,pixP.pos_y:%d,pixP.pos_x:%d\n",incP,pixP.pos_y,pixP.pos_x);
+
+	L0-R3赋值后打印数组下标。
+
+分别用x86、rv、arm和bisa编译后发现x86编译后EdgeLoop函数执行次数是比其他三个少的，
+且缺少的时候传入的数组是enc->imgUV。
+x86截取输出::
+
+	yuv:0,uv:0,PelNum:16
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:8,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:9,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:10,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:11,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:12,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:13,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:14,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:15,pixP.pos_x:3
+	......
+	yuv:0,uv:0,PelNum:16
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:8,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:9,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:10,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:11,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:12,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:13,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:14,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:15,pixP.pos_x:7
+
+rv等截取输出::
+
+	yuv:0,uv:0,PelNum:16
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:8,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:9,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:10,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:11,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:12,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:13,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:14,pixP.pos_x:3
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:15,pixP.pos_x:3
+	yuv:1,uv:0,PelNum:8
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:3
+	yuv:1,uv:1,PelNum:8
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:3
+	pixP.available:0,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:3
+	yuv:0,uv:0,PelNum:16
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:0,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:1,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:2,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:3,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:4,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:5,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:6,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:7,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:8,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:9,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:10,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:11,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:12,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:13,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:14,pixP.pos_x:7
+	pixP.available:1,MbQ->LFDisableIdc:0
+	incP:1,pixP.pos_y:15,pixP.pos_x:7
+
+找到EdgeLoop函数调用位置，在DeblockMb函数内添加打印::
+
+	edge_cr = chroma_edge[dir][edge][img->yuv_format];
+	printf("edge_cr:%d,dir:%d,edge:%d,img->yuv_format:%d,chroma_edge:%d\n",
+	edge_cr,dir,edge,img->yuv_format,chroma_edge[dir][edge][img->yuv_format]);
+	GetStrength(Strength,img,MbQAddr,dir,edge, mvlimit); 
+	StrengthSum = Strength[0];
+	printf("StrengthSum:%d\n",StrengthSum);
+	for (i = 1; i < 16; i++) StrengthSum += Strength[i];
+	if( StrengthSum )                     
+	{
+		if (filterNon8x8LumaEdgesFlag[edge]){
+			EdgeLoop( imgY, Strength, img, MbQAddr, MbQ->LFAlphaC0Offset, 
+			MbQ->LFBetaOffset, dir, edge, img->width, 0, 0) ; 
+		}
+		if( (imgUV != NULL) && (edge_cr >= 0))
+		{
+			EdgeLoop( imgUV[0], Strength, img, MbQAddr, MbQ->LFAlphaC0Offset,
+			 MbQ->LFBetaOffset, dir, edge_cr, img->width_cr, 1 , 0) ; 
+			EdgeLoop( imgUV[1], Strength, img, MbQAddr, MbQ->LFAlphaC0Offset, 
+			MbQ->LFBetaOffset, dir, edge_cr, img->width_cr, 1 , 1) ; 
+		}
+	}
+
+由于带enc->imgUV参数的EdgeLoop函数执行与否与StrengthSum和edge_cr两个变量有关，
+所以打印这两个变量的相关值。
+注：edge_cr和StrengthSum是int型变量，chroma_edge是char类型三维数组。
+::
+
+	char chroma_edge[2][4][4] = //全局变量，且没有在其他位置被赋值。
+	{ { {-1, 0, 0, 0},
+		{-1,-1,-1, 1},
+		{-1, 1, 1, 2},
+		{-1,-1,-1, 3}},
+
+	{ {-1, 0, 0, 0},
+		{-1,-1, 1, 1},
+		{-1, 1, 2, 2},
+		{-1,-1, 3, 3}}};
+
+x86截取输出::
+
+	edge_cr:-1,dir:0,edge:1,img->yuv_format:1,chroma_edge:-1
+	StrengthSum:3
+
+arm、rv和bisa截取输出::
+	edge_cr:255,dir:0,edge:1,img->yuv_format:1,chroma_edge:255
+	StrengthSum:3
+
+可以看到当chroma_edge数组内值为-1时，从char类型到int型的赋值，x86是正常的，
+其他三个是错误的。
+
+我们知道，char类型占1字节，-1则表示为0xFF。而int型占4字节,255则表示为0x000000FF。
+所以这里怀疑arm等编译器在char类型向int类型赋值时，
+做了零扩展，而x86采用了正确的有符号扩展。
+
+为了验证这个想法，手写一个小测例::
+
+	char arry[2][2] =
+	{
+		{-1,-1},
+		{-1,-1}
+	};
+
+	int main()
+	{
+		for(int i=0;i<2;i++){
+			for(int j=0;j<2;j++){
+				int a=arry[i][j];
+				printf("a:%d\n",a);
+			}
+		}
+		return 0;
+	}
+
+arm和rv编译运行后输出都为：255，同时编译并查看相应的汇编文件.
+rv汇编文件::
+
+	main
+	add	sp,sp,-32
+	sd	s0,16(sp)
+	lui	s0,%hi(arry)
+	lbu	a2,%lo(arry)(s0)
+	sd	s1,8(sp)
+	lui	s1,%hi(.LC0)
+	addi	a1,s1,%lo(.LC0)
+	li	a0,1
+	sd	ra,24(sp)
+	addi	s0,s0,%lo(arry)
+	call	__printf_chk
+	lbu	a2,1(s0)
+	addi	a1,s1,%lo(.LC0)
+	li	a0,1
+	call	__printf_chk
+	lbu	a2,2(s0)
+	addi	a1,s1,%lo(.LC0)
+	li	a0,1
+	call	__printf_chk
+	lbu	a2,3(s0)
+	addi	a1,s1,%lo(.LC0)
+	li	a0,1
+	call	__printf_chk
+	ld	ra,24(sp)
+	ld	s0,16(sp)
+	ld	s1,8(sp)
+	li	a0,0
+	add	sp,sp,32
+	jr	ra
+	.size	main, .-main
+	.globl	arry
+	.section	.rodata.str1.8,"aMS",@progbits,1
+	.align	3
+
+arm汇编文件::
+
+	main:
+	stp	x29, x30, [sp, -32]!
+	adrp	x0, .LANCHOR0
+	add	x29, sp, 0
+	ldrb	w2, [x0, #:lo12:.LANCHOR0]
+	stp	x19, x20, [sp, 16]
+	add	x20, x0, :lo12:.LANCHOR0
+	adrp	x19, .LC0
+	add	x19, x19, :lo12:.LC0
+	mov	x1, x19
+	mov	w0, 1
+	bl	__printf_chk
+	ldrb	w2, [x20, 1]
+	mov	x1, x19
+	mov	w0, 1
+	bl	__printf_chk
+	ldrb	w2, [x20, 2]
+	mov	x1, x19
+	mov	w0, 1
+	bl	__printf_chk
+	ldrb	w2, [x20, 3]
+	mov	x1, x19
+	mov	w0, 1
+	bl	__printf_chk
+	mov	w0, 0
+	ldp	x19, x20, [sp, 16]
+	ldp	x29, x30, [sp], 32
+	ret
+	.size	main, .-main
+	.global	arry
+	.data
+	.align	3
+	.set	.LANCHOR0,. + 0
+	.type	arry, %object
+	.size	arry, 4
+
+bisa汇编文件::
+	main:
+	.pushSection	.text.body
+	.LBB0_0.bstart:
+	const	-32
+	get	sp
+	add	t#1, t#2
+	set	sp, t#1
+	get	ra
+	sd	t#1, [t#3, 24]
+	get	s0
+	sd	t#1, [t#5, 16]
+	get	s1
+	sd	t#1, [t#7, 8]
+	lconst	arry
+	lbu	[t#1, 0]
+	set	s1, t#2
+	lconst	.L.str
+	set	s0, t#1
+	set	a0, t#2
+	set	a1, t#5
+	.LBB0_0.bstop:
+
+结论
+=====
+不同的架构对char类型的处理不一致，arm、riscv和bisa的编译器会默认char类型变量是无符号的。
+而x86则默认是有符号的。所以本测例中，char类型数组元素向int型变量赋值过程中bisa做了无符
+号扩展，导致赋值后有问题，影响了最终结果。编译时通过添加-fsigned-char编译选项解决。
+验证已通过。

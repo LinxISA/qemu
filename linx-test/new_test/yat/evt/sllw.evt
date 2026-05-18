@@ -1,0 +1,5 @@
+NEW_EVENT(blk_sllw_rr)
+NEW_EVENT(blk_sllw_tr)
+NEW_EVENT(blk_sllw_tt)
+
+#define TEST_DRIVER testDriver_2_32

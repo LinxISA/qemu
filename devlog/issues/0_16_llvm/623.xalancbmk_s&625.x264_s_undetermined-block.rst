@@ -1,0 +1,85 @@
+623,625子项header编码被覆写问题溯源
+*************************************
+
+介绍
+=====
+
+本篇主要是记录并分析 623.xalancbmk_s&625.x264_s  子项用 QEMU 运行时产生的错误，以供后来者了解情况。
+
+分析人：邹将将
+编辑人：郭超
+
+现象
+======
+
+00000000000c2338 <.LBB21_5>::
+
+    c2338:  00030022 7202003f   bstart	b.std, bnext.fall, battr:atomic.none
+
+00000000000c2340 <get_qscale>:
+
+00000000000c2340 <.LBB22_0>:
+
+00000000000c2340 <.Lfunc_end21>::
+
+   c2340:	00000000 0000040b 0000013e 72a5992f     bstart  rsv31, bnext.cond, battr:atomic.none
+
+上图中pc地址为0xc2340的header反汇编中block type编码域解析出现了 rsv31 这种保留字符
+串。说明此header的编码被覆写过，导致block type的编码错乱。
+
+错误定位
+=========
+
+进一步定位发现0xc2338的header在最终ELF反汇编中看到的是64bit的header，但在重定位时
+解析到的却为concat类型，于是重定位编码时按照128bit header进行编码，最终致了下一个 
+header，即pc为0xc2340的header编码被覆写。
+
+0x2338的header被relax成64 bit，跳转类型却为concat的原因。
+
+进一步分析发现0x2338的header在btext的relax函数中进入了三次::
+
+    pc     symval foff
+    D1754  E2316  10bc2
+    C7cec  D7476  F78a
+    C6524  D6c6e  1074a
+
+第一次btext offset为0x10bc2，超出64bit header范围;
+第二次btext offset为0xf78a，未超出范围，在bsize的relax函数中检测到此header可以relax
+成64bit，故relax成64bit，跳转类型置为真实的跳转类型bnext.ret
+第三次btext offset为0x1074a，超出64bit header范围，跳转类型被重置为concat类型
+
+现在异常的情况是在三次进入btext的relax函数中，btext offset先是变小然后再变大，导致最终
+的跳转类型被置为concat类型，按理说relax过程中指令与寻址符号之间的offset只会减少不会增大。
+
+relax过程offset增大的原因
+layout：按.o排布::
+
+    ...
+    header
+    header
+    ...
+    body
+    body
+
+定位发现在relax过程中，如果header段有指令被删除多余的bit，那么pc地址更新只会限定在header
+段，body指令和符号pc不会同步更新，这是offset增大的原因。（header的PC减小了，寻址的bstart
+符号地址不变，offset就变大了）
+
+layout：header和body分离排布,.text.body会被先提取出来::
+
+    body
+    body
+    ...
+    header
+    header
+
+这种排布方式不会出现offset增大的问题，因为body指令在前面，先relax，指令和符号的PC已经更新，
+等到relax header时header的PC和寻址符号的PC都是正确，offset自然就不会增大了。
+
+解决方案
+=========
+
+遵循relax过程中offset只会减少不会增大的原则，一旦btext的offset不超出范围就把btext的重定位
+类型置为R_LINX_START_NEW，保证不会重复进入btext的relax函数中。
+在上述case中第二次进入btext relax函数中offset没有超出64bit header范围，将重定位类型置为
+R_LINX_START_NEW，就不会有第三次进入btext relax函数。

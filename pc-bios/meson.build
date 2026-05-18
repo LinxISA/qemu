@@ -85,6 +85,10 @@ blobs = files(
   'vof-nvram.bin',
 )
 
+if fs.exists(meson.current_source_dir() / 'pc-bios' / 'LinxInit.bin')
+  blobs += files('LinxInit.bin')
+endif
+
 if get_option('install_blobs')
   install_data(blobs, install_dir: qemu_datadir)
 endif

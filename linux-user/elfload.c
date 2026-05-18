@@ -1502,6 +1502,31 @@ static inline void init_thread(struct target_pt_regs *regs,
 
 #endif /* TARGET_RISCV */
 
+#ifdef TARGET_LINX
+
+#define ELF_START_MMAP 0x80000000
+#define ELF_ARCH  EM_LINX
+#define ELF_CLASS ELFCLASS64
+
+#define ELF_HWCAP get_elf_hwcap()
+
+static uint32_t get_elf_hwcap(void)
+{
+    /* todo: not yet design, should be added later */
+    return 1;
+}
+
+static inline void init_thread(struct target_pt_regs *regs,
+                               struct image_info *infop)
+{
+    regs->sepc = infop->entry;
+    regs->sp = infop->start_stack;
+}
+
+#define ELF_EXEC_PAGESIZE 4096
+
+#endif /* TARGET_LINX */
+
 #ifdef TARGET_HPPA
 
 #define ELF_START_MMAP  0x80000000

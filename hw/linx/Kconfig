@@ -1,0 +1,20 @@
+config LINX_NUMA
+    bool
+
+config LINX_VIRT
+    bool
+    imply PCI_DEVICES
+    imply VIRTIO_VGA
+    imply TEST_DEVICES
+    select LINX_NUMA
+    select GOLDFISH_RTC
+    select MSI_NONBROKEN
+    select PCI
+    select PCI_EXPRESS_GENERIC_BRIDGE
+    select PFLASH_CFI01
+    select SERIAL
+    select SIFIVE_TEST
+    select VIRTIO_MMIO
+    select FW_CFG_DMA
+    select LXIC
+    select LINX_RESET

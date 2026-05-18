@@ -1,0 +1,5 @@
+NEW_EVENT(blk_setc_ne_tt)
+NEW_EVENT(blk_setc_ne_tr)
+NEW_EVENT(blk_setc_ne_rr)
+
+#define TEST_DRIVER testDriver_2_64

@@ -1,0 +1,5 @@
+NEW_EVENT(blk_cmp_lti_t)
+NEW_EVENT(blk_cmp_lti_r)
+
+
+#define TEST_DRIVER testDriver_1_64

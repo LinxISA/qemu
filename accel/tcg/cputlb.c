@@ -27,6 +27,7 @@
 #include "exec/memory-internal.h"
 #include "exec/ram_addr.h"
 #include "tcg/tcg.h"
+#include "sysemu/tcg.h"
 #include "qemu/error-report.h"
 #include "exec/log.h"
 #include "exec/helper-proto.h"
@@ -40,6 +41,7 @@
 #include "qemu/plugin-memory.h"
 #endif
 #include "tcg/tcg-ldst.h"
+#include "sysemu/tcg-bp.h"
 
 /* DEBUG defines, enable DEBUG_TLB_LOG to log to the CPU_LOG_MMU target */
 /* #define DEBUG_TLB */
@@ -1313,6 +1315,8 @@ static void tlb_fill(CPUState *cpu, target_ulong addr, int size,
     ok = cc->tcg_ops->tlb_fill(cpu, addr, size,
                                access_type, mmu_idx, false, retaddr);
     assert(ok);
+
+    tcg_bp_tlb_fill(cpu, addr, size, access_type);
 }
 
 static inline void cpu_unaligned_access(CPUState *cpu, vaddr addr,

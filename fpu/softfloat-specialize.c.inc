@@ -256,6 +256,46 @@ const floatx80 floatx80_infinity
     = make_floatx80_init(floatx80_infinity_high, floatx80_infinity_low);
 
 /*----------------------------------------------------------------------------
+| Returns 1 if the low-precision floating-point value `a' is a quiet
+| NaN; otherwise returns 0.
+*----------------------------------------------------------------------------*/
+
+bool float8_is_quiet_nan(float8 a_, float_status *status)
+{
+    if (no_signaling_nans(status)) {
+        return float8_is_any_nan(a_);
+    } else {
+        uint8_t a = float8_val(a_);
+        if (snan_bit_is_one(status)) {
+            return (((a >> 2) & 0x1F) == 0x1E) && (a & 0x3);
+        } else {
+
+            return ((a >> 2) & 0x1F) == 0x1F;
+        }
+    }
+}
+
+/*----------------------------------------------------------------------------
+| Returns 1 if the low-precision floating-point value `a' is a quiet
+| NaN; otherwise returns 0.
+*----------------------------------------------------------------------------*/
+
+bool float8_1_is_quiet_nan(float8 a_, float_status *status)
+{
+    if (no_signaling_nans(status)) {
+        return float8_1_is_any_nan(a_);
+    } else {
+        uint8_t a = float8_1_val(a_);
+        if (snan_bit_is_one(status)) {
+            return (((a >> 1) & 0x3F) == 0x3E) && (a & 0x1);
+        } else {
+
+            return ((a >> 1) & 0x3F) == 0x3F;
+        }
+    }
+}
+
+/*----------------------------------------------------------------------------
 | Returns 1 if the half-precision floating-point value `a' is a quiet
 | NaN; otherwise returns 0.
 *----------------------------------------------------------------------------*/
@@ -600,6 +640,14 @@ static int pickNaNMulAdd(FloatClass a_cls, FloatClass b_cls, FloatClass c_cls,
         float_raise(float_flag_invalid | float_flag_invalid_imz, status);
     }
     return 3; /* default NaN */
+
+#elif defined(TARGET_LINX)
+    /* For LINX, InvalidOp is set when multiplicands are Inf and zero */
+    if (infzero) {
+        float_raise(float_flag_invalid, status);
+    }
+    return 3; /* default NaN */
+
 #elif defined(TARGET_XTENSA)
     /*
      * For Xtensa, the (inf,zero,nan) case sets InvalidOp and returns

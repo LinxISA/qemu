@@ -64,7 +64,11 @@ static inline bool qemu_log_separate(void)
 #define CPU_LOG_PLUGIN     (1 << 18)
 /* LOG_STRACE is used for user-mode strace logging. */
 #define LOG_STRACE         (1 << 19)
-
+#define CPU_LOG_CS         (1 << 20)
+#define CPU_LOG_LINX_DEBUG (1 << 21)
+#define CPU_LOG_SSR        (1 << 22)
+#define CPU_LOG_CS_NO_M        (1 << 23)
+#define CPU_LOG_LINX_MEM   (1 << 24)
 /* Lock output for a series of related logs.  Since this is not needed
  * for a single qemu_log / qemu_log_mask / qemu_log_mask_and_addr, we
  * assume that qemu_loglevel_mask has already been tested, and that
@@ -151,6 +155,9 @@ void qemu_set_log(int log_flags);
 void qemu_log_needs_buffers(void);
 void qemu_set_log_filename(const char *filename, Error **errp);
 void qemu_set_dfilter_ranges(const char *ranges, Error **errp);
+void qemu_set_start_exec_pc(const char *start_pc, Error **errp);
+void qemu_enable_log(void);
+void qemu_disable_log(void);
 bool qemu_log_in_addr_range(uint64_t addr);
 int qemu_str_to_log_mask(const char *str);
 

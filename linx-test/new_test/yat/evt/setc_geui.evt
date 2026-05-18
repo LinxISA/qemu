@@ -1,0 +1,4 @@
+NEW_EVENT(blk_setc_geui_t)
+NEW_EVENT(blk_setc_geui_r)
+
+#define TEST_DRIVER testDriver_1_64

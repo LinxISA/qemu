@@ -55,4 +55,9 @@ extern int smp_cores;
 extern int smp_threads;
 #endif
 
+/* global options for linx_debug */
+extern uint64_t cpus_stop_on_pc;
+extern uint64_t cpus_stop_on_count;
+extern uint64_t cpus_start_count_pc;
+
 #endif

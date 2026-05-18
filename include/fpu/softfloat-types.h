@@ -84,12 +84,18 @@ this code that are retained.
  * Software IEC/IEEE floating-point types.
  */
 
+typedef uint8_t float8;
+typedef uint8_t float8_1;
 typedef uint16_t float16;
 typedef uint32_t float32;
 typedef uint64_t float64;
+#define float8_val(x) (x)
+#define float8_1_val(x) (x)
 #define float16_val(x) (x)
 #define float32_val(x) (x)
 #define float64_val(x) (x)
+#define make_float8(x) (x)
+#define make_float8_1(x) (x)
 #define make_float16(x) (x)
 #define make_float32(x) (x)
 #define make_float64(x) (x)

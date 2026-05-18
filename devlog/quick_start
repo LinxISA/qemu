@@ -1,0 +1,203 @@
+Quick Start
+============
+
+-v0.1 2022.4.7   WangZhou init
+-v0.2 2023.1.11  WangZhou add LinxInit debug
+
+Abstract: This document shares how to use Block ISA qemu.
+
+Repo
+-----
+
+ https://codehub-dg-y.huawei.com/LinxISA/LinxBlockModel.git
+
+ Mainline about Block ISA is linx-dev. It is suggested to use the latest commit
+ in linx-dev.
+
+Compile
+--------
+
+ In root of qemu, run:
+
+ ./configure --target-list=linx-softmmu
+ make -j4
+
+ When compiling is done, qemu-system-linx will be found in qemu/build directory.
+
+ NOTE: you may need install some dependent libraries.
+
+Run
+----
+
+ qemu-system-linx -m 2048M -nographic -smp 2 \
+    -machine virt \
+    -kernel <your kernel Image> \
+    -append "console=ttyS0 earlycon root=/dev/ram rdinit=/init" \
+    -initrd <your root fs>
+
+Debug kernel
+-------------
+
+ Compiler: \10.174.187.48\BlockISA_Toolchain\
+ If you have an account in 10.30.213.166, latest compiler will be found in
+ /home/public/block_toolchain
+
+ kernel: https://codehub-dg-y.huawei.com/LinxBaseSoftware/LinuxKernel.git
+ branch: bootup_debug_20211203
+
+ you can compile kernel by:
+
+    make ARCH=linx CROSS_COMPILE=<your block compiler> linx_v150_defconfig
+    make ARCH=linx CROSS_COMPILE=<your block compiler> -j4
+
+Debug LinxInit
+---------------
+
+ LinxInit is a firmware for Linx machine, it is based on Linx block ISA, its URL
+ is https://codehub-dg-y.huawei.com/LinxISAV150/LinxInit.git. You can build it
+ and use -bios LinxInit.bin to run it.
+
+ LinxInit is the default firmware for Linx qemu virt machine, so if there is no
+ -bios, qemu/pc-bios/LinxInit.bin will be used.
+
+ A LinxInit submodule has been added into this qemu repo, so you can follow
+ below steps to download、build and replace LinxInit.bin in pc-bios:
+
+  1. cd qemu
+  2. git clone --recurse https://codehub-dg-y.huawei.com/LinxISAV150/LinxInit.git ./roms/LinxInit/
+  3. cd qemu/roms
+  4. make linx CROSS_COMPILE=<your_cross_compile_toolchain_path>
+
+Qemu debug tools
+-----------------
+
+ Qemu already offers to debug options by -d parameter. You can use
+ "qemu-linx -d help" to get related document.
+
+ We also add some debug options:
+
+ 1. -linx_debug [pc_stop=address][,pc_count_begin=addr][,max_insn=insn_number]
+
+    e.g. "-linx_debug pc_stop=0x80200100" will stop qemu in 0x80200100, and you
+         can enter into qemu monitor to see the value of registers and memory.
+
+    e.g. "-linx_debug pc_count_begin=0x80200100,max_insn=2000" will stop qemu
+         in 0x80200100 + 2000 instructions.
+
+ 2. A debug instruction like below: 
+
+     31                                           3 2             0
+    +----------------------------------------------+---------------+
+    |                                              |     111       |
+    +----------------------------------------------+---------------+
+
+     63                                                           0
+    +--------------------------------------------------------------+
+    |                          res[63:0]                           |
+    +--------------------------------------------------------------+
+
+     31                                          10 9             0
+    +----------------------------------------------+---------------+
+    |                                              |  battr[9:0]   |
+    +----------------------------------------------+---------------+
+
+
+    use block head instruction, the head opcode is 0b0000001011, battr[9] is 
+    set and battr[8..0] is mean as below:
+
+    0x001 STOP_VM, stop qemu and can use monitor to diagnose.
+
+    0x002 DUMP_STATE, print CPU registers.
+
+    0x004 DUMP_MEM, print the r10(a0) register in decimal format with unsigned long, and
+          use r11(a1) as the start address of the memory to be dumped and r12(a2) as the
+          size of memory, and then, the memory value will be printed.
+
+    0x008 SHOW_ID, print the r10(a0) register in decimal format with unsigned long.
+
+    0x010 DUMP_STRING, print the r10(a0) register in decimal format with unsigned long, and
+          print the memory to which r11(a1) points as a string.
+
+    Note: DUMP_MEM, SHOW_ID, DUMP_STRING are exclusive. That is, each debug instruction can
+    use only one of them. For example, if SHOW_ID is used, DUMP_MEM cannot be used. But
+    STOP_VM and DUMP_STATE can work with other battr.
+
+    Except DUMP_MEM, SHOW_ID, and DUMP_STRING, other battr (defined & undefined) will print
+    instruction codes, in this case, 'res' in the debug instruction can be used as a data to
+    be printed.
+
+ 3. --trace "linx_*"
+
+    currently we have linx_head/linx_mini to trace head/mini translation.
+
+ 4. -symfile
+
+    Specifying symbols manually from vmlinux.
+    It needs to be used with "-d in_asm"
+
+    e.g. "-d in_asm -symfile your_kernel_path/vmlinux "
+
+ 3. extension on "-d mmu"
+
+    Now "-d mmu" can output Page Walk log.
+    E.g:
+
+    page table SV39 walk level 0: pte(82604010)=0
+
+ 5. breakpoint feature in TCG
+
+    A TCG breakpoint is an condition checker of TCG. When the condition is
+    matched in TCG execution, The breakpoint is hit and some action will be
+    taken.
+
+    Breakpoints can be added by qemu command line options or monitor
+    command. E.g.:
+
+    1. qemu -tcgbp spec,spec,...
+
+    2. qemu> tcgbp add <cpu> spec
+
+    Spec is the breakpoint specification in format "[attr]addr+opt". Attr is
+    the attributes of the breakpoint. It can be combination of:
+
+    R: Read
+    W: Write
+    O: One-shot
+    N: Non-stop
+
+    address is the breakpoint's address
+
+    opt is an number as parameter of the breakpoint.
+
+    There are these types of breakpoint:
+
+    1. pc, it is hit when a translation block pass the PC. This is a spec
+    example: 0x80000873
+
+    2. counter pc, it is hit when a pc is pass and more than *count*
+    instruction is consumed by further translation block. These are some spec
+    example: 0x80000874+1000, 0x80000874+0x3000
+
+    3. data, it is hit when a translation block touch the target memory.
+    These are some spec example: R0x80000000+100, RWN0x80009000. If the size
+    is not specified, it is set to default of 8. Any memory operation
+    touch the range is taken as a "touch".
+
+    When the breakpoint is hit. Its hit counter is added and the vm is stop
+    if the Non-stop attribute is not set.
+
+    monitor commands can be used to add, remove, disable, enable and list
+    all current breakpont per cpu. All these commands are in form of
+
+        [tcgbp|tb] [subcmd] [cpu-spec] [spec]
+
+    These some example:
+
+    1. tb list * all: list all breakpoint for all cpu
+    2. tb add 1 0x80000900: add a pc breakpoint
+    3. tb remove 0 1: remove breakpoint 1 from cpu 0
+
+    watchout:
+
+    1. After a TB executes, qemu would check out breakpoints
+    2. You should set a pointbreak on block's body instead of block's head.

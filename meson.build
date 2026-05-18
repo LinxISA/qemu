@@ -2083,6 +2083,7 @@ disassemblers = {
   'or1k' : ['CONFIG_OPENRISC_DIS'],
   'ppc' : ['CONFIG_PPC_DIS'],
   'riscv' : ['CONFIG_RISCV_DIS'],
+  'linx' : ['CONFIG_LINX_DIS'],
   'rx' : ['CONFIG_RX_DIS'],
   's390' : ['CONFIG_S390_DIS'],
   'sh4' : ['CONFIG_SH4_DIS'],
@@ -2121,11 +2122,11 @@ fdt_required = []
 foreach target : target_dirs
   config_target = { 'TARGET_NAME': target.split('-')[0] }
   if target.endswith('linux-user')
-    if targetos != 'linux'
+    if targetos != 'linux' and targetos != 'darwin'
       if default_targets
         continue
       endif
-      error('Target @0@ is only available on a Linux host'.format(target))
+      error('Target @0@ is only available on a Linux or Darwin host'.format(target))
     endif
     config_target += { 'CONFIG_LINUX_USER': 'y' }
   elif target.endswith('bsd-user')
@@ -2779,6 +2780,7 @@ if have_system or have_user
     'target/nios2',
     'target/ppc',
     'target/riscv',
+    'target/linx',
     'target/s390x',
     'target/s390x/kvm',
     'target/sparc',

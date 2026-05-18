@@ -1,0 +1,1 @@
+NEW_EVENT(blk_ori_t, yat::ori_t, int5)

@@ -681,7 +681,7 @@ void force_sig_fault(int sig, int code, abi_ulong addr)
  * up the signal frame. oldsig is the signal we were trying to handle
  * at the point of failure.
  */
-#if !defined(TARGET_RISCV)
+#if !defined(TARGET_RISCV) || !defined(TARGET_LINX)
 void force_sigsegv(int oldsig)
 {
     if (oldsig == SIGSEGV) {

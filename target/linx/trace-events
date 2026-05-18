@@ -1,0 +1,7 @@
+# cpu_helper.c
+# todo: this is wrong in acr, should be fix later.
+linx_trap(uint64_t hartid, bool async, uint64_t cause, uint64_t epc, uint64_t tval, const char *desc) "hart:%"PRId64", async:%d, cause:%"PRId64", epc:0x%"PRIx64", tval:0x%"PRIx64", desc=%s"
+
+# linx block ISA
+linx_head(uint64_t pc) "0x%lx"
+linx_mini(uint64_t pc) "  0x%lx"

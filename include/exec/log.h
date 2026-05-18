@@ -4,6 +4,7 @@
 #include "qemu/log.h"
 #include "hw/core/cpu.h"
 #include "disas/disas.h"
+extern uint64_t start_exec_from_pc;
 
 /* cpu_dump_state() logging functions: */
 /**

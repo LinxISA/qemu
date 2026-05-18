@@ -1,0 +1,6 @@
+NEW_EVENT(blk_ag_uxtw_a)
+NEW_EVENT(blk_ag_uxtw_b)
+NEW_EVENT(blk_ag_uxtw_c)
+NEW_EVENT(blk_ag_uxtw_d)
+
+#define TEST_DRIVER testDriver_2_64

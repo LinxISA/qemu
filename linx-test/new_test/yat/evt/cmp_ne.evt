@@ -1,0 +1,7 @@
+NEW_EVENT(blk_cmp_ne_tt)
+NEW_EVENT(blk_cmp_ne_tr)
+NEW_EVENT(blk_cmp_ne_rr)
+NEW_EVENT(blk_cmp_ne_rtl)
+NEW_EVENT(blk_cmp_ne_rth)
+
+#define TEST_DRIVER testDriver_2_64

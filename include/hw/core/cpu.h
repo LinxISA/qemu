@@ -21,6 +21,7 @@
 #define QEMU_CPU_H
 
 #include "hw/qdev-core.h"
+#include "hw/core/cpu.h"
 #include "disas/dis-asm.h"
 #include "exec/cpu-common.h"
 #include "exec/hwaddr.h"
@@ -413,6 +414,13 @@ struct CPUState {
     /* shared by kvm, hax and hvf */
     bool vcpu_dirty;
 
+    /* linx_debug parameter */
+    bool do_insn_count;
+    uint64_t insn_count;
+    uint64_t count_start_pc;
+    uint64_t max_insn_count;
+    uint64_t stop_on_pc;
+
     /* Used to keep track of an outstanding cpu throttle thread for migration
      * autoconverge
      */
@@ -429,7 +437,18 @@ struct CPUState {
 
     /* track IOMMUs whose translations we've cached in the TCG TLB */
     GArray *iommu_notifiers;
+
+     /* breakponits for this CPU */
+    GArray *bps;
+    guint bps_sz;
+
+    /* a bit mask to show the state of the cpu when -d exec. The bit should be
+     * set per platform, or it is not showed as exptected.
+     */
+    uint32_t debug_state_mask;
 };
+#define CPU_DSM_INTRE   0x01 /* OS Interrupt Enabled */
+#define CPU_DSM_PREEMPT 0x02 /* OS Task Prempt Enabled */
 
 typedef QTAILQ_HEAD(CPUTailQ, CPUState) CPUTailQ;
 extern CPUTailQ cpus;

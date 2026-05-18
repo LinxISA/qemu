@@ -1,0 +1,137 @@
+# Linx Block ISA decoder
+#
+# Copyright (c) Hisilicon Technology 2022.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2 or later, as published by the Free Software Foundation.
+#
+# This program is distributed in the hope it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+# FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+# more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Fields:
+%SrcL      6:5
+%SrcR      11:5
+%RegDst    11:5
+%imm       6:s5
+%imm_1     11:s5
+%imm_2     4:s12 !function=ex_shift_1
+%u_imm     6:5
+%para_mode 14:1
+%para_op   15:1
+
+%imm8          6:8
+%loopnest_i   14:2
+%loopnest     11:3
+%RegSrc         6:5
+
+
+# Argument sets:
+&empty
+&c_bstart       br_type blk_type
+&direct_branch  bnext_low
+&simt           para_mode para_op para_func para_datatype
+
+&c_bdimi             imm loopnest
+&c_bdim              RegSrc loopnest
+&brk            imm
+
+# Formats linx:
+@empty            ............   ....       &empty
+@c_bstart         ..... .... ... ....       &c_bstart       br_type=%SrcR blk_type=%SrcL
+@c_branch         ............   ... .      &direct_branch  bnext_low=%imm_2
+@simt           .. ... ..... .. ... .       &simt           %para_mode %para_op para_func=0 para_datatype=0
+
+@c_bdimi          .. ........ .. ... .      &c_bdimi        imm=%imm8 loopnest=%loopnest_i
+@c_bdim           .. ... ..... .. ... .     &c_bdim         %RegSrc  %loopnest
+@c_ebrk            ..... ..... ......        &brk imm=%u_imm
+
+# head16 instructions:
+{
+  blk_start_simt          .. 001 00011 00 000 0  @simt
+  blk_start_stop          000000000000 000 0     @empty
+  blk_short_head          ..... ..... 00 000 0   @c_bstart
+}
+
+blk_offset_direct_call  ............ 001 0   @c_branch
+blk_offset_cond         ............ 010 0   @c_branch
+
+blk_c_ebreak          11000 ..... 10 110 0   @c_ebrk
+
+{
+  blk_c_bdim          11 ... ..... 11 110 0  @c_bdim
+  blk_c_bdimi         .. ........ 11 110 0   @c_bdimi
+}
+
+#-----------------------------------------------------------------------------------------------------
+
+# Argument sets:
+&arg_c_arith    SrcR SrcL
+&arg_movi       RegDst imm
+&arg_movr       RegDst SrcL
+&arg_ld_sd      imm SrcL
+&arg_ext        SrcL
+&arg_cmp        imm
+&arg_ssrget     SSRID RegDst
+
+# Formats linx:
+@arg_movr         ..... ..... .. ... .      &arg_movr       %RegDst %SrcL
+@arg_movi         ..... ..... .. ... .      &arg_movi       %RegDst %imm
+@arg_setret       ..... ..... .. ... .      &arg_movi       RegDst=10 imm=%u_imm
+@arg_arith        ..... ..... .. ... .      &arg_c_arith    %SrcR %SrcL
+@arg_ld_sd        ..... ..... .. ... .      &arg_ld_sd      imm=%imm_1 %SrcL
+@arg_ext          .. ... ..... .. ... .     &arg_ext        %SrcL
+@arg_cmp_s        .. ... ..... .. ... .     &arg_cmp        imm=%imm
+@arg_cmp_u        .. ... ..... .. ... .     &arg_cmp        imm=%u_imm
+@arg_ssrget       .. ... ..... .. ... .     &arg_ssrget     SSRID=%u_imm RegDst=31
+
+# Move operation
+blk_c_movr_16       ..... ..... 00 011 0   @arg_movr
+{
+  blk_c_setret_16   01010 ..... 01 011 0   @arg_setret
+  blk_c_movi_16     ..... ..... 01 011 0   @arg_movi
+}
+
+# Set commit argument
+blk_c_setc_eq_16  ..... ..... 10 011 0  @arg_arith
+blk_c_setc_ne_16  ..... ..... 11 011 0  @arg_arith
+
+# Arithmetic operation
+blk_c_add_16      ..... ..... 00 100 0  @arg_arith
+blk_c_sub_16      ..... ..... 01 100 0  @arg_arith
+blk_c_and_16      ..... ..... 10 100 0  @arg_arith
+blk_c_or_16       ..... ..... 11 100 0  @arg_arith
+
+# Load/Store with imm offset
+blk_c_lwi_16      ..... ..... 00 101 0  @arg_ld_sd
+blk_c_ldi_16      ..... ..... 01 101 0  @arg_ld_sd
+blk_c_swi_16      ..... ..... 10 101 0  @arg_ld_sd
+blk_c_sdi_16      ..... ..... 11 101 0  @arg_ld_sd
+
+# Add with imm
+blk_c_addi_16     ..... ..... 00 110 0  @arg_ld_sd
+
+blk_c_setc_tgt_16   00 000 ..... 01 110 0  @arg_ext
+
+# Low bit expansion
+blk_sext_b_16    01 000 ..... 01 110 0  @arg_ext
+blk_sext_h_16    01 001 ..... 01 110 0  @arg_ext
+blk_sext_w_16    01 010 ..... 01 110 0  @arg_ext
+blk_zext_b_16    01 011 ..... 01 110 0  @arg_ext
+blk_zext_h_16    01 100 ..... 01 110 0  @arg_ext
+blk_zext_w_16    01 101 ..... 01 110 0  @arg_ext
+
+# Compare with imm
+blk_c_cmp_eqi_16    00 000 ..... 10 110 0  @arg_cmp_s
+blk_c_cmp_nei_16    00 001 ..... 10 110 0  @arg_cmp_s
+
+# Shift with imm
+blk_c_slli_16       00 010 ..... 10 110 0  @arg_cmp_u
+blk_c_srli_16       00 011 ..... 10 110 0  @arg_cmp_u
+
+blk_c_ssrget_16     10 000 ..... 10 110 0  @arg_ssrget

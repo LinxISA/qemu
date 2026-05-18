@@ -1,0 +1,535 @@
+557.xz_r if分支走错的问题分析
+******************************
+作者:zwx1144326(周兵)
+
+问题描述
+========
+557.xz_r qemu运行之后测例报错，查看源码发现是if分支走错
+
+问题分析
+========
+20230414
+
+557.xz_r qemu运行的输出::
+
+    SPEC CPU XZ driver: input=/remote/lms04/zwx1144326/BlockISA/PM_Cases/
+    speccpu2017/benchspec/CPU/557.xz_r/data/all/input/cpu2006docs.tar.xz 
+    insize=250
+    Loading Input Data
+    Compressed size: 1287176; Uncompressed size: 9041920
+    Hash mismatch at 0: '05' (expected) != '63' (generated)
+    Computed SHA-512 sum for decompressed input did not match expected
+      Generated: 6370923ae634bc9244a92a096e01f8f733d7817a3497ac7ebd0791ef6a904ee
+      5b60853cdeb42eb1c67a06db25f6d4f0f33044ef02fab399ba7917d83f3b0c4db
+       Expected: 055ce243071129412e9dd0b3b69a21654033a9b723d874b2015c774fac1553
+       d9713be561ca86f74e4f16f22e664fc17a79f30caa5ad2c04fbc447549c2810fae
+
+和标准输出对比发现是在"Compressed size: 1287176; Uncompressed size: 9041920"不一样
+查看源码发现这个打印只有在一处有::
+
+    int compare_sum ( unsigned char *ref_sum, unsigned char *generated, int bits)
+    {
+        if (ref_sum == NULL || generated == NULL)
+          return -1;
+    
+        for(int i = 0; i < bits / 8; i++) {
+            if (ref_sum[i] != generated[i]) {
+                
+                fprintf(stderr, "Hash mismatch at %d: '%02x' (expected) != '%02x' (generated)\n", i, ref_sum[i], generated[i]);
+    //zwx1144326
+                exit(1)
+                return( (ref_sum[i] < generated[i]) ? -1 : 1 );
+            }
+        }
+        return 0;
+    }
+
+看到就是ref_sum[i] != generated[i]的值不一样，导致的出现的问题。
+加exit(1)之后的557.xz_r qemu运行的输出::
+
+    SPEC CPU XZ driver: input=/remote/lms04/zwx1144326/BlockISA/PM_Cases/
+    speccpu2017/benchspec/CPU/557.xz_r/data/all/input/cpu2006docs.tar.xz 
+    insize=250
+    Loading Input Data
+    Compressed size: 1287176; Uncompressed size: 9041920
+    Hash mismatch at 0: '05' (expected) != '63' (generated)
+
+
+打印qemu日志，和反汇编进行对比发现，此函数在qemu的日志内没有，函数的BPC搜索不到，但是
+搜索日志内的BPC，在反汇编内是可以对应上的。
+
+qemu的日志打印命令::
+
+    $QEMU -enable-force-tb-chained -d exec,cpu,in_asm -D run.log  $ELF
+
+仔细检查了一下流程，自己的操作无误，qemu的命令无误，那行打印也确实在源码内只有一处，并且
+自己在打印的后面添加exit()函数，是正好在打印之后退出，日志内能看到exit的执行，但是依然
+找不到这个函数，包括这一行printf的BPC，包括这个函数内部call exit()的BPC；
+
+摘出qemu日志有只有函数名哪一行发现这exit()竟然是在spec_mem_load()函数调用的。
+执行的函数流::
+
+    fprintf
+    spec_mem_load
+    exit
+
+spec_mem_load的call exit()和call printf的header::
+
+    0000000000039320 <.LBB2_47>:
+    39320:	0a9c0d3b 06200018 	bstart	b.std, bnext.cond, bget:0x0620, bset:0x0018, ptr:0x3a858 size:0x7, bnext:0x39388,,,
+ 
+    0000000000039328 <.LBB2_48>:
+    39328:	00000000 002c5902 0418181d 0a9f004f 	bstart	b.std, bnext.call, bget:0x0418, bset:0x181d, ptr:0x3a866 size:0x9, bnext:0x4f5f0,,,
+ 
+    0000000000039338 <.LBB2_49>:
+    39338:	0aa46312 13800005 	bstart	b.std, bnext.call, bget:0x0000, bset:0x0005, ptr:0x3a880 size:0x2, bnext:0x4ce50,,,
+
+现在的问题有两个
+1、在spec_mem_load()内call的printf打印的是compare_sum内部printf的内容
+2、自己加了exit()之后改变了程序的逻辑，本来是运行到后面结束的（打印可以看出来），
+自己加了exit()之后，程序运行到spec_mem_load()内部退出的（不是在自己加的位置退出）
+
+分析到这里，接着用这种思路定位难度大，时间会很长，王涛建立比对函数级别的日志，在0.20的
+上一版编译器和这一版本进行比对，然后确定是哪里走的不一样；
+比对qemu的运行tarce需要注意的地方：
+1、可以不用管库函数，两个版本glibc是一样的，而且qemu因为执行命令的字符串不一样，库函数
+也会不一样。
+2、-cs_call onlycall,func : 按照函数调用为粒度打印tarce
+（函数调用指块是direct, indcall, call这3种类型），要注意日志实际的意义，direct有可能
+跳完之后，还在该函数内部；
+3、综上，要判断，哪些日志比对不一样是需要关注的，哪些是不需要的；
+
+0410版本和现在版本比对
+0410::
+
+    lzma2_decode ->  lzma_decoder_reset
+    lzma_decoder_reset ->  lzma_decoder_reset
+    lzma_decoder_reset ->  lzma_decoder_reset
+    lzma_decoder_reset ->  lzma_decoder_reset
+    lzma_decoder_reset ->  lzma_decoder_reset
+    lzma_decoder_reset ->  lzma_decoder_reset
+
+现在::
+
+    lzma2_decode ->  lzma_decoder_reset
+    lzma2_decode ->  lzma2_decode
+    lzma2_decode ->  lzma_decode
+    lzma_decode ->  lzma_decode
+    lzma_decode ->  lzma_decode
+    lzma_decode ->  lzma_decode
+    lzma_decode ->  lzma_decode
+
+函数调用时出现明显区别的，查看lzma2_decode的源码，发现他调用lzma_decoder_reset是通过
+指针调用的，所以跳调整日志，打印出PC，进步一确定
+
+20230415
+打印出具体的跳转的BPC之后，通过反汇编对比发现，qemu的tarce不一样，是因为两版编译器实现
+的跳转方式不一样。0410版是cond+direct，现在的版本是单独就cond，又因为这个函数内
+有大的for循环，所以qemu的tarce的对比，可以到看到地方都是因为跳转实现不一样，无法对比；
+
+一个解决办法，direct先不打印，它不仅仅是call，还包括普通的块间跳转，会有差异；qemu正在
+实现；
+
+和编译器沟通之后，0410版是cond+direct，现在的版本是单独就cond --> 这个是因为开了 
+-mllvm -enable-optimize-branch=true 优化选项。可以关闭优化选项之后定位（这个优化选项）
+不影响正确性，就是减少了direct,减少了空块；
+
+重新比对0410版本和现在版本
+注：先比对不带pc的日志，然后通过的行数，对应到带pc的日志，确定具体的PC，直接比对带pc的
+软件会因为比对的信息过多，崩溃；
+
+找到走的第一个分支不一样的地方：
+
+0410::
+
+    cur:3eb90,  dst:3eb50 sha_compress ->  sha_compress
+    cur:3b800,  dst:3b7e0 spec_mem_load ->  spec_mem_load
+    cur:3b800,  dst:3b7e0 spec_mem_load ->  spec_mem_load
+    cur:3b800,  dst:3b7e0 spec_mem_load ->  spec_mem_load    
+   
+现在的::
+
+    cur:3dbb8,  dst:3db80 sha_compress ->  sha_compress
+    cur:3a828,  dst:50d70 spec_mem_load ->  fprintf
+    cur:50d80,  dst:54ac0 fprintf ->  __vfprintf_internal
+    cur:560f0,  dst:57020 __vfprintf_internal ->  buffered_vfprint
+
+可以看出，现在的版本调用了printf函数，这个原因应该是if分支的条件判断的之不一样。
+
+现在版本的反汇编::
+
+    000000000003a820 <.LBB2_57>:
+    3a820:	0bbc044b 04220018 	bstart	b.std, bnext.cond, bget:0x0422, bset:0x0018, ptr:0x3bf98 size:0x9, bnext:0x3a840,,,
+ 
+    000000000003a828 <.LBB2_58>:
+    3a828:	00000000 002ca902 0418181d 0bc1004f 	bstart	b.std, bnext.call, bget:0x0418, bset:0x181d, ptr:0x3bfaa size:0x9, bnext:0x50d70,,,
+
+上面的cond应该是条件成立，跳到别的块执行，但是这里条件没成立；
+上面cond块的微指令::
+
+    3bf98:	0839                	ld	[sp,64]
+    3bf9a:	0267                	set	t#1,a0
+    3bf9c:	3a00                	add	t#2,s5
+    3bf9e:	0048                	lbu	[t#1,0]
+    3bfa0:	1467                	set.g	t#1,a2
+    3bfa2:	5a80                	add	s0,s5
+    3bfa4:	0048                	lbu	[t#1,0]
+    3bfa6:	1367                	set.g	t#1,a1
+    3bfa8:	8206                	setc.eq	t#5,t#2
+
+分析之后，是"ld sp+64的值+s5" == "ld s0+s5"，这两个地址的值应该是一样的；
+打印出spec_mem_load函数的tarce显示执行cond块之前::
+
+    sp: 00000040007ffd80
+    s0: 0000000000151810
+    s5: 0000000000000000
+    sp+64 : 00000040007ffdc0
+    ld sp+64: 0000000000151300
+
+    s5是0也就意味这，"ld sp+64" == "ld s0"没有成立（本来应该是成立的）
+
+通过打印微指令的tarce，看到两个ld的值::
+
+    ld sp+64的值+s5: 0000000000000005
+    ld s0+s5: 0000000000000034
+
+需要往上找sp，s0, s5的值是怎么set的
+s5是在BPC为3a690的块内被设置成了0::
+
+    const           0
+    set.g           t#1, s5
+
+sp的逻辑::
+
+    sp是调用该函数的时候传进来的,sp+64的值是在该函数最开始被修改：sd       a6 [sp, 8]
+    a6的值：0000000000151300
+    sp + 8<<3 : 00000040007ffdc0
+    确认"00000040007ffdc0"这个地址，只在这里赋值;
+
+综合上面的trace的寄存器信息得出,在改函数里sp+64里存的信息是一致的，
+都是地址"0000000000151300"
+
+s0的逻辑::
+
+    s0是BPC为3a618的块内被set：
+    set.g           a0, s0
+
+    该块执行之前a0的值：0000000000151810
+    该块执行之前s0的值：0000000000000003
+
+    该块执行之后s0的值：0000000000151810
+
+    a0是函数最开始set的：
+    srli            a7, 2
+    set.g           t#1, a0
+    set之后a0的值就是：0000000000151810
+
+
+    问题::
+
+        a7的值是：0000000000000200
+        a7逻辑右移3位的值是：0000000000000040
+        保存到a0的值是：0000000000151810
+
+a7移位之后保存到a0的执行微指令::
+
+    0x000000000003a608:  00000000 00839b0a ffff01c7 0b260027
+    
+    0x000000000003bc54:  eb0d              const           -336
+    0x000000000003bc56:  1100              add             t#1, sp
+    0x000000000003bc58:  0167              set.lgpr        t#1, sp
+    0x000000000003bc5a:  11e7              set.g           sp, sp
+    0x000000000003bc5c:  148d              const           328
+    0x000000000003bc5e:  1100              add             t#1, sp
+    0x000000000003bc60:  001c              sd              ra, [t#1, 0]
+    0x000000000003bc62:  140d              const           320
+    0x000000000003bc64:  1100              add             t#1, sp
+    0x000000000003bc66:  051c              sd              s0, [t#1, 4]
+    0x000000000003bc68:  138d              const           312
+    0x000000000003bc6a:  1100              add             t#1, sp
+    0x000000000003bc6c:  061c              sd              s1, [t#1, 0]
+    0x000000000003bc6e:  130d              const           304
+    0x000000000003bc70:  1100              add             t#1, sp
+    0x000000000003bc72:  071c              sd              s2, [t#1, 4]
+    0x000000000003bc74:  128d              const           296
+    0x000000000003bc76:  1100              add             t#1, sp
+    0x000000000003bc78:  081c              sd              s3, [t#1, 0]
+    0x000000000003bc7a:  120d              const           288
+    0x000000000003bc7c:  1100              add             t#1, sp
+    0x000000000003bc7e:  091c              sd              s4, [t#1, 4]
+    0x000000000003bc80:  118d              const           280
+    0x000000000003bc82:  1100              add             t#1, sp
+    0x000000000003bc84:  0a1c              sd              s5, [t#1, 0]
+    0x000000000003bc86:  f8e7              set.g           a7, s3
+    0x000000000003bc88:  e47c              sd              a6 [sp, 8]
+    0x000000000003bc8a:  d6e7              set.g           a5, s1
+    0x000000000003bc8c:  c3fc              sd              a4 [sp, 7]
+    0x000000000003bc8e:  b17c              sd              a3 [sp, 2]
+    0x000000000003bc90:  427c              sd              a2 [sp, 4]
+    0x000000000003bc92:  37e7              set.g           a1, s2
+    0x000000000003bc94:  237c              sd              a0 [sp, 6]
+    0x000000000003bc96:  f0fc              sd              a7 [sp, 1]
+    0x000000000003bc98:  f2d1              srli            a7, 2
+    0x000000000003bc9a:  1267              set.g           t#1, a0
+
+执行之前的寄存器信息::
+
+    Trace 0: 0x7fe63843f540 [0000000000000000/000000000003a608/00074200/00000201] spec_mem_load
+    r0/ra    0000000000010af8 r1/sp    00000040007ffed0 r2/a0    0000000000151760 r3/a1    0000000000000003
+    r4/a2    0000000000000000 r5/s0    0000000000000003 r6/s1    0000000000151300 r7/s2    000000000fa00000
+    r8/s3    0000004000800302 r9/s4    00000000001499d0 r10/s5   0000000000000001 r11/a3   0000004000800302
+    r12/a4   000000000fa00000 r13/a5   0000000000000001 r14/a6   0000000000151300 r15/a7   0000000000000200
+    TR1      0000000000151760 TR2      0000000000000000 TR3      0000000000000000 TR4      00000000001499d0
+    TR5      0000000000000001 TR6      0000000000000030 TR7      00000040007ffed0 TR8      0000000000000200
+    BPC      ffffffffffffffff CARG     0000000000000000 TPC      000000000003a608 UPTR     00000000001507a0
+
+执行之后的寄存器信息::
+  
+    ----------------
+   IN:
+   (block body) 0x0003bc54+2 in (0x0003bc54-0x0003bc9c)
+   
+   Trace 0: 0x7fe63843f7c0 [0000000000000000/000000000003bc54/00074200/00000201]
+    r0/ra    0000000000010af8 r1/sp    00000040007ffed0 r2/a0    0000000000151760 r3/a1    0000000000000003
+    r4/a2    0000000000000000 r5/s0    0000000000000003 r6/s1    0000000000151300 r7/s2    000000000fa00000
+    r8/s3    0000004000800302 r9/s4    00000000001499d0 r10/s5   0000000000000001 r11/a3   0000004000800302
+    r12/a4   000000000fa00000 r13/a5   0000000000000001 r14/a6   0000000000151300 r15/a7   0000000000000200
+    TR1      0000000000151760 TR2      0000000000000000 TR3      0000000000000000 TR4      00000000001499d0
+    TR5      0000000000000001 TR6      0000000000000030 TR7      00000040007ffed0 TR8      0000000000000200
+    BPC      000000000003a608 CARG     0000000000000000 TPC      000000000003bc54 UPTR     00000000001507a0
+
+通过上面trace可以看到
+执行之前a7的值是：0000000000000200
+a7逻辑右移3位之后的值应该是：0000000000000040
+set a0之后，a0的值应该也是：0000000000000040，但实际是：0000000000151760
+
+打印每微指令的trace确定a7逻辑右移3位之后的值::
+
+    IN:
+    (block body) 0x0003bc98+2 in (0x0003bc54-0x0003bc9c)
+    
+    Trace 0: 0x7fe638442240 [0000000000000000/000000000003bc98/00024200/00000201]
+     r0/ra    0000000000010af8 r1/sp    00000040007ffd80 r2/a0    0000000000151760 r3/a1    0000000000000003
+     r4/a2    0000000000000000 r5/s0    0000000000000003 r6/s1    0000000000000001 r7/s2    0000000000000003
+     r8/s3    0000000000000200 r9/s4    00000000001499d0 r10/s5   0000000000000001 r11/a3   0000004000800302
+     r12/a4   000000000fa00000 r13/a5   0000000000000001 r14/a6   0000000000151300 r15/a7   0000000000000200
+     TR1      00000040007ffdb0 TR2      00000040007ffd88 TR3      00000040007ffdc0 TR4      0000000000000120
+     TR5      00000040007ffdb8 TR6      00000040007ffd90 TR7      00000040007ffda0 TR8      00000040007ffe98
+     BPC      000000000003a608 CARG     0000000000000000 TPC      000000000003bc98 UPTR     00000000001507a0
+    ----------------
+    IN:
+    (block body) 0x0003bc9a+2 in (0x0003bc54-0x0003bc9c)
+    
+    Trace 0: 0x7fe638442380 [0000000000000000/000000000003bc9a/00034200/00000201]
+     r0/ra    0000000000010af8 r1/sp    00000040007ffd80 r2/a0    0000000000151760 r3/a1    0000000000000003
+     r4/a2    0000000000000000 r5/s0    0000000000000003 r6/s1    0000000000000001 r7/s2    0000000000000003
+     r8/s3    0000000000000200 r9/s4    00000000001499d0 r10/s5   0000000000000001 r11/a3   0000004000800302
+     r12/a4   000000000fa00000 r13/a5   0000000000000001 r14/a6   0000000000151300 r15/a7   0000000000000200
+     TR1      00000040007ffdb0 TR2      00000040007ffd88 TR3      0000000000000040 TR4      0000000000000120
+     TR5      00000040007ffdb8 TR6      00000040007ffd90 TR7      00000040007ffda0 TR8      00000040007ffe98
+     BPC      000000000003a608 CARG     0000000000000000 TPC      000000000003bc9a UPTR     00000000001507a0
+
+    Trace 0: 0x7fe638442540 [0000000000000000/000000000003a618/00074200/00000201] spec_mem_load
+     r0/ra    000000000003a618 r1/sp    00000040007ffd80 r2/a0    0000000000151810 r3/a1    0000000000000040
+     r4/a2    00000000001485c8 r5/s0    0000000000000003 r6/s1    0000000000000001 r7/s2    0000000000000003
+     r8/s3    0000000000000200 r9/s4    00000000001499d0 r10/s5   0000000000000001 r11/a3   0000000000151850
+     r12/a4   0000000000000000 r13/a5   0000000000000000 r14/a6   0000000000148628 r15/a7   0000000000000200
+     TR1      000000000003a618 TR2      00000040007ffd80 TR3      0000000000000100 TR4      0000000000151810
+     TR5      00000040007ffd38 TR6      0000000000000001 TR7      00000040007ffc60 TR8      0000000000000020
+     BPC      ffffffffffffffff CARG     0000000000000000 TPC      000000000003a618 UPTR     00000000001507a0
+    
+
+通过块内的微指令可以看出，a7逻辑右移的值应该被保存在t#3，通过上面的打印，可以看到，
+a7逻辑右移3位之后的值就是：0000000000000040
+set.g  t#1, a0的值就是：0000000000151810
+
+注：
+1、没有在其他的T寄存器内搜到"0000000000151810"这个值，应该也不是从那别的T寄存器拿的值；
+2、如果这里成功set给a0的值是0x40，后面对0x40地址取值会段错误，就回到了白晓瑞定位的段
+错误的问题；
+
+20230417
+
+qemu确认，以上分析过程中，因为日志过大，加了过滤，只打印了spec_mem_load()函数的日志，
+发现上面分析的结果，是因为中间有函数调用，但是trace没打印出来导致的；
+
+接255行的分析，（255行——249行的分析是错的）
+
+找到0410的反汇编，发现0410的存在和v0.20.1版本相同的块逻辑::
+
+    //cond
+    000000000003b7e0 <.LBB2_57>:
+       3b7e0:	0bec034b 01221804 	bstart	b.std, bnext.cond, bget:0x0122, bset:0x1804, ptr:0x3cfb8 size:0x9, bnext:0x3b7f8,,,
+    //call
+    000000000003b7e8 <.LBB2_58>:
+       3b7e8:	0bf12f3a 1648001d 	bstart	b.std, bnext.call, bget:0x0100, bset:0x001d, ptr:0x3cfca size:0x7, bnext:0x51d60,,,
+    
+    cond块的微指令实现也一致
+
+    000000000003cfb8 <.LBB2_57.bstart>:
+   3cfb8:	0839                	ld	[sp,64]
+   3cfba:	0267                	set	t#1,a0
+   3cfbc:	2880                	add	a0,s3
+   3cfbe:	0048                	lbu	[t#1,0]
+   3cfc0:	5880                	add	s0,s3
+   3cfc2:	0048                	lbu	[t#1,0]
+   3cfc4:	4b67                	set	t#3,a3
+   3cfc6:	2c67                	set	t#2,a4
+   3cfc8:	bc86                	setc.eq	a3,a4
+
+打印出tarce，看到a3和a4的值是一样的，所以cond块成立，没有执行下面的call printf。
+cond块执行之前的寄存器状态::
+
+    Trace 0: 0x7f18a036ec80 [0000000000000000/000000000003b7e0/00074200/00000000] spec_mem_load
+    r0/ra    000000000003b7d0 r1/sp    00000040007ffda0 r2/a0    0000000000152300 r3/a1    00713be561ca86f7
+    r4/a2    0000000000000026 r5/s0    0000000000152810 r6/s1    000000000089f800 r7/s2    000000007fffffff
+    r8/s3    0000000000000000 r9/s4    0000000000152760 r10/s5   0000000000000040 r11/a3   0000000000000029
+    r12/a4   0bebec1bd7732eea r13/a5   af17dfb0838e212a r14/a6   85bdd7982b4db1b5 r15/a7   59c5a4a46de40aef
+    TR1      000000007fffffff TR2      000000000089f800 TR3      0000000000000040 TR4      0000000000152810
+    TR5      000000000015284e TR6      000000000003b7d0 TR7      bc447549c2810fae TR8      0000000000000040
+    BPC      ffffffffffffffff CARG     0000000000000000 TPC      000000000003b7e0 UPTR     00000000001517a0
+   Linking TBs 0x7f18a036ec80 [000000000003b7e0] index 0 -> 0x7f18a036ee40 [000000000003cfb8]
+   ----------------
+   IN: spec_mem_load
+   0x000000000003b7f8:  05000100 0bf40c1b std_block.conditional next:0x3b858, ptr:0x3cfe0, attr:none, out_reg(s3), in_reg(s3,s5)
+           0x000000000003cfe0:  8181              addi            s3, 1
+           0x000000000003cfe2:  0867              set.lgpr        t#1, s3
+           0x000000000003cfe4:  8a86              setc.eq         s3, s5
+   
+   Trace 0: 0x7f18a036f100 [0000000000000000/000000000003b7f8/00074200/00000000] spec_mem_load
+    r0/ra    000000000003b7d0 r1/sp    00000040007ffda0 r2/a0    0000000000152300 r3/a1    00713be561ca86f7
+    r4/a2    0000000000000026 r5/s0    0000000000152810 r6/s1    000000000089f800 r7/s2    000000007fffffff
+    r8/s3    0000000000000000 r9/s4    0000000000152760 r10/s5   0000000000000040 r11/a3   0000000000000005
+    r12/a4   0000000000000005 r13/a5   af17dfb0838e212a r14/a6   85bdd7982b4db1b5 r15/a7   59c5a4a46de40aef
+    TR1      0000000000152300 TR2      000000000089f800 TR3      0000000000152300 TR4      0000000000000005
+    TR5      0000000000152810 TR6      0000000000000005 TR7      bc447549c2810fae TR8      0000000000000040
+    BPC      ffffffffffffffff CARG     0000000000000000 TPC      000000000003b7f8 UPTR     00000000001517a0
+   
+cond块执行之后的寄存器状态::
+
+    IN: spec_mem_load
+    0x000000000003b800:  00000000 0bf37c01 std_block.direct_link next:0x3b7e0, ptr:0x3cfe6, attr:none, out_reg(), in_reg()
+    
+    Trace 0: 0x7f18a036f500 [0000000000000000/000000000003b800/00074200/00000000] spec_mem_load
+     r0/ra    000000000003b7d0 r1/sp    00000040007ffda0 r2/a0    0000000000152300 r3/a1    00713be561ca86f7
+     r4/a2    0000000000000026 r5/s0    0000000000152810 r6/s1    000000000089f800 r7/s2    000000007fffffff
+     r8/s3    0000000000000001 r9/s4    0000000000152760 r10/s5   0000000000000040 r11/a3   0000000000000005
+     r12/a4   0000000000000005 r13/a5   af17dfb0838e212a r14/a6   85bdd7982b4db1b5 r15/a7   59c5a4a46de40aef
+     TR1      0000000000000001 TR2      000000000089f800 TR3      0000000000152300 TR4      0000000000000005
+     TR5      0000000000152810 TR6      0000000000000005 TR7      bc447549c2810fae TR8      0000000000000040
+     BPC      ffffffffffffffff CARG     0000000000000000 TPC      000000000003b800 UPTR     00000000001517a0
+
+    a3的值：0000000000000005
+    a4的值：0000000000000005
+
+现在可以确定，现在的0.20.1版本中s0里存的地址里存的值出错，因该是0x5，结果存了0x34，接下
+来需要分析，s0里的地址是在哪里被sd的
+
+通过修改源码，从spec_mem_load函数开始，打印详细的信息，没经过过滤的，连续信息，进行查看
+找到s0的那个地址修改的逻辑链条，确认是地址有错，还是地址里的值有错；
+
+20230419
+464的段错误问题定位出来是：ld指令执行后错误的将循环变量相关的寄存器覆盖了，导致出现问题，
+编译器修复之后给出新版，改子项出现了新的问题，后续的错误韩志林在定位；
+
+20230420
+========
+
+0413编译器: /home/hanzhilin/block_toolchain/llvm_v0.20.1_0413/linx_blockisa_llvm
+0418编译器: /home/hanzhilin/block_toolchain/llvm_v0.20.2_0418/linx_blockisa_llvm
+0420编译器: /home/hanzhilin/block_toolchain/llvm_v0.20.2_0420/linx_blockisa_llvm
+
+问题1：用0418版本的编译器继续调试。相比于0413版本编译器，提前报错。这里命名为问题1。
+问题2：用0413版本调试的问题是问题2。（后面无意中把问题1绕过跑通后，程序出错的问题
+是0413版本编译器定位的问题，这里命名为问题2）
+
+因为执行557测例终端会输出一些log，比如"Decompression decoder error:
+Compressed data is corrupt (code 9)"，所以现在的思路是在C语言中添加打印，确认打
+印上面这个字符串的原因是什么。通过gdb x86的557程序向上溯源，确定了出错的函数是
+lzma_decode()。函数调用顺序如下：
+
+..code::
+
+    lz_decode
+        decode_buffer
+            lzma2_decode
+                lzma_decode
+
+现象：lzma_decode()会被重复调用，第一次被调用的时候，进入的参数值、返回值和0410
+版本编译器(联调通过的版本)一致。紧接着第2次被调用时，进入的参数值不一样了，返回值
+也不一样。接下来溯源了一下第2次调用时传入的参数，发现是第一次计算的结果，大概逻辑
+如下：
+
+..code::
+
+    lzma_decode()
+    {
+        ...
+        // 第1步：coder作为输入的数据
+        uint32_t rep0 = coder->rep0;
+        uint32_t rep1 = coder->rep1;
+        uint32_t rep2 = coder->rep2;
+        uint32_t rep3 = coder->rep3;
+
+        // 第2步：对rep0/1/2/3进行计算
+        ...
+
+
+        // 第3步：保留计算的结果到coder中，以便下一次计算作为输入数据
+        coder->rep0 = rep0;
+        coder->rep1 = rep1;
+        coder->rep2 = rep2;
+        coder->rep3 = rep3;
+        return
+    }
+
+那么我们在这个函数中的第3步添加打印，发现问题1消失，问题2出现了。猜测是加了
+打印之后，llvm优化程度较低，不会触发问题。继续加个嵌入式汇编（功能是打开、关闭
+qemu log）。如下：
+
+..code::
+
+        case SEQ_COPY:
+            // Repeat len bytes from distance of rep0.
+            if (unlikely(dict_repeat(&dict, rep0, &len))) {
+                coder->sequence = SEQ_COPY;
+                printf("lzma_decode: rep0: %d\n", rep0);
+                enable_log(1);
+                goto out;
+            }
+        }
+
+        rc_normalize(SEQ_NORMALIZE);
+        coder->sequence = SEQ_IS_MATCH;
+
+    out:
+        // Save state
+
+        // NOTE: Must not copy dict.limit.
+        dictptr->pos = dict.pos;
+        dictptr->full = dict.full;
+
+        rc_from_local(coder->rc, *in_pos);
+
+        coder->state = state;
+        coder->rep0 = rep0;
+        coder->rep1 = rep1;
+        coder->rep2 = rep2;
+        coder->rep3 = rep3;
+
+        // 添加到这里问题1通过，所以disable_log()继续往下挪
+        // disable_log(0);
+
+        coder->probs = probs;
+        coder->symbol = symbol;
+        coder->limit = limit;
+        coder->offset = offset;
+        coder->len = len;
+
+        // 添加到这里出现段错误，继续定位
+        disable_log(0);
+
+添加日志打开、关闭的嵌入式汇编后，出现了段错误，继续定位。通过"-d linxmem"追踪
+内存读写的log，发现出现段错误的直接原因是把rep3这个局部变量的值当成一个地址去
+ld/st. 和牟良雨沟通之后，确认大概率是编译器的问题。这个时候0420修复了2个bug的
+编译器也提供了，重新编译执行之后，问题1，问题2消失，而且所有子项均已验证通过。

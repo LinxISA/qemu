@@ -184,6 +184,8 @@ typedef struct mips_elf_abiflags_v0 {
 
 #define EM_LOONGARCH    258     /* LoongArch */
 
+#define EM_LINX         261     /* Let's use same value with RISCV currently */
+
 /*
  * This is an interim value that we will use until the committee comes
  * up with a final number.
@@ -1418,6 +1420,16 @@ typedef struct {
 #define EF_RISCV_FLOAT_ABI_QUAD   0x0006
 #define EF_RISCV_RVE              0x0008
 #define EF_RISCV_TSO              0x0010
+
+/* LINX ELF Flags.  */
+#define EF_LINX_RVC              0x0001
+#define EF_LINX_FLOAT_ABI        0x0006
+#define EF_LINX_FLOAT_ABI_SOFT   0x0000
+#define EF_LINX_FLOAT_ABI_SINGLE 0x0002
+#define EF_LINX_FLOAT_ABI_DOUBLE 0x0004
+#define EF_LINX_FLOAT_ABI_QUAD   0x0006
+#define EF_LINX_RVE              0x0008
+#define EF_LINX_TSO              0x0010
 
 typedef struct elf32_rel {
   Elf32_Addr	r_offset;

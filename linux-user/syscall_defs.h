@@ -74,7 +74,7 @@
     || defined(TARGET_M68K) || defined(TARGET_CRIS) \
     || defined(TARGET_S390X) || defined(TARGET_OPENRISC) \
     || defined(TARGET_NIOS2) || defined(TARGET_RISCV) \
-    || defined(TARGET_XTENSA)
+    || defined(TARGET_XTENSA) || defined(TARGET_LINX)
 
 #define TARGET_IOC_SIZEBITS	14
 #define TARGET_IOC_DIRBITS	2
@@ -94,6 +94,55 @@
 #define TARGET_IOC_READ	  2U
 #define TARGET_IOC_WRITE  4U
 
+#elif defined(TARGET_OPENRISC) || defined(TARGET_NIOS2) || defined(TARGET_RISCV) || defined(TARGET_LINX)
+
+/* These are the asm-generic versions of the stat and stat64 structures */
+
+struct target_stat {
+    abi_ulong st_dev;
+    abi_ulong st_ino;
+    abi_ulong st_mode;
+    abi_ulong st_nlink;
+    abi_ulong st_uid;
+    abi_ulong st_gid;
+    abi_ulong st_rdev;
+    abi_ulong __pad1;
+    abi_long st_size;
+    abi_long st_blksize;
+    abi_long __pad2;
+    abi_long st_blocks;
+    abi_ulong target_st_atime;
+    abi_ulong target_st_atime_nsec;
+    abi_ulong target_st_mtime;
+    abi_ulong target_st_mtime_nsec;
+    abi_ulong target_st_ctime;
+    abi_ulong target_st_ctime_nsec;
+    abi_ulong __unused4;
+    abi_ulong __unused5;
+};
+#define TARGET_HAS_STRUCT_STAT64
+struct target_stat64 {
+    abi_ulong st_dev;
+    abi_ulong st_ino;
+    abi_ulong st_mode;
+    abi_ulong st_nlink;
+    abi_ulong st_uid;
+    abi_ulong st_gid;
+    abi_ulong st_rdev;
+    abi_ulong __pad1;
+    abi_long st_size;
+    abi_long st_blksize;
+    abi_long __pad2;
+    abi_long st_blocks;
+    abi_ulong target_st_atime;
+    abi_ulong target_st_atime_nsec;
+    abi_ulong target_st_mtime;
+    abi_ulong target_st_mtime_nsec;
+    abi_ulong target_st_ctime;
+    abi_ulong target_st_ctime_nsec;
+    abi_ulong __unused4;
+    abi_ulong __unused5;
+};
 #elif defined(TARGET_HPPA)
 
 #define TARGET_IOC_SIZEBITS  14
@@ -2084,8 +2133,7 @@ struct target_stat64  {
     abi_ulong __unused5;
 };
 
-#elif defined(TARGET_OPENRISC) || defined(TARGET_NIOS2) \
-        || defined(TARGET_RISCV) || defined(TARGET_HEXAGON)
+#elif defined(TARGET_OPENRISC) || defined(TARGET_NIOS2) || defined(TARGET_RISCV) || defined(TARGET_LINX)
 
 /* These are the asm-generic versions of the stat and stat64 structures */
 
@@ -2113,7 +2161,7 @@ struct target_stat {
     unsigned int __unused5;
 };
 
-#if !defined(TARGET_RISCV64)
+#if !defined(TARGET_RISCV64) || !defined(TARGET_LINX)
 #define TARGET_HAS_STRUCT_STAT64
 struct target_stat64 {
     uint64_t st_dev;
@@ -2258,7 +2306,7 @@ struct target_statfs64 {
 };
 #elif (defined(TARGET_PPC64) || defined(TARGET_X86_64) || \
        defined(TARGET_SPARC64) || defined(TARGET_AARCH64) || \
-       defined(TARGET_RISCV)) && !defined(TARGET_ABI32)
+       defined(TARGET_RISCV)) && !defined(TARGET_ABI32) || defined(TARGET_LINX)
 struct target_statfs {
 	abi_long f_type;
 	abi_long f_bsize;

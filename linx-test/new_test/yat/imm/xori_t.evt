@@ -1,0 +1,1 @@
+NEW_EVENT(blk_xori_t, yat::xori_t, int5)

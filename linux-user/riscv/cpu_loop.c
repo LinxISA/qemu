@@ -54,8 +54,7 @@ void cpu_loop(CPURISCVState *env)
                 ret = 0;
             } else {
                 ret = do_syscall(env,
-                                 env->gpr[(env->elf_flags & EF_RISCV_RVE)
-                                    ? xT0 : xA7],
+                                 env->gpr[(env->elf_flags & EF_RISCV_RVE) ? xT0 : xA7],
                                  env->gpr[xA0],
                                  env->gpr[xA1],
                                  env->gpr[xA2],

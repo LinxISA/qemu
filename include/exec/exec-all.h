@@ -62,6 +62,7 @@ void QEMU_NORETURN cpu_loop_exit_noexc(CPUState *cpu);
 void QEMU_NORETURN cpu_loop_exit(CPUState *cpu);
 void QEMU_NORETURN cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc);
 void QEMU_NORETURN cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc);
+void QEMU_NORETURN cpu_loop_exit_atomic_blk(CPUState *cpu, uintptr_t pc);
 
 /**
  * cpu_loop_exit_requested:
@@ -478,6 +479,8 @@ struct TranslationBlock {
 #define CF_NOIRQ         0x00100000 /* Generate an uninterruptible TB */
 #define CF_CLUSTER_MASK  0xff000000 /* Top 8 bits are cluster ID */
 #define CF_CLUSTER_SHIFT 24
+
+#define CF_ATOMIC        0x00200000 /* Note: add this for atomic block */
 
     /* Per-vCPU dynamic tracing state used to generate this TB */
     uint32_t trace_vcpu_dstate;

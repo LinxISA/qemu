@@ -1,0 +1,3760 @@
+开发日志
+
+2021.12.13
+----------
+
+ 上周已经搞了一个新的linx出来，全部拷贝的riscv的实现，基本上是照猫画虎搞的，代码
+ 还比较乱，需要做一些清理。编译的逻辑还比较模糊，需要再看下。不过，现在这个版本是
+ 可以跑起来的。
+
+ 这样可以跑起来：
+
+ ./configure --target-list=linx64-softmmu
+ make
+ 
+ qemu-system-linx64 -m 2048M -nographic -machine virt -kernel ./Image \
+ -append "console=ttyS0 earlycon root=/dev/ram rdinit=/init" \
+ -initrd ./rootfs.cpio.gz
+
+ 还需要做的:
+
+ 1. directly use linx not linx64.
+ 2. some useless code in hw/linx can be removed.
+ 3. linux user target can be added.(I am not sure what is this)
+ 4. aclint and plic driver have been copied in linx, however, linx virt
+    is still using riscv ones, copied drivers can be removed later.
+ 5. code clean.
+
+ 上述遗留问题除3之外都清理完了，linux user这个target后续有需要加进来吧。
+
+ 目前这样可以起来：
+
+ ./configure --target-list=linx-softmmu
+ make
+ 
+ qemu-system-linx -m 2048M -nographic -machine virt -kernel ./Image \
+ -append "console=ttyS0 earlycon root=/dev/ram rdinit=/init" \
+ -initrd ./rootfs.cpio.gz
+
+2021.12.16
+----------
+
+学习了下qemu tcg的基础知识，一下是现阶段对这个的认知：
+
+qemu基础逻辑
+------------
+
+ qemu虚拟机提供两种CPU实现的方式，一种是基于tiny code的实现，一种是基于KVM的实现。
+
+ 第一种方式，我们一般叫tcg(tiny code generator)，这种方式的基本思路是用纯软件的
+ 方式把target CPU的指令先翻译成所谓的tiny code，然后再把tiny code翻译成host CPU
+ 的指令，我们把target CPU指令翻译成tiny code的过程叫整个过程的前端，tiny code翻译
+ 成host CPU的过程对应的叫做后端。给qemu增加一个新CPU的模型需要既增加前端也增加后端，
+ 如果要把整个系统支持起来，还要增加基础设备以及user mode的支持，整个系统的支持的
+ 逻辑不在本文档里展开，本文只聚焦于前端的相关逻辑。如果目的是在一个成熟的平台上
+ 验证另一个新的CPU，比如在x86机器上跑riscv的虚拟机，验证riscv的逻辑，只需要加上
+ riscv指令到tiny code这个前端支持就好，因为tiny code到x86的后端已经存在；如果目的
+ 是，比如在一台riscv的机器上模拟x86，就需要加tiny code到riscv的后端支持，我们这里
+ 以riscv为例子，把它作为一个需要支持的CPU构架。
+
+ 一个完整的riscv到tiny code前端支持的例子可以参考：
+ https://lore.kernel.org/all/1519344729-73482-1-git-send-email-mjc@sifive.com
+
+ 以riscv为例子，体系相关的前端的代码在：target/riscv/*，后端的代码在：tcg/riscv/*，
+ 基础外设和machine的代码在hw/riscv/*
+
+ 基于KVM的方式，直接使用host CPU执行target CPU的指令，性能接近host上的性能，但是
+ 需要target CPU和host CPU是相同的构架。本文不讨论KVM的逻辑。
+
+qemu tcg前端解码逻辑
+--------------------
+
+ 把target cpu指令翻译成host cpu指令有两种方式，一种是使用helper函数，一种是使用
+ tiny code generator函数的方式。helper函数的方式还没有分析，现在只看tcg的方式。
+
+ 我们把逻辑拉高一层看问题，所谓target CPU的运行，实际上是根据target CPU指令流去
+ 不断的改变target CPU软件描述结构里的数据状态，因为实际的代码要运行到host CPU上，
+ 所以，target代码要被翻译成host代码，才可以执行，通过执行改变target CPU的数据状态。
+ qemu为了解耦把target CPU代码先翻译成tiny code，那么翻译成的tiny code的语义也就是
+ 改变target CPU数据状态的一组描述语句，所以target CPU状态参数会被当做入参传入tiny
+ code描述语句。这组tiny code是改变CPU状态的抽象的描述，有些CPU上的状态不好抽象成
+ 一般的描述就用helper函数的方式补充，所以helper函数也是改变target CPU状态的描述。
+
+ tcg的方式，我们要使用tcg_gen_xxx的函数组织逻辑描述target CPU指令对target CPU状态
+ 的改变。一些公共的代码是可以自动生成的，qemu里使用decode tree的方式自动生成这一部
+ 分代码。
+
+ 以riscv的代码来具体说明。qemu定义了一组target CPU指令的描述格式，说明文档在：
+ docs/devel/decodetree.rst，riscv的指令描述在target/riscv/insn16.decode、insn32.decode
+ 里，qemu编译的时候会解析.decode文件，生成对应的定义和函数，生成的文件放在
+ qemu/build/libqemu-riscv64-softmmu.fa.p/decode-insn32.c.inc，decode-insn16.c.inc里。
+ 这些文件生成的trans_xxx函数需要自己实现，riscv的这部分实现是放在了在target/riscv/insn_trans/*里。
+ 生成的文件里有两个很大的解码函数decode-insn32.c.inc和decode-insn16.c.inc，qemu
+ 把target CPU指令翻译成tiny code的时候就需要调用上面两个解码函数。
+
+ 我们用riscv user mode的代码来看看上层具体调用关系。qemu提供system mode和user mode
+ 的模拟方式，其中system mode会完整模拟整个系统，一个完成的OS可以运行在这个模拟的
+ 系统上，user mode只是支持加载一个target CPU构架的用户态程序来跑，对于一般指令
+ 使用tcg的方式翻译执行，对于用户态程序里的系统调用，user mode代码里模拟实现了系统
+ 调用的语意。linux user mode的代码在qemu/linux-user/*，具体的调用过程如下：
+
+```
+ /* qemu/linux-user/main.c */
+ main
+   +-> cpu_loop
+     +-> cpu_exec
+       +-> tb_gen_code
+             /* qemu/target/riscv/trannslate.c */
+         +-> gen_intermediate_code
+	   +-> translator_loop(&riscv_tr_ops, xxx)
+	         /* riscv_tr_translate_insn */
+	     +-> ops->translator_insn
+	       +-> decode_ops
+	         +-> decode_insn16
+		 +-> decode_insn32
+```
+ 
+ 基本逻辑就是这样。下面展开其中的各个细节看下，细节上大概有这么几块：
+
+ 1. tcg整个翻译流程构架分析
+ 2. decode tree的语法
+ 3. tcg trans_xxx函数的语法
+
+tcg翻译流程
+-----------
+
+ 整个tcg前后端的翻译流程按指令块的粒度来搞，收集一个指令块翻译成tiny code，然后
+ 把tiny code翻译成host CPU指令，整个过程动态执行。为了加速翻译，qemu把翻译成的host
+ CPU指令块做了缓存，tcg前端解码的时候，先在缓存里找，如果找见就直接执行。
+
+ 代码分析：todo。
+
+decode tree语法
+-----------------
+
+ 因为CPU指令编码总是一组一组的，就可以用decode去描述这些固定的结构。
+
+ decode tree里定义了几个描述：field，argument，format，pattern，group。依次看看
+ 他们是怎么用的。只记录要注意的点，细节还是直接看decodetree.rst这个文档。
+
+ CPU在解码的时候总要把指令中的特性field中的数据取出作为入参(寄存器编号，立即数，操作码等)，
+ field描述一个指令编码中特定的域段，根据描述可以生成取对应域段的函数。
+
++---------------------------+---------------------------------------------+
+| Input                     | Generated code                              |
++===========================+=============================================+
+| %disp   0:s16             | sextract(i, 0, 16)                          |
++---------------------------+---------------------------------------------+
+| %imm9   16:6 10:3         | extract(i, 16, 6) << 3 | extract(i, 10, 3)  |
++---------------------------+---------------------------------------------+
+| %disp12 0:s1 1:1 2:10     | sextract(i, 0, 1) << 11 |                   |
+|                           |    extract(i, 1, 1) << 10 |                 |
+|                           |    extract(i, 2, 10)                        |
++---------------------------+---------------------------------------------+
+| %shimm8 5:s8 13:1         | expand_shimm8(sextract(i, 5, 8) << 1 |      |
+|   !function=expand_shimm8 |               extract(i, 13, 1))            |
++---------------------------+---------------------------------------------+
+ 上面的定义中，一个数据，比如一个立即数，可能是多个域段拼成的，所以就有相应的
+ 移位操作，再比如有些立即数是编码域段的数值取出来后再进过简单运算得到的，field定义
+ 中带的函数就可以完成这样的计算。
+
+ argument用来定义数据结构，比如，riscv insn32.decode里定义的: &b imm rs2 rs1，
+ 编译后的decode-insn32.c.inc里生成的数据结构：
+```
+ typedef struct {
+     int imm;
+     int rs2;
+     int rs1;
+ } arg_b;
+```
+
+ format定义指令的格式。比如；
+```
+  @opr    ...... ra:5 rb:5 ... 0 ....... rc:5
+  @opi    ...... ra:5 lit:8    1 ....... rc:5
+```
+ 比如上面就是对一个32bit指令编码的描述，.表示一个0或者1的bit位，描述里可以用
+ field、之前定义的filed的引用、argument的引用，field的引用还可以赋值。field可以
+ 用来匹配，argument用来生成trans_xxx函数的入参。
+
+ pattern用来定义具体指令。比如riscv32里的lui指令：
+```
+ lui      ....................       ..... 0110111 @u
+
+ @u       ....................      ..... ....... &u      imm=%imm_u          %rd
+ %imm_u    12:s20                 !function=ex_shift_12
+ %rd        7:5
+```
+ 上面把相关的formate、argument、field的定义也列了出来。可以看到lui的操作码是0110111，
+ 31-12bit是立即数，11-7是rd寄存器的标号，其中立即数要把31-12bit的数值左移12bit。
+ 可以看到riscv里对应的trans函数的实现是：
+```
+ static bool trans_lui(DisasContext *ctx, arg_lui *a)
+ {
+     if (a->rd != 0) {
+         tcg_gen_movi_tl(cpu_gpr[a->rd], a->imm);
+     }
+     return true;
+ }
+```
+ 用生成的立即数更新rd寄存器。
+
+ group：todo
+
+trans_xxx函数语法
+-----------------
+
+ todo
+
+2021.12.17
+----------
+
+ 会上讨论有两个遗留的问题：1. 在rv的指令里区分出block head，2. 微指令子状态的建模。
+
+ 对于1，我们可以用rv compress指令中的reserved指令，但是reserved指令的编码是，
+ bit 15 - bit 5和其他指令做区分的，这样会占用bstart imm的一些位数，但是反正也是
+ hack的方式，感觉先可以把bstart size搞的小点也没有问题。
+
+ 对于2，就是怎么保存block的t寄存器以及怎么找到的问题。在trans函数里我们已知的是
+ pc和被引用寄存器对pc的偏移offset，只要再知道bpc的地址就可以计算出t寄存器的下标：
+ t_index = pc - bpc - offset，所以，在解一个block的时候要把bpc保存起来。
+
+ qemu使用translator_loop函数，解码一段code，放到tb里，我们正好可以用这个loop去
+ 解一个linx block，DisasContext是这个解码的上下文，我们可以把t寄存器加到这个上下
+ 文里。同样的bpc也保存在DisasContext。这里有一些问题要推下: 1. loop要比block的
+ 最大值大，貌似是满足的; 2. 假如block里有跳转，也不影响直接，tb完结就好; 3. block
+ 里有异常或者中断会怎么样，这个现在看不清楚?
+
+2021.12.20
+----------
+
+ 12.17分析的有问题，t寄存器不能加上DisasContext里，因为后端的解码都是针对tcg_ctx的，
+ 我们最好也按cpu reg一样的思路处理t寄存器，其他的逻辑不变。这样编码后，目前是可以
+ 跑通 get/get/add/set这样的逻辑的，load/store还没有做。
+
+ 调试的时候，遇见了几个忽略的问题，获得几个调试技巧。
+
+ 忽略的问题：
+
+ 1. riscv函数调用ABI是用a0, a1传递入参，用a0传递返回值，a0，a1对应的是x10，x11，
+    所以，get的gpr应该是10，11，set的gpr应该是10。
+
+ 2. 尽然把set的link域段漏了，导致一只把数值set不出来。
+
+ 调试技巧：
+
+ 用user mode调试的，-d 加上各种参数可以看到翻译的中间状态，其中比较有用的是可以
+ 加点调试代码把t寄存器的数值打出来，代码：
+```
+@@ -743,6 +797,11 @@ void riscv_translate_init(void)
+             offsetof(CPURISCVState, fpr[i]), riscv_fpr_regnames[i]);
+     }
+ 
++    for (i = 0; i < 10; i++) {
++        cpu_t_reg[i] = tcg_global_mem_new_i64(cpu_env,
++            offsetof(CPURISCVState, t_reg[i]), riscv_t_reg_regnames[i]);
++    }
+```
+ qemu-linx -d cpu,in_asm test_app &> log
+ 这样可以看到t寄存器的变化，知道get，add，get在系统寄存器和t寄存器上有没有生效。
+
+ 这里有两个问题还没有搞清：1. 寄存器dump的数值一直是落后在(可能格式就是这样？),
+ 2. 加上-singlestep的一直出Illegal instruction (core dumped)。
+
+2021.12.23
+----------
+
+ 前几天把load/store也实现了。今天开始把整个设计梳理下，大家统一下就继续往前走，
+ 现在的block指令的定义还在变化，不过不影响我们把基本的代码先搞上去。
+
+ 要梳理的逻辑有：1. bstart编码; 2. rv和blk状态切换状态机; 3，基础数据结构;
+ 4. 编码注意事项(先统一搞一个参考代码); 5. 测试方案。
+
+ 1. bstart编码
+
+   就用国柱说的 100 bype:3 c:1 bsize:7 00的编码，正好够了。(需要反馈给编译器团队)
+
+ 2. rv和blk状态切换状态机
+
+   国柱也推了下，自己上面也推了一个逻辑，但是实现的时候，把TB的第一条指令的地址
+   传给了bpc，这样是不对的。block的代码完全可能不是跳转进来的，比如，可能是这样的：
+```
+   riscv code 1
+   riscv code 2
+   riscv code 3
+   bstart xxx
+```
+   这样会把这几条指令都放到一个TB里，bcp的地址就不是TB的第一条指令，应该是当前pc。
+   和国柱还有一个区别的地方是，实现的时候把一些block的状态放到DisasContext里了，
+   在DisasContext完全涵盖block时是没有问题的，但是，比如跳转就会出问题，跳转会
+   导致当前TB完结，DisasContext也释放了，当再跳转回来的时候是一个全新的DisasContext
+   了，但是还要回到原来block的上下文，所以跳转的上下文关系需要维护在CPU的状态上。
+   和孙文博确认了下，跳转只能发生在一个block完成的时候，return需要到一个新的block，
+   但是我不确定这个是不是一个稳固判断，我们后面还是把block的状态都维护在CPU状态上吧。
+
+   这样看来，直接用国柱的逻辑就好。我把他的推演copy过来，补齐一些状态变化需要考虑
+   的地方。
+
+   > 1. 进行块解码还是RV解码是个状态机问题，状态是CPU的一部分，有两种方法表示：
+   >
+   >    1. 用一个变量表示
+   >    2. 用一个pc的范围表示
+   >
+   >    由于每次解码都需要判断一下有没有超出范围，选第二个方案。用bpc1/2表示，当
+   >    bpc1=全f的时候表示RV解码状态好了。
+   >
+   > 2. 初始状态是RV解码。
+   >
+   > 3. 可以导致状态切换的刺激如下：
+   >
+   >    * RV解码状态刺激
+   >      * 解码到bstart，切换到Block。wz: bp1 = pc，bp2 = pc + block_size。
+   >      * 任何其他情形，状态不变
+   >
+   >    * 块解码状态刺激
+   >      * 解码失败，异常，状态不变
+   >      * pc_next超过当前块地址范围，切换回0。wz：切到rv解码，bp1 = bp2 = 全f。
+   >        (想到的case有：1. 当前block完成; 2. 块内解码到跳转指令)
+   >
+   >    从这个状态机看，可以让块（微）指令和RV指令的翻译共享TB，不需要特别分离。
+
+   后面加跳转的时候，可以在CPU里保存block的状态。
+
+ 3. 基础数据结构
+ 4. 编码注意事项
+
+    先写一个版本出来，大家一起review，然后push上去。
+
+ 5. 测试方案
+
+    感觉我们分两部走，第一步是每加一个指令就把对应的测试加上，第二部是考虑系统测试，
+    开看的原因是我们现在并不强依赖系统测试，而且指令编码还在改，之后还要改。
+    第一步，我们可以为每一个指令在linx_test里创建一个单独的目录，就用指令的名字
+    作为目录名字，测试只争对单条指令，但是要包含正常、异常和边界值测试。
+
+    测试的代码也可以先写一个版本，大家一起review，然后push上去。
+
+12.25
+-----
+
+ 这两天在跟着国柱的文档看后端的解码代码，大概明白了，细节随后看吧。补充了之前的
+ 学习笔记: https://github.com/wangzhou/notes/blob/master/%E5%9C%A8qemu%E9%87%8C%E5%A2%9E%E5%8A%A0%E6%8C%87%E4%BB%A4%E7%9A%84%E5%89%8D%E7%AB%AF%E8%A7%A3%E7%A0%81
+
+ review了李飘提交的基础代码，改了几版后，感觉差不多了，已经合入linx-master。
+ 基础代码里对t寄存器，我们采用8个，放弃之前128个的设计，基本的考虑是128个在同步
+ 的时候可能会有问题。
+
+12.27
+-----
+
+ 今天重新梳理里分支，把里李飘提交的第一个patch合并成了一个，然后把截至到12.27的
+ 所有devlog合成了一个patch，都提交到一个叫linx-dev的分支上了。这个分支作为我们
+ 平时的开发分支，有了patch直接push到这个分支上，review出的问题也直接修在这个上面。
+
+ 看了下娟娟写的测试框架，基本上都平铺开来搞了，先这样吧，后续出问题再调整。
+
+ 看了下分给我的几条指令：rem/remu/mul/sll/lb/lh/lw/ld/lbu/lhu/lwu，一个问题是手上
+ 拿不到准确的定义，先按娟娟写的那个来吧。(不过这个也是只说了link0，link1的定义)
+
+ 其他的几个疑问发到群里，但是还没有人回，我先给一个初步定义，继续走吧:
+
+ 1. rem/remu的除0和溢出我们定义的和rv一样。
+ 2. sll我们认为硬件会做mask，不会超过31。
+ 3. lx的符号扩展我们认为和rv的一样。
+ 4. mul的定义我们认为和rv的一样。
+
+ 这样看来，我们基本上可以完全copy/paste riscv的代码。又看了一下riscv以上指令的
+ 实现。需要注意的有几下几点：1. load里有个gen_pm_adjust_address，貌似是rv的一个
+ 特性，直接删掉这行就可以; 2. load写寄存器有一个x0 zero寄存器的判断，这个block上
+ 不需要; 3. rem/remu以及load到x0，rv手册上说要报异常，代码里还没有看到是怎么处理的，
+ 这个要再看下。
+
+12.28
+-----
+
+ 再总结下我们现在的分支策略：
+
+ 1. 我们现在所有人的开发都移动到linx-dev这个分支上。之前的linx-devlog这个分支之前
+    我理解是存放开发log的，提交的比较乱，各种merge提交都有，之前想着只是用这个分支
+    对齐进展，就没有在意这些。
+
+ 2. 在linx-dev这个分支上，开发的patch可以直接push，如果有问题，我们再加patch修改。
+    这样做的原因是，我们认为长远看linx-dev这个分支也是我们的一个开发分支，而且我们
+    当前处于开发初期快速迭代的阶段，提mr然后review会反复拉扯，降低开发效率。
+
+ 3. 大家的patch要符合基本的格式，这个包括：1. patch头，2. patch的内容。
+
+    1. patch头：
+
+       subject line                      <- 一行说明白改了啥，参照下面的格式。
+
+       commit message                    <- patch的介绍，需要别人注意的点写清楚。
+
+       signed-off-by: xxxx               <- git commit -s可以自动加上。
+
+       subject line格式：
+
+        - 开发日志用：xxx devlog update：data   e.g. wz devlog update: 12.28
+        - 指令模拟代码用: linx：xxxx            e.g. linx: add ld instruction
+        - 测试代码用：test: xxxx                e.g. test: add basic ld test case
+
+        这样做的一个好处是，后面合代码的人看到patch的名字就可以做大该的分类。
+
+    2. patch的内容：
+
+       patch的内容请大家先消除各种格式的问题，可以使用scripts/checkpatch.pl xxxx.patch
+       检查，然后消除其中的error和warning。
+
+ 4. 一些其他的注意事项
+
+    1. 开发日志的patch独立成单个patch，不要和代码混在一起，这样做是为了以后patch
+       整理方便。
+
+    2. push的patch中不要带merge commit patch。
+
+    3. 所有对qemu的代码的改动，在对应文件加上GPLv2的版权申明，所有test文件加上
+       海思私有版权申明：(过两天需要是2022了)
+
+       Copyright by HiSilicon 2021. All Rights Reserved.
+
+ 今天把rem/remu/mul/sll/lb/lh/lw/lbu/lhu/lwu/ld这条指令都实现了，代码还没有push。
+ 明天再验证下再push。有一个问题是lx这些指令的函数都是一样的，计划用宏搞下，但是
+ 编译还有点问题，明天再看了。
+
+12.29
+------
+
+ 整理下patch，把上面的指令都push到linx-dev，汇编宏还是没有搞定，需要在汇编宏里
+ 嵌套宏，一直展不开，先用复制代码的方式搞了。
+
+ 看了下跳转指令的riscv实现。我们现在先按照国柱文档里说的把，b.xxx + bnext.cond
+ 这个实现了吧。
+
+ 还有几条系统指令: sysget, sysset, ebreak, ecall, mret, sret, wfi, fence/fence.i/sfence.vma
+
+ sysget/sysset是在gpr和csr之间传送数据，这个好实现。不过，从块指令的角度讲，这个
+ 没有啥信息量啊，你引入块，要解决的是外部寄存器和块内部的通信，get/set解决gpr和t
+ 的通信问题，sysget/sysset应该解决csr和t的通信问题，现在这个定义不是绕了一圈么？
+
+ ebreak, ecall, mret, sret, wfi和block ISA的特权级定义有关系，现在找不见定义，
+ 我们全部按照riscv的来? (系统的看下riscv的spec，把之前零碎的东西总结下)。
+
+ fence相关和内存模型有关系，这个有定义的地方么？
+
+12.30
+-----
+
+ 分析了qemu里模拟系统指令的代码。见综合分析部分。
+
+ v0.9的spec放出来了，全部看了下，跳转的部分还有点疑惑，已经留言提问。CMP指令搞明白
+ 了，我们可以在现在的阶段把CMP也加进来。spec已经加权限分享给相关同事，现阶段的qemu
+ 模型我们还以之前定义的为准，v0.9的spec只是帮助大家理解指令用。
+
+ 代码还没有来得及reviwe，明天看下。
+
+12.31
+-----
+ 
+ 梳理下我们现在做的指令，已经和新指令不一样的地方，看看这个阶段怎么个结束，下个
+ 阶段什么时候开始。
+
+ 我们之前列的指令还有bltu/bge/bne/ret/battr/bnext/getxxx/copy/bstartxx没有做，
+ 之前我对cmp不理解，我们没有做cmp，这个在最新的spec里有，我们需要补上。
+
+ 新版本在bstart、跳转指令、原子指令和异常相关系统指令，和旧的版本变化较大。
+
+ 我们的策略是在当前的阶段，先把剩下的没有什么变化的指令全部做掉，变化大的，我们
+ 停下来，不纠结在我们之前的理解上，我预计这个工作也就一两天的事。然后，我们打一个
+ tag，之后依照最新的spec来迭代。
+
+ 当前我们需要把：getxxx, copy, const, cmp做掉。
+
+ 新迭代开始时，我们check一遍所有已经实现的指令，先把微小改变或错误的全部根据新
+ spec刷新一遍，然后开始做大块的改动。
+
+ 我初步看微小变化的有：1. opc code高低位变了，2. load/store的定义变了。具体细节
+ 需要大家再check一遍。
+
+ 大块的修改可以看到有几个设计要做：1. bstart，2. 跳转，3. 原子，4. 异常中断，5.
+ 系统指令。
+
+ 第二轮搞定后，我们可以开始和内核联调。
+
+ 1. bstart/跳转：
+
+    新的bstart使用了128bit的header, header和mini-code存放位置不一样了，header的
+    第一个32bit采用了和riscv兼容的编码，所以直接用spec里的编码就好。解析出mini-code
+    的地址后要，需要跳到对应的地址执行。对于下一个地址的计算，直接跳转可以解析header
+    的时候就确定，地址需要计算的，需要在mini-code执行的之后更新，然后mini-code全部
+    执行完后跳转，看来bstart需要和跳转一起考虑。新的spec里没有了ret，过程调用用set gpr
+    和跳转实现。
+
+ 2. 原子和异常中断还在讨论细节定义，先关注讨论和进展。
+
+ 3. 系统指令可以直接搞。
+
+ 计划先hack下现在的16bit head做下header和code分离的测试，hacking中...
+
+1.4
+----
+
+ 看了下qemu tcg branch的实现，以及atomic的实现，笔记见下面的综合分析。
+
+1.5
+----
+ 
+ 基于新的v0.9 spec重新推一下指令切换的状态机，我们把跳转一起拉进来考虑，原子指令
+ 的逻辑另外考虑。具体的分析见下面综合分析4。
+
+1.6
+----
+
+ 持续更新qemu模型推演，分析见下面综合分析4。
+
+1.10
+----
+
+ 看了大家的修改，第一轮里遗留的解码问题，基本上已经修改了。我们开始搞v0.9的head
+ 和跳转的编码，review了李飘push上来的版本，给了意见。基于之前团队同事的patch, 开会
+ 分享了下我自己平时的开发步骤和工具使用。
+
+ 想了下fence的实现，目前我们直接copy riscv的就可以。
+
+1.11
+----
+
+ 改了head解析部分的代码，加了addbpc，addtpb，但是，因为test代码在大改，就先没有
+ 加test case。系统指令还没有定义，感觉我们可以先自己定义下: 系统指令是一个128bit
+ 的块头，把这个块头的32-63bit换成之前定义的32bit系统指令，标准块的type是0，系统
+ 块的type是1。
+
+ 看到邮件列表上有人发基于块的向量指令。是时候要考虑定义block模型的开发维护策略了，
+ 见如下综合分析
+
+1.13
+----
+
+ 补全了一些atomic里的逻辑。实现了atomic的支持和测试代码，没有内存访问的测试过了，
+ 不过只改寄存器也不会出问题，带内存访问的会有rcu超时。明天继续看吧。
+
+1.17
+----
+
+ 这几天在调试原子指令，发现之前的逻辑有问题，qemu里其实对无法直接映射到host原子
+ 指令的这样情况是有考虑的。基本逻辑是，推出大循环，然后停下所有cpu，然后再执行原子
+ 指令，写了一个demo的代码，测试发现两个线程做原子加，还是有问题。先提交了测试代码，
+ 指令模拟的代码需要继续debug下。
+
+ 再当前的调试时，还发现一个问题，mini code是5，也就是10byte时，会感觉出现异常指令，
+ 异常指令落在ret上，当改成mini code是6，也就是12byte的mini code时，测试很多次，
+ 没有出现异常指令的问题。这个问题的根因还没有找见。
+
+1.18
+----
+
+ 思考当前qemu下原子指令到底该怎么搞，qemu里也有在模拟原子指令的异常处理里只处理
+ 一条指令的限制，就是一个tb只含有一条指令，这个地方的具体逻辑是：第一次遇见原子
+ 指令的时候，触发atomic异常，atomic异常里把CF_PARALLEL这个标记位去掉，然后再次
+ 解析相同的原子指令，在指令实现的地方会走!CF_PARALLEL的实现，因为已经在互斥区了，
+ 这个实现就可以用无锁的方式实现。
+
+ 因为有上面一个tb只含一条指令的限制，如果破坏了这个限制，可能将来上传会不容易。
+ 所以，尝试了下把一个atomic块里的指令都在一条指令解析的时候解析完成，但是调试的
+ 时候出现了ctx temp用完的情况，关于ctx temp还没有搞的很清楚，也没有时间具体分析
+ 错误的地方。
+
+ 晚上开会了解到，原子块指令中将来可以有跳转!! 注意其他的快指令里也会有跳转!! 结合
+ 这个约束，上面把全部atomic块的微指令在一条块指令里解析的实现可能无法实现。
+
+ 把一个tb只能有一条指令这个限制放松，貌似在功能上也是可以接受的。对于，下一个块指令
+ 是普通块指令，会继续在互斥区解码，对于下一个指令是原子指令块指令，会直接长跳转
+ 会互斥区。这样看，就是互斥区的作用范围大了，后续上传会有问题，但是，之前这样
+ 实现会有功能问题。所以，这个地方有风险!! 明天先把之前的实现整理下，push下，大家
+ 一起看下吧。
+
+1.21
+----
+
+ 在改原子指令的时候，国柱指出cpu_loop_exit_atomic要跑在helper函数里，准备改成这样。
+ 重新看了下现在head解析的逻辑，感觉比较乱。结合这几天对qemu的认识再把这块梳理下，
+ 看看head解析的高层逻辑到底是怎么样的。
+
+ qemu对指令的首次解析在tcg_gen_code里，但是当qemu搜到现成的tb时，它会直接跳过到tb
+ 执行。我们这里把首次解析叫做解析。解析和tb执行不能混用，否则第二次执行，qemu会
+ 直接执行tb，解析部分对cpu的改变就跑不到了。我们现在对block head的处理是在解析里
+ 做的，每次都解析是没有问题的，但是，一但在解析头的时候加了tcg_gen_xxx/gen_xxx
+ 的代码，逻辑就乱了，当前在加系统指令的时候，在头解析的时候直接调用了系统指令的
+ 翻译函数，其中就有tcg_gen_xxx/gen_xxx的函数，这样就错了。
+
+ 我们可以在解析头的时候不带tcg_gen_xxx/gen_xxx相关的函数，而在下一个tb中去处理
+ 具体业务相关的逻辑，这样，头的处理代码只是做解析，并且每次都跑进来解析，然后exit
+ tb。我们可以在此基础上优化头的处理，helper函数中处理头，然后exit tb，这样下次
+ 跳到头也可以loopup找后就直接执行tb。helper函数处理头时，其实已经不用exit tb，
+ 但是，exit tb会使得后面微指令的代码处理方便，因为exit tb使得后面处理微指令时，
+ 头的数据已经更新到env里，在微指令的模拟代码里可以直接引用env里关于cpu的数据。
+
+1.22
+-----
+
+ 1.21中的表述重新描述下。现在block head解析的代码存在bug。
+```
+static bool trans_blk_head(DisasContext *ctx, arg_blk_head *a)
+{
+    CPURISCVState *env = ctx->cs->env_ptr;
+    uint32_t insn32;
+
+    env->blktype = a->blk_type;
+    env->brhtype = a->br_type;
+    env->btext = a->imm;
+
+    insn32 = translator_ldl(env, &ctx->base, ctx->base.pc_next + 4);
+    env->battr = extract32(insn32, 0, 10);
+    env->bsize = extract32(insn32, 10, 10);
+    env->bnext = extract32(insn32, 20, 12);
+
+    if (head_type_sys == env->blktype) {
+        insn32=translator_ldl(env, &ctx->base, ctx->base.pc_next + 8);
+        if (!decode_block_sys(ctx, insn32))
+            gen_exception_illegal(ctx);
+        ctx->pc_succ_insn = ctx->base.pc_next + env->bnext;
+    } else {
+        env->smask = translator_ldl(env, &ctx->base, ctx->base.pc_next + 8);
+        env->gmask = translator_ldl(env, &ctx->base, ctx->base.pc_next + 12);
+        env->bpc = ctx->base.pc_next;
+        env->bpc1 = ctx->base.pc_next + env->btext;
+        env->bpc2 = env->bpc1 + env->bsize;
+        env->ibpc = 0;
+        /* 计算微指令地址, 指令头解码完成后应跳转到微指令解码 */
+        ctx->pc_succ_insn = ctx->base.pc_next + env->btext;
+    }
+
+    if (env->battr == BLK_ATOMIC) {
+        env->pc = env->bpc1;
+        cpu_loop_exit_atomic(env_cpu(env), GETPC());
+    }
+
+    return true;
+}
+```
+ 这块代码更新env数据, 同时遇到系统指令的时候会执行decode_block_sys的代码，这个
+ 代码里必然会在tb里产生代码，下次qemu执行到一样的系统指令，找到对应的tb后直接执行
+ tb，会使得guest CPU数据的不一致。
+
+ 解决这样的问题，最好是叫qemu在翻译指令的阶段所有对guest CPU状态的更改都通过中间
+ 码来做(生成tb，在tb执行的时候改变CPU的状态)。当然，我们也可以小心区分出不会导致
+ CPU数据不一致的CPU数据，这些数据可以在翻译指令的时候改变(比如，CPU里用于判断在
+ 不在block body范围内的bpc1, bpc2)。但是，这样比较容易导致错误，我们采取全部CPU
+ 状态都通过中间码改变的方式。
+
+ 当前在解析微指令的时候是直接通过env的指针取bpc1，bpc2的值的：
+```
+    /* in_block */
+    if (ctx->base.pc_next >= env->bpc1 && ctx->base.pc_next < env->bpc2) {
+```
+ 如果，在解析head的时候bpc1，bpc2通过中间码更新，这里直接这样引用就可能错(当head
+ 翻译和微指令翻译在一个tb里的时候)。有两种方式解决这个问题，1. 把头的解析放到一个
+ 独立的tb里，这样在微指令解析里就可以直接env->bpc1这样引用，这样做的缺点是丧失了
+ qemu针对中间码的优化机会；2. 通过中间码重新这段逻辑。
+
+ 为了保留qemu优化的机会，我们计划使用2的方法。头的解析需要一个完整的设计。
+ 
+ helper函数尽量先不要使用，因为会丧失qemu中间码的优化机会。
+
+ Note: 昨天使用helper函数改head的解析出问题的原因找到了，推出tb的时候只写了
+       ctx->base.is_jmp = DISAS_NORETURN， 没有写tcg_gen_exit_tb，这样tb的尾巴
+       没有加上，执行cpu_tb_exec的时候后面的icount_enabled判断会出异常。加上
+       tcg_gen_exit_tb后，除了atomic用例，其他的用例都可以跑过，hack代码暂时
+       push到了一个叫helper_parse_head的分支上。
+
+       继续在这个基础上调试atomic的问题，按说swap_reg一定不会错的，因为只是寄存器
+       的update，根本就没有不同cpu之间的同步问题，我试了下非原子下的swap_reg，是
+       没有问题的。继续测试原子块下的单线程的情况，发现swap_reg还是有机会fail，
+       所以，一定是, 新引入的原子操作跳到EXCP_ATOMIC处理的这种方式，有搞错的地方！
+
+1.24
+-----
+
+ 整理下atomic的设计思路。在不能把guest上的原子操作映射到host上时，qemu已经提供了
+ EXCP_ATOMIC的异常去处理，基本逻辑是，在翻译的时候触发EXCP_ATOMIC异常，在异常处理
+ 中，在一个互斥区里再次执行原子操作，两次原子操作通过tb_cflags中的CF_PARALLEL在
+ 翻译时进入不同的分支处理，第二次的原子操作就可以用非原子的指令做，因为已经在互斥区
+ 里了。
+
+ 块原子实现也按照如上的处理，在解析block头的时候，先把pc设置成atomic body的地址(bpc1),
+ 然后触发EXCP_ATOMIC异常，在异常处理里解析执行atomic body。
+ (其他原子指令的处理逻辑是重新执行原子操作，我们的设计是直接跳到atomic body执行)
+
+ 当前的EXCP_ATOMIC处理里限制一个tb只有一条指令，atomic body是多条指令，我们这里
+ 需要改变qemu的代码，放松这个限制，从引入这个patch的描述看，这个限制是为了缩小互斥区，
+ 放松这个限制应该不会有功能问题，不过上传的时候可能会有问题。EXCP_ATOMIC处理不会
+ 处理中断和异常, 所以不会被中断和异常流程进入。当前riscv的代码里，使用
+ cpu_loop_exit_atomic的地方还有一个是处理向量指令的地方，也不会和这里冲突。
+
+1.25
+-----
+
+ 1.22 devlog里提到现在的块头处理有问题。这里做一个对head解析逻辑的梳理，结合现在
+ 对qemu的认识，再次更新综合解析的"qemu模型推演"这一节，还没有推完。
+
+ 今天上午还继续debug的atomic。观察到几个点：
+
+ 1. atomic swap reg, atomic add是都会错的。
+
+ 2. 观察到一个原子body会有两个tb：见附录1
+
+ 3. gdb看到，一次是在atomic上下文，一次是在正常循环里。
+
+ 暂时突破不了，而且现在头解析相关的问题还没有解，不知道主体代码还有什么问题。
+ 先把主体的框架搞的稳定点，再看atomic的问题吧。
+
+1.26
+-----
+
+ 继续刷新"qemu模型推演"这一节，基于v0.11重新梳理了一遍。
+
+1.28
+-----
+
+ 昨天开始改头的代码，目标是全部用中间码更新cpu状态，但是改着改着发现有点问题，
+ 就是代码太难写了。重新思考了下头里的信息是否要用中间码。更新在下面的"qemu模型推演"。
+
+1.29
+-----
+
+ 昨天开始把头和跳转的代码都看了一边，顺带的问题都在群里提了。跳转里面有个sbpc语义
+ 的问题以为是设计问题，是我理解错了，当前的设计中用跳转类型给sbpc划分不同的语义，
+ 当是条件跳转的时候，sbpc是是否跳转这个flag，当时间接跳转、间接调用的时候，spbc
+ 是跳转的目的地址。还有一个问题，call跳转的时候，body可能改link寄存器，这个要在
+ 块后生效，不过这个不是乱了么？
+
+ 异常保存和恢复这块重新整理了下逻辑，见下面"qemu模型推演"。在v0.11里，把异常保存
+ 恢复的寄存器都编码到了系统寄存器的空间里。
+
+ bstate.out.sr[0-31], bstate.out.tpc, bstate.out.t[1-8]，bstate.out.spbc,
+ bstate.in.sr[0-31], bstate.in.tpc, bstate.in.t[1-8]，bstate.in.spbc, 这些都是
+ 系统寄存器。
+
+ 我们在实现的时候把这部分寄存器的id暂时编码到：0x5c0-0x5ff这一段risvc的custom
+ Supervisor CRS空间。
+
+ 晚上发现bnext/btext现在没有考虑负数的情况，这个是一个bug，需要修改。
+
+2.7
+----
+
+ 今天有梳理了下中断异常场景恢复的场景，感觉还是要动态解析头，并把头做no chained
+ tb的处理，具体逻辑见下面的更新。
+
+ 开始改这部分的代码，改代码的时候发现，翻译的时候，使用头相关的信息的时候，还是
+ 可以从evn里直接拿的，这是因为，由于头是no chained tb的，那么在翻译body的时候，
+ 头的tb一定在这之前跑过，信息已经更新到env里。(不直接用env里的信息，代码似乎是
+ 写不出来的)。
+
+ 临时改动的代码push到了一个叫tcg_head的分支上。测试test卡在call上，会有tb size为
+ 0的assert fail。大概看了下call的测试代码，明天继续debug吧。
+
+2.8
+----
+
+ 继续debug如上问题，发现和只有head的跳转处理有关系，之前就发现这块的跳转目前是在
+ translate.c里处理的，其实应该在head解析的时候直接做跳转，所以，先把这块改了，
+ call的问题也没有了。然后btext测试又出了问题，这个是测试负数跳转的，应该在decode
+ tree里直接定义是负数，这样自动生成的代码就会用sextract来做符号扩展，也不用自己
+ hack代码了。这些都改了后，全部用例通过了。明天整理下代码再做push，现在，异常恢复
+ 重新解头的路已经都铺好了。
+
+ 下午开会明确了下v0.2的目标，重点还是异常保存和恢复，以及原子指令。具体计划和
+ 目标在李飘的devlog里。
+
+ 考虑和OS，编译器联调，一个问题是我们对系统指令定义的对齐，若愚他们没有时间做这
+ 块的具体定义，就到导致现在系统指令定义在各个部件之间没有对齐。
+
+2.9
+----
+
+ 动态解析头的代码push上去了，把之前漏的addbpc/addtpc的test case加上了，加的时候
+ 顺带看了下ecall/ebreak的测试代码，发现brk的测试代码其实把测试进程都结束了。所以，
+ 我们加test case的时候可以都加上这个前面。
+
+ 之前甜根给了我kernel的branch，今天看了下，他们改的启动汇编还是之前头和body在一起
+ 的，感觉内核这块还需要改成现在v0.11的版本，不过这个又需要编译器的支持，总之感觉
+ 内核还是要早点调试起来。
+
+2.10
+-----
+
+ 甜根他们在依赖v0.11改代码，只是没有push，我们自己加紧做好qemu吧。
+
+ 继续分析之前原子区会缺页的问题，缺页处理后会重新执行原来的指令，这样就会再次进入
+ EXCP_ATOMIC，这一次在原子区就可以完成整个处理，这个里面有一个约束：原子区里
+ 的所有操作要重新执行一遍(也就是回滚原来的操作)，这是因为，你缺页离开了原子区，
+ 其他的cpu完全可能操作对应内存。
+
+ qemu里模拟原子块的时候，里面的访存指令有缺页异常了，内核在异常返回时，应该跳到
+ 这个原子块的块头上，这样，才能重新执行整个原子块。其实，把一个原子块指令看成
+ 一个类似rv里amoadd或者arm里ldadd的指令，他们也会在异常返回时重新执行本条原子指令
+ (待确定)。
+
+ 在qemu模拟中，如果限定了访问的内存必须是64B对齐的话，其实可以直接写出到内存，
+ 因为，只有异常和正常两种情况，正常的情况，原子区一把是可以都写完的，异常的情况，
+ 访问第一个store就会异常。但是，在执行原子区里指令发生普通异常，比如，没有64B对齐，
+ 我们就需要回滚写出去的store，这样看也可以维护一个cpu内部的buffer, 统一写出去数据。
+
+ review了下其他代码，问题记录下：
+ 1. 新加的系统寄存器的工作模式没有考虑
+ 2. test代码和qemu代码里的宏重复定义，要搞成一份
+ 3. sysset/sysget的实现反了，代码有多余的，而且调用do_csrxx函数也有问题
+
+2.14
+-----
+
+ 接着上面的讨论，看看原子块里有缺页异常的时候，qemu应该怎么实现，有异常时，会有
+ 异常恢复和保存的处理，但是对于原子块是不需要做这个的，因外随后要重新执行整个
+ 原子块，唯一要做的是清空cpu中和原子块相关的写出buffer，这个动作也可以在执行原子
+ 块一开始做。所以，从异常恢复和保存的角度看，需要看看是不是在原子块里，如果是原子
+ 块里，什么也不做就可以。这样，异常返回时，一样的返回到原子块的头上，然后重复执行
+ 整个原子块指令。
+
+ 现在原子块里没有跳转指令了，一个原子块就是在一个tb里，互斥区的代码也可以直接处理
+ 一次翻译执行就退出了。目前看，没有什么逻辑问题，开始写代码。
+
+ 和国柱讨论早上讨论了下原子的问题，发现我上面一个地方想错了，就是对齐的话也可能
+ 是跨页的，上面的逻辑假设的是跨页的，问了下若愚，他说硬件要求原子块指令只能访问
+ 一个对齐的cache line，否则的话报非法指令错误。(反思下，最近至少犯了几个直白逻辑
+ 绕进去没有出来的情况)。还有一个问题，原子块的设计可能对里面的指令有约束，比如，
+ 一个块里有store也有寄存器的改写，一但store异常，寄存器修改也要回退，寄存器修改
+ 没有直接改出去，所以也没有问题。
+
+2.15
+-----
+
+ sysset/sysget对异常恢复和保存的寄存器的配置可以在用户态进行。
+
+ 这样，我们已经恢复和保存的测试代码也好写了。大概可以这样：用第一个块先触发一个
+ 缺页异常，内核处理依然用rv的代码，在第二个顺延的块里读bstate.out, 配置bsate.in,
+ 配置bstate.in.en，然后跳到第一个块，第一个块从触发缺页的指令跑下去。这样，测试
+ 代码全部可以在用户态搞了。
+
+ 原子指令的测试要依赖内核的修改，需要内核的异常恢复跳到原子块头。但是，可以先把
+ 代码写出来，测试下没有缺页的场景。保存和恢复测试需要构造一定缺页的场景，原子指令
+ 测试，需要构造一定不缺页的场景，这个还没有思路。
+
+ 看了国柱推的原子指令的逻辑，可能对原子块内写gpr的场景有限制，但是qemu里应该没有
+ 问题，我们把gpr的提交放到原子提交之后，这样只有原子提交了，gpr才会提交。
+
+ 开始写代码，数据和内部buffer之间的交互先用help函数搞下。
+
+2.16
+-----
+
+ 我们可以用传统大页，保存访存指令一定不会缺页。对于一定会缺页的场景，其实实际上
+ 我们是想触发一次现场保存，可以先增加一条指令，利用这条指令触发下现场保存，这样
+ 保存恢复的测试可以先搞起来。
+
+ 持续原子指令编码，都用help函数搞了。发现store的顺序可能是随意的，这样之前的逻辑
+ 有点问题。目前采用一个比较直白的算法，就是用一个64bit的mask记录internal buffer
+ 里哪个byte有数据，在提交的时候再根据这个mask，一个个把数据store到内存。
+
+2.17
+----
+
+ 还在debug atomic的实现，似乎又回到原来的问题上，就是一个原子区会翻译出两个tb，
+ gdb跟踪了下，一个是在原子区翻译的，但是原子区翻译的tb跑一个随机的次数就会触发一次
+ 在非原子区的翻译，这里估计有一个很傻的问题。
+
+ 调试代码push到了atomic_v2的分支上了。
+
+2.19
+-----
+
+ review了下异常恢复保存的代码，本想顺手改了，但是看到后面有点多，comments已经发
+ 给娟娟了。总的看用trap触发保存和恢复的时候，还是要跑完第一个块，再第二个块里做
+ bstate.in.en的配置，不过要注意把tpc指到trap后面。
+
+ 继续调试原子指令的问题，缩小原子加的个数到10个，然后单线程，依然概率出现一段
+ 原子指令翻译成两个tb的情况，打印tb lookup时的参数，发现出问题的时候，cpu env可能
+ 一样也可能不一样，cflags没有加CM_ATOMIC(自己加的flags)，但是每次还会做跳出到
+ 原子区的跳转，就是说从长跳转到原子区的这段出了问题，没有到原子区，而是继续翻译
+ 了。其实，一看代码就明白了，中断没有屏蔽啊！在异常处理代码里加了打印，果然重复
+ 翻译的时候一个IRQ_U_EXT(编号是8)进来，这样处理完中断就直接翻译了，这也和cpu env
+ 有时前后不一致的信息对的上：虽然测试线程邦核了，中断还是可以随机发？
+
+ 中断相关的逻辑之前尽然一直没有注意到，周一把这个逻辑梳理下，补上这块。。。
+
+2.23
+-----
+
+ 这几天在接着梳理上面的问题，仔细跟了下上面的场景，原子块指令异常会正常进入互斥区，
+ 因为，原子块里的长跳转首先进入cpu_handle_exception，它返回true，去处理异常，后面
+ 的cpu_handle_interrupt是进不去的，在互斥区里，lookup tb，但是，tb却没有执行，在
+ 互斥区空跑一趟后，在主循环里进入cpu_handle_interrupt的时候会检测到已经有中断发生，
+ 然后去处理中断，处理完中断后，在翻译执行主循环里会翻译执行下之前的原子块。(这里
+ 中断处理里的执行还没有分析，中断号是7和5，中间还有异常进来)。注意，这里观察到的
+ 现象是，有中断时的情况，当原子块的处理和中断没有撞在一起的时候，是在互斥区里跑原子块的tb。
+
+ 可以推测是中断写入cpu的时候，触发了跳过tb执行的行为。cpu_interrupt里会把
+ icount_decr.u16.high改成-1，gen_tb_start会把这个值读出来，和0比较，如果小于0会
+ 直接跳到gen_tb_end里的labal上(tb cflags需要不带CF_NOIRQ)。也就是说，tb在执行的
+ 时候会根据cpu里的变量决定是否跳过tb执行，中断会改变这个变量触发跳过tb执行。
+ (u16和u32细节上还要看下)。
+
+ 所以，在翻译原子块的时候，要带上CF_NOIRQ，就是禁止掉中断skipp tb执行的情况。这样
+ 修改后，现在的原子加测试四线程并发，每个线程执行一百万次加，没有问题了。
+
+ 整理了代码，明天提交上去。原子块指令由于缺少cmpxchg功能，硬件需要再仔细设计下，
+ 会上讨论是先按把riscv的原子指令放到系统指令里(就是可以直接映射到host原子指令的实现，
+ 基本可以copy riscv的实现)。
+
+ review了现场保存和恢复的新补丁，已经直接反馈意见，不过，似乎之前的意见还没有改完，
+ 相关的测试也需要添加。
+
+ 项目上对齐使用v0.12版本作为qemu/kernel/编译器集成的基础，已经把v0.12的word文档
+ 先发给大家看，明天来了对齐下内部开发计划。
+
+3.2
+----
+
+ 项目上已经和大家对齐了3.15出v0.3支持v0.12 ISA。
+
+ 这几天分析了下riscv lr/sc和AMO的原子指令和qemu里的实现，见综合分析6.
+
+3.3
+----
+
+ v0.3主要实现: 1. 系统微指令，2. 辅助块，3. 基于lr/sc的原子CAS指令，其中，前两个是
+ 重点，原子指令若愚说不会变了，但是内核版本会先空出这一部分，所以lr/sc的实现还可以
+ 有时间。系统微指令，异常恢复和保存的地方需要注意下，在系统块里，可以触发异常和中
+ 断，对于系统块里的普通指令trap/brk，触发上下文保存，而且pc立马切到跳转目的地址，
+ 对于其他触发pc跳转的系统指令，继续指令系统块里的其他指令，在块提交的时候才跳转。
+ 辅助块里的微指令因为和标准块微指令在一个编码空间，所以，辅助块的支持基本不用修改
+ 现在的代码，要注意的时候，辅助块里的微指令是边长的，所以，解码的时候要注意下。
+
+ lr/sc的实现可以参考riscv里的实现，其中需要注意的时候，在原子块里，sc的实现要和
+ 现在store的实现逻辑一样。测试的时候，lr/sc可以结合原子指令，实现CAS的操作，然后
+ 再用CSA的操作实现一个内存原子加的操作，多线程调用内存原子加测试其正确性。
+
+ 关于原子块指令上叠加的aq和rl属性，可以参考riscv的实现方式，我们需要在块指令提交
+ 的时候加aq属性对应的TCG_BAR_LDAQ barrier，在指令头里加rl属性对应的TCG_BAR_STRL
+ barrier。
+
+3.4
+----
+
+ 增加了select指令，修改了原子指令大页触发的逻辑，直接在test代码里触发大页创建
+ 了，不用每次手动跑一个脚本。
+
+ 目前，block_asm.h的宏写的有点乱，后续会越来越难维护。这个需要整理梳理下。
+
+3.9
+----
+
+ 写了下lr/sc的实现，测试代码是用lr/sc实现了一个原子加。调试中。。。
+ 相关代码先push到了私有分支: lr/sc_debug
+
+3.11
+-----
+
+ lr/sc原子指令的实现会和之前的搅在一起，若愚说这个只是临时方案，内核也暂时没有做
+ 到CAS，这个先放放，先搞定除了lr/sc的其他特性。新加了concatenate head的特性，扩展
+ 了bnext和btext的域段，应该在头解析的时候更新bnext/btext，并注意pc的更新就好。
+
+ 之前没有仔细考虑系统块里改变pc逻辑的指令实现，比如，ecall。v0.12明显对这种情况
+ 定义是不清晰的，现在可以知道的是，在一个系统块里，如果有这种指令，包括:
+ ecall/ebreak/mret/sret，无论这些指令在系统块的什么位置，我们都当他们是最后一条
+ 指令去执行，当存在这些系统微指令的时候，系统块的branch type我们认为不管配置什么
+ 已经失去了意义，因为返回位置是由操作系统决定的。同时，一个系统块里只能有上述四个
+ 指令的其中一个。
+
+ qemu实现中，我们可以先把ecall/ebreak/mret/sret记录下来，在块提交的时候在翻译执行
+ 相关指令。
+
+ 目前，测试代码块指令用的宏有点乱，一旦改动就要不断的小心调整各种参数。一种思路是
+ 预留空间使得btext是个固定的值，e.g.
+
+ block head 1 (16B)     <----- 起始地址 0
+ (空16B)
+ block head 2 (16B)
+ (空16B)
+
+ (空若干地址)
+
+ block body 1 <----- 对齐到一个固定的地址上，比如，128B
+    微指令...
+ (空若干地址)
+
+ block body 2 <----- 对齐到32B上，这里的地址就是128B + 32B
+
+ 如上每个head和他的body的距离都是128B，而且每个body最大可以有16个微指令，这个应该
+ 足够用了，如果觉得一个body最大8个微指令就够了，也可以去掉head中间空的16B。
+
+3.12
+-----
+
+ 实现ecall延后执行的时候出现一些问题需要注意：同一个system block中对gpr的更新
+ 对ecall是可见的，commit中ecall的翻译执行要放到gpr update后面；ecall向软件报的的
+ ecall地址应该是所在的bpc地址，如果ecall还是报tpc，软件拿到这个没有意义，软件拿到
+ bpc地址后，一种合理的处理是sret之前把返回pc配置成下一个bpc地址，当前qemu的实现
+ ，我采用了一种hack的方式，把上报的ecall地址写bpc + 16 - 4(而且，这个修改最好放到
+ 上报地址的地方，不要放到指令实现里)，这样，内核sret返回时加上4就正好时下一个
+ block head的地址；下一个block要用一个branch reture返回到riscv的调用函数里。
+
+ 如上的实现先push到私有分支sys_commit上了，随后整理下提交到主分支。
+
+3.15
+-----
+
+ 如上的ecall延时执行提交到master了，还改了拼接头、get/set mask check的bug。
+
+ 目前lr/sc的指令还需要继续调试，但是内核应该还没有到这里，我们还是先把qemu和
+ 编译器一起跑通。
+
+3.21
+-----
+
+ 目前和编译器联调发现的一些编译器问题：
+
+    1. bpc 16 byte对齐没有做
+    2. concate head没有做
+    3. system块没有做(比如编译一个用户态程序，看不到ecall/trap实现的exit系统调用)
+    4. 编译过程有warning显示：(不使用hack的start.s)
+        Warning: bnext is overflow: 0xfffffffffffefe30
+        Warning: bnext is overflow: 0xfffffffffffefdf0
+        Warning: violation of 16B alignment: 0x3ae
+
+ 链接简易版本的start.S，简单test程序是可以跑过的，编译器现在把返回值放到了ra寄存器
+ 里，上周的版本这里还有问题，ra返回的是全f。
+
+ 链接gcc原始版本的startup代码，简易test可以跑过，但是会在exit里出现测试代码的
+ load page fault。
+
+ 修改了brk/ebreak的测试用例，其子进程做了。call/ind call也会在bset上放bit, 修改
+ 了对应的qemu代码。start.s里call块指令没有在bset上放ra对应的bit, 修改过来了。
+ 加了集成测试的代码目录，目前代码是可以跑过的main return的数值是存放在a0寄存器里的。
+
+3.22
+-----
+
+ 使用原生的ctr0.S，还是出现一样的问题：
+```
+[   20.920563] test[100]: unhandled signal 11 code 0x1 at 0x0000000000055be8 in test[10000+2000]
+[   20.921458] CPU: 1 PID: 100 Comm: test Not tainted 5.16.0-rc7-00011-geec4df26e24e #3
+[   20.921912] Hardware name: riscv-virtio,qemu (DT)
+[   20.922279] epc : 0000000000010a34 ra : 0000000000010dac sp : 0000003ff9a61cd0
+[   20.922710]  gp : 00000000000c0c98 tp : 0000003f9ff97a38 t0 : 0000000000000039
+[   20.923096]  t1 : 000000000002b53c t2 : 000000000000002e s0 : 0000000000055be0
+[   20.923304]  s1 : 00000000000123f0 a0 : 0000000000000003 a1 : 0000000000000000
+[   20.923569]  a2 : 0000000000000000 a3 : 0000000000000001 a4 : 0000000000000009
+[   20.923733]  a5 : 0000000000012000 a6 : 0000000000000000 a7 : 000000000000001f
+[   20.923959]  s2 : 0000000000010dfb s3 : 0000000000000000 s4 : 0000000000000003
+[   20.924306]  s5 : 00000000000121f0 s6 : 0000000000000001 s7 : 0000000000000000
+[   20.924702]  s8 : 0000003f9fe381f0 s9 : 0000003f9fe385c0 s10: 0000003f9fe3bc10
+[   20.925048]  s11: 0000000000000000 t3 : 0000003f9ff357f8 t4 : 0000000000000000
+[   20.925429]  t5 : 000000000000000e t6 : 0000003f9fdfa564
+[   20.925717] status: 0000000000004020 badaddr: 0000000000055be8 cause: 000000000000000d
+Segmentation fault
+```
+反汇编出现问题的地方在：__call_exitprocs里load一个地址的时候出现page fault.
+直接从qemu里找这个问题基本上只能瞎撞，需要分析一下gcc的startup的流程，看看有没有
+什么突破，还有一个点，我们可以从test_add这里进去看看T寄存器的值是否是对的，这个
+引出我们需要补齐单步输出寄存器这个qemu的调试特性，这个对我们后续调试会有帮助。
+
+3.23
+-----
+
+ 使用-d exec,cpu查看test_add前后函数入参和计算结果的寄存器，数值是符合预期的。
+
+ -d debug参数使用过程中发现几个问题：1. exec中tb对应的符号显示不出来，相同测试
+ 代码，使用riscv的编译器，是可以显示出来的。大概看了下，qemu在load elf的时候会
+ 把符号也都自己保存下，然后在打印log的时候，通过pc找到符号名字。需要继续debug。
+ 2. -d in_asm会直接挂住，log里显示一些ilegal instruction的打印，需要继续debug。
+
+ 目前cpu寄存器的值是可以已tb给单位打印出来的，需要单条指令打印时可以用-singlestep -d cpu，
+ 正确性还没有检测。
+
+ 会上若愚提到可能用qemu trace指令的执行流，这个用singlestep应该可以做到，具体逻辑
+ 需要分析下，可以知道的是，我们要在disas目录下增加一堆类似riscv的反汇编信息。
+
+3.24
+-----
+
+ 分析startup代码，需要先给linx-newlib库打上附带的那两个补丁，先打LinxTarget-newlib.patch，
+ 再打blockISA-newlib.patch这个，_start函数在linx-newlib/newlib-3.0.0/libgloss/linx/crt0.S
+
+ 会发现_start是一个riscv的汇编，编译器的同事说编译器会转换成block的汇编，后续要
+ 提供block汇编的版本。我们先拿这个看吧。atexit函数在：newlib/libc/stdlib/atexit.c
+ __libc_init_array在newlib/libc/misc/init.c，exit函数在newlib/libc/stdlib/exit.c
+ 其中的__call_exitprocs在newlib/libc/stdlib/__call_atexit.c，我们就是挂在了这个
+ 函数里。
+
+ 内核那边已经编译通过了，和甜根已经对齐了qemu和内核的仓库。试着跑了下内核可以走到
+ _start的最初的block，但是跑飞了，现在的内核_start学习riscv的做法放一个跳转block，
+ 但是一个block 16B，直接把elf头后面的内容覆盖了。
+
+3.25
+-----
+
+ 继续测试内核，现在在_start一开始的地方放了一条rv的跳转指令，直接跳到__start_kernel。
+ 现在基本上还在一点点试，已知的一些问题总结如下：
+
+ 1. 编译器因为没有支持concat head，head里body的地址是不对的。。。 :(
+    这个问题在下一个版本，也就是明天的编译器里体现。qemu要搞点集成用例试试这个
+    功能。
+
+ 2. 编译器sysset/sysget还没有支持，内核也是空桩。。。
+    不过要想跑功能，内核可以用宏先支持下。
+
+ 3. 内核system head的描述错误，小问题。改到内核版本里就可以。
+
+ 4. _start_kernel的第二个block里有段这样的代码：
+```
+	block_aux_head _start_kernel1
+	bset gp
+	block_text_begin _start_kernel1
+	/* Load the global pointer */
+.option push
+.option norelax
+		lconst __global_pointer$
+		set gp, t#1
+.option pop
+	block_text_end _start_kernel1
+```
+   rv编译器的一个代码优化特性，现在block的编译器还没有支持，要先删掉。不过，这个
+   代码的具体逻辑还不清楚。
+
+3.26
+-----
+
+ 大概看了下riscv head.S的逻辑，后续调试要用。笔记在：(会持续增加)
+ https://github.com/wangzhou/notes/blob/master/rv_head.s_note
+ 
+ 下周要仔细搞下qemu调试相关的东西了，没有打印之前，全靠qemu自己的调试手段了。
+
+3.28
+-----
+ 
+ 编译器的新版本还是有问题，明天发新版本。
+ 细看看了下qemu -d参数的一些基本用法，写了一个基本用法的，已经share给内核的同事，
+ 调试的时候估计会用上:https://github.com/wangzhou/notes/blob/master/qemu%E8%B0%83%E8%AF%95%E6%96%B9%E6%B3%95
+ 实际测试了下系统模式下-d in_asm,cpu (-singlestep)，太慢了，估计需要加一个地址范围
+ 的限制的特性。
+
+3.29
+-----
+ 
+ 今天看了下qemu -d exec无法输出符号名字的问题，一个简单测试程序，分别用block和rv原生
+ 编译器编译，然后qemu-linx -d exec -D log a.out 运行，得到rv的log是：
+ 
+ Trace 0: 0x7faf4c000100 [0000000000000000/000000000001036c/00004200/00000000] main
+ Linking TBs 0x7faf4c000100 [000000000001036c] index 0 -> 0x7faf4c000200 [000000000001039a]
+ Trace 0: 0x7faf4c000200 [0000000000000000/000000000001039a/00004200/00000000] _start
+ Trace 0: 0x7faf4c000340 [0000000000000000/0000000000010370/00004200/00000000] _start
+ [...]
+
+ block编译器得到的log没有，比如，main、_start这样的符号的名字。
+
+ qemu在加载程序的时候会把程序里的符号表里的信息存起来(load_symbols)，在打印信息的
+ 时候会用pc作为key在存起的信息里搜索符号的名字，然后打印出来：
+
+ cpu_tb_exec -> log_cpu_exec -> lookup_symbol
+
+ 具体查找的逻辑在lookup_symbolxx，使用二分搜，比较函数是symfind，这个比较函数使
+ 用了symbol size去比较：
+```
+    static int symfind(const void *s0, const void *s1)
+    {
+        target_ulong addr = *(target_ulong *)s0;
+        struct elf_sym *sym = (struct elf_sym *)s1;
+        int result = 0;
+        if (addr < sym->st_value) {
+            result = -1;
+        } else if (addr >= sym->st_value + sym->st_size) {
+            result = 1;
+        }
+        return result;
+    }
+```
+ block ISA编译器符号表里function的st_size都填的是0，这个就正好搜不到了。这个问题
+ qemu可以简单hack，先绕过去(比如，就精确做addr的比较，这样会少输出点信息)，不过，
+ 根因是head和body分离，所有假设代码顺序排列的逻辑都有可能错，这个要想下怎么搞。
+
+3.30
+-----
+
+ qemu增加了head/mini code翻译的trace。分析了内核反汇编和qemu打印地址除了虚拟地址
+ 的偏移还差0x200000的问题，这个是Image加载时的偏移，不是错误。
+
+ 目前跑过了三个block，但是寄存器的修改是否正确明天要看下。(todo)
+
+ qemu发现一个问题，block最后提交的时候要计算是否时最后一条微指令，之前一直假设
+ 所有微指令都是2B，这个在加了系统微指令和lconst后，就不成立了。已经修改，明天push。
+
+ 编译器有两个问题：1. block编译器的objdump -D会挂，2. head mask计算的有问题。
+
+3.31
+-----
+
+ 编译器目前还没有把原子块的attribute flag加上，内核一个bset/bget写错了，body里
+ 用了宏，宏里面也有对系统寄存器的操作，写bset/bget的时候漏了。
+
+ qemu发现一个bug，branch call / cond jump / indirect call计算顺延块branch的时候，
+ 没有考虑concatenate head的情况，这个已经修改push。
+
+ 修了上面的bug，qemu里还有bug，具体是，在kernel里第三个block最后跳转的地方，跳转
+ 出错。第三个块的逻辑是：
+```
+	block_aux_head _start_kernel4
+	bnext.cond .Lsecondary_start
+	bget a2, a3
+	bset a2, a3
+	battr atomic
+	block_text_begin _start_kernel4
+		lconst hart_lottery
+		set a3, t#1
+		const 1
+		set a2, t#1
+		amoadd.w a3, a2, a3
+		get a3
+		const 0
+		setbpc.eq t#2, t#1
+	block_text_end _start_kernel4
+```
+ 是一个cond jump，按说结尾不是跳到.Lsecondary_start就是跳到顺延的块。但是，实际
+ 都没有跳到。查看了qemu在这个块结束时的中间码：
+```
+ ---- 000000008151f926
+ setcond_i64 sbpc,x2/t2,x3/t3,eq
+ mov_i64 x12/a2,R12
+ mov_i64 R12,$0x0
+ mov_i64 x13/a3,R13
+ mov_i64 R13,$0x0
+ brcond_i64 sbpc,$0x1,eq,$L1
+ mov_i64 pc,$0x80200260
+ call lookup_tb_ptr,$0x6,$1,tmp5,env
+ goto_ptr tmp5
+ set_label $L1
+ mov_i64 pc,$0x80200380
+ call lookup_tb_ptr,$0x6,$1,tmp5,env
+ goto_ptr tmp5
+ mov_i64 bpc1,$0xffffffffffffffff
+ mov_i64 bpc2,$0xffffffffffffffff
+ mov_i64 ibpc,$0x0
+ set_label $L0
+ exit_tb $0x7f50980c42c3
+```
+两个lookup分支的pc都是对的。在lookup_tb_ptr的help函数里加了判断，竟然没有这两个
+pc的搜索进来。。。 头晕。。。
+
+4.1
+----
+
+ 跳转的问题没有进展，之前两个块里的sysset是否生效越来越疑神疑鬼，我们先确定这个
+ 问题。首先，qemu是把firmware(我们用的openSBI)放到DDR开头空开的2MB去跑的，进入
+ 内核的时候，切到了S mode，内核的第一个块的sysset了sie和sip，把这两个系统寄存器
+ 清0，我们可以看到进入内核的时候，mip是0，mie是0x8(-d cpu,exec的查看寄存器值)。
+
+ 可以看到qemu的打印是没有sie/sip的寄存器的，这个是因为sie/sip和mip/mie内部就是一个
+ 寄存器，只不过s mode，m mode占用了它的不同域段，不同域段也有不同读写权限，然后它
+ 对外呈现到了不同csr地址上。。。
+
+ 我们发现，sie已经被写了0，mie的读数里的8还是清不掉，这是因为，bit3是MSIE M mode的，
+ 当然我们清不掉。我们写1到sie，发现也是写不进去的，bit0是USIE，应该是可以改的，
+ 这个写不进去的原因是qemu的这个版本还不支持，写2到sie，就是更新SSIE，可以看到寄存器
+ 是生效的。有理由相信sysset的生效的。
+
+ 以上相关的逻辑在qemu的代码里看的比较清楚，在target/linx/csr.c write_sie这个函数。
+
+ 查看实际执行出错跳转之前cpu寄存器各个数值，可以发现，这个跳转的地址就是mtvec的数值，
+ 跳到m mode异常入口了，mcause是5，load fault，出问题的指令的地址是，mepc 0x8151f918，
+ 尝试load的地址是 mtval 0x18。这个再去分析那段mini code就可以了，现在也和昨天的
+ 实验对上了，根本就没有跑到mini code执行完的跳转逻辑里，块里的load就异常了。
+
+4.3
+----
+
+ 修掉上面的问题，发现还是同样的位置报load access fault，load hart_lottery报错了，
+ qemu看到这个全局变量的地址是0xffffxxxxxxxx，当前还没有开mmu，这个地址显然是错的。
+ 我们做一些hack，可以把这个地址手工改对，也可以不去load这个数据，绕过这个继续往
+ 后走，发现下面做bss段清理的时候，__bss_start/__bss_stop的地址也是0xffffxxxxxxxx
+ 的样子，可见对于全局符号地址处理可能都错了。
+
+ 我们反汇编下riscv，看它怎么处理：
+```
+ffffffff80000130 <_start_kernel>:
+ffffffff80000130:	00100513          	li	a0,1
+ffffffff80000134:	10451073          	csrw	sie,a0
+ffffffff80000138:	14451073          	csrw	sip,a0
+ffffffff8000013c:	012da197          	auipc	gp,0x12da
+ffffffff80000140:	94418193          	addi	gp,gp,-1724 # ffffffff812d9a80 <__compound_literal.80>
+ffffffff80000144:	000062b7          	lui	t0,0x6
+ffffffff80000148:	1002b073          	csrc	sstatus,t0
+ffffffff8000014c:	00800293          	li	t0,8
+ffffffff80000150:	00554463          	blt	a0,t0,ffffffff80000158 <_start_kernel+0x28>
+ffffffff80000154:	fd5ff06f          	j	ffffffff80000128 <setup_trap_vector+0x14>
+ffffffff80000158:	81818693          	addi	a3,gp,-2024 # ffffffff812d9298 <hart_lottery>
+ffffffff8000015c:	00100613          	li	a2,1
+ffffffff80000160:	00c6a6af          	amoadd.w	a3,a2,(a3)
+ffffffff80000164:	06069e63          	bnez	a3,ffffffff800001e0 <clear_bss_done+0x58>
+[...]
+```
+ 可以看到，riscv把当前地址给到gp，然后后面用gp做相对寻址，这里qemu看到的就都是
+ 物理地址，就没有问题。所以，我们需要和编译器同事一起看下block ISA这里怎么处理下。
+
+4.7
+----
+
+ 如上问题，需要编译器的同时做位置无关的相对寻址处理，预计下周五出版本。内核这边
+ 会手写一点汇编，搞成相对寻址，先调试起来。今天的内核版本出现了call branch没有写
+ bset ra的错误，这个之前在start.S里犯过一次，真是要在spec里"标红加粗"写下，不然
+ 就是bug的源泉。
+
+ 编译器当前lconst symbol得到symbol的全局地址少了最高的16bit全1，编译器后续修改，
+ 内核相关地方先hack下。
+
+ 继续分析head.S和初始化页表相关的部分：
+ https://github.com/wangzhou/notes/blob/master/rv_head.s_note
+
+4.8
+----
+
+ 初始化页表到relocate到虚拟地址的部分分析完了，已经update如上笔记。多核启动的汇编
+ 等调多核的时候接着看。
+
+ 内核做了一些hack，可以跑过bss段清理，走进setup_vm里了，肉眼可以直接看到一些问题：
+ 1. 对全局变量用绝对地址，这个是已知问题，需要等编译器搞定PIC。(人工继续hack工作
+    修改的太多了，所有全部变量，函数的地址都要改下)
+ 2. call指令对create_pgd_mapping的掉用地址不对
+ 3. 一些小问题: 编译器反汇编最好支持下10进制的表示，方便人肉编译; 编译器编译出的
+    汇编有很多冗余。
+
+ 因为，setup_vm这个函数可以说是，编译器第一个编译出的代码(之前的都是手写汇编)，
+ 我们首先要人工大概看下编出来的代码是否OK。另外一个工作是要人工查下已经走过去的
+ bss段的修改数值上是否是对的，保证qemu是对的。
+
+4.11
+-----
+
+ 四月，qemu可以尝试利用联调的空余时间把in_asm反汇编和lr/sc实现了吧。梳理下disas的
+ 基本逻辑，再看国柱的分析的时候，发现qemu实现一个小问题：block的架构上是没有pc
+ 寄存器的，riscv的pc寄存器被bpc代替了，整个最后要注意下，目前的pc的含义是程序执行
+ 到的绝对地址。
+ 
+ 完整的模型还要仔细想下。
+
+4.12
+-----
+
+ qemu -d in_asm的反汇编分析：
+ https://github.com/wangzhou/notes/blob/master/qemu%E5%8F%8D%E6%B1%87%E7%BC%96%E8%B0%83%E8%AF%95
+
+ head的编码和rv32是兼容的，head是可以区分出来的。因为总是先有head才有body，我们
+ 可以在解到head的时候，在cpu里记录下现在进入block的反汇编，下次进入body就走block
+ body的解码入口。
+
+ 现在-d in_asm直接会死循环，所以，我们可以分成几步实现：1. -d in_asm不会死循环，
+ 最多就是不会输出; 2. 可以反汇编head; 3. 可以反汇编body。
+
+ 今天和郑增凯一起看一个用户态try lock的实现，他用了一个原子块实现，他有一个问题
+ qemu怎么看内存上的数据。查了下，可以用qemu monitor，ctrl + a + c可以进入qemu
+ monitor，使用xp/format address读物理地址，使用x/format address读虚拟地址，读物理
+ 内存还好，读虚拟地址，到底是哪个进程的虚拟地址，这个还没有找到方法。
+
+4.13
+-----
+
+ 开始重新接着看lr/sc的实现，我们要把原子块里，lr/sc的逻辑和之前的原子块逻辑扭合
+ 到一起，lr的逻辑和之前load逻辑基本不变，增加的是在cpu里保存load的地址和数据，
+ 这个是为了后续支持配对的sc，sc的逻辑和之前原子块里store的逻辑有很大不一样，之前
+ 原子块的store是先缓存起来，最后块提交的时候写内存的，sc的逻辑(先看riscv的逻辑)
+ 的核心是条件写入。在定义上，存在很多情况不清楚，比如，一个原子块里，既有sc，也有
+ 普通store，结果是怎么样的？两者访问的地址是一样的又是怎么样。
+
+ 目前，我们做这样的假设继续往下走，那就是一个原子块里的sc普通store指令不同时出现。
+ 这样，普通的原子块的实现逻辑和sc的逻辑也可以分开。基于这样的逻辑，在一个原子块
+ 里有sc的时候，sc在跳到原子区执行，sc里的store有异常时，跳到异常做缺页，然后再
+ 重新返回原子块，再进入原子区执行。逻辑上也没有问题。
+
+ rebase了下之前的代码，push到lr/sc_debug_v2的临时分支上了。测试发现，多线程
+ 加法有小概率结果是错的，估计还是哪里没有搞对。
+
+ 李飘他们测试有dump cpu里bpc/tpc的数值为零，可以记录在change-log里。国柱提示
+ head里bit mask的检查要做成紧贴着每个状态，这样每个状态都是确切的了，可以结合
+ 自修改的代码一起看下，这个优先级放底吧。
+
+4.15
+-----
+
+ 大概看了下目前大家在搞的几个问题，qemu停在一个pc上这个好搞，李飘提醒可以借助
+ wfi指令把cpu halt，这样可以从monito里看，感觉是可以，但是要注意不要搞的太重，
+ 毕竟只是一个调试手段，我之前的想法是直接qemu进程退出。
+
+ bpc/tpc显示的问题，还不光是一个显示的问题。block ISA的所有寄存器里是没有PC寄存器
+ 的，只有BPC和TPC寄存器，其中BPC是系统寄存器，TPC是Block的一个BSTATE寄存器，全局
+ 不可见，在外部只能在BSTATE.VLD有效的时候，从BSTATE.EXT.TPC里获取TPC的值，在block
+ 内只能通过addtpc把TPC写入T寄存器。
+
+ bpc/tpc的问题是，我们应该在跳转的时候更新BPC，而我们现在是在解析head的时候更新
+ BPC, 慢了一拍。但是，我们还不能把头里这个BPC写入删掉，因为我们现在是从riscv里进来
+ 的，第一次进入Block的时候，总有一个用当前PC更新BPC的操作，这个动作就在头里。
+
+ TPC是一个BSTATE，我们只要维护住BSTATE.EXT.TPC和addtpc的语义就好，按道理是不用
+ 有一个显示的TPC寄存器的。-d输出的cpu寄存器里，其实PC就是TPC。
+
+4.18
+-----
+
+ 和甜根一起看了下qemu的log，在mmu使能后的第一个取指令应该有异常，然后跳到之前设置
+ 好的异常向量地址才对，但是后面和mmu没有使能的逻辑一样走下去了。看了satp的配置，
+ satp的mode也是对的，唯一和rv不一样的就是编译器没有实现satp配置之前的sfence.vma，
+ 我们手动hack了一个sfence.vma的编码进去(qemu是实现这个指令的)，结果qemu运行到跳转
+ 到异常时就没有了trace，估计是跳到异常处理的地方有问题，这块基本是riscv原来的代码，
+ 明天看吧。要先把对应的debug手段补齐。
+
+4.20
+-----
+
+ 这两天一起看了下in_asm的反汇编，并且做了一点代码的clean up。然后今天继续看了下
+ 目前遇到的这个mmu启动，程序死循环的问题。
+
+ 在qemu里简单加了page walk时的打印：
+```
+diff --git a/target/linx/cpu_helper.c b/target/linx/cpu_helper.c
+index 124b917658..b68f81ed85 100644
+--- a/target/linx/cpu_helper.c
++++ b/target/linx/cpu_helper.c
+@@ -610,6 +610,8 @@ restart:
+         }
+ 
+         hwaddr ppn = pte >> PTE_PPN_SHIFT;
++        qemu_log("--> level: %d, pte_addr: %lx, value: %lx, ppn: %lx\n",
++                i, pte_addr, pte, ppn);
+ 
+         if (!(pte & PTE_V)) {
+             /* Invalid PTE */
+```
+ 打开-d mmu,int，我们可以看到在程序走到trampoline页表配置好，走到lable 1取指令
+ 时qemu的行为：
+```
+[...]
+riscv_cpu_tlb_fill ad 80200100 rw 2 mmu_idx 1
+--> level: 0, pte_addr: 82cef010, value: 0, ppn: 0
+riscv_cpu_tlb_fill address=80200100 ret 1 physical 0000000000000000 prot 0
+riscv_cpu_do_interrupt: hart:1, async:0, cause:000000000000000c, epc:0x0000000080200100, tval:0x0000000080200100, desc=exec_page_fault
+riscv_cpu_tlb_fill ad ffffffff80000100 rw 2 mmu_idx 1
+--> level: 0, pte_addr: 82cefff0, value: 0, ppn: 0
+riscv_cpu_tlb_fill address=ffffffff80000100 ret 1 physical 0000000000000000 prot 0
+riscv_cpu_do_interrupt: hart:1, async:0, cause:000000000000000c, epc:0xffffffff80000100, tval:0xffffffff80000100, desc=exec_page_fault
+[...]
+```
+ 可见qemu的行为符合我们的认知，首先尝试翻译80200100，页表也没有，产生异常，跳到
+ 异常向量地址，尝试翻译，对应的第一级页表项就是空的。查看了rv里对应的部分，是可以
+ 正常翻译拿到物理地址的。
+
+ 所以，继续去查setup_vm里页表配置的地方去吧。
+
+4.24
+-----
+
+ 继续看setup_vm里的页表设置，在setup_vm里的create_kernel_page_table处停下来，然后
+ 进monitor看，trampoline_pg_dir的页表，发现kernel.virt也就是0xffffffff80000000的
+ 页表entry是0，这个就需要继续往前看。需要在前面多加点断点，看看逻辑哪里错了。
+
+ 但是现在的问题是，c和block汇编很难对应起来，首先block objdump的反汇编的bnext域段
+ 是错的。。。已经叫编译器的同时去改了(执行时的跳转是对的)，同时qemu单点断住的debug
+ 还是太弱了，比如我想跟踪一个函数第二次进去后的内部行为就不行了，我们还是集中精力
+ 把qemu的breakpoint先做掉，还有就是编译器和qemu都存在的符号打印的问题，lconst+addtpc
+ 的符号要可以直接输出来，跳转的目的地址对应的符号要可以输出来, qemu的IN的符号要可以
+ 打印出来。
+
+4.26
+-----
+
+ 和编译器的同事对了下supertest的情况。supertest是业内一个测试编译器的开源测试集
+ solidsands.com/products/supertest。编译器的同事在开源的基础上增加了block的相关
+ 用例，使用的时候先是用block编译器编译测试用例，链接自己写的简易start.S，这个start.s
+ 只有两个块，第一块创建执行环境，第二个块会跳到到固定地址上，在退出时用，main函数
+ 结束时跳到第二个，其中把main函数的return值放到a0寄存器里。编译器团队把supertest
+ 跑在自己写的模型上，在模型里当跑到固定的退出地址时，就可以检测a0寄存器的值，判断
+ 测试是否通过，目前是模型里写死，a0是0表示测试通过，否则表示测试不通过。
+
+ 目前测试用例里没有特权指令，start.s里的第一个块读入模型提前配置好的sp指针，然后
+ call main函数。这些用例放到qemu上是完全可以跑的, 可以用qemu user mode来跑。qemu
+ 也可以稍微修改检测用例是否通过。用户态使能团队可以去做这个工作。
+
+ 目前，编译器使用了第一个通用寄存器，这个和rv上第一个gpr接死为0不一样。现在的修改
+ 是，block ISA的第一个gpr是一个可用的寄存器，但是，编译器做一点hack, 生成的代码
+ 不去用这个寄存器，这样实际也是兼容的。定义成r0/t7。这样qemu上需要改的位置有：
+ 1. 反汇编输出的名字; 2. set_sgpr_to_gpr正常copy(可以加一个check检查实际没有用);
+ 3. gpr初始化(目前是没有包含第一个gpr的)
+
+4.27
+-----
+
+ 迁移到了新服务器上工作，但是内核没有编译过，编译器使用了系统里的动态库，ubuntu20.04
+ ubuntu22.04这方面有了变化，编译器把这部分库静态编译了。版本已出，还没有试。
+
+ 把之前assert相关的代码做一些cleanup，但是测试的时候发现hello test跑不过，挂在
+ blk_ecall，log显示继续解码LINX_RET这个块后面的指令了，这个块是一个return块，
+ 应该跳到ra寄存器，也就是rv代码里调用blk_ecall这个函数的下一条指令的地方。看了
+ 下逻辑，暂时没有找见问题。回退版本到国柱这几天加的代码之前，没有这个问题。明天
+ 再看了。
+
+4.28
+-----
+
+ 简单hack了下qemu，在检测到pc是全f地址的时候，就判断a0是否是0，是0表示运行结果
+ 正确，否则失败。这样qemu-linx + supertest就可以跑起来，编译器同事拿去跑了下supertest，
+ 20000多个用例，有一个用例会导致qemu segment fault，我们担心是不是测试方法有问题，
+ 又回退了移位的那个bug，然后重跑，fail了一些用例，观察fail的用例，里面有相关的bug
+ 指令，这使得我们对现在的测试方法有信心。进一步看出问题的那个用例，是反复用不同的
+ 参数去调用newlib里的swscanf这个函数，只留一个第一个次调用swscanf其他都注释掉，也
+ 同样复现。
+
+ 具体的调用参数是：int i; char s[16]; swscanf(L"56789", L"%2d%*d %[0123456789]", &i, s);
+ 我们可以自己写一个测试用里复现这个bug，然后调试。
+
+5.3
+----
+
+ 定位4.27发现的blk_ecall的问题，在ecall的处理逻辑里多了对bpc1/bpc2的判断，ecall
+ 本来就是在block提交的时候做的，bpc1/bpc2已经clear了，删去这个判断。之后trap又出
+ 问题，之前hack trap的逻辑，异常时把pc-2，riscv内核里把pc+4正好返回到下一条微指令
+ 的地址，trap和ecall的hack是独立的逻辑，我们可以先把trap测试改成普通块，使得trap
+ 的测试通过。之后sysset的测试出问题，把sysset测试简化，只进行tpc的set和get，在
+ 后面打印时就会报非法指令。太奇怪了。。。临时debug分支是：debug_ecall。
+
+ 本来想先迅速打通问题，再梳理逻辑，看来还是搞不定。明天先梳理逻辑，再解问题。
+
+5.4
+----
+
+ 梳理bpc、pc的逻辑。pc是rv里的程序指针，block里对外没有pc，只有bpc/tpc。在qemu
+ 的block实现里，我们沿用pc作为程序指针，qemu执行block的程序是head-body顺序执行的，
+ pc顺序的在head和body的指令上移动。再看bpc和tpc更新的逻辑，tpc更新的逻辑之前分析
+ 过(4.15)，只要保证addtpc、异常时tpc输出正常(-d cpu显示tpc的值就是pc值)，bpc更新
+ 目前是在解析头的时候更新的，这个其实逻辑上有问题，应该是先有env里的bpc，从bpc
+ 得到要翻译执行的block，但是，我们目前的实现是基于riscv的，所以第一次进来一定会有
+ pc到bpc的这个赋值，进到block世界后，跳转时要同时更新bpc和pc，更新bpc是block语义
+ 上的要求，更新pc是qemu的内部实现。我们看所有执行流跳转的地方，它包括各种branch
+ 跳转、异常中断时跳转，各种branch的跳转只要在跳之前用目的地址更新bpc就好，异常中断
+ 跳转到异常向量之前，要用异常向量的地址更新bpc。
+
+ 异常相关的指令，之前为了测试做了hack，现在要和内核联调，我们要都改过来，改之前
+ 再梳理下相关逻辑。相关的指令有：trap, brk, ecall, ebreak, mret, sret, 前面两条
+ 是标准块的微指令，后面四个是系统块的微指令，两者的区别是，前者异常是要把块的中间
+ 状态输出到ext寄存器的，后者是在整个块提交的时候才执行，对外没有块中间状态。
+ 所以qemu实现上，trap触发异常后，把中间状态输出到ext寄存器就可以，我们目前的实现，
+ trap触发异常的时候人为hack了pc值，这个要改正确，trap输出的上下文中有bpc和tpc，
+ 是没有pc的，软件在返回的时候只会恢复bpc和tpc，qemu想要继续执行，就要在返回点上
+ 把bpc赋值给pc，因为qemu认识的是pc，异常返回使用mret或者sret，qemu可以在这两个
+ 指令的实现里把bpc给到pc，注意！目前sret/mret是把sepc的值给到pc，软件需要把保存的
+ bpc提前赋给sepc。对于ecall的异常，qemu只要把当前的bpc写道sepc里，其他的都和
+ riscv的一致，软件(内核)处理完异常时，应该返回ecall的下一个块，这里有个要注意的
+ 地方，内核需要知道ecall这个块head的大小(16B还是32B)，这样才能配置返回的bpc，qemu
+ 中ecall的实现，sepc也是hack的，这个也要改过来。
+
+ trap和ecall的修改会破坏qemu的hello test测试，删掉相关自测用例就可以了。
+
+ 按照这样的逻辑修改了下代码，sysset的用例还是小概率出问题，仔细看都是sysset ext.tpc
+ 后又sysget ext.tpc的值不对，查看ext.tpc修改的地方，现场保存的地方会修改tpc，这个
+ 在riscv_cpu_do_interrupt里，当判断异常/中断在body里时，保存现场，用把pc赋值给ext.tpc，
+ 那问题原因比较清楚了，sysset和sysget的函数调用之间，有中断进来，做了修改了ext.tpc,
+ 在这个位置上禁止中断的情况进来，测试发现sysset用例不会出问题了。这个问题中，其实
+ 是测试用例设计的有问题。关于异常保存和中断之间的逻辑还要再梳理下。
+
+ 目前异常这块已经把hack代码修改成正式代码，理论上可以和内核联调。先放到debug_ecall_v2
+ 这个临时分支上了，明天push。
+
+5.5
+----
+
+ 整体代码的时候发现在v0.12里定义的wfi也是一个延后执行的指令，这块block目前事抄
+ riscv的实现。ricv上wfi的基本逻辑是，执行到这个指令的时候cpu停住，等中断，当本cpu
+ 上收到中断并且可以处理的时候，cpu从停住的状态跳到中断入口处理中断，sepc是wfi pc + 4
+ 位置上的值，当中断来了，无法处理的时候，cpu从wfi pc + 4，也就是wfi的顺延指令继续
+ 执行。riscv的qemu实现是gen_helper_wfi挂起cpu之前，把pc更新成pc_succ_insn，这个就
+ 是用下条指令的地址更新pc。block ISA的wfi是一个延时执行的系统指令，在块提交的时候
+ 执行，所以pc应该被更新成下一个块的bpc。
+
+ wfi被中断唤醒，当中断可以执行的时候去执行中断，否则继续执行。那么wfi执行的时候
+ 就可以把in_block这个flag去掉了。现在的实现没有问题。
+
+5.7
+----
+
+ 在看甜根的那个内核反复循环的问题，现在甜根在第一个出问题的地方加了打印，问题
+ 尽然不出现了，然后现在在sched_init的init_rt_rq函数里出现了类似的问题，这个地方
+ 的c代码是：
+```
+void init_rt_rq(struct rt_rq *rt_rq)
+{
+	struct rt_prio_array *array;
+	int i;
+
+    qemu_debug_printf("---> sherlock: debug: %d\n", __LINE__);
+	array = &rt_rq->active;
+	for (i = 0; i < MAX_RT_PRIO; i++) {
+		//INIT_LIST_HEAD(array->queue + i);
+		__clear_bit(i, array->bitmap);
+	}
+    qemu_debug_printf("---> sherlock: debug: %d\n", __LINE__);
+[...]
+```
+ qemu执行的反汇编代码如下，我逐行分析并加了comment，逻辑是很清晰的，就是对一个100
+ 个bit的bitmap逐个clear bit，在一个块里反复做这个动作。
+```
+----------------
+IN: init_rt_rq
+Priv: 1; Virt: 0
+0xffffffff8007cd60:  00084a00 0000f000 00006000 258e9c0b std_block.concat next:0xffffffff8007cd60, ptr:0xffffffff814a2648, attr:none, out_reg(a2,a3,a4,a5), in_reg(s1,a1,a4,s3)
+0xffffffff8007cd70:  00000014 00000000 00000000 00000c00 std_block.conditional
+	0xffffffff814a2648:  0e12           0  0x40                 get             a4       // a4 = 0  a4 is i
+	0xffffffff814a264a:  1fe1           1  0x4000000000         slli            t#1 32   // i << 32
+	0xffffffff814a264c:  05a1           2  0x100000000          srli            t#1 6    // (i << 32) >> 6
+	0xffffffff814a264e:  1fc1           3  0x1                  srai            t#1 32   // i / 64  long num
+	0xffffffff814a2650:  02e1           4  0x8                  slli            t#1 3    // long address  -> word address
+	0xffffffff814a2652:  0912           5  0xffffffff82c11840                   get s1   // bitmap base address
+	0xffffffff814a2654:  0400           6  0xffffffff82c11848   add             t#1 t#2   ----------------+  // real word address
+	0xffffffff814a2656:  0f92           7                       set             a5, t#1
+	0xffffffff814a2658:  2064           0  0                    ld              [t#2, 0] // load word value
+	0xffffffff814a265a:  1312           1  1                    get             s3       // s3 = 1
+	0xffffffff814a265c:  0e12           2  0x40                 get             a4       // i       ----------------+
+	0xffffffff814a265e:  20e0           3  1                    sll             t#2 t#1  // 1 << i  offset in word
+	0xffffffff814a2660:  1f81           4  0xfffffffffffffffe   xori            t#1 -1   // reverse all bit, set offset 0, other 1 -> mask
+	0xffffffff814a2662:  0c92           5                       set             a2, t#1  // a2 = mask
+	0xffffffff814a2664:  e001           6  0xffffffff82c11848   addi            t#8 0     ----------------+
+	0xffffffff814a2666:  c840           7  0                    and             t#7 t#3  // mask & value  -> clear bit
+	0xffffffff814a2668:  0d92           0                       set             a3, t#1  // a3 = clear bit value
+	0xffffffff814a266a:  440f           1                       sd              t#2, [t#3, 0]  // write clear bit
+	0xffffffff814a266c:  e101           2  1                    addi            t#8 1    // i + 1   ----------------+
+	0xffffffff814a266e:  1fe1           3       slli            t#1 32
+	0xffffffff814a2670:  1fc1           4       srai            t#1 32   // i
+	0xffffffff814a2672:  0e92           5       set             a4, t#1
+	0xffffffff814a2674:  0b12           6       get             a1       // a1 = 100
+	0xffffffff814a2676:  4030           7       setbpc.ne       t#3 t#1
+
+```
+  观察结尾处的i值，这个值保存在a4里，我们把cpu寄存器打出来，观察a4的值，发现a4
+  到了0x40后，下次body执行完尽然是1，那当然在这里死循环了。进一步观察发现body
+  执行完的t2寄存器，也就是addi t#8 1对应的t寄存器值尽然是1。现在的范围已经缩的
+  比较小了，要么addi搞错了，要么上面a4读进来就是0(在观察到进来body之前a4是0x40)。
+
+  单补可以看寄存器的变化，但是单步起内核时间太久了。注意，这个for里如果插入我们
+  自己的qemu指令的打印函数，这个问题就复现不了了。头大。。。
+
+5.9
+----
+
+  把clear_bit的代码单独测试，没有发现问题，不过单独测试反汇编的代码不一样了。
+
+  加-singlestep，和-dfilter用，很好用。单步看body里每个微指令运行后T寄存器的变化，
+  到addi这条发现他对应的寄存器是1，那一定是它索引的t2寄存器在上面0xffffffff814a265c
+  后被其他的微指令改了，再去从0xffffffff814a265c看是哪个微指令后t2寄存器的值变了，
+  sll变了，sll除了修改它自己对应的T寄存器，还把offset，也就是t#1也修改成了移位值，
+  这里是1 << 64, 处理后是1 << 0, 也就把0写到了T#1里。
+
+5.10
+-----
+
+  开始看sbi_init这个问题，拉了今天最新的kernel和内核代码，可以复现问题，不过可以
+  进去ecall执行，就是在m mode mret的时候出错。
+
+  内核里代码的逻辑是，在架构相关的初始化代码里，内核通过sbi接口从opensbi里获取一些
+  信息，这写接口使用s mode ecall来实现的，mdeleg寄存器对应的bit为0(bit9 S_ECALL),
+  就是说这个异常要在m mode处理，发生异常的时候pc跳到mtvec，cpu切到m mode。
+
+  ecall调用前的寄存器是：
+
+----------------
+IN: __sbi_base_ecall
+Priv: 1; Virt: 0
+0xffffffff80008320:  00000000 00000000 7ce00400 4e841f8b sys_block.concat next:0xffffffff80008340, ptr:0xffffffff81456b60, attr:none, out_reg(), in_reg()
+0xffffffff80008330:  00000014 00007fff 00000000 00000000 sys_block.fall_through
+	0xffffffff81456b60:  0053                  ecall           
+
+[...]
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81456b60+2 in (0xffffffff81456b60-0xffffffff81456b62)
+
+Trace-Tue May 10 11:27:47 2022
+ 0: 0x7f6bc0325f80 [0000000000000000/ffffffff81456b60/00004201/ff000200] 
+ pc       ffffffff81456b60
+ mhartid  0000000000000000
+ mstatus  8000000a00006180
+ mip      0000000000000000
+ mie      0000000000000008
+ mideleg  0000000000000222
+ medeleg  000000000000b109 <- bit9 S mode ecall 是 0, S mode的ecall在m mode处理
+ mtvec    0000000080000520 <- 可以看到后面跳到了这个地址
+ stvec    ffffffff80003180
+ mepc     0000000080200000
+ sepc     0000000080200100
+ mcause   0000000000000002
+ scause   000000000000000c
+ mtval    0000000000000000
+ stval    0000000080200100
+ mscratch 0000000080018000
+ sscratch 0000000000000000
+ satp     8000000000082ef0
+ x0/zero  0000000000000000 x1/ra    ffffffff822078e0 x2/sp    ffffffff82c03ef0 x3/gp    ffffffff82ce93a0
+ x4/tp    ffffffff82c09480 x5/t0    ffffffe00fa78e00 x6/t1    0000000000000000 x7/t2    0000000000000001
+ x8/s0    ffffffff82c03f00 x9/s1    ffffffff8240b2c0 x10/a0   0000000000000000 x11/a1   0000000000000000
+ x12/a2   0000000000000000 x13/a3   0000000000000000 x14/a4   0000000000000000 x15/a5   0000000000000000
+ x16/a6   0000000000000000 x17/a7   0000000000000010 x18/s2   0000000000000007 x19/s3   ffffffff8240a630
+ x20/s4   ffffffe00fa78b80 x21/s5   0000000000000280 x22/s6   0000000080000200 x23/s7   0000000000000fff
+ x24/s8   0000000081000200 x25/s9   0000000000000018 x26/s10  0000000000000007 x27/s11  ffffffe00fa78d80
+ x28/t3   000000008fc78e00 x29/t4   ffffffff82cea7b0 x30/t5   ffffffff828628a0 x31/t6   0000000000001000
+ x0/t0    0000000000000000 x1/t1    ffffffff82c03ef0 x2/t2    0000000000000000 x3/t3    ffffffff82c03f20
+ x4/t4    0000000000000000 x5/t5    ffffffff82c03f00 x6/t6    0000000000000010 x7/t7    0000000000000000
+ bpc      ffffffff80008320 sbpc     ffffffff822076c0 tpc      ffffffff81456b60
+ R0       0000000000000000 R1       0000000000000000 R2       0000000000000000 R3       0000000000000000
+ R4       0000000000000000 R5       0000000000000000 R6       0000000000000000 R7       0000000000000000
+ R8       0000000000000000 R9       0000000000000000 R10      0000000000000000 R11      0000000000000000
+ R12      0000000000000000 R13      0000000000000000 R14      0000000000000000 R15      0000000000000000
+ R16      0000000000000000 R17      0000000000000000 R18      0000000000000000 R19      0000000000000000
+ R20      0000000000000000 R21      0000000000000000 R22      0000000000000000 R23      0000000000000000
+ R24      0000000000000000 R25      0000000000000000 R26      0000000000000000 R27      0000000000000000
+ R28      0000000000000000 R29      0000000000000000 R30      0000000000000000 R31      0000000000000000
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000000000009, epc:0xffffffff81456b60, tval:0x0000000000000000, desc=supervisor_ecall
+
+注意：epc是ecall指令的地址, 去掉filter, 可有看到opensbi里mret后的地址在0xffffffff81456b64，
+      对于rv是对的，但是block显然是错了。
+
+      首先qemu实现的时候，并没有考虑陷入M mode处理异常的情况，正常来讲，我们应该
+      在切入M mode的时候，上报当前bpc的地址(对于ecall的情况)，opensbi里处理完异常
+      后，把下一个bpc的地址配置给mepc，然后调用mret返回内核。
+
+      问题来了，我们现在要怎么hack下，还是改opensbi？一个hack的方式是，qemu里对于
+      切到M mode的这种异常，mepc就写next bpc - 4，这样rv的opensbi可以返回到正常的
+      地址，如果内核ecall的块头一定是一个16B的头，那么mepc的地址就是bpc + 12。
+
+类似这样hack可以跑过sbi_init(ecall的这个块是concat head):
+diff --git a/target/linx/cpu_helper.c b/target/linx/cpu_helper.c
+index 724245d18a..107f08c2f3 100644
+--- a/target/linx/cpu_helper.c
++++ b/target/linx/cpu_helper.c
+@@ -1213,7 +1213,12 @@ void riscv_cpu_do_interrupt(CPUState *cs)
+         s = set_field(s, MSTATUS_MIE, 0);
+         env->mstatus = s;
+         env->mcause = cause | ~(((target_ulong)-1) >> async);
+-        env->mepc = env->pc;
++        if (env->in_block) {
++            env->mepc = env->bpc + 32 - 4;
++            env->in_block = 0;
++        } else {
++            env->mepc = env->pc;
++        }
+         env->mtval = tval;
+         env->mtval2 = mtval2;
+         env->pc = (env->mtvec >> 2 << 2) +
+
+5.13
+-----
+
+  娟娟把lr_sc的代码rebase到了最新的提交，跑lr_sc的测试用例大概率出现这样的错误：
+  (branch: debug_lr_sc_cj, commit: aadf443d3)
+```
+./test lr_sc
+[  119.122157] hrtimer: interrupt took 15986800 ns
+[  122.492366] Unable to handle kernel paging request at virtual address 00000000000179d0
+[  122.610100] Oops [#1]
+[  122.618159] Modules linked in:
+[  122.642209] CPU: 0 PID: 100 Comm: test Not tainted 5.16.0-rc3 #1
+[  122.663469] Hardware name: riscv-virtio,qemu (DT)
+[  122.686178] epc : 0x179d0
+[  122.714188]  ra : __irq_exit_rcu+0xa0/0xd6
+[  122.726185] epc : 00000000000179d0 ra : ffffffff80010a86 sp : ffffffd010443df0
+[  122.734793]  gp : ffffffff80eda490 tp : ffffffe008249480 t0 : ffffffff80a025b0
+[  122.741879]  t1 : 0000000000000400 t2 : 0000000002ae02a0 s0 : ffffffd010443e80
+[  122.746812]  s1 : ffffffff80f0d4f8 a0 : 0000000000000000 a1 : ffffffff80816ec0
+[  122.754163]  a2 : 00000000ffff528f a3 : 00000000ffff5290 a4 : ffffffe00fa59ec0
+[  122.758183]  a5 : ffffffff80816ec0 a6 : 0000000000000000 a7 : 0000000054494d45
+[  122.766663]  s2 : ffffffff80f0d4f8 s3 : ffffffff80f0d4f8 s4 : ffffffff80e07480
+[  122.774168]  s5 : 00000000ffffffff s6 : 0000000000000006 s7 : 000000000000ffff
+[  122.778772]  s8 : ffffffff80812308 s9 : 0000003f9d7ffc60 s10: 0000000000000001
+[  122.786097]  s11: 0000000000000002 t3 : 000000000000b67e t4 : 00000000eac0c6e6
+[  122.790784]  t5 : 02a6c09e06974648 t6 : 0000000002ae02a0
+[  122.798291] status: 0000000000000120 badaddr: 00000000000179d0 cause: 000000000000000c
+[  122.864403] ---[ end trace 25f1a4ed4624fdac ]---
+[  122.886198] Kernel panic - not syncing: Fatal exception in interrupt
+[  122.898164] SMP: stopping secondary CPUs
+[  122.914545] ---[ end Kernel panic - not syncing: Fatal exception in interrupt ]---
+```
+  最新的代码对ecall延时执行这个地方有修改，尝试把in_delay这样的flag改成新加一个
+  Linx的U ECALL类型，如上的问题没有了(branch: debug_lr_sc_cj, commit: 51e6983c,
+  注意这个提交把异常保存也注释掉了，这个不用注释也可以修复这个问题。注释调异常保存
+  可以使另一个问题，也就是多线程add结果不对的问题的概率大大减低，但是显然这里不能
+  这么改)。
+
+  昨天晚上在喵entry.S的内核代码的时候，发现里面有清load reservation的注释，当时
+  没有明白，今天突然隐约记得写lr/sc代码的时候，rv有一部分没有看懂就没有copy过来，
+  这个就是在切cpu mode的时候要清理下load_res(在riscv_cpu_set_mode)，加上这部分果然
+  就通过整个测试了。理论上讲，lr/sc是在一个进程内生效的，切进程上下文的时候要清理
+  load_res，但是即使没有清理，和错误的现象：原子加出的和总是小一些，还是有点对不上。
+
+5.16
+----
+ 
+ 回头总结下lr/sc的实现逻辑。在block ISA的定义中，lr/sc是普通的系统指令，和atomic
+ 属性的定义是没有关系的，对于system block，它一定是严格保序的(注意system block在
+ 实现的时候并没有考虑到这一点)，那么用两个包含lr/sc指令的系统块是可以完成原子操作
+ 或者CAS的。lr/sc执行的时候，可能触发缺页，硬件应该去处理缺页，然后重新执行lr/sc，
+ 因为是在body中异常，硬件应该把上下文保存到ext寄存器，重新执行的时候先恢复上下文，
+ 然后继续重新指令lr/sc。
+
+ qemu实现上，我们可以基本上copy rv的lr/sc实现，异常保存恢复也没有打破现有逻辑。
+ 和rv有区别的时，rv把lr/sc上又叠加上了指令序的语义，有lr.aq/sc.rl等，注意这个序
+ 针对的是lr/sc指令，block ISA上也有指令序的定义，有atomic.aq, atomic.rl, atomic.aq_rl，
+ 但是block上的定义是针对block之间的序。block之前序的问题和lr/sc实现是两个独立的
+ 问题，可以在body的结尾或者head的开始插入相关的mb中间码，保证满足要求的指令序。
+
+ guest上的指令序和host上序的逻辑关系还要继续研究下。
+
+5.19
+-----
+
+ 重新看来保存恢复的代码，和中断一起的时候。触发保存恢复的机会有两个，1. head和
+ body之间来了中断，2. body跨page了，一个body对应了两个tb。又考虑了下，之前遇到的
+ 中断会使得tb跳过执行的情况，在这种情况下，qemu处理中断的时候做现场保存，中断handle
+ 里最后要把sepc配置成被中断的bpc，这样就可以在中断处理完后重新执行这个块。
+
+ 内核的同事说，中断恢复的时候是把之前保存的ext没有改变写回去的。qemu里没有清ext
+ 对应的寄存器，现场保存和恢复又是配对的，所以我在写ext的函数里检查了写入值和ext
+ 的当前值，理论上应该是相等的，这个检查没有发现异常。
+
+ 关于qemu user mode支持trap的问题，trap是可以触发ecall异常的标准块微指令，是要做
+ bstate保存和恢复的，user mode如果支持，首先要检测到是trap，然后做上下问题的恢复，
+ 重新执行块就好。现在的问题是，到现在为止一个用trap的地方也没有，都用的是ecall，
+ 所以，对于user mode trap的支持，我们就叫它在user mode指令翻译的时候直接false
+ 好了，等到用的时候再改。
+
+5.20
+-----
+ 
+ 如上trap的问题改了上去。
+
+ lr/sc的问题和国柱对齐：原子块和lr/sc不并存，lr/sc在原子块里报指令异常。那就在lr/sc
+ 指令解码的一开始检查是否在原子块，如果在就生成指令异常，但是在改测试代码的时候，
+ 发现order属性是和atomic绑定的，lr/sc又需要order的限制，所以larm这块还缺少定义。
+ (todo)
+
+ 改bpc不一致的问题，在异常中断/sret/mret切pc的时候，把pc值付给bpc下。bios回来内核
+ 是通过mret的，那么只有bios一开始进入内核的这个点没有覆盖住，问题估计也不大，先这样
+ 改上去了。
+
+ fence.i的逻辑是遇到fence.i就结束并提交块。可以在判断块是否在结尾的逻辑上, 增加如果
+ 是一个条fence.i，我们也认为块到结尾了，这样其他所有的逻辑都不用改。fence.i的修改
+ push上去了，周一来了看看怎么测试下。
+
+ ecall延后执行的改动还没有分析，随后再看看细节吧(to do) 
+
+5.23
+-----
+ 
+ 现在最高优先级先解决block被中断的问题，出问题的基本逻辑是，一个块在s mode跑，这时
+ 被一个m mode的中断打断，因为m mode跑的还是rv，这里就有可能出问题。block执行的基本
+ 逻辑是: ->head->body(head)->head->，处理中断的所有地方有：1. 所有->处，就是翻译执行
+ loop的入口处；2. head/body, 可能被生成到两个tb上，这样，head或者body的中间中断也会
+ 进来(有明确见到一个body会生成到两个tb上，head的情况还没有看到过，head要不要处理？);
+ 3. 需要单独考虑下，body执行和irq处理并发执行时，跳过body，先响应irq的行为。
+
+ 我们一个一个考虑下上面的情况:
+
+ 中断在head和body之间，这个时候pc是bpc1(body第一条微指令地址), 中断的mepc地址是
+ bpc1，sbi里在处理完中断，继续从mepc执行，由于sbi里的rv执行没有改变当前cpu里的
+ block状态，继续执行应该不会出现问题，head和head，hody和head之间如果有中断进来，
+ 也是一样的逻辑。注意，这里qemu里是在m mode的分支处理，不会保存上下文，vld也不会置1，
+ 不会干扰后续block的处理。
+
+ 对于head/body可能被翻译到两个tb里的情况，第一个tb翻译结束后会把pc指向后面的指令
+ 然后把pc更新到cpu里，这样随后qemu的中断处理里，是把被中断的head/body的后续第一条
+ 指令地址给mpec，这样中断完成后，继续执行head/body后面一段所对应的tb也是对的。
+ 从上面的分析可以看出，head这种当作一条指令处理的指令，会不会被翻译到两个tb里还不
+ 确定?
+
+ 之前我们遇到过，中断和tb执行并发的时候，中断会写icount对应的flag，tb执行时，如果
+ 检测到flag被写了就跳过当前tb执行，继续分析下，当中断在m mode处理时的情况，整个tb
+ 被跳过，pc还是bpc1，就是块的第一条微指令，qemu中断处理的时候，把pc(bpc1)保存
+ 到mepc里，中断处理完，返回到bpc1继续执行body。看起来也不会出问题。
+
+ (中断在s mode处理的情况，整个tb被跳过，pc还是指令bpc1，就是块的第一条微指令，
+ qemu中断处理的时候，发现是在body里，保存当前块的bpc到sepc，保存上下文到ext寄存器。)
+
+ 想到这里head执行的时候也有可能被中断跳过，pc指向head，中断处理完后，继续跳回
+ head执行，看起来也没有问题。
+
+ 具体跑了下上面对应的trace，pc的切换是对的，但是发现有异常的地方，只打印s -> m,
+ m -> s的切换，按说，ext.vld/en的值都是0才对，但是发现不有时有值，发现vld清理是
+ 在s mode的处理分支里的，这个显然不对了，应该不管什么mode，一进入就清vld，改过之后
+ 还是有问题，干脆放开打印，发现s -> s的timer上下文保存也不对：
+```
+------------- CS_OUT(0): Priv(1=>1) for `s_timer`
+BPC(bpc1-bpc2)/TPC/epc: 0xffffffff80002960(0xffffffff8098ffea-0xffffffff80990002)/0xffffffff80002960/0xffffffff8098ffea  <--- 这里的sepc应该是bpc
+  BSTATE.VLD/EN: 1/0
+
+------------- CS_OUT(0): Priv(1=>3) for `supervisor_ecall`
+BPC(bpc1-bpc2)/TPC/epc: 0x80000520(0xffffffffffffffff-0xffffffffffffffff)/0x80000520/0xffffffff800080e0
+  BSTATE.VLD/EN: 0/0
+
+------------- CS_IN(0): Prv(3=>1)
+BPC(bpc1-bpc2)/TPC/epc: 0xffffffff800080e4(0xffffffffffffffff-0xffffffffffffffff)/0x800005f8/0xffffffff800080e4
+  BSTATE.VLD/EN: 0/0
+
+------------- CS_IN(0) Prv(1=>1) 
+BPC(bpc1-bpc2)/TPC/epc: 0xffffffff8098ffea(0xffffffffffffffff-0xffffffffffffffff)/0xffffffff8068a292/0xffffffff8098ffea
+  BSTATE.VLD/EN: 0/1
+```
+ 明天来了啥都不用看了，先把这个异常看下...
+
+5.25
+-----
+
+ 跟踪了下基本的ecall/m-time/s-time的流程，主要是保存恢复的pc/bpc1/bpc2/epc，没有
+ 发现异常。
+
+ 我们计划切入m和切出m采用直接进入和直接出来hack的办法，所以中点看了切入时以及恢复
+ 时block的状态是不是一样的，都是一样的。按说ext也要查，但是代码要写的有点多就没有
+ 查，想着rv里不会改，但是还是打脸了，国柱提醒do_interrupt里对所有状态都改了vld，
+ 这个就错了。这个要改回来。
+
+ 还检查了切入m和切出m的pc/bpc1/bpc2/epc，按照之前的分析，会有三种可能的情况，
+ 1. bpc1,bpc2有值而且不是全f，mepc=bpc1，这种是，head和body中有中断以及body tb被打断的情况。
+ 2. bpc1,bpc2为全f，bpc=mepc，这种是，head-head，body-head中有中断。
+ 3. bpc1,bpc2有值而且不是全f，mpec是bpc1,bpc2中间的一个值，这种是一个body被分到两个tb里，中断从中间进来。
+ 
+ 全部log都是1、2的情况。但是，在log的结尾会大概率的出现一个异常的情况：
+```
+------------- CS_OUT(0): Priv(1=>3) for `m_timer`
+  bpc: ffffffff800080e0, bpc1-bpc2: ffffffffffffffff-ffffffffffffffff, mepc: ffffffff800080e4   <----- 这个地方的值不对啊！应该是和bpc要相等，80e0的这个地址是s->m时一个rv ecall的地址。
+  GPRS:            GPRS:          0000000000000000 ffffffff80008680 ffffffe0016dfa40 ffffffff8149fb80 ffffffe0016d1bc0 0000000000000040 0000000000000000 0000000000000078 ffffffe0016dfa50 ffffffff8149b880 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000054494d45 0000000000002710 0000000000000009 0000000000000001 8000000000006020 0000000000000000 0000000000000000 ffffffe0016d1bc0 0000000000000001 ffffffff8113b468 000000000000000e 0000000000000002 0000000000000402 ffffffff81482560 ffffffff81482580 
+
+------------- CS_IN(0): Prv(3=>1)
+  bpc: ffffffff800080e0, bpc1-bpc2: ffffffffffffffff-ffffffffffffffff, mepc: ffffffff800080e4
+  GPRS:            GPRS:          0000000000000000 ffffffff80008680 ffffffe0016dfa40 ffffffff8149fb80 ffffffe0016d1bc0 0000000000000040 0000000000000000 0000000000000078 ffffffe0016dfa50 ffffffff8149b880 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000054494d45 0000000000002710 0000000000000009 0000000000000001 8000000000006020 0000000000000000 0000000000000000 ffffffe0016d1bc0 0000000000000001 ffffffff8113b468 000000000000000e 0000000000000002 0000000000000402 ffffffff81482560 ffffffff81482580 
+
+------------- CS_OUT(0): Priv(1=>1) for `s_timer`
+  GPRS:            GPRS:          0000000000000000 ffffffff806822d0 ffffffe0016dfb90 ffffffff8149fb80 ffffffe0016d1bc0 0000000000000040 0000000000000000 0000000000000078 ffffffe0016dfbb0 0000000000000002 ffffffe0016d21c8 8000000000006022 0000000000000000 0000000000000001 ffffffffdead4ead 0000000000000001 0000000000000000 0000000054494d45 0000000000000000 ffffffe0016dfc40 0000000000000031 ffffffff81411700 ffffffff814a00a8 0000000000000078 ffffffe0016d1bc0 0000000000000001 ffffffff8113b468 000000000000000e 0000000000000002 0000000000000402 ffffffff81482560 ffffffff81482580 
+
+linx_debug str id 679, kernel/sched/core.c hit
+linx_debug instruction: 2010000000b, 0
+```
+ 但是仔细想下，也是对的，这里是在m mode ecall返回后，马上来了一个m timer，rv ecall
+ 为了对齐，后面还插了一个rv的nop，这里还是rv解码，和上面分析的还是有点区别。
+ 
+ 另外，bpc同步的地方也要先改对。
+
+5.27
+-----
+
+ 今天发现，is_concatenate_head相关的逻辑有问题，这个逻辑是，在head翻译的时候在
+ cpu里写一个flag表示是不是concate head，在跳转和其他地方可以用这个信息，这个漏洞
+ 太多了。比如，当前是concate head，在解码的时候更新了flag，head翻译执行后，来了
+ 一个中断，然后我们去执行中断处理里的block代码了，中断处理里的block，比如，只有
+ 非concate head，那现在head里的flag又被刷新成非concate head，好了，中断回来跳回
+ 被中断block对应的bpc，重新执行头，然后做现场恢复，注意，只是执行头，concate head
+ 的信息丢了，等到后面body翻译的时候，认为是非concate head。
+
+ 修改的方式是在head翻译的时候，用中间码把信息写入cpu，为了方便，我们直接写next_bpc
+ 的值到cpu里，后面需要用的时候也用中间码把next_bpc的信息读出来。同时，ecall要上报
+ 的next_bpc也直接从这里拿。next_bpc的值在使用完后马上清理掉。已修改上库。
+
+ ecall等指令延时执行的问题，目前采用的方式是用翻译flag的方式，在翻译ecall的时候
+ 先记住，然后在生成commit中间码的时候生成ecall，这个方式和现在larm的定义不符合，
+ 定义是把要delay执行的指令记在sbpc里，然后硬件到最后block commit的时候再执行，
+ 理论上，qemu要模拟这个行为，就是ecall执行的时候，设置sbpc，在commit的时候，根据
+ sbpc触发相关的指令，注意，这个行为是完全动态的。
+
+ 具体实现上，我们可以用helper实现commit触发指令运行的逻辑，但是，里面有个tb exit
+ 不知道在helper里怎么搞？另外一个办法就是全部手写中间码生成的逻辑，手写一个swith
+ 似乎代码会搞的比较乱。明天来了看看怎么搞。。。
+
+5.28
+-----
+ 
+ 如上swith的问题还没有想到怎么写，不行只有全部手写中间码了。除了这个，周六又报了
+ 两个问题出来。
+
+ 一个是在检查bit mask的时候发现的，晓强在改这块的逻辑，基本的算法是，在解析头的
+ 时候把bset/bget记录下来，在block执行微指令的时候，当执行get/set的时候去找bset/bget
+ 里看有没有相关的bit，但是，这个过程是检测不出来bset/bget里有多余bit的错误的，
+ 所以，在get/set的执行的时候，还在记录get/set的bit，最后提交的时候再和bset/bget
+ 比较下，这样就可以检测出bset/bget有多余bit的情况。一切看起来很好，但是，我们考虑
+ 有block中断的时候，如上的算法其实在block里增加了状态，block恢复的时候的时候要把
+ 记录的get/set bit的情况也恢复，不然后面比较就错了。
+
+ 我们需要看看硬件是怎么实现这个的。感觉这里可能会有定义上的问题。
+
+ 另一个的问题是，我们的T寄存器的访问在block保存和恢复的时候实现是有问题的。
+ 当前的实现是，我们用8个寄存器循环使用当T寄存器用，用一个env->ibpc作为一个block
+ 里指令序列的标号，注意这个ibpc只在翻译的时候用(这里还有一个bug，ibpc每次翻译block
+ 的时候要初始化成0, 现在没有做这个操作)。实现上，我们用一个数组。
+
+ T register：  0    1    2    3    4    5    6    7
+
+ ibpc：        0    1    2    3    4    5    6    7
+
+               8    9    10   11   12   13   14   15
+
+               16   17   18   19   20   21   22   23
+
+ 假设一个block的微指令我们用ibpc标号，那么set/get的算法是，set ibpc % 8, value，
+ get (ibpc - offset) % 8。set的逻辑是，T寄存器只能向前索引最大8个，ibpc为8的微指令
+ 完全可以用0号寄存器，因为ibpc 9的微指令已经索引不到0号寄存器了，get的逻辑是，先
+ 求出访问的T寄存器的ibpc，再%8找到具体的地址。
+
+ 如上整个逻辑在一个block翻译到一个tb的时候是成立的，但是在一个block翻译到两个tb，
+ 或者在block被中断的时候就不成里了。(我们现在能跑这么远的原因是，第一，block翻译
+ 到两个tb的概率比较低，第二，现在基本上block被中断的情况都是在head-body间中断，
+ 这种情况可以认为没有上下文要恢复)。如果要成立，ibpc搞成一个cpu状态，当一个block
+ 被翻译成两个tb时，后一个tb继续用顺延的ibpc，当有中断保存和恢复时，要恢复ibpc状态。
+ 我们考虑ibpc搞成cpu状态是否是必须的，只要考虑中断保存和恢复的场景，被打断时的
+ t寄存器和tpc都有了，恢复回来后完全可以继续从tpc处取指令继续指令，所以，这个问题
+ 应该是一个实现问题。
+
+ 其实我们可以这样实现，每个微指令都保证，他直接用t的offset就可以索引到，不用ibpc。
+ set 0, value, get offset, 每个set都写到第0个寄存器，每个get都直接用offset做为
+ 下标，每次微指令执行都包含对T regisert做整体右移。这样qemu模拟的速度要慢了，不过
+ 真实硬件可能一拍就搞定了。
+
+ 总结下，第一个问题，在自修改代码上，larm定义可能会有问题，第二个问题是一个实现
+ 问题，当前实现必须马上改正(当前问题可能的原因！！)，但是用上面的办法，qemu的模拟
+ 速度可能会变慢很多。
+
+5.30
+-----
+
+ bset/bget的问题已经和若愚对齐，他认为这个是个问题，后面会持续跟踪，目前想到的解决
+ 办法是增加系统寄存器，表示block里已经访问过的gpr。
+
+ T寄存器的问题，应为是概率小的问题，我首先在do_interrupt里加了assert(pc == bpc1),
+ 基本上大概率会这里不过，也就是虽然一个block被翻译到两个tb里是一个小概率事件，
+ 但是block翻译执行持续的时间长，触发这个问题的概率还是比较大的。
+
+ 我们考虑修改的方式，每次微指令都移动，相当于一个指令又要多执行八次，估计qemu的
+ 运行速度会慢不少。我们直接尝试国柱提示的方式。
+
+ 我们这样看，只要把所有断开的地方的方式搞的一致，所有继续的地方的逻辑就一样，断开
+ 地方的T寄存器重排可以满足这样的定义: 后续的微指令到下标是7的地方索引上一个微指令
+ 的T寄存器，到下标是6的地方索引上上个微指令的T寄存器，重新开始的index配置成0，
+ 这样，如果重新开始的指令就是set，直接写入下标为0的T寄存器，依此类推。这样ibpc在
+ 所有开始翻译的时候都初始化成0就可以。(实际就是在qemu层面约定了一个实现的规范)
+
+ 可以断开的地方有三个: 1. 中断，2. 遇到跨page的情况，3. 遇到一个tb占满的情况，
+ 我们认为第三种情况永远不可能(是么?)
+
+ T register：  0    1    2    3    4    5    6    7
+
+ ibpc：        0    1    2    3    4    5    6    7
+
+ T register：  2    3    4    5    6    7    0    1    <----- 现场变成这样
+
+               8    9    10   11   12   13   14   15
+                         0    1    2    3    4    5
+
+               16   17   18   19   20   21   22   23
+               6    ...
+
+
+ 假设我们在ibpc是10的时候断开tb(10是下一个tb的第一条指令)，我们要做的是：把T寄存器
+ 器的数据变成如上，下一个tb翻译的时候ibpc从0开始。具体计算的逻辑还和之前一样，
+ get (ibpc - offset) % 8, set ibpc % 8，get中需要对下标做循环以为，确保下标为正
+ (e.g. -1就是7)。具体实现的时候，ibpc要同时更新到寄存上，这样才能在中断处理里用,
+ 一个block到两个tb的场景，要在翻译退出前插入help函数，把t寄存器做调整。
+
+6.1
+----
+ 
+ review了李飘的T寄存器修改的patch，一个最大的问题是ibpc的概念不明确，一个翻译
+ 变量在执行的时候使用和修改，这个可能就会出错。我们整理下当前patch的逻辑，分情况
+ 看，在一个block完整在一个tb里执行的情况下，ibpc翻译是从0开始，逻辑没有问题；在
+ 一个block分成两个tb执行时，tb执行完后，ibpc要刷回cpu，这样，如果有中断，就可以
+ 从ibpc的到当前的循环队列的尾，用这个信息做循环移位，如果没有中断，反正翻译的时候
+ ibpc在两个tb中间也没有清零，也是对的。但是在有中断的时候，中断恢复的tb，翻译的
+ 时候ibpc要从0，当前是在恢复tb的执行中给ibpc清0的，也不会有问题，如果头恢复完后
+ 有中断进来，进入中断翻译执行，ibpc这个翻译变量会被破坏，但是，中断回来还是要做
+ do_recovery，ibpc又可以清0。所以，整体看，只要再tb结束的时候把ibpc刷会cpu就可以。
+ 但是，上面这么复杂的状态变化，还有其他问题么？后面能维护的住么？
+
+ 现在larm有做了很大的调整，这里重新推导下，看看qemu要这么改。larm改动的核心点是
+ 一个block执行，可以从一个前置的块内状态开始，这个块内状态就是bstate。删去了
+ bstate.ext.en，改用从这个bstate中的情况，判断一个block是不是要使用bstate的信息
+ 作为他的块内信息开始执行。bstate.ext.vld继续存在，依然表示bstate.ext中导出的块
+ 上下文是否有效。我们逐个点看下。
+
+ 1. 当中断或者在异常在body中间时，保存bstate到ebstate，ebstate.vld = 1，这点不变。
+    ebstate.vld在中断异常处理的开始首先清0，这点也不变。
+
+ 2. sret/mret根据指令输入的参数，决定是否在执行原来的sret/mret之前插入
+    bstate = ebstate的操作。输入参数来自T寄存器，因为sret/mret是延时执行的，输入
+    参数也要保存下，sret/mret所在的块可能被中断，所以这个输入信息必须保存在架构
+    寄存器上，否则中断回来数据有可能没有了，所以，还是要塞到commit argument(原来
+    sbpc上)。
+
+ 3. 在头解析的代码里，根据bstate.tpc决定，是否要采用bstate的当前值作为block内部
+    执行环境。会上讨论的是bstate.tpc的非法值是全f，当bstate.tpc不是全f时，我们认为
+    采用bstate作为block内部执行环境。我们继续看看这样做是否有问题。
+
+ 4. sret/mret后，跳到目标跳转地址之前有中断进来，或者目标跳转地址取指异常，这两种
+    情况都会进入qemu的异常中断处理代码，如上，首先清ebstate.vld，然后qemu的异常中断
+    处理代码，判断是否现在处于block的中间状态，判断的条件时，检查bstate.tpc的值
+    是不是有效的，全f是无效，检测到非全1时，把状态导出到ebstate：ebstate = bstate，
+    ebstate.vld = 1。随后，执行跳到中断或者异常处理向量，异常处理向量也时block，
+    这个block也要检测用不用bstate作为它的中间状态，显然用bstate.tpc是否全f，会错误
+    的认为bstate是它的块内状态，所以，检测bstate是否为一个块的块内状态，应该加强为
+    bstate.tpc是否在这个块的bpc1/bpc2内。(注意，后面把bpc1/bpc2改成tpc1/tpc2)
+    这样中断和异常处理向量会用一个全新的块执行，然后检测到ebstate.vld有效，做上下
+    文保存，然后处理中断或者异常，然后恢复现场(上述第二步)
+
+ 5. 因为一个块要根绝bstate里的寄存器决定是否使用bsate作为block状态，我们就要在
+    每个块提交的时候，清理bstate，包括，bstate.tpc = 全f、sgpr/T寄存器清0、commit
+    argument清0，但是在包含有sret/mret的块提交的时候做导出恢复bstate的操作。
+
+ 6. 内核有要重发系统调用的需求，block有可能有普通微指令和ecall指令在一个block的
+    情况，重新执行ecall所在block可能会有副作用。为此, 在sret里增加了一个redo_ecall
+    的参数，sret需要把相关信息写到bstate里，我们需要在bstate里找一个没有占用的域段，
+    把这个信息塞到里面，bstate.tpc是2byte对齐的，最低1bit可以用来编码这个信息，
+    commit argument(CA)也可以协调下，CA可能是一个bnext的地址，低4bit空闲，把CA在
+    条件跳转和延迟执行的编码的低4bit也空出来，就可以编码redo_ecall这个信息。我们
+    需要定义bstate中的通信协议。
+
+    commit argument(CA)我们定义成：
+
+    1. 间接跳转或调用：bit63-bit4编码bnext，bit3-bit0为0
+
+    2. 条件跳转：bit4为0表示不跳转，1表示跳转，其它bit为0
+
+    3. 延迟执行：bit7-bit4的数据，1: ecall, 2: ebreak, 3: sret without bstate,
+       4. sret with bstate, 5. mret without bstate, 6. mret with bstate,
+       7. wfi without bstate, 8. wfi with bstate
+
+    4. 重复执行ecall：bit0是1，重复执行ecall
+
+    在执行一个块的时候，qemu首先判断bstate是否对这个块有效，判断的标准是
+    bstate.tpc不为全1，或者CA bit0是1，那么当前bstate对这个块是有效的，否则bstate
+    取自default值。
+
+ 7. ebstate区分了特权级，m下一个: mbstate，s下一个: sbstate，并且寄存器的地址做了
+    调整。我们可以把m mode的寄存器先加上，但是因为m mode我们用rv hack, 所以上面
+    关于mbstate/mret的操作先空着，并加上注释。
+
+ 8. 我们可以先都改到一个私有分支上，和内核、编译器联调好后，同步push主线。
+
+6.2
+----
+
+ 现在sbpc改成了commit argument(CA)，它表示相互互斥的提交参数，梳理下其中的逻辑。
+ CA可以表示：1. 下一个block的跳转地址，这个在间接跳转或调用的时候使用，2. 是否
+ 发生跳转，跳转的目的地址在bnext里，这个在条件跳转使用，3. 延迟执行的标记，这个
+ 在ecall/ebreak/sret/mret/wfi的块里使用，这些块的必须是顺延块。
+
+ 所以，我们的处理逻辑可以分成两层，第一层是跳转模式，第二层是跳转模式下的具体处理，
+ 其他的case都是错误情况。具体可以：
+
+ 1. 顺延：
+    1. CA有值并且是系统块：处理延迟指令, 不是系统块，报错。
+    2. CA没有值：顺延。
+
+ 2. 间接跳转或调用：
+    根据CA值跳转。
+
+ 3. 条件跳转：
+    根据CA值决定是否跳转。
+    
+ 4. 其他跳转：
+    CA如果有值，报错。
+
+ 如上的处理，无法识别的异常情况有：
+
+ 1. 延迟指令出现在非顺延块，根据上面的情况，有可能会把标记的延迟执行信息作为跳转
+    信息用。我们在延迟执行指令译码的时候判断是否在顺延块，不在，就报错。
+
+ 2. 一个块里有多个延迟执行指令。我们在延迟执行指令译码是插入中间码，判断CA是否已经
+    有值，已经有值就报错。
+
+ CA值需要在块提交以及系统reset的时候清0。
+
+6.8
+----
+
+ 全部review修改的代码，先记下逻辑，顺着去看。
+ 
+ 一个块结束的时候，bstate状态的处理逻辑：
+
+  1. 所有branch跳转都reset bstate。
+  2. 除了branch跳转需要reset bstate的：(delay insn)
+     1. ecall需要
+     2. ebreak, 写ebsate，然后reset bstate
+     3. sret 0, 需要
+     4. mret, 需要, 但是暂时没有用到mret
+     5. wfi, 需要
+  3. 需要写下一个块的前置bstate的情况:
+     1. sret 1, ebstate写入bstate。sret里搞
+     2. sret 2, redo ecall。sret里搞
+
+ 一个块开始时，根据bstate状态做恢复的逻辑：
+
+  1. 中断异常在一个块中间: tpc有效。直接使用bstate
+  2. sret 1 配置了bstate: tpc有效。直接使用bsate
+  3. sret 2 配置了bstate: sbpc的最低bit为1。触发ecall异常
+  4. bstate从default开始: tpc无效，并且不是情况3。最好复位下bstate
+
+ 处理中断异常时判断在block中间的逻辑：(bstate有效，也认识时在block中间)
+
+  1. 在一个块中间：pc属于[tpc1, tpc2)
+  2. sret 1 配置了bstate: tpc有效
+  3. sret 2 配置了bstate: sbpc的最低bit为1
+
+  所有情况的处理一样，都是把bstate写出到ebstate, vld = 1, bstate reset
+
+ 需要review的逻辑还有：
+  1. ecall st.cause/vld/sz的上报逻辑，直接看就好。
+
+6.9
+----
+
+ 和最新的内核跑，会挂在一个原子块里，出现store page fault(cause 7)，去掉原子属性
+ 就可以继续往下跑。这叫人怀疑原子实现有问题。国柱review出几个明显的问题：
+ 1. 0地址是合法的，store_addr不能用0表示初始地址；2. load的操作都没有考虑，这里面
+ 包括：1. load的地址不在64B的窗口(非法情况)，2. load没有从内部buff里拿数值，这个
+ load/修改/store的序列不会有问题，但是逻辑上有问题，整个原子块内部的store都是先
+ 更新到一个内部buff上，如果load直接从外面取值，有可能取的是旧值，所以load要从内部
+ buff上取; 3. CF_ATOMIC可能和通用的原子操作翻译flags冲突; 4. buff_mask里用bit标记
+ 写入值的算法，不够贴合硬件。
+
+ 我们再梳理下逻辑。第一次有读写操作的时候，把对应的64B内容读入内部buffer，原子块
+ 的读写操作我们都先作用到cpu的内部buffer上，最后提交的时候一次copy到对应的64B。
+ 之所以还用内部buffer，我们要防止写出去的内存生效之后还有非法地址访问的情况。
+
+ 具体的数据结构：store_buf是内部buffer, store_addr是要访问的内存地址(对齐到64B)
+ 新加一个CPU变量store_buf_valid表示是否store_buf有效(head里清0, 第一次读写操作
+ 置1)。每次读写时，如果store_buf_valid是0，就配置成1，并配置store_addr这个窗口，
+ 同时把整个64B读入buffer。异常检查的逻辑是：如果store_buf_valid是1，就做异常检查。
+ 读写都作用到内部buffer，因为都在buffer里操作，就不需要mask bit了。
+
+ 考虑原子块头和body中间有中断的情况，中断断在一个block里，会保存上下文，但是恢复
+ 回来的时候，从head开始指令，在看到是一个原子块的时候，不会做恢复。
+
+ 还是用CF_ATOMIC，先改一版试试。
+
+ 看代码的时候发现一个bug，在头里清了sbpc，这样redo ecall做不了。这个提醒我们要
+ 把头里状态全部过一遍，分清哪些是head解析创建的，哪些是bstate属性，基于此明确配置
+ 和清理的时机。
+
+6.10
+-----
+
+ 按照上面的逻辑写了代码，中间编译出了点问题，原因是gen_helper的返回值直接赋值了，
+ 返回值应该定义到第一个参数。回头还是要研究下这块。测试的时候发现do_interrupt的
+ assert fail了，吐血，还是老实回来把head/bstate的信息全部整理一遍。
+
+ 一个块要运行需要的信息分两部分：1. head得到的信息，2. bstate的前置信息。head的
+ 的信息必须运行head才能得到，bstate信息在head运行的时候，通过检测特性的bstate状态
+ 得到。
+
+ head得到信息包括：tpc1/2, bpc, next_bpc, btext, bnext, bsize, battr, smask, gmask,
+                   blktype, brhtype
+ bstate的信息包括：sbpc, tpc, sgpr[32], blk_t[8]
+
+ ibpc比较tricky，ebsate由sret已经恢复到bsate，不在考虑范围，store buff相关的信息
+ 每次执行head都要清空，考虑意义不大。
+
+ next_bpc, btext, bnext, bsize, battr, smask, gmask, blktype, brhtype每次头执行
+ 时更新，他们只有在block世界才有意义。sgpr[32], blk_t[8]机械的导出和恢复。所以，
+ 我们把关注的范围缩小到：
+
+ head得到信息包括：tpc1/2, bpc
+ bstate的信息包括：sbpc, tpc
+
+ 我们一个一个看下: (已国柱之前的状态机为基础)
+ bpc: 在执行到head里，设置为当前head bpc，在block执行完或者pc发生迁移的时候(特权
+      指令)，清理bpc的值。注意某些特权指令，比如ecall，需要上报bpc，这个时候等到
+      上报完后清理。
+ tpc1/2: 在执行head时配置，在所有可能离开block世界时清理，和需要清理bpc的点是一样的。
+ tpc: 是一个tricky的存在，它只有两个接口读，一个接口配置。块被打断时tpc写入ebsate.tpc,
+      addtpc时tpc的信息被得到，二层微指令指针被配置到ebstate.tpc, 然后在sret里写入
+      bstate.tpc, 这个是唯一个tpc的配置接口。我们严格在所有出block世界时把tpc配置
+      成无效(所谓出block世界是指所有branch跳转和特权指令pc发生迁移的地方)，在tpc
+      导出到ebstate的时候也把tpc配置成无效。
+ sbpc: 在块运行的时候更新这个参数，表示块提交时的跳转和延迟执行指令信息。
+       sbpc的最低bit被sret来表示是否重发ecall。我们在所有出block世界时清sbpc，只
+       在sret需要重发ecall的时候置最低bit。所以，当进入一个head时，sbpc只可能是
+       0或者1或者其他值: 它们分别表示：0：进入一个全新的块, 1: 进入一个需要重发
+       ecall的块中间态，其他：进入一个被中断的块(并且这个块有跳转和延迟执行信息)
+
+6.11
+-----
+
+ 今天把assert相关的问题都过了一遍，基本上都改上去了，有几个概率出现的固定位置问题。
+```
+[    0.029588] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.110173] ASID allocator using 16 bits (65536 entries)
+[    0.136050] devtmpfs: initialized
+[    0.178291] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[    0.181298] futex hash table entries: 256 (order: 1, 12288 bytes, linear)
+[    0.199854] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.582767] iommu: Default domain type: Translated 
+[    0.583428] iommu: DMA domain TLB invalidation policy: strict mode 
+[    0.593749] vgaarb: loaded
+[    0.602010] SCSI subsystem initialized
+[    0.611492] usbcore: registered new interface driver usbfs
+[    0.613239] usbcore: registered new interface driver hub
+[    0.614985] usbcore: registered new device driver usb
+[    0.651155] clocksource: Switched to clocksource riscv_clocksource
+tpc: ffffffff8009dc00, tpc1: ffffffff8157527c, tpc2: ffffffff81575284
+qemu-system-linx: ../target/linx/op_helper.c:474: helper_blk_do_recovery: Assertion `env->tpc >= env->tpc1 && env->tpc < env->tpc2' failed.
+./run_qemu.sh: line 9: 194296 Aborted                 ~/repos/LinxBlockModel/build/qemu-system-linx -m 256M -nographic -smp 1 -machine virt -kernel ~/repos/LinuxKernel/arch/linx/boot/Image -
+append "console=ttyS0 earlycon root=/dev/ram rdinit=/init" -device virtio-9p-pci,fsdev=p9fs,mount_tag=p9,bus=pcie.0 -fsdev local,id=p9fs,path=/home/sherlock/repos/LinxBlockModel/linx-test/he
+llo/,security_model=mapped -initrd ./rootfs.cpio.gz
+```
+ 概率的每次都是在这个地方会assert失败，这个地方先用tpc判断是不是在一个block的中
+ 间状态，然后加这个assert去判断一下env->tpc >= env->tpc1 && env->tpc < env->tpc2。
+ 这个地方的assert是对的。这个要持续定位。
+
+ 还有一个问题，是会检测到block里有多余一条延时执行的指令，上一条是ecall。立福说
+ 是内核的问题，这个先不管了。
+
+ 起来init之后因为我用的还是rv的文件系统，自然有问题，这个先不管。甜根hack了一个
+ block的init，配合-enable_delay_block_intr可以稳定的跑进init，在init里调用了下
+ 调式指令，也是可以跑的。这个对我们看第一个问题有帮助。
+
+ 另外还在system mode下跑了hello atomic测试，是没有问题的，文杰在跑block编译器编译
+ 出来的多线程测试atomic程序，有问题。
+
+ 内核还随机有空指针出来，不过这个概率不高。
+
+6.13
+-----
+
+ 用block内核+rv文件系统，静态编译情况下，立福跑进了shell。
+
+ 今天晓强把assert的问题修了后，assert的问题没有了。但是内核还是有低概率的空指针
+ 出来。
+
+ 文杰提醒qemu-linx + block编译原子块测试的场景失败的问题，可能是测试场景的问题。
+ 益鹏的用例用用fork起了多进程，然后在多进程里对一个共享内存做原子加减操作。问题是
+ qemu构造原子区的方式是，基于一个cpu一个线程，并依赖线程间同步的方式，依赖一堆
+ 进程中的全局变量(锁)，qemu-linx里的fork直接fork了整个进程，这些机制应该都失效了。
+ 要看看clone的时候，原子区还能不能用，能就用线程去测试。
+
+ atomic block改进的patch写完了，测试也通过，不过CFLAG_ATOMIC还在，这个要改成根据
+ attr判断的微码形式。
+
+6.20
+-----
+ 
+ 早会文杰报了用户态use mode的问题，这个问题我之前review代码的时候已经给他们提过，
+ 是个已知问题，把模型写下把。
+
+ 首先看硬件，ebstate是系统寄存器，访问权限和特权级相关联，sebstate只能在s/m mode
+ 访问，mebstate只能在m mode访问。scause是一个读写寄存器，但是机器只在有异常需要
+ 上报原因时更新scause寄存器，block新加的ebstate.st具有相同的属性。
+
+ qemu的user mode只认识机器u mode的指令和寄存器，当遇到系统调用的时候，在逻辑层面
+ 由host模拟，也就时说，qemu user mode只从逻辑上认知一个系统调用和他的相关参数。
+ qemu user mode要支持rv和block，逻辑上看系统调用和他的相关参数都是一样，唯一的区别
+ 系统调用完成后下一个pc的计算方式不一样。我们不能使用s mode的寄存器区分rv和block，
+ 异常的时候直接新加linx对应的异常就好了，可以新加LINX_EXCP_U_ECALL_16B和
+ LINX_EXCP_U_ECALL_32B。
+
+ qemu system mode，我们根据不同qemu异常更新相关的系统寄存器。这里需要注意的是，
+ 我们用scause和ebstate.st同时支持rv和block，所以，rv和block下要更新scause和ebstate.st
+ (rv异常的时候，配置了scause还要清ebstate.st)
+
+6.21
+-----
+ 
+ 按照5.30的ibpc思路写了一版代码，跑内核还是一样的问题，代码在私有分支上：
+ linx-dev-sxq-ibpc。一个信息是，block的代码因为超过tb限制而分到两个tb里的情况在
+ 跑内核的时候是必现的。明天只能死磕下log，看看国柱的log出问题的地方还有没有问题了。
+
+6.22
+-----
+
+ 依赖linx-dev-sxq-ibpc上的commit开始debug，思路是触发异常后，根据内核的打印在qemu
+ 的log的找见出异常的地方，因为基本上全部是访存异常，所以整个qemu log一般只有一个
+ 这样的异常，就是出问题的地方，然后查看细节的对应情况，重点看ibpc和t寄存器。出问题
+ 往前推的log基本上是这样的：
+```
+riscv_cpu_do_interrupt: hart:0, async:1, cause:0000000000000007, epc:0xffffffff818d4000, tval:0x0000000000000000, desc=m_timer
+riscv_cpu_do_interrupt: hart:0, async:1, cause:0000000000000005, epc:0xffffffff818d4000, tval:0x0000000000000000, desc=s_timer
+------------- CS_OUT_FROM_BLK(0): Addr(ffffffff818d4000=>ffffffff80003180) with bpc=ffffffff8068d060(ffffffff818d3fe8,ffffffff818d4014), Priv(1=>1) for `s_timer`
+  GPRS:          0000000000000000 ffffffff8068d040 ffffffe002e33b00 ffffffff82d012e8 ffffffe002e48000 ffffffe00384f530 0000000000000100 0000000000000000 ffffffe002e33b90 ffffffe0038c0938 ffffffff827c4298 0000000000000118 0000000000000000 ffffffe00384f530 0000000000000000 0000000000000000 0000000000000040 0000000000000000 ffffffe00384f528 ffffffe00385d480 ffffffe00387c7e8 0000000000000001 ffffffff8240f1d0 ffffffff82400480 ffffffe00384f528 0000000000000008 ffffffff822000e0 0000000000000000 fffffffffffffffc 0000000000000400 00000000000002d0 00000000000003ff 
+  CARG:          0000000000000000
+  TREG_P:        b
+  SGPRS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000fffffffe0 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         ffffffffffffffe0 0000000fffffffe0 0000000000000000 0000000000000000 0000000000000000 0000000000000598 ffffffe00387c7e8 ffffffe00387cd80 
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000000000009, epc:0xffffffff80008860, tval:0x0000000000000000, desc=supervisor_ecall
+------------- CS_IN_RECOVER(0) Addr (ffffffff814c63be=>ffffffff8068d060) Priv(1=>1)
+  GPRS:          0000000000000000 ffffffff8068d040 ffffffe002e33b00 ffffffff82d012e8 ffffffe002e48000 ffffffe00384f530 0000000000000100 0000000000000000 ffffffe002e33b90 ffffffe0038c0938 ffffffff827c4298 0000000000000118 0000000000000000 ffffffe00384f530 0000000000000000 0000000000000000 0000000000000040 0000000000000000 ffffffe00384f528 ffffffe00385d480 ffffffe00387c7e8 0000000000000001 ffffffff8240f1d0 ffffffff82400480 ffffffe00384f528 0000000000000008 ffffffff822000e0 0000000000000000 fffffffffffffffc 0000000000000400 00000000000002d0 00000000000003ff 
+  CARG:          0000000000000000
+  TREG_P:        4e
+  SGPRS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000fffffffe0 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 0000000000000000 0000000000000598 ffffffe00387c7e8 ffffffe00387cd80 ffffffffffffffe0 0000000fffffffe0 0000000000000000 
+  block recoverred with header ffffffff8068d060(ffffffff818d3fe8, ffffffff818d4014), TPC=ffffffff818d4000
+riscv_cpu_do_interrupt: hart:0, async:0, cause:000000000000000d, epc:0xffffffff81526852, tval:0x0000000000000004, desc=load_page_fault
+```
+ 一个m_timer(返回没有打印)，接着一个s_time，他中断一个block，中断返回，然后后面
+ 就访存异常。ibpc的值已经没有看的意义了，它是一个翻译参数，而且每次block body任意
+ 地点上开始翻译，ibpc都从0开始。但是treg的值应该是保存和恢复应该是一致，上面的
+ log有了位移，这里是不对的。这里的打印原来是用的ibpc作为下标的，我也改成直接从0到7
+ 了，还是一样的问题，这里不符合逻辑。先把这里搞对，然后再往细查吧。
+
+6.23
+-----
+
+ 今天采用国柱增加ibpc的办法来搞下ibpc的问题。这个办法的模型是这样的，现在block的
+ 状态估计以后还是要增加的，那么我们就多加一个ebstate寄存器，然后用另外一个寄存器
+ 报告当前有多少个ebstate寄存器有效，这个是一个长远的方案。基于此，我们把ibpc放到
+ 新加的ebstate寄存器里。
+
+ 硬件层面，ibpc作为一个状态寄存器，执行当前微指令对应的t寄存器位置，当前微指令
+ 对t寄存器的访问都可以通过ibpc得到。这样当块被中断的时候，ibpc需要保存，这样恢复
+ 回来的块才能继续运行。(当然实际的硬件实现，每个微指令对t寄存器做下循环移位，也
+ 可以简单的访问到需要的t寄存器，所以国柱说"愚蠢的硬件")
+
+ qemu模拟层面，ibpc和tpc的逻辑是一样的，qemu只要把对外接口的逻辑模拟对就可以。
+ 所以，我们还是按照静态翻译的方式把ibpc直接静态编码到翻译生成的指令里。对于一个
+ block body，ibpc是连续的，所以body被翻译到多个tb时，连续翻译就好。当一个body被
+ 中断时，从中断返回，从硬件层面看它的ibpc应该继续，所以，中断的时候应该导出ibpc
+ 到ebstate，注意，这个时候的语义是，导出硬件的ibpc寄存器，而不是翻译参数，虽然我们
+ 马上要用这个ibpc去做翻译。
+
+6.25
+-----
+
+ 昨天写的patch还是用一个ibpc，一会翻译一会寄存器真心看的头大，重新写了一版，cpu
+ 里的ibpc就表示ibpc这个"寄存器"，disas context里多加一个ibpc_trans的翻译变量，
+ 根据逻辑重新刷了下代码，以这个代码为基础调试(debug_ibpc_0624)，随机空指针的问题
+ 还是出现。
+
+ 先查，我们改的ibpc的后的代码的逻辑，treg/ibpc保存和恢复的值都可以对起来。一个
+ 看起来比较明显的不同是，出错的时候保存恢复中的ibpc的值都比较大一点，没有合理的
+ 解释，这个先存一个线索放在这里，也可能是看的次数不多。
+
+ 现在基本上错误分成两个，一个是会报取指令地址异常，每次pc都跑到0地址上了, 这个错误
+ 在出现错误的情况里占大多数。前面一个body还是执行，下面一个head就是从pc=0的地方
+ 取指令，先在brand跳转的地方加上assert重跑，发现每次都是BRANCH_RET这跳指令把pc改到0上。
+ return的下一个地址，应该是把ra读入，然后用ra setbpc，我们去看看具体出问题的块是
+ 不是这样的。编译器产生的代码大概也是这样的，不过一个函数会生成多个块，第一个块进来，
+ 把ra保存到栈上，return的时候在栈上拿数据，然后做setbpc，然后跳转回去。看起来就是
+ 栈上的数据被改了。凡是出现这个问题，模式基本上都是这样：一个大的函数，中间有块
+ 内中断进来，栈上的返回地址就成0了。
+```
+----------------
+IN: get_device_parent
+Priv: 1; Virt: 0
+0xffffffff80db5380:  000c0706 00088104 01e06800 cfc6bc0b std_block.concat next:0xffffffff80db5560, ptr:0xffffffff81d84fea, attr:none, out_reg(sp,s0,a5,s3), in_reg(ra,sp,s0,s1,a0,s2,s3)
+0xffffffff80db5390:  0000000f 00000000 00000000 00000c00 std_block.conditional
+	0xffffffff81d84fea:  fa09                  const           -48                             # 0xffffffffffffffd0
+	0xffffffff81d84fec:  0212                  get             sp
+	0xffffffff81d84fee:  0400                  add             t#1, t#2
+	0xffffffff81d84ff0:  0292                  set             sp, t#1
+	0xffffffff81d84ff2:  0812                  get             s0
+	0xffffffff81d84ff4:  408f                  sd              t#1, [t#3, 32]
+	0xffffffff81d84ff6:  1312                  get             s3
+	0xffffffff81d84ff8:  802f                  sd              t#1, [t#5, 8]
+	0xffffffff81d84ffa:  0112                  get             ra
+	0xffffffff81d84ffc:  c0af                  sd              t#1, [t#7, 40]         <---- ra存到sp+40
+	0xffffffff81d84ffe:  e001                  addi            t#8, 0
+	0xffffffff81d85000:  0912                  get             s1
+	0xffffffff81d85002:  206f                  sd              t#1, [t#2, 24]
+	0xffffffff81d85004:  1212                  get             s2
+	0xffffffff81d85006:  604f                  sd              t#1, [t#4, 16]
+	0xffffffff81d85008:  0609                  const           48                              # 0x30
+	0xffffffff81d8500a:  a000                  add             t#6, t#1
+	0xffffffff81d8500c:  0892                  set             s0, t#1
+	0xffffffff81d8500e:  3f09                  const           504                             # 0x1f8
+	0xffffffff81d85010:  0a12                  get             a0
+	0xffffffff81d85012:  0400                  add             t#1, t#2
+	0xffffffff81d85014:  0064                  ld              [t#1, 0]
+	0xffffffff81d85016:  0f92                  set             a5, t#1
+	0xffffffff81d85018:  6001                  addi            t#4, 0
+	0xffffffff81d8501a:  1392                  set             s3, t#1
+	0xffffffff81d8501c:  6011                  setbpc.eqi      t#4, 0
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d84fea+22 in (0xffffffff81d84fea-0xffffffff81d8501e)
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d85000+30 in (0xffffffff81d84fea-0xffffffff81d8501e)
+
+riscv_cpu_do_interrupt: hart:0, async:1, cause:0000000000000007, epc:0xffffffff81d85000, tval:0x0000000000000000, desc=m_timer
+riscv_cpu_do_interrupt: hart:0, async:1, cause:0000000000000005, epc:0xffffffff81d85000, tval:0x0000000000000000, desc=s_timer
+------------- CS_OUT_FROM_BLK(0): Addr(ffffffff81d85000=>ffffffff80003180) with bpc=ffffffff80db5380(ffffffff81d84fea,ffffffff81d8501e), Priv(1=>1) for `s_timer`
+  GPRS:          0000000000000000 ffffffff80dbd040 ffffffe002e5fb60 ffffffff82d012e8 ffffffe002e78000 ffffffe002e20b00 da17c69924789e00 ffffffffa86547a8 ffffffe002e5fc00 ffffffff82cc6960 ffffffff82cc6960 0000000000000000 ffffffe002e5fb30 ffffffe002e20ab8 ffffffff827f3c50 da17c69924789e00 0000000000000015 0000000000000000 0000000000000000 ffffffff82d020a8 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 ffffffff82cc6960 0000000000000000 0000000000000009 0000000000000037 ffffffff82c12ee8 ffffffff82c12f08 
+  CARG:          0000000000000000
+  TREG_P:        b
+  SGPRS:         0000000000000000 0000000000000000 ffffffe002e5fb30 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 ffffffe002e5fc00 ffffffe002e5fb50 ffffffff82d020a8 ffffffe002e5fb38 ffffffff80dbd040 ffffffe002e5fb58 ffffffe002e5fb30 
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000000000009, epc:0xffffffff80008880, tval:0x0000000000000000, desc=supervisor_ecall
+------------- CS_IN_RECOVER(0) Addr (ffffffff814c64d0=>ffffffff80db5380) Priv(1=>1)
+  GPRS:          0000000000000000 ffffffff80dbd040 ffffffe002e5fb60 ffffffff82d012e8 ffffffe002e78000 ffffffe002e20b00 da17c69924789e00 ffffffffa86547a8 ffffffe002e5fc00 ffffffff82cc6960 ffffffff82cc6960 0000000000000000 ffffffe002e5fb30 ffffffe002e20ab8 ffffffff827f3c50 da17c69924789e00 0000000000000015 0000000000000000 0000000000000000 ffffffff82d020a8 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 ffffffff82cc6960 0000000000000000 0000000000000009 0000000000000037 ffffffff82c12ee8 ffffffff82c12f08 
+  CARG:          0000000000000000
+  TREG_P:        b
+  SGPRS:         0000000000000000 0000000000000000 ffffffe002e5fb30 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 ffffffe002e5fc00 ffffffe002e5fb50 ffffffff82d020a8 ffffffe002e5fb38 ffffffff80dbd040 ffffffe002e5fb58 ffffffe002e5fb30 
+  block recoverred with header ffffffff80db5380(ffffffff81d84fea, ffffffff81d8501e), TPC=ffffffff81d85000
+----------------
+IN: get_device_parent
+Priv: 1; Virt: 0
+0xffffffff80db5560:  00000800 00000200 ffe01000 cfb87c0b std_block.concat next:0xffffffff80db5540, ptr:0xffffffff81d850e6, attr:none, out_reg(s1), in_reg(a1)
+0xffffffff80db5570:  0000000f ffffffff 00000000 00000c00 std_block.conditional
+	0xffffffff81d850e6:  0b12                  get             a1
+	0xffffffff81d850e8:  0001                  addi            t#1, 0
+	0xffffffff81d850ea:  0992                  set             s1, t#1
+	0xffffffff81d850ec:  4031                  setbpc.nei      t#3, 0
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d850e6+8 in (0xffffffff81d850e6-0xffffffff81d850ee)
+
+----------------
+IN: get_device_parent
+Priv: 1; Virt: 0
+0xffffffff80db5580:  00000400 00000200 ffc01000 cfb6fc0b std_block.concat next:0xffffffff80db5540, ptr:0xffffffff81d850ee, attr:none, out_reg(s1), in_reg(a0)
+0xffffffff80db5590:  0000000f ffffffff 00000000 00000c00 std_block.conditional
+	0xffffffff81d850ee:  0a12                  get             a0
+	0xffffffff81d850f0:  0c64                  ld              [t#1, 96]
+	0xffffffff81d850f2:  0992                  set             s1, t#1
+	0xffffffff81d850f4:  2011                  setbpc.eqi      t#2, 0
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d850ee+8 in (0xffffffff81d850ee-0xffffffff81d850f6)
+
+----------------
+IN: get_device_parent
+Priv: 1; Virt: 0
+0xffffffff80db5540:  00000204 000c0706 aac05400 cfb7dc0b std_block.concat next:------, ptr:0xffffffff81d850bc, attr:none, out_reg(ra,sp,s0,s1,a0,s2,s3), in_reg(sp,s1)
+0xffffffff80db5550:  0000000f 00007f24 00000000 00001800 std_block.ret
+	0xffffffff81d850bc:  0212                  get             sp
+	0xffffffff81d850be:  0564                  ld              [t#1, 40]          <----- sp+40的地方拿到ra, 一路通过addi t#8, 0送到setbpc，根据之前assert这里栈上sp+40的位置是0了。
+	0xffffffff81d850c0:  0192                  set             ra, t#1
+	0xffffffff81d850c2:  4464                  ld              [t#3, 32]
+	0xffffffff81d850c4:  0892                  set             s0, t#1
+	0xffffffff81d850c6:  8264                  ld              [t#5, 16]
+	0xffffffff81d850c8:  1292                  set             s2, t#1
+	0xffffffff81d850ca:  c164                  ld              [t#7, 8]
+	0xffffffff81d850cc:  1392                  set             s3, t#1
+	0xffffffff81d850ce:  e001                  addi            t#8, 0
+	0xffffffff81d850d0:  0912                  get             s1
+	0xffffffff81d850d2:  0001                  addi            t#1, 0
+	0xffffffff81d850d4:  0a92                  set             a0, t#1
+	0xffffffff81d850d6:  0212                  get             sp
+	0xffffffff81d850d8:  0364                  ld              [t#1, 24]
+	0xffffffff81d850da:  0992                  set             s1, t#1
+	0xffffffff81d850dc:  0609                  const           48                              # 0x30
+	0xffffffff81d850de:  e001                  addi            t#8, 0
+	0xffffffff81d850e0:  8400                  add             t#5, t#2
+	0xffffffff81d850e2:  0292                  set             sp, t#1
+	0xffffffff81d850e4:  40b2                  setbpc          t#3
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d850bc+42 in (0xffffffff81d850bc-0xffffffff81d850e6)
+
+riscv_cpu_do_interrupt: hart:0, async:0, cause:000000000000000c, epc:0x0000000000000000, tval:0x0000000000000000, desc=exec_page_fault
+------------- CS_OUT(0): Addr(0=>ffffffff80003180) with bpc=ffffffffffffffff(ffffffffffffffff,ffffffffffffffff), Priv(1=>1) for `exec_page_fault`
+  GPRS:          0000000000000000 0000000000000000 ffffffe002e5fb60 ffffffff82d012e8 ffffffe002e78000 ffffffe002e20b00 da17c69924789e00 ffffffffa86547a8 0000000000000000 ffffffff82cc6960 0000000000000000 0000000000000000 ffffffe002e5fb30 ffffffe002e20ab8 ffffffff827f3c50 0000000000000000 0000000000000015 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 ffffffff82cc6960 0000000000000000 0000000000000009 0000000000000037 ffffffff82c12ee8 ffffffff82c12f08 
+  CARG:          0000000000000000
+  TREG_P:        ffffffff
+  SGPRS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+----------------
+```
+ 在do_interrupt里，当cause 0xc的时候打印当前栈里的内容，对应的位置不为0，和分析的
+ 对不上了：
+```
+----------------
+IN: simple_pm_bus_probe
+Priv: 1; Virt: 0
+0xffffffff80722080:  00000004 000c0306 df804400 1efd9c0b std_block.concat next:------, ptr:0xffffffff81941058, attr:none, out_reg(ra,sp,s0,s1,s2,s3), in_reg(sp)
+0xffffffff80722090:  00000012 00007f8d 00000000 00001800 std_block.ret
+	0xffffffff81941058:  0212                  get             sp
+	0xffffffff8194105a:  0564                  ld              [t#1, 40]  <----- sp+40的位置
+	0xffffffff8194105c:  0192                  set             ra, t#1
+	0xffffffff8194105e:  4464                  ld              [t#3, 32]
+	0xffffffff81941060:  0892                  set             s0, t#1
+	0xffffffff81941062:  8364                  ld              [t#5, 24]
+	0xffffffff81941064:  0992                  set             s1, t#1
+	0xffffffff81941066:  c264                  ld              [t#7, 16]
+	0xffffffff81941068:  1292                  set             s2, t#1
+	0xffffffff8194106a:  e001                  addi            t#8, 0
+	0xffffffff8194106c:  0212                  get             sp
+	0xffffffff8194106e:  0164                  ld              [t#1, 8]
+	0xffffffff81941070:  1392                  set             s3, t#1
+	0xffffffff81941072:  0609                  const           48                              # 0x30
+	0xffffffff81941074:  6000                  add             t#4, t#1
+	0xffffffff81941076:  0292                  set             sp, t#1
+	0xffffffff81941078:  c0b2                  setbpc          t#7
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81941058+34 in (0xffffffff81941058-0xffffffff8194107a)
+
+dump memory 0xffffffe002e5fa10+128:
+00 00 00 00 00 00 00 00 10 08 e5 02 e0 ff ff ff 
+60 fa e5 02 e0 ff ff ff 40 64 dc 80 ff ff ff ff 
+00 00 00 00 00 00 00 00 38 61 c9 82 ff ff ff ff  <------ 38 61开始的位置应该是0，和分析的没有多上，哪里错了？
+00 00 00 00 00 00 00 00 10 08 e5 02 e0 ff ff ff 
+90 fa e5 02 e0 ff ff ff 60 6d dc 80 ff ff ff ff 
+18 01 00 00 00 00 00 00 10 08 e5 02 e0 ff ff ff 
+38 61 c9 82 ff ff ff ff c8 34 d0 82 ff ff ff ff 
+c0 fa e5 02 e0 ff ff ff 80 6e dc 80 ff ff ff ff 
+
+riscv_cpu_do_interrupt: hart:0, async:0, cause:000000000000000c, epc:0x0000000000000000, tval:0x0000000000000000, desc=exec_page_fault
+------------- CS_OUT(0): Addr(0=>ffffffff80003180) with bpc=ffffffffffffffff(ffffffffffffffff,ffffffffffffffff), Priv(1=>1) for `exec_page_fault`
+  GPRS:          0000000000000000 0000000000000000 ffffffe002e5fa10 ffffffff82d012e8 ffffffe002e78000 ffffffe002e5f8f8 0000000000000001 0000000000000000 0000000000000000 0000000000000000 0000000000000000 ffffffe01ee00487 0000000000000000 ffffffe01ee00487 0000000000000000 0000000000000000 0000000000000081 0000000000000228 0000000000000000 0000000000000000 0000000000000000 ffffffff82d02008 ffffffff8240f0c0 ffffffff82400480 ffffffff82867f40 0000000000000008 ffffffff822000e0 0000000000000000 0000000000000000 0000000000000400 0000000000000102 00000000000003ff 
+  CARG:          0000000000000000
+  TREG_P:        ffffffff
+  SGPRS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+----------------
+```
+
+ 还有一类函数后来很少跑出来，后面遇到再记录起来。
+
+6.27
+-----
+
+ 上面的打印有点问题，有三个问题，一个最后setbpc之前会把sp改下，所以，我们打印栈
+ 内容的时候，可以把sp减去一个数去打印，然后根据新sp和老sp之间的距离，得到老sp的
+ 值，第二是要在提交的时候(bstate清之前)去打印，第三个是ibpc从0开始就可以。这样
+ 修改后得到打印t寄存器和分析出来的值一样了，对应的栈内容是0，不过奇怪的时候，老
+ 栈的内容基本上0，这个不合理。
+
+ 另外，出问题的时候并不一定中间有块内中断进来。这叫我怀疑，是不是我们的基础指令
+ 还有问题。在当前的qemu/内核上禁止块内中断，一次也没有问题，所以，应该还是块内中断
+ 的问题。继续定位的思路没有了。块内中断有无时的差异，出了qemu，内核的逻辑也有所
+ 不同，有块内中断的时候，内核会把ebstate相关的寄存器保存到栈上，会不会这里有问题。
+ 把sebstate.reg[n]里没有用到的寄存器(43-63)的值都配置成0xabcdabcdabcdabcd，重新
+ 跑内核，发现异常的地址变成了0xabcdabcdabcdabcd。两个原因可能导致这个现象：1.
+ qemu保存恢复错了，2. 内核保存恢复搞错了。
+
+ 复现过程中触发了概率小的访存异常:
+```
+----------------
+IN: devtmpfs_setup
+Priv: 1; Virt: 0
+0xffffffff822317c0:  00040204 00040706 e8405400 6bff7c0b std_block.concat next:------, ptr:0xffffffff81d9d7b6, attr:none, out_reg(ra,sp,s0,s1,a0,s2), in_reg(sp,s1,s2)
+0xffffffff822317d0:  fffffffb 00007ddc 00000000 00001800 std_block.ret
+	0xffffffff81d9d7b6:  1212                  get             s2
+	0xffffffff81d9d7b8:  0912                  get             s1
+	0xffffffff81d9d7ba:  200e                  sw              t#1, [t#2, 0]     <----- 这个地方访问0地址了，注意：也是在ret里。下面tval是0
+	0xffffffff81d9d7bc:  0212                  get             sp
+	0xffffffff81d9d7be:  0364                  ld              [t#1, 24]
+	0xffffffff81d9d7c0:  0192                  set             ra, t#1
+	0xffffffff81d9d7c2:  4264                  ld              [t#3, 16]
+	0xffffffff81d9d7c4:  0892                  set             s0, t#1
+	0xffffffff81d9d7c6:  8064                  ld              [t#5, 0]
+	0xffffffff81d9d7c8:  1292                  set             s2, t#1
+	0xffffffff81d9d7ca:  0912                  get             s1
+	0xffffffff81d9d7cc:  0001                  addi            t#1, 0
+	0xffffffff81d9d7ce:  e001                  addi            t#8, 0
+	0xffffffff81d9d7d0:  2a92                  set             a0, t#2
+	0xffffffff81d9d7d2:  0212                  get             sp
+	0xffffffff81d9d7d4:  0164                  ld              [t#1, 8]
+	0xffffffff81d9d7d6:  0992                  set             s1, t#1
+	0xffffffff81d9d7d8:  0409                  const           32                              # 0x20
+	0xffffffff81d9d7da:  6000                  add             t#4, t#1
+	0xffffffff81d9d7dc:  0292                  set             sp, t#1
+	0xffffffff81d9d7de:  e0b2                  setbpc          t#8
+
+----------------
+IN: 
+Priv: 1; Virt: 0
+(block body) 0xffffffff81d9d7b6+42 in (0xffffffff81d9d7b6-0xffffffff81d9d7e0)
+
+riscv_cpu_do_interrupt: hart:0, async:0, cause:000000000000000f, epc:0xffffffff81d9d7ba, tval:0x0000000000000000, desc=store_page_fault
+------------- CS_OUT_FROM_BLK(0): Addr(ffffffff81d9d7ba=>ffffffff80003180) with bpc=ffffffff822317c0(ffffffff81d9d7b6,ffffffff81d9d7e0), Priv(1=>1) for `store_page_fault`
+  GPRS:          0000000000000000 ffffffff822317c0 ffffffe002e9fc30 ffffffff82d012e8 ffffffe002e7ca00 ffffffe002e168c0 ffffffe002e14900 0000000038041be5 0000000000000000 0000000000000000 0000000000000000 0000000000000368 0000000000000000 ffffffe002e9fb58 31eec6451c576000 31eec6451c576000 0000000000000000 0000000000000001 0000000000000000 ffffffe002e05480 ffffffff814b32b0 ffffffe002e5fbf4 0000000000000001 ffffffff82d020a8 ffffffe002e78db0 0000000000000000 0000000000000000 0000000000000000 ffffffff82cea4c0 0000000000000402 ffffffff82c12ee8 ffffffff82c12f08 
+  CARG:          0000000000000000
+  TREG_P:        2
+  SGPRS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+  TREGS:         0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+----------------
+```
+
+7.6
+----
+
+ 目前动态ebstate和sr_mask的修改已经都push到linx-dev，不阻塞内核。在相关patch上库
+ 做qemu hello自测试的时候发现一个问题，使用rv内核跑hello/test，在加上-enable_delay_block_intr
+ 的情况lr_sc测试失败，去掉这个参数lr_sc是成功的，其他用例都没有问题，这个问题出现
+ 的概率比较高，lr_sc的测试用例是用lr_sc实现了一个原子加，我们把循环次数减小出现的
+ 概率也是比较高的。查代码，enable_delay_block_intr只在两个地方起作用，1. do_recovery，
+ 这个是不响应head和body中间的中断，2. tb_stop中的too_many退出，这个是不响应一个body
+ 翻译成多个tb时，多个tb中间的中断。修改代码屏蔽1或2，发现屏蔽do_recovery里的代码，
+ 就没有问题，屏蔽tb_stop里的代码还是一样的问题。屏蔽do_recovery里的代码和不屏蔽
+ 的区别就是head和body之间有没有中断，而qemu中断处理里有load_res里清理，猜测是和这个
+ 有关系，屏蔽2的代码不出问题的原因也可能是测试代码body太小，出现body翻译成多个tb
+ 的概率太小了，既然head、body中间中断进来的情况触发问题很频繁，我们就顺着这个去分析。
+
+ 现在基本上就是head和body中间可以有中断进来就不会有问题，逻辑还没有想清楚。
+
+7.7
+----
+
+ 看不出来逻辑上有问题的地方，加点debug先跑跑看，把每次sc成功失败的t寄存器打下，
+ 看看sc成功失败的次数有什么规律没有。在setbpc_eqi加helper函数打印sc的返回值，但是
+ 加了helper后，问题不复现了，更加解释不通了。
+
+ 在sc的实现里打点，然后测试结束看cpu里打点的次数。在cpu里加了两个寄存器，统计sc
+ 执行成功和失败的次数，运行lr_sc测试，然后在monitor里看统计值，lr_sc执行成功和失败
+ 的场景，sc执行成功的次数都是预期的值，比如两个cpu都做10000次原子加，每个cpu上
+ sc执行成功的次数都是10000，失败的次数也没有统计上的明显差距。失败的时候加出来的
+ 总数总是比实际的少，那么只有sc执行返回是成功的，但是实际上没有加1上去，这会是哪里
+ 错了？
+
+7.8
+----
+
+ 重新写下setbpc_eqi里的help函数，在这个函数里检查sc成功时，有没有完成加1，被加数
+ 是从系统寄存器里get进来的，加数是1，结果在t寄存器。这个用例不太好构造，因为sc的
+ 写入是用host上原子写入的，一个线程里从公共的地址上读出来的数值，完全可能被另外
+ 一个线程改了。
+
+ 似乎没有什么办法了，只能硬看一下exec的log，看看成功和失败的执行轨迹有什么不同。
+ 正好用下新上的在指定pc处打开exec。把exec log输出指定在lr/sc测试函数的开始，因为
+ 有了打印，失败的情况又不复现了。
+
+ 文杰说，发现sc成功的时候写入的值有重复的情况，如果有重复写入，是会出现累加值小于
+ 预期的情况。
+
+7.11
+-----
+
+ 接着上面的分析，如果有重复写入的情况，那应该是sc的实现逻辑还有问题，sc的逻辑中
+ 最为核心的逻辑是一个tcg_gen_atomic_cmpxchg_i64实现的CAS操作，这个操作的逻辑是：
+ 如果已经在串行的上下文里了，就用tcg_gen_xxx去生成一段汇编代码，完成CAS的操作，
+ 这个是最通用的，放在第一个branch里，如果不在串行上下文，就要实现CAS这个原子操作了，
+ 这个就回到了我们之前原子操作的分析：如果host上有CAS原子指令，qemu就直接用host上
+ 的原子指令，如果没有qemu就利用qemu自己的异常退出整个翻译执行流程，到原子区里完成
+ 这个CAS操作。判断在不在串行上下文用的是翻译参数CF_PARALLEL，没有配置这个翻译参数
+ 就认为是在串行上下文里，那好了，helper_noirq里只配置了一个CF_NOIRQ的翻译参数，
+ 把之前的默认的翻译参数都删了，这里就会进入第一个分支，但是，翻译执行又不在原子区，
+ 自然会出错。相应的修改方式是helper_noirq里在原来的翻译参数基础上加上CF_NOIRQ翻译
+ 参数。
+
+7.21
+-----
+
+ v0.13出现了一个改动点：1. setbpc和setbpc.cond调整为set.carg，cmp移动到标准块；
+ 2. 消除对外的sgrp；3. 增加块内跳转微指令；4. 增加块内私有访问；5；get/set的索引
+ 方式改变(待定)。
+
+ 对于1和5，基本是写法的改动，不涉及逻辑改动。下面分析234的逻辑。
+
+ 2的变化是，set变成直接写gpr，然后加上对于某个系统寄存器，get不能出现在set之后的
+ 限制。这个限制增加的逻辑是，v0.12 get是从gpr读数据，set是写到sgpr里，不会出现set
+ 改变get数据源的情况，v0.13中set直接写gpr，为了依然维持之前set不改变get数据源的
+ 逻辑(为啥要有这个约束？)，需要get不出现在set之后。
+
+ qemu实现上可以去掉sgpr的内部寄存器，set的时候直接写到gpr上。对外的sr_mask也可以
+ 不要了(larm上需要更新)，但是qemu内部sr_mask依然保留，在set的时候写sr_mask对应的
+ bit，在get的时候检查对应bit，如果已经被set，则报异常。
+
+ 第3点是增加了几条块内跳转的指令，有条件跳转和直接跳转，逻辑上比较直接。qemu实现
+ 上，原来认为block每部的微指令总是顺序翻译执行的，现在引入了块内跳转，之前基于此
+ 的逻辑都要重新考虑。目前看，只有ibpc在一个block是顺序的，之前因为只有block翻译
+ 到多个tb里的情况，多个tb之间的ibpc还是连续的，所以，当一个tb翻译是从block中间开始
+ 的时候，翻译用得ibpc是直接从ibpc寄存器里取出来的。引入块间跳转后，当一个tb翻译是
+ 从block中间开始的时候，就可能和上一个tb中间隔了一些微指令，依然用上次执行的ibpc
+ 是不行的。ibpc寄存器的语义是指向当前执行的微指令位置，所以，我们可以在块内跳转
+ 指令中更新ibpc到跳转的目的地址，这样其他逻辑还是不变的。块内跳转始终不改变块头
+ 执行得到的信息。
+
+ 单独校验下中断进来时候，逻辑是否正确: 如果中断了跳转指令，也就是跳转执行没有执行，
+ 报告的是跳转指令ibpc，如果跳转指令指令完后，中断进来，报告的是块内跳转的目的地址
+ ibpc，逻辑都是对的。
+
+ 第4点，只从ppt上看不出逻辑是怎么样的。
+
+8.1
+----
+ 
+ 中软的同事报了一个问题，最新的版本上，加上in_asm会出问题，晓强定位到了原因。
+ 目前做反汇编的逻辑是，反汇编头的时候，把body也反汇编了，qemu上反汇编和前端翻译
+ 是在一起做的，顺带反汇编body就会出现提前读body的问题。这个问题是这样的：qemu反汇编
+ 的逻辑是对于一个tb，翻译多少就反汇编多少，因为翻译的时候已近做了取指令的操作，qemu
+ 在反汇编的时候用cpu_memory_rw_debug直接读对应的指令，这个函数可以做page walk，但是
+ 处理不了缺页，因为刚做了取指令的操作，物理内存一定是在位的，直接读逻辑上没有问题，
+ 而且，一个qemu内部调试功能，他只能贴着系统去看一眼，他自己触发被模拟系统的异常，
+ 逻辑上也是不对的。
+
+ 翻译head的时候反汇编head，同时也去反汇编body, 反汇编body用cpu_memory_rw_debug，
+ 当遇到物理内存不在位的时候就会错。
+
+ 这个问题，晓强hack的方式，是在head翻译里插入了translator_ld去读下body的内存，
+ 不用读到的值，就是去触发一下读body内存这个操作，就会去触发异常，内核在异常处理里
+ 补页后，重新翻译head，这个时候再去反汇编body，body的物理内存就在位了。但是，这里
+ 的洞很多啊，首先我们需要在head里触发覆盖body内存区域的异常，比如body用了两个页，每个页
+ 都要触发下异常，然后，需要触发的异常是一个layer1的取指令异常，bpc和tpc不能有值，
+ bpc的值是执行时写入的，这里不会有正常值，但是tpc就不一定，如果tpc有值，hack出来的
+ 异常就影响到了整个状态机。
+
+ 我们之前为什么可以跑，因为我们之前在检查bset/bset的时候在head翻译里，读了body的
+ 内容，实际上是把上面的行为做了。但是，之前一直没有出问题，可以看到，一个出问题的
+ 场景是翻译头的时候tpc有值，tranlator_ld读body时发生异常，这里要看看为什么之前没有
+ 问题。tpc有值的时候，1. ecall重发，2. 中断恢复，这两个case都是跳到head，应该head
+ 之前都有翻译过，所以不会在此翻译，就不会发生这样的问题。但是，还是感觉这样太hack，
+ 之后正常功能都需要绕着这里走。
+
+ 这个hack会导致debug特性改变被模拟系统的行为，我们最好不要这样。还有一个办法，就是
+ 反汇编的时候改回把head和body分别反汇编的实现，这样虽然可读性会差点，但是我们依照
+ qemu的逻辑做进来，出问题的可能性要小。
+
+ 去翻下之前的devlog，qemu这里貌似有约束。这里的问题应该是反汇编的时候没法区分何时
+ 反汇编body。
+
+8.4
+----
+ 
+ 国柱发了local-indexed GPR的方案，包含两个技术点：1. 在body里用bset/bget里的寄存器
+ 位置信息作为索引，2. block被中断时直接gpr寄存器。针对第二点，之前和若愚对的设计
+ 是body里所有的set gpr都是直接写到gpr上，不是在block被中断的时候才提交，这个要再
+ 对下? 针对第一点，qemu在实现的时候可以，在head翻译执行的时候把，bset/bget里的信息
+ 先保存在cpu的in/out数组里，在body翻译执行的时候就可以根据get/set后面跟的偏移直接
+ 静态引用。
+
+ head(bget: x0, x2, x5, bset: x3, x4), 在head执行的时候生成cpu.in_array[32] = {x0, x2, x5},
+ cpu.out_array[32] = {x3, x4}
+
+ body翻译里，比如做get i1，就可以是：tcg_gen_mov_tl(treg, cpu.in_arry[1])
+
+ 梳理了下块内跳转的逻辑，larm的基本定义梳理清楚了，放在一个独立的文档里：
+ 《Block_ISA块内跳转逻辑整理》。 其中有包含两个技术点：1. 块内跳转; 2. local内存。块内
+ 跳转在语义上比较直白，多是细节上的约束；local内存和栈类似，给一个执行流多加了一块
+ 存储空间，一个执行流可能有多个block engine并发执行，硬件负责把一整块存储空间划分
+ 到各个block engine上。
+
+ qemu实现上，因为块内跳转依然要保证T寄存器动态索引不变，这个地方的逻辑我们要格外
+ 注意下，实际上我们对T寄存的赋值就是按照程序执行顺序的，所以，在块内跳转的时候，
+ 他们导出ibpc的值，跳转到目的地址后继续使用ibpc的值翻译执行就好。
+
+ local内存的实现也比较简单，和load/store的实现是一样的，只不过计算地址的地方稍作
+ 改变就可以。对于多block engine并发的模拟，qemu里完全可以搞成串行，也就是虽然nblk
+ 大于1，但是qemu里可以都只用第一块local内存。
+
+8.10
+----
+
+ 今天和刘盈盈讨论编译器计划怎么使用块内跳转优化代码，她还没有思路，原因是编译器
+ 的优化方法和硬件的具体设计有关系。
+
+ 那么硬件的模型大概是怎么样的，我收集到的信息是，一个CPU core里有4个PE，PE指块
+ 处理引擎，一个PE可以同时处理的最大8个块，一个PE公用一个64深度的PROB，一个CPU
+ core有一个64深度的BROB。
+
+ 一层一层看，我们的最终目的是提高软件执行的并行度，当在layer1层，块和块之间的
+ 依赖少时，块和块之间的并行度可以增大，现在每遇到跳转就分块，那么块和块之间的依赖
+ 就比较大，我们通过块内跳转，把原来layer1的块之间依赖转移到了layer2里，layer1的
+ 块间如果有依赖，挂住的资源要大于layer2之间依赖时关注的资源(?)，这个是我们引入
+ 块跳转的原因，所以编译器应该尽量使得layer1块和块之间的依赖少。但是，我们也不能
+ 把块膨胀的过大，块内微指令在layer2执行，layer2上，一个PE内的多个block engine共享
+ PROB的资源，根据硬件设计不同，可以把PROB只给一个block engine，也可以把PROB平均
+ 分给8个block engine，这个对编译器怎么构建块内跳转块的大小有影响。
+
+ (todo: 影响的逻辑)
+
+8.22
+----
+
+ 在改set直接写gpr的larm修改时，去掉了sr_mask这个寄存器，感觉还要加回来。块被中断
+ 时需要把块内状态写到ebstate里，所以我们考虑块内微指令执行的时候set gpr是不是一个
+ 块内状态，对于显示的块内状态，比如tpc/前8个T寄存器/8个S寄存器/carg寄存器，一眼可以
+ 看出来，块内需要记录已经set过的gpr，以此发现相关的异常：set相同寄存器，get之后
+ 不能set，没有完全set bset里定义的gpr。所以，"已经执行过的set gpr"是一个块内状态,
+ 需要保留sr_mask这个ebstate寄存器，这个寄存器记录块被中断的时候，已经执行过的set gpr。
+
+8.30
+-----
+
+ 今天文杰报了一个问题，块内跳转指令出现非法指令异常的时候，和m mode配合起来会有
+ 问题。首先回忆下，我们当前hack m mode的方式，我们假设block世界被m mode的中断或
+ 者异常打断时，在m mode的整个处理不破坏block世界的状态，然后我们中断异常处理里，
+ 切入m mode之前，把bpc保存起来，并配置bpc成无效，这样切入m mode后，因为bpc无效，
+ 直接翻译就会按照rv的方式来，在mret返回block世界的时候，我们用保存的bpc恢复bpc，
+ 从block世界看过去，只是中间在一个黑盒里跑了一会，回来之后一切照旧。
+
+ 但是，非法指令异常的处理逻辑是这样的，首先，指令异常在m mode处理，没有直接
+ delegate到s mode，m mode处理完后返回到s mode异常向量的入口。这样就会和上面的逻辑
+ 冲突，因为mret返回时恢复的bpc是非法指令所在的块的bpc，pc却指向s mode异常向量入口，
+ 按照我们当前的译码逻辑，qemu会认为现在在第二层译码，逻辑就都错了。
+
+ 一个hack的方式是，针对非法指令异常，在qemu的中断异常处理里，把一个非法的bpc保存
+ 起来，这样，mret恢复到的是一个非法的bpc，qemu认为是在第一层解码，就可以在s mode
+ 的异常处理函数里跑了。(todo: 需要尝试下)
+
+ 长远的解决办法，应该是bios的兄弟一起进来看看整体上怎么搞。和bios负责linxISA的
+ 同事聊了下，似乎他对block ISA的基本情况还不是很清楚，处于学习阶段。我们先试试
+ 上面hack的方式吧。
+
+9.15
+-----
+
+ 需要看下qemu目前使用的virt平台里rv相关的东西。直接dump qemu的dtb然后用dtc转化成
+ dts，得到: (直接把分析结果写到注释里)
+
+ 使用如下命令得到dts文件：
+ qemu-system-linx -machine virt -machine dumpdtb=linx.dtb
+ dtc linx.dtb -I dtb -o linx.dts
+
+/ {
+	#address-cells = <0x02>;
+	#size-cells = <0x02>;
+	compatible = "riscv-virtio";
+	model = "riscv-virtio,qemu";
+
+	fw-cfg@10100000 {
+		dma-coherent;
+		reg = <0x00 0x10100000 0x00 0x18>;
+		compatible = "qemu,fw-cfg-mmio"; // 内核驱动drivers/firmware/qemu_fw_cfg.c
+	};
+
+	flash@20000000 {
+		bank-width = <0x04>;
+		reg = <0x00 0x20000000 0x00 0x2000000 0x00 0x22000000 0x00 0x2000000>;
+		compatible = "cfi-flash"; //内核驱动drivers/memory/pl353-smc.c
+	};
+
+	chosen {
+		bootargs = [00];
+		stdout-path = "/soc/uart@10000000";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x00 0x80000000 0x00 0x8000000>;
+	};
+
+	cpus {
+		#address-cells = <0x01>;
+		#size-cells = <0x00>;
+		timebase-frequency = <0x989680>;
+
+		cpu@0 {
+			phandle = <0x01>;
+			device_type = "cpu";
+			reg = <0x00>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64imafdcsu";
+			mmu-type = "riscv,sv48";
+
+			interrupt-controller {
+				#interrupt-cells = <0x01>;
+				interrupt-controller;
+				compatible = "riscv,cpu-intc"; // rv内核中断控制器，相关驱动
+				phandle = <0x02>;  //drivers/irqchip/irq-riscv-intc.c
+			};                     //drivers/clocksource/timer-riscv.c
+		};
+
+		cpu-map {
+
+			cluster0 {
+
+				core0 {
+					cpu = <0x01>;
+				};
+			};
+		};
+	};
+
+	soc {
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		compatible = "simple-bus"; // 内核公共的平台总线？
+		ranges;
+
+		rtc@101000 {
+			interrupts = <0x0b>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x101000 0x00 0x1000>;
+			compatible = "google,goldfish-rtc"; // 内核驱动drivers/rtc/rtc-goldfish.c
+		};
+
+		uart@10000000 {
+			interrupts = <0x0a>;
+			interrupt-parent = <0x03>;
+			clock-frequency = "\08@";
+			reg = <0x00 0x10000000 0x00 0x100>;
+			compatible = "ns16550a"; // 公共的8250串口
+		};
+
+		poweroff {
+			value = <0x5555>;
+			offset = <0x00>;
+			regmap = <0x04>;
+			compatible = "syscon-poweroff"; // 内核驱动 drivers/power/reset/syscon-poweroff.c
+		};
+
+		reboot {
+			value = <0x7777>;
+			offset = <0x00>;
+			regmap = <0x04>;
+			compatible = "syscon-reboot"; // 内核驱动 drivers/power/reset/syscon-reboot.c
+		};
+
+		test@100000 {
+			phandle = <0x04>;
+			reg = <0x00 0x100000 0x00 0x1000>;
+			compatible = "sifive,test1\0sifive,test0\0syscon"; // 这个东西是啥？
+		};
+
+		pci@30000000 {
+			interrupt-map-mask = <0x1800 0x00 0x00 0x07>;
+			interrupt-map = <0x00 0x00 0x00 0x01 0x03 0x20 0x00 0x00 0x00 0x02 0x03 0x21 0x00 0x00 0x00 0x03 0x03 0x22 0x00 0x00 0x00 0x04 0x03 0x23 0x800 0x00 0x00 0x01 0x03 0x21 0x800 0x00 0x00 0x02 0x03 0x22 0x800 0x00 0x00 0x03 0x03 0x23 0x800 0x00 0x00 0x04 0x03 0x20 0x1000 0x00 0x00 0x01 0x03 0x22 0x1000 0x00 0x00 0x02 0x03 0x23 0x1000 0x00 0x00 0x03 0x03 0x20 0x1000 0x00 0x00 0x04 0x03 0x21 0x1800 0x00 0x00 0x01 0x03 0x23 0x1800 0x00 0x00 0x02 0x03 0x20 0x1800 0x00 0x00 0x03 0x03 0x21 0x1800 0x00 0x00 0x04 0x03 0x22>;
+			ranges = <0x1000000 0x00 0x00 0x00 0x3000000 0x00 0x10000 0x2000000 0x00 0x40000000 0x00 0x40000000 0x00 0x40000000 0x3000000 0x04 0x00 0x04 0x00 0x04 0x00>;
+			reg = <0x00 0x30000000 0x00 0x10000000>;
+			dma-coherent;
+			bus-range = <0x00 0xff>;
+			linux,pci-domain = <0x00>;
+			device_type = "pci";
+			compatible = "pci-host-ecam-generic";
+			#size-cells = <0x02>;
+			#interrupt-cells = <0x01>;
+			#address-cells = <0x03>;
+		};
+
+		virtio_mmio@10008000 {
+			interrupts = <0x08>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10008000 0x00 0x1000>;
+			compatible = "virtio,mmio"; // drivers/virtio/virtio_mmio.c
+		};                              // 这里模拟的是啥？下同
+
+		virtio_mmio@10007000 {
+			interrupts = <0x07>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10007000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10006000 {
+			interrupts = <0x06>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10006000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10005000 {
+			interrupts = <0x05>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10005000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10004000 {
+			interrupts = <0x04>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10004000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10003000 {
+			interrupts = <0x03>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10003000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10002000 {
+			interrupts = <0x02>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10002000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		virtio_mmio@10001000 {
+			interrupts = <0x01>;
+			interrupt-parent = <0x03>;
+			reg = <0x00 0x10001000 0x00 0x1000>;
+			compatible = "virtio,mmio";
+		};
+
+		plic@c000000 {
+			phandle = <0x03>;
+			riscv,ndev = <0x35>;
+			reg = <0x00 0xc000000 0x00 0x210000>;
+			interrupts-extended = <0x02 0x0b 0x02 0x09>;
+			interrupt-controller;
+			compatible = "sifive,plic-1.0.0\0riscv,plic0"; // drivers/irqchip/irq-sifive-plic.c
+			#interrupt-cells = <0x01>;                     // 虽然是rv上的核外中断控制器，但是貌似和core没有什么关系，感觉可以复用。
+			#address-cells = <0x00>;
+		};
+
+		clint@2000000 {
+			interrupts-extended = <0x02 0x03 0x02 0x07>;
+			reg = <0x00 0x2000000 0x00 0x10000>;
+			compatible = "sifive,clint0\0riscv,clint0"; // drivers/clocksource/timer-clint.c
+		};      // Kconfig里说这个timer用在noMMU上，这里是否可以删掉这个timer？
+	};
+};
+
+虽然有些设备还不知道具体干啥，但是，我们可以大概看到，只有核内中断控制器会和rv
+的系统寄存器有关系。需要注意的是，我们现在的qemu版本已经比较老，从最新的qemu看，
+还有一些rv core相关的设备，比如PMU，我们不妨就以现在的qemu作为现阶段的基础分析，
+其他的特性，在ACR特权级切换完在考虑，因为在qemu实现上，这部分的实现工作量是比较
+大的，最好不要和ACR的融合放到一起。
+
+上面不知道干啥的外设，可以在monitor里info qtree列出设备列表，dev：xxx后面跟着就是
+这个设备的name，去看看qemu代码，了解下干啥的，明天看了。
+
+另外，跑v0.13的发布版本，cpio.gz格式的小问题系统尽然linux boot的时候会出问题，ext4
+的可以起来，这个问题已经反馈给春华。
+
+10.8
+-----
+
+上面的问题，春华最近给了回复，说是cpio.gz小一点就可以起来。还没有具体测试。
+
+虽然特权级融合的spec还没有出来，我们也可以提前想下qemu后续的工作怎么开展，当然
+qemu正式开始，还是要spec先出来，review下没有问题再开始。
+
+qemu中实现rv特权级模型的代替，是一个状态机建模和实现的问题，我们完成了特权级状态
+机的建模和实现，就完成了rv特权级的替换。
+
+特权级状态机可以分成状态定义和状态迁移两大块。qemu具体逻辑实现的时候，我们可以先
+把状态定义代码写好，然后针对具体的状态迁移情况一点一点加上去。严格讲，我们应该是
+针对具体特性，状态定义和状态逻辑一起加，但是，全部状态定义一起加上去，实现起来更
+快一点，先不加状态迁移代码，一开始对现在的逻辑也没有改动。
+
+我们先看状态定义这部分，所有状态包括：1. ACR的各个level; 2. GPR和特权级寄存器。
+我们把特权级寄存器的读写接口也放在这一个阶段实现，原因是这个比较简单，也相对独立。
+
+我们再看状态迁移部分，这一部分又可以大概分为两部分：1. 机器启动/停止；2. ACR level
+之间的相互跳转。机器启动包含机器执行第一条opensbi指令之前的所有逻辑，进入opensbi后，
+机器运行在ACR0，后续ACR level之间的跳转都基于ACR0这个状态，机器停止包括：1. 执行
+一条reset执行，整个系统复位，2. 下电关机。
+
+ACR各个level之间变迁的激励来源包括：1. 执行正常执行可以触发异常的指令; 2. 中断;
+3. 指令执行触发异常。我们可以分步实现这个三大类激励，这三大类激励的公共依赖是：
+异常和中断的委托机制，所以，这个可以排在这三个之前，触发异常的指令会先用到，所以
+把这个排到中断之前实现，指令执行触发异常，这个会帮助我们拦截程序的异常行为，这个
+可以排到这三个实现的第一个来做。
+
+我们总结下，qemu大概的实现顺序是：
+1. 状态定义
+2. 机器启动/停止
+3. 异常和中断的委会机制
+4. 指令执行异常触发的异常
+5. 指令正常执行触发异常的指令
+6. 中断导致的状态迁移
+
+11.24
+------
+
+基于LinxInit的细化方案，具体看了下参数传递的设计该怎么实现。可以大概归结为以下几个
+问题，我们一个一个看下：
+
+1. 通过a0传递core id以及是否是主核的标记bit
+2. 多核系统只从主核启动，全部从核先不执行指令
+3. 通过系统寄存器触发从核开始运行
+
+如上启动方式和arm上psci的启动方式很像，arm上先起第一个core(first_cpu)，配置其他
+cpu的start-powered-off为true，cpu在reset的时候会根据start-powered-off的值配置
+CPUState里的haulted标记位，通过这样的方式可以挂起从核，psci的CPU ON接口里会直接
+把CPUState里的haulted标记去掉，这样从核就可以开始运行。我们的平台可以使用相同的
+实现。
+
+RV上，每个CPU出了自己的描述结构外，还有一个叫ArrayState的结构，它描述一组core，
+我们可以保留这个结构，在此基础上在增加boot cpuid的域段，这个域段描述主核id，在ArrayState
+初始化的时候，检测主从核，配置a0、主核标记以及从核state-powered-off。
+
+基于如上的认识(还没有仔细分析代码，需要看下同步上的细节，以及各个初始化步骤对寄存器
+的影响)，实际hack了下，可以达成1、2。看起来3也容易做到。
+
+
+综合分析
+--------
+
+ 1. qemu里模拟系统指令
+ ---------------------
+
+ ecall指令是riscv里系统调用的指令，这个指令改变CPU的模式，并且改变CPU PC到异常处理
+ 代码的入口。可以想象，qemu里把这些两条模拟了就可以。
+
+```
+cpu_exec
+  -> while (!cpu_handle_exception()) {
+       -> while (!cpu_handle_interrupt()) {
+	    -> 生成host上的指令并模拟guest cpu的行为
+	  }
+     }
+```
+ qemu的cpu_exec在一个循环中模拟guest cpu的行为，每次进入循环就查下有没有异常发生，
+ 所以，应该循环内在异常发生时设置一个flag，每次进入的时候就检测这个flag，flag置位
+ 了就做异常处理。
+
+ 大概的流程是这样：
+```
+/* qemu/accel/tcg/cpu-exec.c */
+cpu_handle_exception
+     /* 检测cpu->exception_index，这个就是flag */
+  -> cc->tcg_ops->do_interrupt
+     /* target/riscv/cpu.c */
+     (riscv_cpu_do_interrupt)
+       -> 配置各种cpu状态，其中包括pc
+       -> riscv_cpu_set_mode
+```
+
+ 再以ecall指令的模拟函数为例看下：
+```
+/* target/riscv/insn_trans/trans_privileged.c.inc */
+trans_ecall
+  -> generate_exception
+       /*
+        * 这个函数是宏生成的，相关的定义在riscv目录的helper.h，顺着查看就可以，
+        * 有个注意的地方是其中有个名叫glue的宏，作用是字符串拼接。
+	*/
+    -> gen_helper_raise_exception
+      -> tcg_gen_callN
+        -> 在哈希表里找注册的函数，这里名字是helper_raise_exception
+	   这个函数定义在riscv目录下的op_helper.c，可以看到其中配置了cpu里的
+	   exception_index，然后cpu_restore_state，cpu_loop_exit。
+```
+ 但是helper_raise_exception怎么注册的？看下helper_table这哈希表在哪里初始化的。
+```
+/* tcg/tcg.c */
+tcg_context_init
+  -> g_hash_table_insert(helper_table, all_helpers[i].func, ...)
+```
+ 上面把all_helpers这个表里的元素一个一个加到哈希表里。all_helpers这个表是静态
+ include了一个头文件生成的，里面把helper.h也包含了进来，但是上面分析helper.h
+ 里生成的是gen_helper_raise_exception，这里qemu里针对DEF_HELP_FLAGS_2尽然定义
+ 了两个版本，helper-gen.h里的生成gen_helper_xxx函数，helper-tcg.h里生成哈希表里
+ 的注册entry，用undef控制宏的作用域。
+
+ 2. qemu tcg branch
+ ------------------
+
+以beq为例:
+```
+trans_beq
+  -> gen_branch
+    -> gen_new_lable
+    -> tcg_gen_brcond_tl
+    -> gen_goto_tb
+    -> gen_set_label
+    -> gen_goto_tb
+    -> ctx->base.is_jmp = DISAS_NORETURN;
+```
+如上的逻辑是生成中间码的，生成的代码还要执行，我们不用关注host上执行的细节，只要
+中间码这边的逻辑通就好。那就比较好理解上面的代码，结合tcg/README里的介绍。
+
+gen_new_lable是创建了一个lable，brcond_t是brcond_i32/i64 t0, t1, cond, label，根据
+t0/t1的计算决定是否要跳到lable处执行，gen_set_lable是set_label $label，相当于在
+当前位置设置lable。所以上面的代码生成的代码伪代码表示大概是：
+```
+lable l;
+
+if (t0 cond t1) {
+    goto l;
+}
+
+goto_tb(pc顺移);
+
+l:
+    goto_tb(计算新pc);
+```
+其中gen_goto_tb的逻辑是：
+```
+gen_goto_tb
+    if (translator_use_goto_tb(&ctx->base, dest)) {
+        tcg_gen_goto_tb(n);
+        tcg_gen_movi_tl(cpu_pc, dest);
+        tcg_gen_exit_tb(ctx->base.tb, n);
+    } else {
+        tcg_gen_movi_tl(cpu_pc, dest);
+        tcg_gen_lookup_and_goto_ptr();
+    }
+```
+如果goto_tb在tcg后端有实现就用goto_tb来跳转，可以看到riscv的tcg后端对于goto_tb
+是直接用jump指令实现的。但是，还不清楚goto_tb后面要加movi_tl把PC再set回来。
+goto_tb的n可以取0和1，应该跳转还是顺序执行的意思？
+
+没有goto_tb支持时，先设置跳转的PC，然后会调用到lookup_tb_ptr(在accel/tcg/cpu-exec.c)，
+找对应的tb执行，如果没有找见就退出当前tb。
+
+ 3. qemu tcg atomic
+ ------------------
+
+```
+/* target/riscv/insn_trans/trans_rva.c.inc */
+trans_amoadd_w
+  -> gen_amo
+    -> tcg_gen_atomic_fetch_add_tl
+      -> tcg_gen_atomic_fetch_add_i64
+```
+如上最后一个函数的定义在：tcg/tcg-op.c
+```
+#define GEN_ATOMIC_HELPER(NAME, OP, NEW)                                \
+static void * const table_##NAME[(MO_SIZE | MO_BSWAP) + 1] = {          \
+    [MO_8] = gen_helper_atomic_##NAME##b,                               \
+    [MO_16 | MO_LE] = gen_helper_atomic_##NAME##w_le,                   \
+    [MO_16 | MO_BE] = gen_helper_atomic_##NAME##w_be,                   \
+    [MO_32 | MO_LE] = gen_helper_atomic_##NAME##l_le,                   \
+    [MO_32 | MO_BE] = gen_helper_atomic_##NAME##l_be,                   \
+    WITH_ATOMIC64([MO_64 | MO_LE] = gen_helper_atomic_##NAME##q_le)     \
+    WITH_ATOMIC64([MO_64 | MO_BE] = gen_helper_atomic_##NAME##q_be)     \
+};                                                                      \
+void tcg_gen_atomic_##NAME##_i32                                        \
+    (TCGv_i32 ret, TCGv addr, TCGv_i32 val, TCGArg idx, MemOp memop)    \
+{                                                                       \
+    if (tcg_ctx->tb_cflags & CF_PARALLEL) {                             \
+        do_atomic_op_i32(ret, addr, val, idx, memop, table_##NAME);     \
+    } else {                                                            \
+        do_nonatomic_op_i32(ret, addr, val, idx, memop, NEW,            \
+                            tcg_gen_##OP##_i32);                        \
+    }                                                                   \
+}                                                                       \
+void tcg_gen_atomic_##NAME##_i64                                        \
+    (TCGv_i64 ret, TCGv addr, TCGv_i64 val, TCGArg idx, MemOp memop)    \
+{                                                                       \
+    if (tcg_ctx->tb_cflags & CF_PARALLEL) {                             \
+        do_atomic_op_i64(ret, addr, val, idx, memop, table_##NAME);     \
+    } else {                                                            \
+        do_nonatomic_op_i64(ret, addr, val, idx, memop, NEW,            \
+                            tcg_gen_##OP##_i64);                        \
+    }                                                                   \
+}
+```
+do_atomic_op_i64里会调用gen_helper_atomic_add_xxx，这个函数的定义在:
+accel/tcg/atomic_template.h
+```
+#define GEN_ATOMIC_HELPER(X)                                        \
+ABI_TYPE ATOMIC_NAME(X)(CPUArchState *env, target_ulong addr,       \
+                        ABI_TYPE val, MemOpIdx oi, uintptr_t retaddr) \
+{                                                                   \
+    DATA_TYPE *haddr = atomic_mmu_lookup(env, addr, oi, DATA_SIZE,  \
+                                         PAGE_READ | PAGE_WRITE, retaddr); \
+    DATA_TYPE ret;                                                  \
+    atomic_trace_rmw_pre(env, addr, oi);                            \
+    ret = qatomic_##X(haddr, val);                                  \
+    ATOMIC_MMU_CLEANUP;                                             \
+    atomic_trace_rmw_post(env, addr, oi);                           \
+    return ret;                                                     \
+}
+```
+可以看到，里面还是使用的host平台上的基本的原子语义函数做的。
+
+如果需要模拟多条指令拼起来的原子指令，我们就考虑用锁保护。这个原因是多个guest cpu
+会修改同一处内存上的数据，之前都是基于host上原子指令实现的，不存在一致性的问题，
+现在一个原子block里的多条指令会读写内存，多guest cpu情况下就会出先不一致的问题。
+
+这个问题在单个CPU时是不存在的，因为qemu用一个线程去模拟一个cpu的运行，这个cpu(线程)
+对内存的读写总是顺序的，对于这个cpu上运行的多个线程，他们分时使用这个cpu，这个cpu
+上的原子块指令只有在访存时有可能触发缺页，其他情况都是不会被中断和异常的。触发的
+缺页异常同步执行，也不会导致内存不一致的问题。
+
+对原子块指令加锁，可以保证多个guest cpu更新内存顺序进行，但是这样性能会很差，因为
+实际要保护的是访问的那一小块内存。
+
+具体看下加锁的逻辑：
+
+原子指令分为，无访存和有访存。注意，无访存不能被中断和异常，都是访问寄存器的话
+异常无法触发，但是中断无法避免，所以，这里需要在无访存原子块的时候不响应中断，
+qemu tcg响应中断一定是在TB之间，而一个原子块指令一定是在一个TB里，所以，这里没有问题。
+
+有访存的原子指令模拟的时候，在一开始的时候加锁，访存时如果触发异常，异常执行里
+有可能有原子指令，这样就会重复加锁，造成死锁。所以，处于异常时的原子指令不能加锁，
+这里需要给CPU加一个标记，指示它是否处于异常状态，当是异常状态时，原子块不加锁。
+
+是否可以用rcu，还要再看下。qemu里提供了rcu的实现，文档在docs/devel/rcu.txt
+
+
+ 4. qemu模型推演(基于v0.12)
+ -------------------------
+
+现在硬件的基本模型是：header 128bit，header和mini-code分离，header里确定下一个
+head的跳转地址以及跳转类型，在条件跳转时，mini-code里计算条件是否满足，跳转在
+块mini-code执行完后执行。注意，v0.12 Spec里定义的块，只是一种块，手册里说，块的
+种类是可能不同的，这意味着其他类型块的定义可能有变化，模型的高层需要做出区分。
+注意，所谓块内状态寄存器BSTAT其实是系统寄存器，和作用域只在块内的T寄存器不同，
+BSTATE寄存器用来保存和恢复异常现场。
+
+对head里的域段的分析：GPR mask是编译器算出来的，模型里可以做一下校验，最大微指令
+1000，也可以做下校验，重复或者并行执行时，bnext指向自己的head。
+
+原子指令分为，无访存和有访存。注意，无访存不能被中断和异常，都是访问寄存器的话
+异常无法触发，但是中断无法避免，所以，这里需要在无访存原子块的时候不响应中断，
+qemu tcg响应中断一定是在TB之间，而一个原子块指令一定是在一个TB里，所以，这里没有问题。
+
+系统指令不修改内存，所以从qemu模型的角度看，系统指令天然就是原子的，系统块有系统
+微指令。
+
+中断和异常时块状态保存恢复的逻辑是，软件配置bstate.in.en控制硬件正常执行，还是从
+bstate.in这组保存中间状态的寄存器中恢复块的状态后执行。块正常执行，最终状态提交
+到系统寄存器，并置bstate.ext.vld无效，块被打断，状态提交到bstate.ext这组寄存器里，
+并置bstate.ext.vld有效，软件可以使用sysget读bsate.ext寄存器组。中断和异常恢复时，
+软件先用sysset把信息恢复到bstate.in寄存器组，配置bstate.in.en有效，sret把bpc返回
+到中断或异常打断的bpc，bpc执行，最后bpc执行的硬件行为最开始已经描述。
+
+基于以上的认识，我们再次推演下qemu的模型。
+
+0. 我们建下cpu的状态机。cpu可以运行在rv或者是block的翻译执行上下文，分别叫做rv
+   状态和block状态，block状态又可以分为block head和block body的翻译执行状态。
+   我们用每次更新pc进行翻译来观察状态的变化，所以下面block到block的变化是，block
+   里随着pc的变化，在循环中翻译的过程。这里的pc是rv里的pc，是block里bpc/tpc对应
+   的指令地址。
+
+   有如下的状态转移：rv->rv，rv->block_head, block_head->block_head,
+   block_head->block_body，block_head->rv，block_body->rv，block_body->block_head,
+   block_body->block_body
+
+   一个一个看下触发条件以及响应：
+
+   rv->block_head:
+
+    触发条件：解码到block head op code
+
+    响应：解码head信息。整个head的翻译可以分为：1. 信息获取，2. 产生中间码(1. block
+          状态的中间码，跳转相关的中间码)
+
+   block_head->block_head/rv:
+
+    触发条件：解码到block head op code，或rv指令
+
+    响应：block_head如上，rv正常解码
+
+   block_head->block_body:
+
+    触发条件：pc在[bpc1, bpc2)的范围内。(似乎tpc1、tpc2更好点)
+
+    响应：进入body翻译。整个body翻译可以分为，1. 逐条翻译，产生中间码，
+          2. 最后一条微指令翻译后，要继续进行块的后续处理，包括：1. 对外提交状态，
+          2. 延后执行指令处理，3. 跳转相关处理，4. 本个块cpu状态的清理。
+
+   block_body->rv/block_head:
+
+    触发条件：解码到block head op code，或rv指令
+
+    响应：block_head如上，rv正常解码。
+
+   block_body->block_body:
+
+    触发条件：pc在[bpc1, bpc2)的范围内
+
+    响应：block处理如上。
+
+1. 现在做到了rv兼容，所以头的解析可以直接加到decode-insn32里。
+
+2. 不同种类的块，mini-code的编码空间是可能重复的，这个使用一些编码技巧就可以处理。
+   不同种类的块可以定义不同的.decode文件，这样生成不同的解码入口函数。大概的逻辑是：
+
+   decode_block:
+
+       switch (head.type) {
+       case std_type: decode_std_block();
+       case xxx_type: decode_xxx_block();
+       }
+
+   其中decode_std_block就是当前我们做的标准块指令的解码(就是当前代码里的decode_block)。
+   系统指令可以放到标准块解码里。
+
+3. 依然用pc范围判断mini-code的范围，这一点是块指令定义的基础，比较稳固。
+
+4. RV解码和块解码的切换逻辑。初始状态是RV解码，解码到head的时候，切换到块解码，
+   块解码中从head跳到mini-code的时候解码状态不变，其他所有标准块的跳转都先跳到RV
+   解码。因为标准块不可能在mini-code间跳转或跳到另一个块的中间，实际跳到RV指令，
+   就RV解码，跳到标准块head就切到块解码。具体看，进入块解码，就是配置cpu中的bpc1,
+   bpc2，离开block body时清理bpc1/bpc2。
+
+5. 解码到head的时候，把128bit全部一次解出来，用head的信息更新CPU状态，更新块的
+   各种信息。如果是系统块指令，直接翻译执行，如果普通块指令，保持块解码状态，
+   但是跳到mini-code地址。具体看，使用head信息更新CPU状态的时候，可以直接更新(不
+   使用中间码)，对于有body的块，直接跳到body执行。因为系统指令也会有微指令，系统指
+   令不改变内存，所以系统指令本来就是原子的。直接使用中间码或者helper函数实现系统块。
+   head和body可以放在一个tb里。
+
+   单独考虑下什么时候需要用中间码，什么时候可以直接更新cpu状态。qemu所有对cpu的
+   状态的更新是在tb里做的，所谓翻译生成tb是要把指令里的全部信息给到tb里，所以写
+   指令翻译代码的时候，要看相关指令的信息是否传递到了tb里，如果可以传递到，那么
+   就可以不用再加中间码翻译，这个和指令的信息是否固定没有关系。比如一条立即数赋值
+   寄存器的指令，就需要放到tb里，在翻译里直接更新寄存器的内存，这条指令的信息没有
+   传递到tb里。但是，比如对于block head里的信息，比如，跳转类型(branch type)，在
+   翻译的时候就会根据这个值，选择相应的中间码放到tb里，他的信息已经完全传递了，
+   就不用使用中间码去更新。所以，只要在翻译的时候直接用掉的信息，就都不用使用
+   中间码，要动态使用的才需要使用中间码更新。
+
+6. 对于跳转的逻辑。在CPU里增加sbpc缓存跳转地址，解析head和mini-code执行时更新
+   sbpc的值，在当前块指令执行完时进行跳转。具体看，对于标准块指令，当是最后一条
+   mini-code指令时，执行完该指令后进行跳转，跳转的动作在当前tb里做，对于系统指令，
+   下一条指令就是顺延的指令。所有跳转按照spec里规定的实现就好，对于BNEXT.CONCAT，
+   虽然定义在了跳转格式里，但是其实和跳转没有关系，它只是扩展头的存储空间，原始
+   需求是head和body的地址可能间隔比较远，一个head中的btext不够用，这部分的实现
+   应该在头解析里，当解析头的时候，如果是BNEXT.CONCAT就顺序解析下一个头。
+
+7. 异常和中断时状态保存和恢复的逻辑。需要在cpu中增加sgpr，微指令先都update到sgpr上，
+   需要在cpu中增加bstate.ext寄存器组(包括bstate.ext.sr[0-31], bstate.ext.tpc,
+   bstate.ext.t[1-8]，bstate.in也是都一样来一套)，微指令直接更新T寄存器，当一个块
+   没有异常产生时，需要在最后一条mini-code后把sgpr copy到gpr，copy动作在当前tb里做。
+   当有异常产生时，在raise异常前，把当前的8个T寄存器、tpc, sbpc保存在bstate.ext
+   的相关寄存器，同时设置bstate.ext.vld有效，这个动作为bstate.ext寄存器和系统寄存器
+   同步指令做准备。因为有了异常恢复，需要在块的执行逻辑里加入异常恢复的逻辑，
+   可以在头解析的时候，加入相关的逻辑，在头解析里判断bstate.in.en，如果置位，
+   就用bstate.in寄存器组刷新当前块内寄存器的状态，然后跳到TPC位置执行。
+
+   基于目前静态解析头，以及头和微码放在一个tb里的逻辑，我们推下异常恢复的具体逻辑:
+
+   异常恢复重新跳到头的时候，有两种可能的实现，第一种是，所有异常恢复的逻辑在第一
+   次解码的时候已经放到tb里了，如果可以这样，我们直接跑已有的tb就可以，第二种是，
+   重新从头里得到全部信息，恢复上下文，跳到tpc的地方，重新解码执行。第一种要根据
+   bstate.in.en动态地决定翻译哪一块代码，有点错乱了，那我们把头独立成一个tb，异常
+   恢复跳到头这个tb还是拿不到bpc12，这样，跳到tpc对应的微码就进不去解析。看来看去，
+   我们只能用第二种方式，就是重新跳到头的时候要重新做解码。有两种方式重新解码，
+   一种是新增tb的flag，这样就搜不到原来的tb，就会重新解码，注意，这样实现，我们
+   之前的逻辑还是可以不变的(静态解析头、头和微码放一个tb)。还有一种就是把头解析
+   都动态实现了。第一种比较hack，会破坏qemu原来的结构，第二种，是一劳永逸的办法，
+   就是要磕下代码，因为目前的实现中，头全部是静态解析的。第二种搞起吧，返回头看下，
+   如果头全部是动态解码的，实际上我们就实现了所有逻辑第一次解码时已经放到tb里。
+   具体看，动态解析头，我们要把头独立到一个tb里，因为这个tb要动态的改pc，正常的
+   时候是btext地址，异常恢复的时候是tpc地址。
+
+   具体的，我们看下qemu里什么时候会出现微指令被打断的情况，中断在tb和tb中间处理，
+   所以，虽然真实的硬件可能会出现一个tb被中断打断的情况，但是qemu模拟不出来。
+   系统指令触发异常的情况也不会打断微指令执行，那就只有微指令本身执行时触发的异常，
+   能想到的就是各种访存异常，非法指令，trap和brk。非法指令触发异常前按照如上把信息提交到
+   bstate.ext寄存器组。访存异常触发的代码在tcg/riscv/tcg-target.c.inc，基本逻辑
+   是在tcg_gen_code的时候，生成load/store相关代码时插入helper函数做tlb/page walk/
+   触发异常的逻辑，其中触发异常又会调用riscv_raise_exception(riscv_cpu_tlb_fill)，
+   我们只需要在riscv_raise_exception中根据异常编号保留现场到bstate.ext寄存器组就
+   可以。
+
+8. 原子指令逻辑见1.24的分析。
+
+
+ 5. Linx Block ISA 开发维护策略
+ ------------------------------
+
+我们用qemu为Linx Block ISA建立功能仿真模型，该模型支持Linx Block ISA v0.9的指令，
+可以使用usrer mode和system mode来运行基于Linx Block ISA的代码。
+
+可以预料新的指令会不断的被加入到Block ISA里。验证新指令的功能，可以以当前的模型
+为基础，加入新的指令的模拟。我们欢迎大家基于现有的模型增加自己的指令做验证，我们
+将提供对应的技术指导，包括qemu基础技术、编译构建、测试以及代码review提交等。大家
+会发现自己编写代码模拟指令运行很容易做到，这样做会极大的提升大家的工作效率。我们
+也欢迎大家把自己编写的代码提交到现在的仓库，这样做有几个好处：1. 我们会持续维护
+Block ISA qemu模型，新特性和bug fix会不断的合入，2. 提交过程也是代码review的过程，
+新代码可以被其他人一起review，提升代码质量。
+
+下面是相关的信息：
+
+  1. 获取代码，编译和运行
+
+     代码仓库：https://codehub-dg-y.huawei.com/LinxISA/LinxBlockModel.git
+
+     这样可以跑起来：
+
+     ./configure --target-list=linx64-softmmu
+     make
+
+     qemu-system-linx64 -m 2048M -nographic -machine virt -kernel ./Image \
+     -append "console=ttyS0 earlycon root=/dev/ram rdinit=/init" \
+     -initrd ./rootfs.cpio.gz
+
+  2. 相关技术指导
+
+     (国柱ppt)
+
+  3. 编写补丁
+
+     简单来看，补丁的头可以这样写：
+
+        subject line                      <- 一行说明白改了啥，参照下面的格式。
+
+        commit message                    <- patch的介绍，需要别人注意的点写清楚。
+
+        signed-off-by: xxxx               <- git commit -s可以自动加上。
+
+        subject line格式：
+
+        - 开发日志用：xxx devlog update：data   e.g. xxx devlog update: 12.28
+        - 指令模拟代码用: linx：xxxx            e.g. linx: add ld instruction
+        - 测试代码用：test: xxxx                e.g. test: add basic ld test case
+
+        patch的内容请大家先消除各种格式的问题，可以使用scripts/checkpatch.pl xxxx.patch
+        检查，然后消除其中的error和warning。
+
+      具体可以参考docs/devel/submitting-a-patch.rst
+
+  4. 提交补丁
+
+     当前我们的开发主线是linx-dev，所以你需要针对linx-dev的最新提交做patch。
+     当前模型代码的维护者是xxx，你需要把patch发邮件给xxx review。
+
+ 6. risv原子指令分析
+ -------------------
+
+ (a) riscv原子指令:
+
+ riscv的原子指令定义了load reserved/store conditional和直接更新内存的原子指令两大
+ 类。前者需要几条指令配合实现原子操作，后者一条指令就可以对内存做更新。riscv的这个
+ 版本里还没有提供CAS的单指令实现，协议推荐用lr/sc的方式实现CAS，并给出了参考代码。
+
+ lr/sc的方式在其他的构架里也都有，其基本的使用逻辑是，load的时候同时更新一个硬件
+ flag，store的执行有成功和失败，当store的时候，如果load配置的flag有效，并且store
+ 的地址和load的一样，就做store操作，并且store成功，否则store失败。这里的store/load
+ 是在同一个core上。lr/sc基础上还可以叠加上order的语义，有acquire和release。
+
+ 如上只是初步看lr/sc，详细的指令定义还需要各种限制堵住各种出问题的情况。用这两个
+ 指令做原子操作的逻辑就是用lr去抢这个flag，如果抢到，与之配对的store就可以把数据
+ 写下去。这里更多的细节就是lr可以有多个，但是store只和相同core上的上一个匹配，
+ sc只要有就会消除之前的flag，不管这个sc是成功还是失败，sc成功的情况只有上面一种，
+ 但是失败的情况就很多了，sc和上一个lr的地址不匹配会失败，sc之前已经有来自其他core
+ 或者设备做完相同地址的sc，本core上这个sc也是失败，同一个core上，sc和lr中间有sc，
+ 那么后一个sc也是失败。
+
+ Linux内核里riscv cmpxchg是这样实现的，和spec里提供的代码类似，多个一个fence。
+ 实际上最后更新内存的只是sc.w.rl这个指令，多核之间对于同一内存位置，sc之间，一个
+ 成功，另外一个就必须失败，这个是硬件语义保证的。相关的代码在arch/riscv/include/asm/cmpxchg.h
+
+ riscv里的AMO指令是单原子指令对内存做更新，有swap/add/and/xor/or/max/min操作。
+
+ (b) qemu实现:
+
+ qemu实现lr/sc的代码在：qemu/target/riscv/insn_trans/trans_rva.c.inc。cpu的结构体
+ 里会增加load_res和load_val。lr指令会把load的地址保存到load_res，sc先判断store的
+ 地址是否和load_res相同，如果不相同，store失败，写1到rd寄存器，并清掉load_res，
+ 如果相等，使用一个host上cmpxchg原子指令做store操作。
+
+ 这个操作的语义和上面内核里的是一样的:
+```
+ tcg_gen_atomic_cmpxchg_i64(retv, addr, cmpv, newv, idx, memop)
+```
+ 如果是addr上的数据和cmpv相等，就把newv写入addr的位置，retv用来存储addr地址上原来
+ 的值。qemu里sc的这个代码的意思就是，如果load_res这个地址上的值和load_val相等，就
+ 把src2这个寄存器上的数据写入load_res地址，dest保存load_res地址上原来的值。
+```
+    tcg_gen_atomic_cmpxchg_tl(dest, load_res, load_val, src2,
+                              ctx->mem_idx, mop);
+```
+ 我们反过来看riscv sc的定义，sc写的地址和lr reserve地址不一样的情况在之前就排除了，
+ 对于其他cpu也在并发写reserve地址的情况，如果其他cpu已经把load_res地址上的数据修改
+ 了，那么load_res地址上的数据和load_val相等就不成立，dest是load_res处被其他cpu修改
+ 后的值，下面的判断会成立，把1写入rd标志这个sc失败。如果load_res上数据和load_val
+ 相等，src2数据被写入load_res的位置，下面dest和load_val的判断相等，写0到rd里表示
+ sc成功。
+
+ 不管sc成功还是失败都跳到l2 lable，这个地方会把load_res清掉。
+
+ qemu里对AMO的实现比较简单，就是直接映射到host上的对应原子指令实现。
+
+ (c) 原子指令里的内存序:
+
+ lr/sc和AMO的指令都支持在上叠加内存序的约束。aq表示本条执行之后的访存指令不能越
+ 过本条指令完成，rl表示本条指令不能越过之前的访存指令完成。
+
+ qemu的实现中，对于AMO的指令都没有对aq和rl做处理，对于lr/sc指令，是加了相关的
+ memory barrier，aq是TCG_BAR_LDAQ，rl是TCG_BAR_STRL，但是对于sc的正常处理分支，
+ 由于使用了host的atomic_cmpxchg指令，也是没有对aq/rl做显示的处理。
+
+ 内存序还有待深入分析(todo)
+
+附录:
+------
+
+1. atomic debug log
+
+----------------
+IN: 
+Priv: 0; Virt: 0                                         <-- 这个是atomic_add的body
+0x0000000000013890:  0a72              slli            s4,s4,28   <-- get a0
+0x0000000000013892:  0064              addi            s1,sp,12   
+0x0000000000013894:  0b72              slli            s6,s6,28   <-- get a1
+0x0000000000013896:  0400              addi            s0,sp,512  <-- add
+0x0000000000013898:  4c000c0f          fence           io, <-- st add
+
+OP:
+ ld_i32 tmp1,env,$0xfffffffffffffff0
+ brcond_i32 tmp1,$0x0,lt,$L0
+
+ ---- 0000000000013890
+ mov_i64 x0/t0,x10/a0
+
+ ---- 0000000000013892
+ mov_i64 tmp4,x0/t0
+ qemu_ld_i64 tmp3,tmp4,leq,0
+ mov_i64 x1/t1,tmp3
+
+ ---- 0000000000013894
+ mov_i64 x2/t2,x11/a1
+
+ ---- 0000000000013896
+ add_i64 tmp3,x2/t2,x1/t1
+ mov_i64 x3/t3,tmp3
+
+ ---- 0000000000013898
+ mov_i64 tmp3,x0/t0
+ qemu_st_i64 x3/t3,tmp3,leq,0
+ add_i64 tmp3,tmp3,$0x8
+ mov_i64 x4/t4,tmp3
+
+ ---- 000000000001389a
+ add_i64 tmp3,x2/t2,x1/t1
+ mov_i64 x5/t5,tmp3
+ mov_i64 bpc1,$0xffffffffffffffff
+ mov_i64 bpc2,$0xffffffffffffffff
+ mov_i64 ibpc,$0x0
+ mov_i64 battr,$0x0
+ mov_i64 pc,$0x1389c
+ exit_tb $0x0
+ set_label $L0
+ exit_tb $0x7ff07ebdc943
+
+----------------
+IN: 
+Priv: 0; Virt: 0                                      <- 有两个一样的body，但是退出的时候有一点不一样
+0x0000000000013890:  0a72              slli            s4,s4,28
+0x0000000000013892:  0064              addi            s1,sp,12
+0x0000000000013894:  0b72              slli            s6,s6,28
+0x0000000000013896:  0400              addi            s0,sp,512
+0x0000000000013898:  4c000c0f          fence           io,
+
+OP:
+ ld_i32 tmp1,env,$0xfffffffffffffff0
+ brcond_i32 tmp1,$0x0,lt,$L0
+
+ ---- 0000000000013890
+ mov_i64 x0/t0,x10/a0
+
+ ---- 0000000000013892
+ mov_i64 tmp4,x0/t0
+ qemu_ld_i64 tmp3,tmp4,leq,0
+ mov_i64 x1/t1,tmp3
+
+ ---- 0000000000013894
+ mov_i64 x2/t2,x11/a1
+
+ ---- 0000000000013896
+ add_i64 tmp3,x2/t2,x1/t1
+ mov_i64 x3/t3,tmp3
+
+ ---- 0000000000013898
+ mov_i64 tmp3,x0/t0
+ qemu_st_i64 x3/t3,tmp3,leq,0
+ add_i64 tmp3,tmp3,$0x8
+ mov_i64 x4/t4,tmp3
+
+ ---- 000000000001389a
+ add_i64 tmp3,x2/t2,x1/t1
+ mov_i64 x5/t5,tmp3
+ mov_i64 bpc1,$0xffffffffffffffff
+ mov_i64 bpc2,$0xffffffffffffffff
+ mov_i64 ibpc,$0x0
+ mov_i64 battr,$0x0
+ goto_tb $0x0
+ mov_i64 pc,$0x1389c
+ exit_tb $0x7ff07ebdccc0
+ set_label $L0
+ exit_tb $0x7ff07ebdccc3

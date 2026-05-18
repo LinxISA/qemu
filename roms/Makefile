@@ -185,6 +185,10 @@ opensbi64-generic:
 		PLATFORM="generic"
 	cp opensbi/build/platform/generic/firmware/fw_dynamic.bin ../pc-bios/opensbi-riscv64-generic-fw_dynamic.bin
 
+linx:
+	$(MAKE) -C LinxInit CROSS_COMPILE=$(CROSS_COMPILE)
+	cp LinxInit/build/LinxInit.bin ../pc-bios/LinxInit.bin
+
 MESON = meson
 NINJA = ninja
 qboot:
@@ -211,3 +215,4 @@ clean:
 	$(MAKE) -C opensbi clean
 	$(MAKE) -C qboot clean
 	$(MAKE) -C vbootrom clean
+	$(MAKE) -C LinxInit clean

@@ -1378,6 +1378,8 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
     return tb;
 }
 
+extern uint64_t kenny_tb_trans;
+
 /* Called with mmap_lock held for user mode emulation.  */
 TranslationBlock *tb_gen_code(CPUState *cpu,
                               target_ulong pc, target_ulong cs_base,
@@ -1394,6 +1396,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     int64_t ti;
 #endif
 
+    kenny_tb_trans++;
     assert_memory_lock();
     qemu_thread_jit_write();
 

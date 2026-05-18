@@ -43,6 +43,7 @@
 #include "sysemu/runstate.h"
 #include "sysemu/cpu-timers.h"
 #include "sysemu/whpx.h"
+#include "sysemu/tcg-bp.h"
 #include "hw/boards.h"
 #include "hw/hw.h"
 #include "trace.h"
@@ -71,6 +72,11 @@ static QemuMutex qemu_global_mutex;
  * The chosen accelerator is supposed to register this.
  */
 static const AccelOpsClass *cpus_accel;
+
+/* linx_debug global options */
+uint64_t cpus_stop_on_pc;
+uint64_t cpus_stop_on_count;
+uint64_t cpus_start_count_pc;
 
 bool cpu_is_stopped(CPUState *cpu)
 {
@@ -626,6 +632,18 @@ void qemu_init_vcpu(CPUState *cpu)
     cpu->nr_threads =  ms->smp.threads;
     cpu->stopped = true;
     cpu->random_seed = qemu_guest_random_seed_thread_part1();
+    cpu->bps_sz = 0;
+    cpu->bps = tcg_bps_init(&cpu->bps_sz);
+
+
+    if (cpus_stop_on_count) {
+        cpu->do_insn_count = !cpus_start_count_pc;
+        cpu->insn_count = 0;
+        cpu->count_start_pc = cpus_start_count_pc;
+        cpu->max_insn_count = cpus_stop_on_count;
+    }
+
+    cpu->stop_on_pc = cpus_stop_on_pc;
 
     if (!cpu->as) {
         /* If the target cpu hasn't set up any address spaces itself,

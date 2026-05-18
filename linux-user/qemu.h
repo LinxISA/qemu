@@ -102,7 +102,7 @@ typedef struct TaskState {
     FPA11 fpa;
 # endif
 #endif
-#if defined(TARGET_ARM) || defined(TARGET_RISCV)
+#if defined(TARGET_ARM) || defined(TARGET_RISCV) || defined(TARGET_LINX)
     int swi_errno;
 #endif
 #if defined(TARGET_I386) && !defined(TARGET_X86_64)
@@ -116,7 +116,7 @@ typedef struct TaskState {
 #ifdef TARGET_M68K
     abi_ulong tp_value;
 #endif
-#if defined(TARGET_ARM) || defined(TARGET_M68K) || defined(TARGET_RISCV)
+#if defined(TARGET_ARM) || defined(TARGET_M68K) || defined(TARGET_RISCV) || defined(TARGET_LINX)
     /* Extra fields for semihosted binaries.  */
     abi_ulong heap_base;
     abi_ulong heap_limit;

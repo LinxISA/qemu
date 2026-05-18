@@ -79,6 +79,9 @@ config RISCV_IMSIC
 config SIFIVE_PLIC
     bool
 
+config LXIC
+    bool
+
 config GOLDFISH_PIC
     bool
 

@@ -1,0 +1,175 @@
+531.deepsjeng_r 验证失败问题分析文档
+************************************
+作者：郭超 gwx1158827 
+
+问题描述
+==========
+531.deepsjeng_r 输出与标准输出不一致
+
+问题分析
+==========
+20230329
+
+标准输出数据::
+
+    Time for move : 99999999
+    3     -32     0      614  Qd4 ??
+    3     -21     0     1181  Qd4 Rc8 a5 Qf7 
+    3     -16     0     2362  Qf3 Qh5 a5 Rae8 
+    3     -16     0     2737  Qf3 Qh5 a5 Rae8 
+    4     -16     0     3166  Qf3 Qh5 a5 Rae8 
+    4     -16     0     4078  Qf3 Qh5 a5 Rae8 
+
+v020 输出数据::
+
+    Time for move : 99999999
+    3     -32     0      614  Qd4 ??
+    3     -21     0     1181  Qd4 Rc8 a5 Qf7 
+    3     -16     0     2363  Qf3 Qh5 a5 Rae8 
+    3     -16     0     2738  Qf3 Qh5 a5 Rae8 
+    4     -16     0     3169  Qf3 Qh5 a5 Rae8 
+    4     -16     0     4082  Qf3 Qh5 a5 Rae8 
+
+根据输出，发现从标准输出第四列 2362 开始，执行测例输出开始比标准输出数值大。
+
+首先定位确定此段输出在源码中的位置，确定到 utils.cpp 文件 post_thinking()
+函数内::
+
+    myprintf("%2d %7d %5d %8llu  ",gamestate.i_depth,score,elapsed,s->nodes);
+
+可以看到是 s->nodes 数值存在不同；
+在项目内找到 s->nodes 此值变化有两处，均为 s->nodes++；
+
+接下来的定位方法：添加打印，对比 016 & 020两文件 s->nodes 值变化，根据打印信息，
+再打印 qemu 执行日志，对比寄存器信息，逐步定位。
+
+添加打印::
+
+    printf("search_s->nodes: %llu\n", s->nodes);
+    printf("search_s->nodes: %llu\n", s->nodes);
+
+发现在s->nodes是2138的时候::
+
+    x86：
+    qsearch_s->nodes: 2138
+    search_s->nodes: 2139
+
+    020：
+    qsearch_s->nodes: 2138
+    qsearch_s->nodes: 2139
+
+x86中的s->nodes是2138的时候，在qsearch的这个位置会退出，但在0.20不会，再缩小范围；
+
+找到在 qsearch() 函数内调用  ProbeTT() 的返回值是不一样的，再添加打印::
+
+    x86:
+    qsearch_s->nodes: 1
+    调用前： 
+    ound: 0, alpha: -30, beta: 30, best: 0, xdummy: 0, xdummy: 0, xdummy: 0, xdummy: 0
+    qsearch_ProbeTT: 4, qsearch_bound: 0
+    调用后： 
+    bound: 0, alpha: -30, beta: 30, best: 0, xdummy: 1, xdummy: 1, xdummy: 1, xdummy: 1
+
+    020:
+    qsearch_s->nodes: 1
+    调用前： 
+    bound: 0, alpha: -30, beta: 30, best: 0, xdummy: 0, xdummy: 0, xdummy: 0, xdummy: 0
+    qsearch_ProbeTT: 0, qsearch_bound: 0
+    调用后： 
+    bound: 0, alpha: -30, beta: 30, best: 0, xdummy: 0, xdummy: 0, xdummy: 0, xdummy: 0
+
+看到 ProbeTT() 函数返回值是不一样的，即x86 中，ProbeTT 函数的返回值为4，而在020中的
+返回值为0。
+
+范围缩小到 ProbeTT() 函数内，对比发现::
+
+    if (temp->buckets[i].hash == nhash)
+
+x86 此判断不成立， 020 成立，打印两个值::
+
+    x86:
+    Time for move : 99999999
+    temp->buckets[i].hash: 0, nhash: 3293430756
+    temp->buckets[i].hash: 0, nhash: 3293430756
+    temp->buckets[i].hash: 0, nhash: 3293430756
+    temp->buckets[i].hash: 0, nhash: 3293430756
+    qsearch_s->nodes: 1
+
+    020:
+    Time for move : 99999999
+    temp->buckets[i].hash: 0, nhash: 0
+    qsearch_s->nodes: 1
+
+nhash 值有问题，在此值赋值前后加打印，printf 对输出有影响::
+
+    x86:
+    Time for move : 99999999
+    nhash1: 0
+    nhash2: 14145177390327764046
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    qsearch_s->nodes: 1
+
+    020:
+    Time for move : 99999999
+    nhash1: 274886290692
+    nhash2: 14145177390327764046
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    qsearch_s->nodes: 1
+
+再加打印，减少 printf 影响，发现在 nhash >>= 32 前删除printf后，020 nhash 有不
+同，影响函数返回值问题::
+
+    删除 printf 之前：
+    Time for move : 99999999
+    nhash1: 274886290692
+    nhash2: 14145177390327764046
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    nhash3: 3293430756
+    qsearch_s->nodes: 1
+    nhash2: 10663939033037943100
+    nhash3: 2482891788
+    nhash3: 2482891788
+    nhash3: 2482891788
+    nhash3: 2482891788
+    qsearch_ProbeTT: 4  函数返回值与 x86 相同
+    qsearch_s->nodes: 2
+
+    删除 printf 之后的输出:
+    Time for move : 99999999
+    nhash1: 274886290692
+    nhash3: 0
+    qsearch_s->nodes: 1
+    nhash1: 274886284992
+    nhash3: 0
+    qsearch_ProbeTT: 0  函数返回值与 x86 不相同
+    qsearch_s->nodes: 2
+
+从这可以看到是这句右移指令导致 020 与 x86 nhash3 值不同
+接下来找下这条右移微指令。
+
+打印 qemu 执行日志，比对 016 与 020 寄存器信息变化::
+
+    016
+    r6/s1    c44dc3e4635f944e -> r6/s1    00000000c44dc3e4
+
+    020
+    r6/s1    c44dc3e4635f944e -> r6/s1    0000000000000000
+
+根据 trace 信息可以看出，016 在数据移位之后值正确，020 移位之后数据为0，
+定位到是 qemu 的 remuw 指令导致的结果出错。
+
+qemu 已经修复，验证通过，问题解决！
+
+
+
+
+
+

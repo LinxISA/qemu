@@ -15,4 +15,6 @@ extern bool tcg_allowed;
 #define tcg_enabled() 0
 #endif
 
+extern void disas_add_symfile(const char *fn);
+
 #endif

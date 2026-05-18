@@ -81,3 +81,6 @@
   initialize and run boot images stored in SPI flash, but may grow more
   features over time as needed. The source code is available at:
   https://github.com/google/vbootrom
+
+- LinxInit (https://codehub-dg-y.huawei.com/LinxISAV150/LinxInit.git) is a
+  firmware for Linx Machine.

@@ -15,4 +15,6 @@ GTAGS
 *.depend_raw
 *.swp
 *.patch
+.cache
+.vscode
 *.gcov
