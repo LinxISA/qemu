@@ -53,7 +53,7 @@ static const MemMapEntry virt_memmap[] = {
     [VIRT_VIRTIO] =      { 0x10001000,        0x1000 },
     [VIRT_PCIE_ECAM] =   { 0x30000000,    0x10000000 },
     [VIRT_PCIE_MMIO] =   { 0x40000000,    0x40000000 },
-    [VIRT_DRAM] =        { 0x80000000,           0x0 },
+    [VIRT_DRAM] =        {        0x0,           0x0 },
 };
 
 /* PCIe high mmio is fixed for RV32 */
@@ -68,6 +68,49 @@ static MemMapEntry virt_high_pcie_memmap;
 static uint32_t mmio_mask, virtio_mask, pcie_mask;
 
 int linx_cpus_total_num;
+static target_ulong linx_boot_stack_top;
+
+static void linx_virt_kernel_sym_cb(const char *st_name, int st_info,
+                                    uint64_t st_value, uint64_t st_size)
+{
+    if (strcmp(st_name, "__end_init_stack") == 0) {
+        linx_boot_stack_top = st_value;
+    }
+}
+
+static void linx_virt_override_resetvec(LINXVirtState *s, MachineState *machine,
+                                        target_ulong resetvec)
+{
+    for (int socket = 0; socket < linx_socket_count(machine); socket++) {
+        LINXHartArrayState *hart_array = &s->soc[socket];
+
+        hart_array->resetvec = resetvec;
+        for (int hart = 0; hart < hart_array->num_harts; hart++) {
+            LINXCPU *cpu = &hart_array->harts[hart];
+
+            cpu->cfg.resetvec = resetvec;
+            cpu->env.resetvec = resetvec;
+            cpu->env.pc = resetvec;
+        }
+    }
+}
+
+static void linx_virt_seed_boot_stack(LINXVirtState *s, MachineState *machine,
+                                      target_ulong boot_sp)
+{
+    for (int socket = 0; socket < linx_socket_count(machine); socket++) {
+        LINXHartArrayState *hart_array = &s->soc[socket];
+
+        for (int hart = 0; hart < hart_array->num_harts; hart++) {
+            LINXCPU *cpu = &hart_array->harts[hart];
+
+            if (cpu->env.lxlcid == hart_array->boot_hartid) {
+                cpu->env.gpr[xSP] = boot_sp;
+                return;
+            }
+        }
+    }
+}
 
 static void create_pcie_irq_map(void *fdt, char *nodename,
                                 uint32_t irq_phandle)
@@ -542,6 +585,7 @@ static void virt_machine_init(MachineState *machine)
     MemoryRegion *mask_rom = g_new(MemoryRegion, 1);
     char *soc_name;
     target_ulong start_addr = memmap[VIRT_DRAM].base;
+    target_ulong reset_target_addr = start_addr;
     target_ulong firmware_end_addr, kernel_start_addr;
     uint32_t fdt_load_addr;
     uint64_t kernel_entry;
@@ -656,11 +700,13 @@ static void virt_machine_init(MachineState *machine)
                                 LINX_BIOS_BIN, start_addr, NULL);
 
     if (machine->kernel_filename) {
+        linx_boot_stack_top = 0;
         kernel_start_addr = linx_calc_kernel_start_addr(&s->soc[0],
                                                          firmware_end_addr);
 
         kernel_entry = linx_load_kernel(machine->kernel_filename,
-                                         kernel_start_addr, NULL);
+                                         kernel_start_addr,
+                                         linx_virt_kernel_sym_cb);
 
         if (machine->initrd_filename) {
             hwaddr start;
@@ -680,12 +726,21 @@ static void virt_machine_init(MachineState *machine)
         kernel_entry = 0;
     }
 
+    if (machine->firmware && !strcmp(machine->firmware, "none") &&
+        kernel_entry != 0) {
+        reset_target_addr = kernel_entry;
+        linx_virt_override_resetvec(s, machine, reset_target_addr);
+        if (linx_boot_stack_top != 0) {
+            linx_virt_seed_boot_stack(s, machine, linx_boot_stack_top);
+        }
+    }
+
 
     /* Compute the fdt load address in dram */
     fdt_load_addr = linx_load_fdt(memmap[VIRT_DRAM].base,
                                    machine->ram_size, machine->fdt);
     /* load the reset vector */
-    linx_setup_rom_reset_vec(machine, &s->soc[0], start_addr,
+    linx_setup_rom_reset_vec(machine, &s->soc[0], reset_target_addr,
                               virt_memmap[VIRT_MROM].base,
                               virt_memmap[VIRT_MROM].size, kernel_entry,
                               fdt_load_addr, machine->fdt);

@@ -1140,6 +1140,19 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     trace_linx_mini(ctx->base.pc_next);
     ctx->pc_succ_insn = ctx->base.pc_next + ctx->insn_size;
 
+    if (!is_head_block(ctx, opcode) &&
+        ctx->brh_type == BRANCH_RET &&
+        ctx->carg_tgt == ctx->base.pc_next) {
+        /*
+         * Split RET helpers can span several tiny non-head blocks before a
+         * later c.setc.tgt ra writes the real return address. Keep the
+         * provisional target moving forward across those microblocks instead
+         * of self-looping on the current PC.
+         */
+        ctx->carg_tgt = ctx->pc_succ_insn;
+        tcg_gen_movi_tl(carg_tgt, ctx->carg_tgt);
+    }
+
     if (ctx->insn_size == 2) {
         opcode = linx_lduw_code(env, &ctx->base, ctx->base.pc_next);
         if (!decode_block16(ctx, (uint16_t)opcode)) {

@@ -296,9 +296,7 @@ common_semi_sys_exit_extended(CPUState *cs, int nr)
 static inline target_ulong
 common_semi_rambase(CPUState *cs)
 {
-    LINXCPU *cpu = LINX_CPU(cs);
-    CPULINXState *env = &cpu->env;
-    return common_semi_find_region_base(env->gpr[xSP]);
+    return common_semi_find_bases(cs).rambase;
 }
 #endif
 

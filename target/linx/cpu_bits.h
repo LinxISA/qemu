@@ -71,6 +71,23 @@
 #define  A0_TIMECMP      0x0f21
 #define  A0_XBINFO       0x0f30
 #define  A0_ACR_PARAM    0x0f31
+#define  A0_ELPR0        0x0f40
+#define  A0_ELPR1        0x0f41
+#define  A0_ELPR2        0x0f42
+#define  A0_ELPR3        0x0f43
+#define  A0_ELPR4        0x0f44
+#define  A0_ELPR5        0x0f45
+#define  A0_ELPR6        0x0f46
+#define  A0_ELPR7        0x0f47
+#define  A0_ELPR8        0x0f48
+#define  A0_ELPR9        0x0f49
+#define  A0_ELPR10       0x0f4a
+#define  A0_ELPR11       0x0f4b
+#define  A0_ELPR12       0x0f4c
+#define  A0_ELPR13       0x0f4d
+#define  A0_ELPR14       0x0f4e
+#define  A0_ELPR15       0x0f4f
+#define  A0_ELPR16       0x0f50
 
 /* ACR1 System Register Address Macro Definition */
 #define  A1_ECSTATE      0x1f00
@@ -93,6 +110,23 @@
 #define  A1_TIMECMP      0x1f21
 #define  A1_XBINFO       0x1f30
 #define  A1_ACR_PARAM    0x1f31
+#define  A1_ELPR0        0x1f40
+#define  A1_ELPR1        0x1f41
+#define  A1_ELPR2        0x1f42
+#define  A1_ELPR3        0x1f43
+#define  A1_ELPR4        0x1f44
+#define  A1_ELPR5        0x1f45
+#define  A1_ELPR6        0x1f46
+#define  A1_ELPR7        0x1f47
+#define  A1_ELPR8        0x1f48
+#define  A1_ELPR9        0x1f49
+#define  A1_ELPR10       0x1f4a
+#define  A1_ELPR11       0x1f4b
+#define  A1_ELPR12       0x1f4c
+#define  A1_ELPR13       0x1f4d
+#define  A1_ELPR14       0x1f4e
+#define  A1_ELPR15       0x1f4f
+#define  A1_ELPR16       0x1f50
 
 #define CSTATE_PERMIT       0x200ULL
 #define CSTATE_IE           0x10ULL

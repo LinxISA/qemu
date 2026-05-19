@@ -786,6 +786,14 @@ void helper_block_fret_stk(CPULINXState *env,
         target_addr -= 8;
         env->tpc = i;
         env->gpr[i] = cpu_ldq_data_ra(env, target_addr, GETPC());
+        if (i == ra_idx) {
+            /*
+             * Preserve the restored return target as soon as RA is reloaded.
+             * If an exception or interrupt lands later in this template block,
+             * ebpcn must carry the return target rather than an older carg_tgt.
+             */
+            env->carg_tgt = env->gpr[ra_idx];
+        }
         if (qemu_loglevel_mask(CPU_LOG_LINX_MEM) &&
             qemu_log_in_addr_range(env->pc)) {
             helper_memprnt(target_addr, env->gpr[i], READ);
@@ -1751,7 +1759,8 @@ void linx_recovery_bstate_by_ebstate(CPULINXState *env, target_ulong priv)
 
     hi = set_field(hi, HEADER_INFO_AQ_MASK, get_field(ebarg, EBARG_AQ));
     hi = set_field(hi, HEADER_INFO_RL_MASK, get_field(ebarg, EBARG_RL));
-    if (blk_typ == HEAD_TYPE_STD || blk_typ == HEAD_TYPE_FP) {
+    if (blk_typ == HEAD_TYPE_STD || blk_typ == HEAD_TYPE_FP ||
+        blk_typ == HEAD_TYPE_FRET_RA || blk_typ == HEAD_TYPE_FRET_STK) {
         switch (br_typ) {
         case CBRANCH_FALL: {
             br_typ = BRANCH_FALL;

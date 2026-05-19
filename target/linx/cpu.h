@@ -34,6 +34,18 @@
 #define LINX_DEFAULT_TIMEBASE_FREQ 10000000
 #define TCG_GUEST_DEFAULT_MO 0
 
+/*
+ * Older Linx target code used MO_TEQ for 64-bit target-endian accesses.
+ * Current QEMU memop naming spells that form MO_TEUQ.
+ */
+#ifndef MO_TEQ
+#define MO_TEQ MO_TEUQ
+#endif
+
+#ifndef MO_Q
+#define MO_Q MO_UQ
+#endif
+
 #define TYPE_LINX_CPU "linx-cpu"
 
 #define LINX_ILLEGAL_INSTR_ADDR  0xFFFFFFFFFFFFFFFFUL
@@ -65,7 +77,8 @@ enum {
 
 #define MMU_USER_IDX 3
 
-typedef struct CPULINXState CPULINXState;
+typedef struct CPUArchState CPULINXState;
+typedef struct ArchCPU LINXCPU;
 
 #define LINX_EBSTATE_SIZE 64
 #define LINX_ACR_NUM  2
@@ -121,6 +134,7 @@ typedef struct LinxSYSReg {
     uint64_t timecmp;
     uint64_t xbinfo;
     uint64_t acr_param;
+    uint64_t elpr[17];
 #define EBSTATE_MAX_VALID_REG 46
 } LinxSYSReg;
 
@@ -136,7 +150,7 @@ struct TILEOPInfo {
     uint32_t tileop_datatype;
 };
 
-struct CPULINXState {
+struct CPUArchState {
     target_ulong gpr[GPR_REG_SIZE];
 
     target_ulong pc;
@@ -330,8 +344,7 @@ struct CPULINXState {
     target_ulong carg_flag;
 };
 
-OBJECT_DECLARE_TYPE(LINXCPU, LINXCPUClass,
-                    LINX_CPU)
+OBJECT_DECLARE_CPU_TYPE(LINXCPU, LINXCPUClass, LINX_CPU)
 
 /**
  * LINXCPUClass:
@@ -354,7 +367,7 @@ struct LINXCPUClass {
  *
  * A LINX CPU.
  */
-struct LINXCPU {
+struct ArchCPU {
     /*< private >*/
     CPUState parent_obj;
     /*< public >*/
@@ -451,8 +464,6 @@ void linx_cs_log(CPULINXState *env);
 #define TB_FLAGS_PRIV_MMU_MASK                3
 #define TB_FLAGS_PRIV_HYP_ACCESS_MASK   (1 << 2)
 
-typedef CPULINXState CPUArchState;
-typedef LINXCPU ArchCPU;
 #include "exec/cpu-all.h"
 
 FIELD(TB_FLAGS, MEM_IDX, 0, 3)
