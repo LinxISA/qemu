@@ -256,6 +256,26 @@ static LINXException write_etemp(CPULINXState *env, int ssrno,
     return LINX_EXCP_NONE;
 }
 
+static LINXException read_elpr(CPULINXState *env, int ssrno,
+                               target_ulong *val)
+{
+    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
+    int idx = ssrno & 0x1f;
+
+    *val = env->sysreg[acr].elpr[idx];
+    return LINX_EXCP_NONE;
+}
+
+static LINXException write_elpr(CPULINXState *env, int ssrno,
+                                target_ulong val)
+{
+    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
+    int idx = ssrno & 0x1f;
+
+    env->sysreg[acr].elpr[idx] = val;
+    return LINX_EXCP_NONE;
+}
+
 static LINXException read_futo(CPULINXState *env, int ssrno,
                                        target_ulong *val)
 {
@@ -756,6 +776,23 @@ linx_csr_operations csr_ops[SSR_TABLE_SIZE] = {
     [A0_TIMECMP]        = {"a0_timecmp", any, read_timecmp, write_timecmp },
     [A0_XBINFO]         = {"a0_xbinfo", any, read_xbinfo, write_xbinfo },
     [A0_ACR_PARAM]      = {"a0_acr_param", any, read_acr_param },
+    [A0_ELPR0]          = {"a0_elpr0", any, read_elpr, write_elpr },
+    [A0_ELPR1]          = {"a0_elpr1", any, read_elpr, write_elpr },
+    [A0_ELPR2]          = {"a0_elpr2", any, read_elpr, write_elpr },
+    [A0_ELPR3]          = {"a0_elpr3", any, read_elpr, write_elpr },
+    [A0_ELPR4]          = {"a0_elpr4", any, read_elpr, write_elpr },
+    [A0_ELPR5]          = {"a0_elpr5", any, read_elpr, write_elpr },
+    [A0_ELPR6]          = {"a0_elpr6", any, read_elpr, write_elpr },
+    [A0_ELPR7]          = {"a0_elpr7", any, read_elpr, write_elpr },
+    [A0_ELPR8]          = {"a0_elpr8", any, read_elpr, write_elpr },
+    [A0_ELPR9]          = {"a0_elpr9", any, read_elpr, write_elpr },
+    [A0_ELPR10]         = {"a0_elpr10", any, read_elpr, write_elpr },
+    [A0_ELPR11]         = {"a0_elpr11", any, read_elpr, write_elpr },
+    [A0_ELPR12]         = {"a0_elpr12", any, read_elpr, write_elpr },
+    [A0_ELPR13]         = {"a0_elpr13", any, read_elpr, write_elpr },
+    [A0_ELPR14]         = {"a0_elpr14", any, read_elpr, write_elpr },
+    [A0_ELPR15]         = {"a0_elpr15", any, read_elpr, write_elpr },
+    [A0_ELPR16]         = {"a0_elpr16", any, read_elpr, write_elpr },
 
     [A1_ECSTATE]        = {"a1_ecstate", acr1, read_ecstate, write_ecstate},
     [A1_EVBASE]         = {"a1_evbase", acr1, read_evbase, write_evbase},
@@ -777,6 +814,23 @@ linx_csr_operations csr_ops[SSR_TABLE_SIZE] = {
     [A1_TIMECMP]        = {"a1_timecmp", any, read_timecmp, write_timecmp },
     [A1_XBINFO]         = {"a1_xbinfo", any, read_xbinfo, write_xbinfo },
     [A1_ACR_PARAM]      = {"a1_acr_param", any, read_acr_param },
+    [A1_ELPR0]          = {"a1_elpr0", acr1, read_elpr, write_elpr },
+    [A1_ELPR1]          = {"a1_elpr1", acr1, read_elpr, write_elpr },
+    [A1_ELPR2]          = {"a1_elpr2", acr1, read_elpr, write_elpr },
+    [A1_ELPR3]          = {"a1_elpr3", acr1, read_elpr, write_elpr },
+    [A1_ELPR4]          = {"a1_elpr4", acr1, read_elpr, write_elpr },
+    [A1_ELPR5]          = {"a1_elpr5", acr1, read_elpr, write_elpr },
+    [A1_ELPR6]          = {"a1_elpr6", acr1, read_elpr, write_elpr },
+    [A1_ELPR7]          = {"a1_elpr7", acr1, read_elpr, write_elpr },
+    [A1_ELPR8]          = {"a1_elpr8", acr1, read_elpr, write_elpr },
+    [A1_ELPR9]          = {"a1_elpr9", acr1, read_elpr, write_elpr },
+    [A1_ELPR10]         = {"a1_elpr10", acr1, read_elpr, write_elpr },
+    [A1_ELPR11]         = {"a1_elpr11", acr1, read_elpr, write_elpr },
+    [A1_ELPR12]         = {"a1_elpr12", acr1, read_elpr, write_elpr },
+    [A1_ELPR13]         = {"a1_elpr13", acr1, read_elpr, write_elpr },
+    [A1_ELPR14]         = {"a1_elpr14", acr1, read_elpr, write_elpr },
+    [A1_ELPR15]         = {"a1_elpr15", acr1, read_elpr, write_elpr },
+    [A1_ELPR16]         = {"a1_elpr16", acr1, read_elpr, write_elpr },
 #endif /* !CONFIG_USER_ONLY */
     [CSR_TP]  = { "tp",  any, read_tp,  write_tp  },
     [CSR_GP]  = { "gp",  any, read_gp,  write_gp  },

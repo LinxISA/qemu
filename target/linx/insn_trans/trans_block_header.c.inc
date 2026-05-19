@@ -594,14 +594,32 @@ static bool trans_blk_start_icall(DisasContext *ctx, arg_blk_start_icall *a)
 static bool trans_blk_start_ret(DisasContext *ctx, arg_blk_start_ret *a)
 {
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_RET, a->blk_type, 0);
+    /*
+     * Generic RET headers often rely on a later c.setc.tgt ra in a following
+     * tiny block. If we seed carg_tgt with bpc+0 here, split return helpers
+     * livelock on their own header before reaching that later target write.
+     * Default to the next block header and let an explicit setc.tgt override.
+     */
+    ctx->carg_tgt = ctx->pc_succ_insn;
+    tcg_gen_movi_tl(carg_tgt, ctx->carg_tgt);
 
     return true;
 }
 
 static bool trans_blk_offset_cond(DisasContext *ctx, arg_blk_offset_cond *a)
 {
+    uint64_t saved_header_info = ctx->header_info;
+    target_long saved_carg_tgt = ctx->carg_tgt;
+
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CONDITIONAL, HEAD_TYPE_STD,
                                   a->bnext_low);
+    /*
+     * Short offset headers are nested helper edges inside an outer block.
+     * Keep the conditional semantics for this tiny block, but restore the
+     * outer block state for the next TB when control falls through.
+     */
+    tcg_gen_movi_i64(header_info, saved_header_info);
+    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
 
     return true;
 }
@@ -609,7 +627,12 @@ static bool trans_blk_offset_cond(DisasContext *ctx, arg_blk_offset_cond *a)
 static bool trans_blk_offset_direct_call(DisasContext *ctx,
                                          arg_blk_offset_direct_call *a)
 {
+    uint64_t saved_header_info = ctx->header_info;
+    target_long saved_carg_tgt = ctx->carg_tgt;
+
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CALL, HEAD_TYPE_STD, a->bnext_low);
+    tcg_gen_movi_i64(header_info, saved_header_info);
+    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
     return true;
 }
 
@@ -797,6 +820,15 @@ static bool trans_blk_short_head(DisasContext *ctx, arg_blk_short_head *a)
     /* branch type takes only the lower three bits */
     a->br_type &= 0x7;
     GEN_LINX_INIT_HEAD(ctx, a, a->br_type, a->blk_type, 0);
+    if (a->br_type == BRANCH_RET) {
+        /*
+         * Short RET headers are used as split helpers in early kernel code.
+         * They may reach c.setc.tgt ra only in a following tiny block, so a
+         * self-targeted default livelocks at the header. Fall through first.
+         */
+        ctx->carg_tgt = ctx->pc_succ_insn;
+        tcg_gen_movi_tl(carg_tgt, ctx->carg_tgt);
+    }
     return true;
 }
 

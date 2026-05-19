@@ -3126,12 +3126,21 @@ common_ss.add_all(when: 'CONFIG_SOFTMMU', if_true: [softmmu_ss])
 common_ss.add_all(when: 'CONFIG_USER_ONLY', if_true: user_ss)
 
 common_all = common_ss.apply(config_all, strict: false)
+common_all_c_args = []
+if target_dirs.length() == 1 and (target_dirs[0] == 'linx-softmmu' or target_dirs[0] == 'linx64-softmmu')
+  common_all_c_args += [
+    '-DNEED_CPU_H',
+    '-DCONFIG_TARGET="@0@-config-target.h"'.format(target_dirs[0]),
+    '-DCONFIG_DEVICES="@0@-config-devices.h"'.format(target_dirs[0]),
+  ]
+endif
 common_all = static_library('common',
                             build_by_default: false,
                             sources: common_all.sources() + genh,
                             include_directories: common_user_inc,
                             implicit_include_directories: false,
                             dependencies: common_all.dependencies(),
+                            c_args: common_all_c_args,
                             name_suffix: 'fa')
 
 feature_to_c = find_program('scripts/feature_to_c.sh')

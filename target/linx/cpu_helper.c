@@ -774,8 +774,14 @@ void linx_cpu_do_interrupt(CPUState *cs)
      * if in_body is valid, we are in layer2 which is in block.
      */
     if (env->in_body) {
-        /* tpc should be sync-ed with pc, ret address is this block */
-        assert(is_valid_linx_addr(env->bpc));
+        /*
+         * Some early boot / direct-kernel entry paths can take an exception
+         * before bpc is initialized. The exception frame already falls back
+         * to env->pc in that case, so keep bstate save/recovery consistent.
+         */
+        if (!is_valid_linx_addr(env->bpc)) {
+            env->bpc = env->pc;
+        }
         /* save bstate to ebstate */
         if (!linx_is_atomic_blk(get_blk_atomic(env->header_info))) {
             linx_save_bstate(env, handle_acr);

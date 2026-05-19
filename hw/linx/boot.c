@@ -32,6 +32,26 @@
 
 #include <libfdt.h>
 
+#define EM_LINX_LEGACY 233
+
+static int linx_try_load_elf(const char *filename, uint64_t *pentry,
+                             uint64_t *highaddr, symbol_fn_t sym_cb)
+{
+    ssize_t ret;
+
+    ret = load_elf_ram_sym(filename, NULL, NULL, NULL,
+                           pentry, NULL, highaddr, NULL,
+                           0, EM_LINX, 1, 0, NULL, true, sym_cb);
+    if (ret > 0) {
+        return ret;
+    }
+
+    ret = load_elf_ram_sym(filename, NULL, NULL, NULL,
+                           pentry, NULL, highaddr, NULL,
+                           0, EM_LINX_LEGACY, 1, 0, NULL, true, sym_cb);
+    return ret;
+}
+
 target_ulong linx_calc_kernel_start_addr(LINXHartArrayState *harts,
                                           target_ulong firmware_end_addr) {
     /* linx only have 64bit */
@@ -95,9 +115,8 @@ target_ulong linx_load_firmware(const char *firmware_filename,
 {
     uint64_t firmware_entry, firmware_size, firmware_end;
 
-    if (load_elf_ram_sym(firmware_filename, NULL, NULL, NULL,
-                         &firmware_entry, NULL, &firmware_end, NULL,
-                         0, EM_LINX, 1, 0, NULL, true, sym_cb) > 0) {
+    if (linx_try_load_elf(firmware_filename, &firmware_entry,
+                          &firmware_end, sym_cb) > 0) {
         return firmware_end;
     }
 
@@ -119,9 +138,8 @@ target_ulong linx_load_kernel(const char *kernel_filename,
 {
     uint64_t kernel_entry;
 
-    if (load_elf_ram_sym(kernel_filename, NULL, NULL, NULL,
-                         &kernel_entry, NULL, NULL, NULL, 0,
-                         EM_LINX, 1, 0, NULL, true, sym_cb) > 0) {
+    if (linx_try_load_elf(kernel_filename, &kernel_entry, NULL,
+                          sym_cb) > 0) {
         return kernel_entry;
     }
 
