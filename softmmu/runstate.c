@@ -30,6 +30,7 @@
 #include "crypto/cipher.h"
 #include "crypto/init.h"
 #include "exec/cpu-common.h"
+#include "exec/address-spaces.h"
 #include "exec/gdbstub.h"
 #include "hw/boards.h"
 #include "migration/misc.h"
@@ -435,6 +436,7 @@ static int qemu_debug_requested(void)
 void qemu_system_reset(ShutdownCause reason)
 {
     MachineClass *mc;
+    uint8_t low_page[8];
 
     mc = current_machine ? MACHINE_GET_CLASS(current_machine) : NULL;
 
@@ -445,10 +447,24 @@ void qemu_system_reset(ShutdownCause reason)
     } else {
         qemu_devices_reset();
     }
+    if (g_getenv("LINX_LOG_RESET_LOW")) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_RESET_LOW[after-device-reset]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
     if (reason && reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
         qapi_event_send_reset(shutdown_caused_by_guest(reason), reason);
     }
     cpu_synchronize_all_post_reset();
+    if (g_getenv("LINX_LOG_RESET_LOW")) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_RESET_LOW[after-post-reset]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
 }
 
 /*

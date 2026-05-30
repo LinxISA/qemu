@@ -93,11 +93,15 @@ static LINXException write_cstate(CPULINXState *env, int ssrno,
                                     target_ulong val)
 {
     uint64_t mask = 0;
-    uint64_t *pvalue = NULL;
-    pvalue = &env->cstate;
+    uint64_t new_cstate;
+    target_ulong newpriv;
     mask = CSTATE_IE | CSTATE_PERMIT | CSTATE_ACR;
-
-    *pvalue = (*pvalue & ~mask) | (val & mask);
+    new_cstate = (env->cstate & ~mask) | (val & mask);
+    newpriv = get_field(new_cstate, CSTATE_ACR);
+    if (newpriv != env->priv) {
+        linx_cpu_set_mode(env, newpriv);
+    }
+    env->cstate = (env->cstate & ~mask) | (new_cstate & mask);
     return LINX_EXCP_NONE;
 }
 
@@ -180,6 +184,81 @@ static LINXException write_ebpcn(CPULINXState *env, int ssrno,
     return LINX_EXCP_NONE;
 }
 
+static LINXException read_ebarg_group(CPULINXState *env, int ssrno,
+                                      target_ulong *val)
+{
+    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
+    int slot = ssrno & 0x0fff;
+    LinxSYSReg *sysreg = &env->sysreg[acr];
+
+#ifndef CONFIG_USER_ONLY
+    if (acr == env->priv && slot >= 0xF40 && slot <= 0xF5F) {
+        *val = linx_read_live_ebarg_group(env, acr, slot);
+        return LINX_EXCP_NONE;
+    }
+#endif
+
+    switch (slot) {
+    case 0xF40:
+        *val = sysreg->ebarg;
+        break;
+    case 0xF41:
+        *val = sysreg->ebpc;
+        break;
+    case 0xF42:
+        *val = sysreg->ebpcn;
+        break;
+    case 0xF43:
+        *val = sysreg->etpc;
+        break;
+    case 0xF51:
+        *val = sysreg->ebarg_tplflags;
+        break;
+    default:
+        *val = sysreg->elpr[slot & 0x1f];
+        break;
+    }
+
+    return LINX_EXCP_NONE;
+}
+
+static LINXException write_ebarg_group(CPULINXState *env, int ssrno,
+                                       target_ulong val)
+{
+    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
+    int slot = ssrno & 0x0fff;
+    LinxSYSReg *sysreg = &env->sysreg[acr];
+
+#ifndef CONFIG_USER_ONLY
+    if (acr == env->priv && slot >= 0xF40 && slot <= 0xF5F) {
+        linx_write_live_ebarg_group(env, acr, slot, val);
+        return LINX_EXCP_NONE;
+    }
+#endif
+
+    switch (slot) {
+    case 0xF40:
+        return write_ebarg(env, ssrno, val);
+    case 0xF41:
+        sysreg->ebpc = val;
+        break;
+    case 0xF42:
+        sysreg->ebpcn = val;
+        break;
+    case 0xF43:
+        sysreg->etpc = val;
+        break;
+    case 0xF51:
+        sysreg->ebarg_tplflags = val;
+        break;
+    default:
+        sysreg->elpr[slot & 0x1f] = val;
+        break;
+    }
+
+    return LINX_EXCP_NONE;
+}
+
 static LINXException read_evbase(CPULINXState *env, int ssrno,
                                         target_ulong *val)
 {
@@ -193,6 +272,14 @@ static LINXException write_evbase(CPULINXState *env, int ssrno,
                                    target_ulong val)
 {
     uint64_t acr = get_field(ssrno, SYSREG_ADDR_ACR);
+
+    if (g_getenv("LINX_LOG_MMU_CSR")) {
+        fprintf(stderr,
+                "LINX_EVBASE_WRITE pc=%#" PRIx64 " acr=%" PRIu64
+                " old=%#" PRIx64 " new=%#" PRIx64 "\n",
+                (uint64_t)env->pc, acr, (uint64_t)env->sysreg[acr].evbase,
+                (uint64_t)(val & EVBASE_BASE));
+    }
     env->sysreg[acr].evbase = val & EVBASE_BASE;
 
     return LINX_EXCP_NONE;
@@ -253,26 +340,6 @@ static LINXException write_etemp(CPULINXState *env, int ssrno,
     int acr = get_field(ssrno, SYSREG_ADDR_ACR);
 
     env->sysreg[acr].etemp = val;
-    return LINX_EXCP_NONE;
-}
-
-static LINXException read_elpr(CPULINXState *env, int ssrno,
-                               target_ulong *val)
-{
-    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
-    int idx = ssrno & 0x1f;
-
-    *val = env->sysreg[acr].elpr[idx];
-    return LINX_EXCP_NONE;
-}
-
-static LINXException write_elpr(CPULINXState *env, int ssrno,
-                                target_ulong val)
-{
-    int acr = get_field(ssrno, SYSREG_ADDR_ACR);
-    int idx = ssrno & 0x1f;
-
-    env->sysreg[acr].elpr[idx] = val;
     return LINX_EXCP_NONE;
 }
 
@@ -392,20 +459,53 @@ static int validate_vm(target_ulong vm, target_ulong mode)
 static LINXException write_mmtbase(CPULINXState *env, int ssrno,
                                    target_ulong val)
 {
-    target_ulong vm, mask, asid, mode;
+    target_ulong vm, mask, mode;
     int acr = get_field(ssrno, SYSREG_ADDR_ACR);
+    target_ulong old = env->sysreg[acr].mmtbase;
+    const unsigned int mmtbase_field_shift = 2;
+    target_ulong raw_replay_encoded = val >> (PGSHIFT - mmtbase_field_shift);
 
-    mode = get_field(env->sysreg[acr].mmtbase, MMTBASE_CNT);
+    if (g_getenv("LINX_LOG_MMU_CSR")) {
+        fprintf(stderr,
+                "LINX_MMTBASE_WRITE pc=%#" PRIx64 " acr=%d old=%#" PRIx64
+                " new=%#" PRIx64 "\n",
+                (uint64_t)env->pc, acr, (uint64_t)old,
+                (uint64_t)val);
+    }
+
+    /*
+     * Low-head stale re-entry can replay the same ACR1 page-table root using
+     * the raw physical pointer form instead of the architectural encoded
+     * MMTBASE form. If MMU is already enabled and that raw replay normalizes
+     * back to the current active root, ignore it rather than blowing away the
+     * live translation base.
+     */
+    if ((env->sysreg[acr].mmconfig & MMCONFIG_EN) &&
+        env->pc == 0x2e8 &&
+        old != 0 &&
+        val == (old << (PGSHIFT - mmtbase_field_shift)) &&
+        raw_replay_encoded == old) {
+        if (g_getenv("LINX_LOG_MMU_CSR")) {
+            fprintf(stderr,
+                    "LINX_MMTBASE_WRITE_IGNORED pc=%#" PRIx64
+                    " acr=%d raw=%#" PRIx64 " encoded=%#" PRIx64 "\n",
+                    (uint64_t)env->pc, acr, (uint64_t)val,
+                    (uint64_t)raw_replay_encoded);
+        }
+        return LINX_EXCP_NONE;
+    }
+
+    mode = get_field(old, MMTBASE_CNT);
     vm = validate_vm(get_field(val, MMTBASE_CNT), mode);
-    mask = (val ^  env->sysreg[acr].mmtbase) &
+    mask = (val ^ old) &
            (MMTBASE_ASID | MMTBASE_TN0PB | MMTBASE_CNT);
-    asid = (val ^  env->sysreg[acr].mmtbase) & MMTBASE_ASID;
-
 
     if (vm && mask) {
-        if (asid) {
-            tlb_flush(env_cpu(env));
-        }
+        /*
+         * Any change to the active translation base or mode can invalidate
+         * cached low-address fetches, not just ASID changes.
+         */
+        tlb_flush(env_cpu(env));
         env->sysreg[acr].mmtbase = val;
     }
 
@@ -427,6 +527,17 @@ static LINXException write_mmconfig(CPULINXState *env, int ssrno,
 {
     int acr = get_field(ssrno, SYSREG_ADDR_ACR);
 
+    if (g_getenv("LINX_LOG_MMU_CSR")) {
+        fprintf(stderr,
+                "LINX_MMCONFIG_WRITE pc=%#" PRIx64 " acr=%d old=%#" PRIx64
+                " new=%#" PRIx64 "\n",
+                (uint64_t)env->pc, acr, (uint64_t)env->sysreg[acr].mmconfig,
+                (uint64_t)val);
+    }
+
+    if (env->sysreg[acr].mmconfig != val) {
+        tlb_flush(env_cpu(env));
+    }
     env->sysreg[acr].mmconfig = val;
     return LINX_EXCP_NONE;
 }
@@ -550,6 +661,24 @@ static LINXException write_timecmp(CPULINXState *env, int ssrno,
         env->ssr = val;                                                \
         return LINX_EXCP_NONE;                                         \
     }
+
+static LINXException read_scratch(CPULINXState *env, int ssrno,
+                                  target_ulong *val)
+{
+    int idx = ssrno - CSR_SCRATCH0;
+
+    *val = env->csr_scratch[idx];
+    return LINX_EXCP_NONE;
+}
+
+static LINXException write_scratch(CPULINXState *env, int ssrno,
+                                   target_ulong val)
+{
+    int idx = ssrno - CSR_SCRATCH0;
+
+    env->csr_scratch[idx] = val;
+    return LINX_EXCP_NONE;
+}
 
 static LINXException write_fssr(CPULINXState *env, int csrno,
                                 target_ulong val)
@@ -776,23 +905,38 @@ linx_csr_operations csr_ops[SSR_TABLE_SIZE] = {
     [A0_TIMECMP]        = {"a0_timecmp", any, read_timecmp, write_timecmp },
     [A0_XBINFO]         = {"a0_xbinfo", any, read_xbinfo, write_xbinfo },
     [A0_ACR_PARAM]      = {"a0_acr_param", any, read_acr_param },
-    [A0_ELPR0]          = {"a0_elpr0", any, read_elpr, write_elpr },
-    [A0_ELPR1]          = {"a0_elpr1", any, read_elpr, write_elpr },
-    [A0_ELPR2]          = {"a0_elpr2", any, read_elpr, write_elpr },
-    [A0_ELPR3]          = {"a0_elpr3", any, read_elpr, write_elpr },
-    [A0_ELPR4]          = {"a0_elpr4", any, read_elpr, write_elpr },
-    [A0_ELPR5]          = {"a0_elpr5", any, read_elpr, write_elpr },
-    [A0_ELPR6]          = {"a0_elpr6", any, read_elpr, write_elpr },
-    [A0_ELPR7]          = {"a0_elpr7", any, read_elpr, write_elpr },
-    [A0_ELPR8]          = {"a0_elpr8", any, read_elpr, write_elpr },
-    [A0_ELPR9]          = {"a0_elpr9", any, read_elpr, write_elpr },
-    [A0_ELPR10]         = {"a0_elpr10", any, read_elpr, write_elpr },
-    [A0_ELPR11]         = {"a0_elpr11", any, read_elpr, write_elpr },
-    [A0_ELPR12]         = {"a0_elpr12", any, read_elpr, write_elpr },
-    [A0_ELPR13]         = {"a0_elpr13", any, read_elpr, write_elpr },
-    [A0_ELPR14]         = {"a0_elpr14", any, read_elpr, write_elpr },
-    [A0_ELPR15]         = {"a0_elpr15", any, read_elpr, write_elpr },
-    [A0_ELPR16]         = {"a0_elpr16", any, read_elpr, write_elpr },
+    [A0_EBARG0]         = {"a0_ebarg0", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_BPC_CUR]  = {"a0_ebarg_bpc_cur", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_BPC_TGT]  = {"a0_ebarg_bpc_tgt", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TPC]      = {"a0_ebarg_tpc", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_LRA]      = {"a0_ebarg_lra", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TQ0]      = {"a0_ebarg_tq0", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TQ1]      = {"a0_ebarg_tq1", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TQ2]      = {"a0_ebarg_tq2", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TQ3]      = {"a0_ebarg_tq3", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_UQ0]      = {"a0_ebarg_uq0", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_UQ1]      = {"a0_ebarg_uq1", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_UQ2]      = {"a0_ebarg_uq2", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_UQ3]      = {"a0_ebarg_uq3", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_LB]       = {"a0_ebarg_lb", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_LC]       = {"a0_ebarg_lc", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_EXTCTX_PTR] = {"a0_ebarg_extctx_ptr", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_EXTCTX_META] = {"a0_ebarg_extctx_meta", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBARG_TPLFLAGS] = {"a0_ebarg_tplflags", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT0]   = {"a0_ebstate_ext0", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT1]   = {"a0_ebstate_ext1", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT2]   = {"a0_ebstate_ext2", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT3]   = {"a0_ebstate_ext3", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT4]   = {"a0_ebstate_ext4", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT5]   = {"a0_ebstate_ext5", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT6]   = {"a0_ebstate_ext6", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT7]   = {"a0_ebstate_ext7", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT8]   = {"a0_ebstate_ext8", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT9]   = {"a0_ebstate_ext9", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT10]  = {"a0_ebstate_ext10", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT11]  = {"a0_ebstate_ext11", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT12]  = {"a0_ebstate_ext12", any, read_ebarg_group, write_ebarg_group },
+    [A0_EBSTATE_EXT13]  = {"a0_ebstate_ext13", any, read_ebarg_group, write_ebarg_group },
 
     [A1_ECSTATE]        = {"a1_ecstate", acr1, read_ecstate, write_ecstate},
     [A1_EVBASE]         = {"a1_evbase", acr1, read_evbase, write_evbase},
@@ -814,30 +958,63 @@ linx_csr_operations csr_ops[SSR_TABLE_SIZE] = {
     [A1_TIMECMP]        = {"a1_timecmp", any, read_timecmp, write_timecmp },
     [A1_XBINFO]         = {"a1_xbinfo", any, read_xbinfo, write_xbinfo },
     [A1_ACR_PARAM]      = {"a1_acr_param", any, read_acr_param },
-    [A1_ELPR0]          = {"a1_elpr0", acr1, read_elpr, write_elpr },
-    [A1_ELPR1]          = {"a1_elpr1", acr1, read_elpr, write_elpr },
-    [A1_ELPR2]          = {"a1_elpr2", acr1, read_elpr, write_elpr },
-    [A1_ELPR3]          = {"a1_elpr3", acr1, read_elpr, write_elpr },
-    [A1_ELPR4]          = {"a1_elpr4", acr1, read_elpr, write_elpr },
-    [A1_ELPR5]          = {"a1_elpr5", acr1, read_elpr, write_elpr },
-    [A1_ELPR6]          = {"a1_elpr6", acr1, read_elpr, write_elpr },
-    [A1_ELPR7]          = {"a1_elpr7", acr1, read_elpr, write_elpr },
-    [A1_ELPR8]          = {"a1_elpr8", acr1, read_elpr, write_elpr },
-    [A1_ELPR9]          = {"a1_elpr9", acr1, read_elpr, write_elpr },
-    [A1_ELPR10]         = {"a1_elpr10", acr1, read_elpr, write_elpr },
-    [A1_ELPR11]         = {"a1_elpr11", acr1, read_elpr, write_elpr },
-    [A1_ELPR12]         = {"a1_elpr12", acr1, read_elpr, write_elpr },
-    [A1_ELPR13]         = {"a1_elpr13", acr1, read_elpr, write_elpr },
-    [A1_ELPR14]         = {"a1_elpr14", acr1, read_elpr, write_elpr },
-    [A1_ELPR15]         = {"a1_elpr15", acr1, read_elpr, write_elpr },
-    [A1_ELPR16]         = {"a1_elpr16", acr1, read_elpr, write_elpr },
+    [A1_EBARG0]         = {"a1_ebarg0", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_BPC_CUR]  = {"a1_ebarg_bpc_cur", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_BPC_TGT]  = {"a1_ebarg_bpc_tgt", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TPC]      = {"a1_ebarg_tpc", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_LRA]      = {"a1_ebarg_lra", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TQ0]      = {"a1_ebarg_tq0", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TQ1]      = {"a1_ebarg_tq1", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TQ2]      = {"a1_ebarg_tq2", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TQ3]      = {"a1_ebarg_tq3", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_UQ0]      = {"a1_ebarg_uq0", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_UQ1]      = {"a1_ebarg_uq1", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_UQ2]      = {"a1_ebarg_uq2", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_UQ3]      = {"a1_ebarg_uq3", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_LB]       = {"a1_ebarg_lb", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_LC]       = {"a1_ebarg_lc", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_EXTCTX_PTR] = {"a1_ebarg_extctx_ptr", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_EXTCTX_META] = {"a1_ebarg_extctx_meta", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBARG_TPLFLAGS] = {"a1_ebarg_tplflags", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT0]   = {"a1_ebstate_ext0", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT1]   = {"a1_ebstate_ext1", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT2]   = {"a1_ebstate_ext2", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT3]   = {"a1_ebstate_ext3", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT4]   = {"a1_ebstate_ext4", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT5]   = {"a1_ebstate_ext5", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT6]   = {"a1_ebstate_ext6", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT7]   = {"a1_ebstate_ext7", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT8]   = {"a1_ebstate_ext8", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT9]   = {"a1_ebstate_ext9", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT10]  = {"a1_ebstate_ext10", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT11]  = {"a1_ebstate_ext11", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT12]  = {"a1_ebstate_ext12", acr1, read_ebarg_group, write_ebarg_group },
+    [A1_EBSTATE_EXT13]  = {"a1_ebstate_ext13", acr1, read_ebarg_group, write_ebarg_group },
 #endif /* !CONFIG_USER_ONLY */
     [CSR_TP]  = { "tp",  any, read_tp,  write_tp  },
     [CSR_GP]  = { "gp",  any, read_gp,  write_gp  },
+    [CSR_SCRATCH0]  = { "scratch0",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH1]  = { "scratch1",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH2]  = { "scratch2",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH3]  = { "scratch3",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH4]  = { "scratch4",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH5]  = { "scratch5",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH6]  = { "scratch6",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH7]  = { "scratch7",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH8]  = { "scratch8",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH9]  = { "scratch9",  any, read_scratch, write_scratch },
+    [CSR_SCRATCH10] = { "scratch10", any, read_scratch, write_scratch },
+    [CSR_SCRATCH11] = { "scratch11", any, read_scratch, write_scratch },
+    [CSR_SCRATCH12] = { "scratch12", any, read_scratch, write_scratch },
+    [CSR_SCRATCH13] = { "scratch13", any, read_scratch, write_scratch },
+    [CSR_SCRATCH14] = { "scratch14", any, read_scratch, write_scratch },
+    [CSR_SCRATCH15] = { "scratch15", any, read_scratch, write_scratch },
+    [CSR_SCRATCH16] = { "scratch16", any, read_scratch, write_scratch },
+    [CSR_SCRATCH17] = { "scratch17", any, read_scratch, write_scratch },
+    [CSR_SCRATCH18] = { "scratch18", any, read_scratch, write_scratch },
     [CSR_CW]  = { "cw",  any, read_cw,  write_cw  },
     [CSR_TR1] = { "tr1", any, read_tr1, write_tr1 },
     [CSR_TR2] = { "tr2", any, read_tr2, write_tr2 },
-    [CSR_FSSR]  = { "fssr", any, read_fssr, write_fssr },
 
     [CSR_LC0]    = { "lc0",   any, read_lc0,   write_lc0 },
     [CSR_LB0]    = { "lb0",   any, read_lb0,   write_lb0 },

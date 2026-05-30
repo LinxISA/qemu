@@ -102,10 +102,10 @@ static inline const char *get_dest_reg1_name(int reg_enc)
     return linx_dest_reg1_name[reg_enc];
 }
 
-static const char srctype_au[4][5] = { "", ".sw", ".uw" , ".neg"};
-static const char srctype_lu[4][5] = { "", ".sw", ".uw" , ".not"};
-static const char srctype_cmp_sect_lu[4][5] = { "", ".sw", ".uw", ".not"};
-static const char srctype_cmp_sect[4][5] = { "", ".sw", ".uw", ".N/A"};
+static const char srctype_au[4][5] = { ".sw", ".uw", ".neg", "" };
+static const char srctype_lu[4][5] = { ".sw", ".uw", ".not", "" };
+static const char srctype_cmp_sect_lu[4][5] = { ".sw", ".uw", "", "" };
+static const char srctype_cmp_sect[4][5] = { ".sw", ".uw", "", "" };
 
 
 static const char cachetype_prf[4][5] = { ".l1", ".l2", ".l3" , ""};
@@ -122,7 +122,25 @@ static const char *csr_name(int csrno)
     case CSR_TP: return "tp";
     case CSR_GP: return "gp";
     case CSR_CW: return "cw";
-    case CSR_FSSR: return "fssr";
+    case CSR_SCRATCH0: return "scratch0";
+    case CSR_SCRATCH1: return "scratch1";
+    case CSR_SCRATCH2: return "scratch2";
+    case CSR_SCRATCH3: return "scratch3";
+    case CSR_SCRATCH4: return "scratch4";
+    case CSR_SCRATCH5: return "scratch5";
+    case CSR_SCRATCH6: return "scratch6";
+    case CSR_SCRATCH7: return "scratch7";
+    case CSR_SCRATCH8: return "scratch8";
+    case CSR_SCRATCH9: return "scratch9";
+    case CSR_SCRATCH10: return "scratch10";
+    case CSR_SCRATCH11: return "scratch11";
+    case CSR_SCRATCH12: return "scratch12";
+    case CSR_SCRATCH13: return "scratch13";
+    case CSR_SCRATCH14: return "scratch14";
+    case CSR_SCRATCH15: return "scratch15";
+    case CSR_SCRATCH16: return "scratch16";
+    case CSR_SCRATCH17: return "scratch17";
+    case CSR_SCRATCH18: return "scratch18";
     case CSTATE: return "cstate";
     case LXLCID: return "lxlcid";
     case A0_ECSTATE: return "a0_ecstate";
@@ -142,6 +160,38 @@ static const char *csr_name(int csrno)
     case A0_MMCONFIG: return "a0_mmconfig";
     case A0_TIME: return "a0_time";
     case A0_TIMECMP: return "a0_timecmp";
+    case A0_EBARG0: return "a0_ebarg0";
+    case A0_EBARG_BPC_CUR: return "a0_ebarg_bpc_cur";
+    case A0_EBARG_BPC_TGT: return "a0_ebarg_bpc_tgt";
+    case A0_EBARG_TPC: return "a0_ebarg_tpc";
+    case A0_EBARG_LRA: return "a0_ebarg_lra";
+    case A0_EBARG_TQ0: return "a0_ebarg_tq0";
+    case A0_EBARG_TQ1: return "a0_ebarg_tq1";
+    case A0_EBARG_TQ2: return "a0_ebarg_tq2";
+    case A0_EBARG_TQ3: return "a0_ebarg_tq3";
+    case A0_EBARG_UQ0: return "a0_ebarg_uq0";
+    case A0_EBARG_UQ1: return "a0_ebarg_uq1";
+    case A0_EBARG_UQ2: return "a0_ebarg_uq2";
+    case A0_EBARG_UQ3: return "a0_ebarg_uq3";
+    case A0_EBARG_LB: return "a0_ebarg_lb";
+    case A0_EBARG_LC: return "a0_ebarg_lc";
+    case A0_EBARG_EXTCTX_PTR: return "a0_ebarg_extctx_ptr";
+    case A0_EBARG_EXTCTX_META: return "a0_ebarg_extctx_meta";
+    case A0_EBARG_TPLFLAGS: return "a0_ebarg_tplflags";
+    case A0_EBSTATE_EXT0: return "a0_ebstate_ext0";
+    case A0_EBSTATE_EXT1: return "a0_ebstate_ext1";
+    case A0_EBSTATE_EXT2: return "a0_ebstate_ext2";
+    case A0_EBSTATE_EXT3: return "a0_ebstate_ext3";
+    case A0_EBSTATE_EXT4: return "a0_ebstate_ext4";
+    case A0_EBSTATE_EXT5: return "a0_ebstate_ext5";
+    case A0_EBSTATE_EXT6: return "a0_ebstate_ext6";
+    case A0_EBSTATE_EXT7: return "a0_ebstate_ext7";
+    case A0_EBSTATE_EXT8: return "a0_ebstate_ext8";
+    case A0_EBSTATE_EXT9: return "a0_ebstate_ext9";
+    case A0_EBSTATE_EXT10: return "a0_ebstate_ext10";
+    case A0_EBSTATE_EXT11: return "a0_ebstate_ext11";
+    case A0_EBSTATE_EXT12: return "a0_ebstate_ext12";
+    case A0_EBSTATE_EXT13: return "a0_ebstate_ext13";
     case A1_ECSTATE: return "a1_ecstate";
     case A1_EVBASE: return "a1_evbase";
     case A1_ECAUSE: return "a1_ecause";
@@ -159,6 +209,38 @@ static const char *csr_name(int csrno)
     case A1_MMCONFIG: return "a1_mmconfig";
     case A1_TIME: return "a1_time";
     case A1_TIMECMP: return "a1_timecmp";
+    case A1_EBARG0: return "a1_ebarg0";
+    case A1_EBARG_BPC_CUR: return "a1_ebarg_bpc_cur";
+    case A1_EBARG_BPC_TGT: return "a1_ebarg_bpc_tgt";
+    case A1_EBARG_TPC: return "a1_ebarg_tpc";
+    case A1_EBARG_LRA: return "a1_ebarg_lra";
+    case A1_EBARG_TQ0: return "a1_ebarg_tq0";
+    case A1_EBARG_TQ1: return "a1_ebarg_tq1";
+    case A1_EBARG_TQ2: return "a1_ebarg_tq2";
+    case A1_EBARG_TQ3: return "a1_ebarg_tq3";
+    case A1_EBARG_UQ0: return "a1_ebarg_uq0";
+    case A1_EBARG_UQ1: return "a1_ebarg_uq1";
+    case A1_EBARG_UQ2: return "a1_ebarg_uq2";
+    case A1_EBARG_UQ3: return "a1_ebarg_uq3";
+    case A1_EBARG_LB: return "a1_ebarg_lb";
+    case A1_EBARG_LC: return "a1_ebarg_lc";
+    case A1_EBARG_EXTCTX_PTR: return "a1_ebarg_extctx_ptr";
+    case A1_EBARG_EXTCTX_META: return "a1_ebarg_extctx_meta";
+    case A1_EBARG_TPLFLAGS: return "a1_ebarg_tplflags";
+    case A1_EBSTATE_EXT0: return "a1_ebstate_ext0";
+    case A1_EBSTATE_EXT1: return "a1_ebstate_ext1";
+    case A1_EBSTATE_EXT2: return "a1_ebstate_ext2";
+    case A1_EBSTATE_EXT3: return "a1_ebstate_ext3";
+    case A1_EBSTATE_EXT4: return "a1_ebstate_ext4";
+    case A1_EBSTATE_EXT5: return "a1_ebstate_ext5";
+    case A1_EBSTATE_EXT6: return "a1_ebstate_ext6";
+    case A1_EBSTATE_EXT7: return "a1_ebstate_ext7";
+    case A1_EBSTATE_EXT8: return "a1_ebstate_ext8";
+    case A1_EBSTATE_EXT9: return "a1_ebstate_ext9";
+    case A1_EBSTATE_EXT10: return "a1_ebstate_ext10";
+    case A1_EBSTATE_EXT11: return "a1_ebstate_ext11";
+    case A1_EBSTATE_EXT12: return "a1_ebstate_ext12";
+    case A1_EBSTATE_EXT13: return "a1_ebstate_ext13";
     default: return "unkown";
     }
 }
@@ -896,6 +978,16 @@ print_block_insn_srcl_imm_dst(DisasContext *ctx, arg_arg_arith_i *a,
     OUTPUT(ctx, mnemonic, "%s, %d%s", srcl_name, a->imm, dest_name);
 }
 
+static void
+print_block_insn_hl_srcl_imm_dst(DisasContext *ctx, arg_arg_hl_arith_i *a,
+                                 const char *mnemonic)
+{
+    const char *srcl_name = get_src_reg_name(a->SrcL);
+    const char *dest_name = get_dest_reg_name(a->RegDst);
+
+    OUTPUT(ctx, mnemonic, "%s, %d%s", srcl_name, a->imm, dest_name);
+}
+
 /* srli SrcL, shamt, {->t, ->u, ->RegDst} */
 static void
 print_block_insn_srcl_shamt_dst(DisasContext *ctx, arg_arg_shift_i *a,
@@ -967,6 +1059,15 @@ print_block_insn_srcl_imm(DisasContext *ctx, arg_arg_setc_i *a,
     const char *srcl_name = get_src_reg_name(a->SrcL);
 
     OUTPUT(ctx, mnemonic, "%s, %d", srcl_name, (a->imm << a->shamt));
+}
+
+static void
+print_block_insn_hl_srcl_imm(DisasContext *ctx, arg_arg_hl_setc_i *a,
+                             const char *mnemonic)
+{
+    const char *srcl_name = get_src_reg_name(a->SrcL);
+
+    OUTPUT(ctx, mnemonic, "%s, %d", srcl_name, a->imm);
 }
 
 /* b.eq SrcL, SrcR, label */
@@ -1212,6 +1313,22 @@ print_block_insn_prf_srcl_srcr_au_shamt(DisasContext *ctx,
     }
 }
 
+static void
+print_block_insn_prf32_srcl_srcr_au_shamt(DisasContext *ctx,
+    arg_arg_prf32 *a, const char *mnemonic)
+{
+    const char *srcl_name = get_src_reg_name(a->SrcL);
+    const char *srcr_name = get_src_reg_name(a->SrcR);
+    const char *srcr_type = srctype_au[a->SrcRType];
+
+    if (a->shamt) {
+        OUTPUT(ctx, mnemonic, "[%s, %s%s<<%d]", srcl_name, srcr_name,
+               srcr_type, a->shamt);
+    } else {
+        OUTPUT(ctx, mnemonic, "[%s, %s%s]", srcl_name, srcr_name, srcr_type);
+    }
+}
+
 /* prf.a{.l1,.l2,.l3} [SrcL, SrcR<{.sw, .uw}><<<shamt>], {->t, ->u, ->RegDst} */
 static void
 print_block_insn_prf_srcl_srcr_au_shamt_dst(DisasContext *ctx,
@@ -1241,6 +1358,15 @@ print_block_insn_prf_srcl_imm(DisasContext *ctx, arg_arg_prfi *a,
     const char *cache_type = cachetype_prf[0];
 
     OUTPUT(ctx, mnemonic, "%s [%s, %d]", cache_type, srcl_name, a->imm);
+}
+
+static void
+print_block_insn_prf32_srcl_imm(DisasContext *ctx, arg_arg_prfi32 *a,
+                                const char *mnemonic)
+{
+    const char *srcl_name = get_src_reg_name(a->SrcL);
+
+    OUTPUT(ctx, mnemonic, "[%s, %d]", srcl_name, a->imm);
 }
 
 /* prfi.ua.l1 [SrcL, simm], {->t, ->u, ->RegDst} */
@@ -2117,6 +2243,18 @@ print_block_insn_imm_srcr_srcd_dst(DisasContext *ctx, arg_arg_sdi *a,
 
 }
 
+static void
+print_block_insn_imm_srcr_srcd_dst_raw(DisasContext *ctx, arg_arg_sdi_raw *a,
+                                       const char *mnemonic, int shift)
+{
+    const char *srcd_name = get_src_reg_name(a->SrcD);
+    const char *srcr_name = get_src_reg_name(a->SrcR);
+    const char *dest_name = get_dest_reg_name(a->RegDst);
+
+    OUTPUT(ctx, mnemonic, "%s, [%s, %d]%s", srcd_name, srcr_name,
+           (a->imm << shift), dest_name);
+}
+
 /* hl.sbp.pr SrcD, SrcD1, [SrcL, SrcR<{.sw,.uw}>], ->{t, u, Rd} */
 static void
 print_block_insn_srcd_au_srcr_srcl_dst_srcd1(DisasContext *ctx, arg_arg_sdp *a,
@@ -2147,6 +2285,20 @@ print_block_insn_imm_srcr_srcd_dst_srcd1(DisasContext *ctx, arg_arg_sdip *a,
     OUTPUT(ctx, mnemonic, "%s, %s, [%s, %d]%s", srcd_name, srcd_name1,
            srcr_name, (a->imm << shift), dest_name);
 
+}
+
+/* hl.sbip SrcD, SrcD1, [SrcR, simm] */
+static void
+print_block_insn_imm_srcr_srcd_srcd1(DisasContext *ctx,
+                                     arg_arg_sdip_plain *a,
+                                     const char *mnemonic, int shift)
+{
+    const char *srcd_name = get_src_reg_name(a->SrcD);
+    const char *srcd_name1 = get_src_reg_name(a->SrcD1);
+    const char *srcr_name = get_src_reg_name(a->SrcR);
+
+    OUTPUT(ctx, mnemonic, "%s, %s, [%s, %d]", srcd_name, srcd_name1,
+           srcr_name, (a->imm << shift));
 }
 
 /* hl.lb.pcr [<symbol>], ->{t, u, Rd} */
@@ -2707,6 +2859,11 @@ SIMT_AND_NORMAL_INSN(ld, ld, load_srcl_srcr_au_shamt_dst)
 SIMT_AND_NORMAL_INSN(lbu, lbu, load_srcl_srcr_au_shamt_dst)
 SIMT_AND_NORMAL_INSN(lhu, lhu, load_srcl_srcr_au_shamt_dst)
 SIMT_AND_NORMAL_INSN(lwu, lwu, load_srcl_srcr_au_shamt_dst)
+static bool trans_blk_prf_32(DisasContext *ctx, arg_blk_prf_32 *a)
+{
+    print_block_insn_prf32_srcl_srcr_au_shamt(ctx, a, "prf");
+    return true;
+}
 
 SIMT_SCALED_IMM_INSN(lb_i, lbi, 0, load_srcl_imm_dst)
 SIMT_SCALED_IMM_INSN(lh_i, lhi, 1, load_srcl_imm_dst)
@@ -2721,6 +2878,11 @@ SIMT_SCALED_IMM_INSN(lw_ui, lwi.u, 0, load_srcl_imm_dst)
 SIMT_SCALED_IMM_INSN(ld_ui, ldi.u, 0, load_srcl_imm_dst)
 SIMT_SCALED_IMM_INSN(lhu_ui, lhui.u, 0, load_srcl_imm_dst)
 SIMT_SCALED_IMM_INSN(lwu_ui, lwui.u, 0, load_srcl_imm_dst)
+static bool trans_blk_prfi_u_32(DisasContext *ctx, arg_blk_prfi_u_32 *a)
+{
+    print_block_insn_prf32_srcl_imm(ctx, a, "prfi.u");
+    return true;
+}
 
 SIMT_LDST_LC0_INSN(lb_lc0, lb, 0, load_srcl_lc0_srcr_au_shamt_dst)
 SIMT_LDST_LC0_INSN(lh_lc0, lh, 1, load_srcl_lc0_srcr_au_shamt_dst)
@@ -2825,7 +2987,7 @@ INSN(tc_iall, tc.iall, no_arg)
 INSN(bse, bse, exec_ctrl_srcl)
 INSN(bwe, bwe, exec_ctrl_srcl)
 INSN(bwi, bwi, exec_ctrl_srcl)
-INSN(bwa, bwa, exec_ctrl_srcl)
+INSN(bwa, bwt, exec_ctrl_srcl)
 INSN(assert, assert, exec_ctrl_srcl)
 
 INSN(fence_d, fence.d, pred_succ)
@@ -2986,10 +3148,49 @@ SIMT_INSN(shfli_bfly, shfli.bfly, imm_srcl_srcr_dst)
 SIMT_INSN(shfli_idx, shfli.idx, imm_srcl_srcr_dst)
 
 HL_INSN(lui, hl.lui, imm_dst1)
+static bool trans_blk_addtpc_48(DisasContext *ctx, arg_blk_addtpc_48 *a)
+{
+    print_block_insn_imm_dst1(ctx, a, (a->RegDst == 10) ? "hl.setret" : "hl.addtpc");
+    return true;
+}
+HL_INSN(addi, hl.addi, hl_srcl_imm_dst)
+HL_INSN(subi, hl.subi, hl_srcl_imm_dst)
+HL_INSN(andi, hl.andi, hl_srcl_imm_dst)
+HL_INSN(ori, hl.ori, hl_srcl_imm_dst)
+HL_INSN(xori, hl.xori, hl_srcl_imm_dst)
+HL_INSN(addiw, hl.addiw, hl_srcl_imm_dst)
+HL_INSN(subiw, hl.subiw, hl_srcl_imm_dst)
+HL_INSN(andiw, hl.andiw, hl_srcl_imm_dst)
+HL_INSN(oriw, hl.oriw, hl_srcl_imm_dst)
+HL_INSN(xoriw, hl.xoriw, hl_srcl_imm_dst)
+HL_INSN(cmp_eqi, hl.cmp.eqi, hl_srcl_imm_dst)
+HL_INSN(cmp_nei, hl.cmp.nei, hl_srcl_imm_dst)
+HL_INSN(cmp_andi, hl.cmp.andi, hl_srcl_imm_dst)
+HL_INSN(cmp_ori, hl.cmp.ori, hl_srcl_imm_dst)
+HL_INSN(cmp_lti, hl.cmp.lti, hl_srcl_imm_dst)
+HL_INSN(cmp_gei, hl.cmp.gei, hl_srcl_imm_dst)
+HL_INSN(cmp_ltui, hl.cmp.ltui, hl_srcl_imm_dst)
+HL_INSN(cmp_geui, hl.cmp.geui, hl_srcl_imm_dst)
+HL_INSN(setc_eqi, hl.setc.eqi, hl_srcl_imm)
+HL_INSN(setc_nei, hl.setc.nei, hl_srcl_imm)
+HL_INSN(setc_andi, hl.setc.andi, hl_srcl_imm)
+HL_INSN(setc_ori, hl.setc.ori, hl_srcl_imm)
+HL_INSN(setc_lti, hl.setc.lti, hl_srcl_imm)
+HL_INSN(setc_gei, hl.setc.gei, hl_srcl_imm)
+HL_INSN(setc_ltui, hl.setc.ltui, hl_srcl_imm)
+HL_INSN(setc_geui, hl.setc.geui, hl_srcl_imm)
 HL_INSN(mul, hl.mul, srcr_srcl_dst0_dst1)
 HL_INSN(mulu, hl.mulu, srcr_srcl_dst0_dst1)
 HL_INSN(madd, hl.madd, srcd_srcr_srcl_dst0_dst1)
 HL_INSN(maddw, hl.maddw, srcd_srcr_srcl_dst0_dst1)
+HL_INSN(div, hl.div, srcr_srcl_dst0_dst1)
+HL_INSN(divu, hl.divu, srcr_srcl_dst0_dst1)
+HL_INSN(divw, hl.divw, srcr_srcl_dst0_dst1)
+HL_INSN(divuw, hl.divuw, srcr_srcl_dst0_dst1)
+HL_INSN(rem, hl.rem, srcr_srcl_dst0_dst1)
+HL_INSN(remu, hl.remu, srcr_srcl_dst0_dst1)
+HL_INSN(remw, hl.remw, srcr_srcl_dst0_dst1)
+HL_INSN(remuw, hl.remuw, srcr_srcl_dst0_dst1)
 
 /* Load Pre-Index */
 HL_INSN(lb_pr, hl.lb.pr, shm_au_srcr_srcl_dst0_dst1)
@@ -3046,19 +3247,18 @@ HL_INSN(lbup_pr, hl.lbup.pr, shm_au_srcr_srcl_dst0_dst1_dst2)
 HL_INSN(lhup_pr, hl.lhup.pr, shm_au_srcr_srcl_dst0_dst1_dst2)
 HL_INSN(lwup_pr, hl.lwup.pr, shm_au_srcr_srcl_dst0_dst1_dst2)
 
-IMM_HL_INSN(lbip_pr, hl.lbip.pr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhip_pr, hl.lhip.pr, imm_srcl_dst0_dst1_dst2, 1)
-IMM_HL_INSN(lwip_pr, hl.lwip.pr, imm_srcl_dst0_dst1_dst2, 2)
-IMM_HL_INSN(ldip_pr, hl.ldip.pr, imm_srcl_dst0_dst1_dst2, 3)
-IMM_HL_INSN(lbuip_pr, hl.lbuip.pr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhuip_pr, hl.lhuip.pr, imm_srcl_dst0_dst1_dst2, 1)
-IMM_HL_INSN(lwuip_pr, hl.lwuip.pr, imm_srcl_dst0_dst1_dst2, 2)
-
-IMM_HL_INSN(lhip_upr, hl.lhip.upr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lwip_upr, hl.lwip.upr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(ldip_upr, hl.ldip.upr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhuip_upr, hl.lhuip.upr, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lwuip_upr, hl.lwuip.upr, imm_srcl_dst0_dst1_dst2, 0)
+IMM_HL_INSN(lbip, hl.lbip, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(lhip, hl.lhip, imm_srcl_dst0_dst1, 1)
+IMM_HL_INSN(lwip, hl.lwip, imm_srcl_dst0_dst1, 2)
+IMM_HL_INSN(ldip, hl.ldip, imm_srcl_dst0_dst1, 3)
+IMM_HL_INSN(lbuip, hl.lbuip, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(lhuip, hl.lhuip, imm_srcl_dst0_dst1, 1)
+IMM_HL_INSN(lwuip, hl.lwuip, imm_srcl_dst0_dst1, 2)
+IMM_HL_INSN(lhip_u, hl.lhip.u, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(lwip_u, hl.lwip.u, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(ldip_u, hl.ldip.u, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(lhuip_u, hl.lhuip.u, imm_srcl_dst0_dst1, 0)
+IMM_HL_INSN(lwuip_u, hl.lwuip.u, imm_srcl_dst0_dst1, 0)
 
 /* Load Pair Post-Index */
 HL_INSN(lbp_po, hl.lbp.po, shm_au_srcr_srcl_dst0_dst1_dst2)
@@ -3068,20 +3268,6 @@ HL_INSN(ldp_po, hl.ldp.po, shm_au_srcr_srcl_dst0_dst1_dst2)
 HL_INSN(lbup_po, hl.lbup.po, shm_au_srcr_srcl_dst0_dst1_dst2)
 HL_INSN(lhup_po, hl.lhup.po, shm_au_srcr_srcl_dst0_dst1_dst2)
 HL_INSN(lwup_po, hl.lwup.po, shm_au_srcr_srcl_dst0_dst1_dst2)
-
-IMM_HL_INSN(lbip_po, hl.lbip.po, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhip_po, hl.lhip.po, imm_srcl_dst0_dst1_dst2, 1)
-IMM_HL_INSN(lwip_po, hl.lwip.po, imm_srcl_dst0_dst1_dst2, 2)
-IMM_HL_INSN(ldip_po, hl.ldip.po, imm_srcl_dst0_dst1_dst2, 3)
-IMM_HL_INSN(lbuip_po, hl.lbuip.po, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhuip_po, hl.lhuip.po, imm_srcl_dst0_dst1_dst2, 1)
-IMM_HL_INSN(lwuip_po, hl.lwuip.po, imm_srcl_dst0_dst1_dst2, 2)
-
-IMM_HL_INSN(lhip_upo, hl.lhip.upo, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lwip_upo, hl.lwip.upo, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(ldip_upo, hl.ldip.upo, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lhuip_upo, hl.lhuip.upo, imm_srcl_dst0_dst1_dst2, 0)
-IMM_HL_INSN(lwuip_upo, hl.lwuip.upo, imm_srcl_dst0_dst1_dst2, 0)
 
 /* Store Pre-Index */
 HL_INSN(sb_pr, hl.sb.pr, srcd_au_srcr_srcl_dst)
@@ -3096,9 +3282,17 @@ IMM_HL_INSN(sbi_pr, hl.sbi.pr, imm_srcr_srcd_dst, 0)
 IMM_HL_INSN(shi_pr, hl.shi.pr, imm_srcr_srcd_dst, 1)
 IMM_HL_INSN(swi_pr, hl.swi.pr, imm_srcr_srcd_dst, 2)
 IMM_HL_INSN(sdi_pr, hl.sdi.pr, imm_srcr_srcd_dst, 3)
-IMM_HL_INSN(shi_upr, hl.shi.upr, imm_srcr_srcd_dst, 0)
-IMM_HL_INSN(swi_upr, hl.swi.upr, imm_srcr_srcd_dst, 0)
-IMM_HL_INSN(sdi_upr, hl.sdi.upr, imm_srcr_srcd_dst, 0)
+static bool trans_blk_sdi_pr_alt_48(DisasContext *ctx, arg_blk_sdi_pr_alt_48 *a)
+{
+    return trans_blk_sdi_pr_48(ctx, (arg_blk_sdi_pr_48 *)a);
+}
+IMM_HL_INSN(shi_upr, hl.shi.upr, imm_srcr_srcd_dst_raw, 0)
+IMM_HL_INSN(swi_upr, hl.swi.upr, imm_srcr_srcd_dst_raw, 0)
+IMM_HL_INSN(sdi_upr, hl.sdi.upr, imm_srcr_srcd_dst_raw, 0)
+static bool trans_blk_sdi_upr_alt_48(DisasContext *ctx, arg_blk_sdi_upr_alt_48 *a)
+{
+    return trans_blk_sdi_upr_48(ctx, (arg_blk_sdi_upr_48 *)a);
+}
 
 /* Store Post-Index */
 HL_INSN(sb_po, hl.sb.po, srcd_au_srcr_srcl_dst)
@@ -3113,9 +3307,9 @@ IMM_HL_INSN(sbi_po, hl.sbi.po, imm_srcr_srcd_dst, 0)
 IMM_HL_INSN(shi_po, hl.shi.po, imm_srcr_srcd_dst, 1)
 IMM_HL_INSN(swi_po, hl.swi.po, imm_srcr_srcd_dst, 2)
 IMM_HL_INSN(sdi_po, hl.sdi.po, imm_srcr_srcd_dst, 3)
-IMM_HL_INSN(shi_upo, hl.shi.upo, imm_srcr_srcd_dst, 0)
-IMM_HL_INSN(swi_upo, hl.swi.upo, imm_srcr_srcd_dst, 0)
-IMM_HL_INSN(sdi_upo, hl.sdi.upo, imm_srcr_srcd_dst, 0)
+IMM_HL_INSN(shi_upo, hl.shi.upo, imm_srcr_srcd_dst_raw, 0)
+IMM_HL_INSN(swi_upo, hl.swi.upo, imm_srcr_srcd_dst_raw, 0)
+IMM_HL_INSN(sdi_upo, hl.sdi.upo, imm_srcr_srcd_dst_raw, 0)
 
 /* Store Pair Pre-Index */
 HL_INSN(sbp_pr, hl.sbp.pr, srcd_au_srcr_srcl_dst_srcd1)
@@ -3126,30 +3320,13 @@ HL_INSN(shp_upr, hl.shp.upr, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(swp_upr, hl.swp.upr, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(sdp_upr, hl.sdp.upr, srcd_au_srcr_srcl_dst_srcd1)
 
-IMM_HL_INSN(sbip_pr, hl.sbip.pr, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(ship_pr, hl.ship.pr, imm_srcr_srcd_dst_srcd1, 1)
-IMM_HL_INSN(swip_pr, hl.swip.pr, imm_srcr_srcd_dst_srcd1, 2)
-IMM_HL_INSN(sdip_pr, hl.sdip.pr, imm_srcr_srcd_dst_srcd1, 3)
-IMM_HL_INSN(ship_upr, hl.ship.upr, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(swip_upr, hl.swip.upr, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(sdip_upr, hl.sdip.upr, imm_srcr_srcd_dst_srcd1, 0)
-
-/* Store Pair Post-Index */
-HL_INSN(sbp_po, hl.sbp.po, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(shp_po, hl.shp.po, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(swp_po, hl.swp.po, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(sdp_po, hl.sdp.po, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(shp_upo, hl.shp.upo, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(swp_upo, hl.swp.upo, srcd_au_srcr_srcl_dst_srcd1)
-HL_INSN(sdp_upo, hl.sdp.upo, srcd_au_srcr_srcl_dst_srcd1)
-
-IMM_HL_INSN(sbip_po, hl.sbip.po, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(ship_po, hl.ship.po, imm_srcr_srcd_dst_srcd1, 1)
-IMM_HL_INSN(swip_po, hl.swip.po, imm_srcr_srcd_dst_srcd1, 2)
-IMM_HL_INSN(sdip_po, hl.sdip.po, imm_srcr_srcd_dst_srcd1, 3)
-IMM_HL_INSN(ship_upo, hl.ship.upo, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(swip_upo, hl.swip.upo, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(sdip_upo, hl.sdip.upo, imm_srcr_srcd_dst_srcd1, 0)
+IMM_HL_INSN(sbip, hl.sbip, imm_srcr_srcd_srcd1, 0)
+IMM_HL_INSN(ship, hl.ship, imm_srcr_srcd_srcd1, 1)
+IMM_HL_INSN(swip, hl.swip, imm_srcr_srcd_srcd1, 2)
+IMM_HL_INSN(sdip, hl.sdip, imm_srcr_srcd_srcd1, 3)
+IMM_HL_INSN(ship_u, hl.ship.u, imm_srcr_srcd_srcd1, 0)
+IMM_HL_INSN(swip_u, hl.swip.u, imm_srcr_srcd_srcd1, 0)
+IMM_HL_INSN(sdip_u, hl.sdip.u, imm_srcr_srcd_srcd1, 0)
 
 HL_INSN(lb_pcr, hl.lb.pcr, ld_imm_dst)
 HL_INSN(lh_pcr, hl.lh.pcr, ld_imm_dst)
@@ -3436,6 +3613,42 @@ static bool trans_blk_bior(DisasContext *ctx, arg_blk_bior *a)
     return true;
 }
 
+static bool trans_blk_b_arg_norm_32(DisasContext *ctx, arg_blk_b_arg_norm_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG NORM.normal");
+    return true;
+}
+
+static bool trans_blk_b_arg_format_32(DisasContext *ctx, arg_blk_b_arg_format_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG %u", a->format);
+    return true;
+}
+
+static bool trans_blk_b_arg_nz2dn_32(DisasContext *ctx, arg_blk_b_arg_nz2dn_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG NZ2DN.canon");
+    return true;
+}
+
+static bool trans_blk_b_arg_nd2zn_32(DisasContext *ctx, arg_blk_b_arg_nd2zn_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG ND2ZN.normal, FP16, Null");
+    return true;
+}
+
+static bool trans_blk_b_arg_dn2zn_32(DisasContext *ctx, arg_blk_b_arg_dn2zn_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG DN2ZN.normal, FP16, Null");
+    return true;
+}
+
+static bool trans_blk_b_arg_dn2nz_32(DisasContext *ctx, arg_blk_b_arg_dn2nz_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "B.ARG DN2NZ.normal, FP32, Null");
+    return true;
+}
+
 const char biot_size[16][6] = {
     "0", "32B", "64B", "128B", "256B", "512B", "1KB", "2KB",
     "4KB", "8KB", "16KB", "32KB", "64KB", "128KB", "256KB", "512KB"
@@ -3514,13 +3727,28 @@ static bool trans_blk_biot3(DisasContext *ctx, arg_blk_biot3 *a)
 }
 
 /* B.DIM RegSrc, imm, ->{LB0, LB1, LB2} */
-static bool trans_blk_bdim(DisasContext *ctx, arg_blk_bdim *a)
+static bool trans_blk_bdim_fixed(DisasContext *ctx, int regsrc, int imm, int loopnest)
 {
-    const char *dst_name = get_src_reg_name(a->RegSrc);
+    const char *dst_name = get_src_reg_name(regsrc);
 
     (ctx->info->fprintf_func)(ctx->info->stream,
-        "B.DIM %s, %d, ->LB%d", dst_name, a->imm, a->loopnest);
+        "B.DIM %s, %d, ->LB%d", dst_name, imm, loopnest);
     return true;
+}
+
+static bool trans_blk_bdim_lb0_32(DisasContext *ctx, arg_blk_bdim_lb0_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 0);
+}
+
+static bool trans_blk_bdim_lb1_32(DisasContext *ctx, arg_blk_bdim_lb1_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 1);
+}
+
+static bool trans_blk_bdim_lb2_32(DisasContext *ctx, arg_blk_bdim_lb2_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 2);
 }
 
 /* b.catr {trap, atomic, <.aq,.rl,.aqrl>, far} */
@@ -3629,6 +3857,24 @@ static bool trans_blk_memset(DisasContext *ctx, arg_blk_memset *a)
         block_type_name(HEAD_TYPE_MSET));
 
     (ctx->info->fprintf_func)(ctx->info->stream, " [%s, %s, %s]",
+        linx_src_reg_name[a->reg_src0],
+        linx_src_reg_name[a->reg_src1],
+        linx_src_reg_name[a->reg_src2]);
+    return true;
+}
+
+static bool trans_blk_esave_32(DisasContext *ctx, arg_blk_esave_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "ESAVE [%s, %s, %s]",
+        linx_src_reg_name[a->reg_src0],
+        linx_src_reg_name[a->reg_src1],
+        linx_src_reg_name[a->reg_src2]);
+    return true;
+}
+
+static bool trans_blk_ercov_32(DisasContext *ctx, arg_blk_ercov_32 *a)
+{
+    (ctx->info->fprintf_func)(ctx->info->stream, "ERCOV [%s, %s, %s]",
         linx_src_reg_name[a->reg_src0],
         linx_src_reg_name[a->reg_src1],
         linx_src_reg_name[a->reg_src2]);
@@ -3759,7 +4005,6 @@ int print_insn_linx(bfd_vma memaddr, struct disassemble_info *info)
             print_block_insn_unknown(&ctx, info);
         }
     } else if (head_size == 6) {  /*  48 bit 指令 */
-        head_size = 8;
         (*info->fprintf_func)(info->stream, MICRO_FMT_8, inst);
         if (!decode_block48(&ctx, inst)) {
             print_block_insn_unknown(&ctx, info);

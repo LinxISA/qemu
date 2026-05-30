@@ -37,6 +37,39 @@ static void sifive_test_write(void *opaque, hwaddr addr,
     if (addr == 0) {
         int status = val64 & 0xffff;
         int code = (val64 >> 16) & 0xffff;
+        if (status == 0) {
+            switch (code) {
+            case FINISHER_FAIL:
+            case FINISHER_PASS:
+            case FINISHER_RESET:
+                status = code;
+                code = 0;
+                break;
+            default:
+                break;
+            }
+        }
+        if ((status != FINISHER_FAIL &&
+             status != FINISHER_PASS &&
+             status != FINISHER_RESET) &&
+            (val64 & 0xfff) == 0) {
+            int shifted_status = (val64 >> 12) & 0xffff;
+            int shifted_code = (val64 >> 28) & 0xffff;
+            switch (shifted_status) {
+            case FINISHER_FAIL:
+            case FINISHER_PASS:
+            case FINISHER_RESET:
+                status = shifted_status;
+                code = shifted_code;
+                break;
+            default:
+                break;
+            }
+        }
+        fprintf(stderr,
+                "sifive_test write addr=0x%x val=0x%016" PRIx64
+                " status=0x%04x code=0x%04x\n",
+                (int)addr, val64, status, code);
         switch (status) {
         case FINISHER_FAIL:
             exit(code);

@@ -1907,6 +1907,30 @@ load_memop(const void *haddr, MemOp op)
     }
 }
 
+static inline void linx_log_state_phys_read(CPUArchState *env, target_ulong addr,
+                                            MemOpIdx oi, uintptr_t retaddr,
+                                            uint64_t ram_phys, uint64_t val,
+                                            size_t size)
+{
+    static int linx_state_phys_read_log_count;
+    uintptr_t mmu_idx = get_mmuidx(oi);
+
+    if (!g_getenv("LINX_LOG_STATE_PHYS_READS") ||
+        linx_state_phys_read_log_count >= 1200)
+        return;
+
+    if ((ram_phys >= 0x00100c500ULL && ram_phys < 0x00100c540ULL) ||
+        (ram_phys >= 0x001010b80ULL && ram_phys < 0x001010bc0ULL)) {
+        linx_state_phys_read_log_count++;
+        fprintf(stderr,
+                "LINX_STATE_PHYS_READ pc=%#" PRIx64 " addr=%#" PRIx64
+                " ram=%#" PRIx64 " val=%#" PRIx64 " size=%zu"
+                " mmu_idx=%" PRIuPTR " ret=%#" PRIxPTR "\n",
+                (uint64_t)env->pc, (uint64_t)addr, ram_phys, val, size,
+                mmu_idx, retaddr);
+    }
+}
+
 static inline uint64_t QEMU_ALWAYS_INLINE
 load_helper(CPUArchState *env, target_ulong addr, MemOpIdx oi,
             uintptr_t retaddr, MemOp op, bool code_read,
@@ -1979,9 +2003,19 @@ load_helper(CPUArchState *env, target_ulong addr, MemOpIdx oi,
          * There is a build-time assert inside to remind you of this.  ;-)
          */
         if (unlikely(need_swap)) {
-            return load_memop(haddr, op ^ MO_BSWAP);
+            res = load_memop(haddr, op ^ MO_BSWAP);
+            linx_log_state_phys_read(env, addr, oi, retaddr,
+                                     (uint64_t)iotlbentry->addr +
+                                         (uint64_t)(addr & ~TARGET_PAGE_MASK),
+                                     res, size);
+            return res;
         }
-        return load_memop(haddr, op);
+        res = load_memop(haddr, op);
+        linx_log_state_phys_read(env, addr, oi, retaddr,
+                                 (uint64_t)iotlbentry->addr +
+                                     (uint64_t)(addr & ~TARGET_PAGE_MASK),
+                                 res, size);
+        return res;
     }
 
     /* Handle slow unaligned access (it spans two pages or IO).  */
@@ -2009,7 +2043,12 @@ load_helper(CPUArchState *env, target_ulong addr, MemOpIdx oi,
     }
 
     haddr = (void *)((uintptr_t)addr + entry->addend);
-    return load_memop(haddr, op);
+    res = load_memop(haddr, op);
+    linx_log_state_phys_read(env, addr, oi, retaddr,
+                             (uint64_t)env_tlb(env)->d[mmu_idx].iotlb[index].addr +
+                                 (uint64_t)(addr & ~TARGET_PAGE_MASK),
+                             res, size);
+    return res;
 }
 
 /*
@@ -2314,6 +2353,9 @@ static inline void QEMU_ALWAYS_INLINE
 store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
              MemOpIdx oi, uintptr_t retaddr, MemOp op)
 {
+    static int linx_pt_store_log_count;
+    static int linx_pt_phys_store_log_count;
+    static int linx_state_phys_store_log_count;
     uintptr_t mmu_idx = get_mmuidx(oi);
     uintptr_t index = tlb_index(env, mmu_idx, addr);
     CPUTLBEntry *entry = tlb_entry(env, mmu_idx, addr);
@@ -2322,6 +2364,18 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
     unsigned a_bits = get_alignment_bits(get_memop(oi));
     void *haddr;
     size_t size = memop_size(op);
+
+    if (g_getenv("LINX_LOG_PT_SLOT_WRITES") &&
+        linx_pt_store_log_count < 400 &&
+        ((uint64_t)addr >= 0xff0bfffffeffc000ULL &&
+         (uint64_t)addr <  0xff0bfffffeffd000ULL)) {
+        linx_pt_store_log_count++;
+        fprintf(stderr,
+                "LINX_PT_STORE pc=%#" PRIx64 " addr=%#" PRIx64
+                " val=%#" PRIx64 " size=%zu mmu_idx=%" PRIuPTR
+                " ret=%#" PRIxPTR "\n",
+                (uint64_t)env->pc, (uint64_t)addr, val, size, mmu_idx, retaddr);
+    }
 
     /* Handle CPU specific unaligned behaviour */
     if (addr & ((1 << a_bits) - 1)) {
@@ -2339,6 +2393,46 @@ store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
             entry = tlb_entry(env, mmu_idx, addr);
         }
         tlb_addr = tlb_addr_write(entry) & ~TLB_INVALID_MASK;
+    }
+
+    if (g_getenv("LINX_LOG_PT_PHYS_WRITES") &&
+        linx_pt_phys_store_log_count < 800) {
+        CPUIOTLBEntry *iotlbentry = &env_tlb(env)->d[mmu_idx].iotlb[index];
+        uint64_t ram_phys = (uint64_t)iotlbentry->addr +
+                            (uint64_t)(addr & ~TARGET_PAGE_MASK);
+
+        if ((ram_phys >= 0x1ffff000ULL && ram_phys < 0x20000000ULL) ||
+            (ram_phys >= 0x0000c0b000ULL && ram_phys < 0x0000c0c000ULL) ||
+            (ram_phys >= 0x0010e1000ULL && ram_phys < 0x0010e2000ULL) ||
+            ram_phys == 0x1ffffff8ULL ||
+            ram_phys == 0x0000000000c0b030ULL ||
+            ram_phys == 0x00000000010e1fe8ULL) {
+            linx_pt_phys_store_log_count++;
+            fprintf(stderr,
+                    "LINX_PT_PHYS_STORE pc=%#" PRIx64 " addr=%#" PRIx64
+                    " ram=%#" PRIx64 " val=%#" PRIx64 " size=%zu"
+                    " mmu_idx=%" PRIuPTR " ret=%#" PRIxPTR "\n",
+                    (uint64_t)env->pc, (uint64_t)addr, ram_phys, val, size,
+                    mmu_idx, retaddr);
+        }
+    }
+
+    if (g_getenv("LINX_LOG_STATE_PHYS_WRITES") &&
+        linx_state_phys_store_log_count < 800) {
+        CPUIOTLBEntry *iotlbentry = &env_tlb(env)->d[mmu_idx].iotlb[index];
+        uint64_t ram_phys = (uint64_t)iotlbentry->addr +
+                            (uint64_t)(addr & ~TARGET_PAGE_MASK);
+
+        if ((ram_phys >= 0x00100c500ULL && ram_phys < 0x00100c540ULL) ||
+            (ram_phys >= 0x001010b80ULL && ram_phys < 0x001010bc0ULL)) {
+            linx_state_phys_store_log_count++;
+            fprintf(stderr,
+                    "LINX_STATE_PHYS_STORE pc=%#" PRIx64 " addr=%#" PRIx64
+                    " ram=%#" PRIx64 " val=%#" PRIx64 " size=%zu"
+                    " mmu_idx=%" PRIuPTR " ret=%#" PRIxPTR "\n",
+                    (uint64_t)env->pc, (uint64_t)addr, ram_phys, val, size,
+                    mmu_idx, retaddr);
+        }
     }
 
     /* Handle anything that isn't just a straight memory access.  */

@@ -18,12 +18,362 @@
 
 static bool trans_blk_lui_48(DisasContext *ctx, arg_blk_lui_48 *a)
 {
-    TCGv imm = tcg_constant_i64((uint64_t)a->imm << 32);
+    TCGv imm = tcg_constant_i64((int64_t)(int32_t)a->imm);
     TCGv addr = get_dst_regx(ctx, a->RegDst);
     tcg_gen_mov_tl(addr, imm);
 
     set_dst_regx(ctx, addr, a->RegDst);
     return true;
+}
+
+static bool trans_blk_addtpc_48(DisasContext *ctx, arg_blk_addtpc_48 *a)
+{
+    int64_t off = ((int64_t)(int32_t)a->imm << 1);
+    if (a->RegDst == 10) {
+        off = ((int64_t)(uint32_t)a->imm << 1);
+        static_brh_type_check(ctx, (1 << BRANCH_CALL) | (1 << BRANCH_INDCALL));
+    }
+    TCGv imm = tcg_constant_tl(off);
+    TCGv addr = get_dst_regx(ctx, a->RegDst);
+    tcg_gen_addi_tl(addr, imm, ctx->base.pc_next);
+
+    set_dst_regx(ctx, addr, a->RegDst);
+    if (a->RegDst == 10) {
+        tcg_gen_mov_tl(next_bpc, addr);
+    }
+    return true;
+}
+
+static bool gen_blk_arith_i_48(DisasContext *ctx, int SrcL, int RegDst,
+                               int64_t imm,
+                               void (*func)(TCGv, TCGv, int64_t))
+{
+    TCGv src_l = get_src_regx(ctx, SrcL);
+    TCGv dest = get_dst_regx(ctx, RegDst);
+    func(dest, src_l, imm);
+    set_dst_regx(ctx, dest, RegDst);
+    return true;
+}
+
+static bool trans_blk_addi_48(DisasContext *ctx, arg_blk_addi_48 *a)
+{
+    return gen_blk_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_addi_tl);
+}
+
+static bool trans_blk_subi_48(DisasContext *ctx, arg_blk_subi_48 *a)
+{
+    return gen_blk_arith_i_48(ctx, a->SrcL, a->RegDst, -a->imm, tcg_gen_addi_tl);
+}
+
+static bool trans_blk_andi_48(DisasContext *ctx, arg_blk_andi_48 *a)
+{
+    return gen_blk_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_andi_tl);
+}
+
+static bool trans_blk_ori_48(DisasContext *ctx, arg_blk_ori_48 *a)
+{
+    return gen_blk_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_ori_tl);
+}
+
+static bool trans_blk_xori_48(DisasContext *ctx, arg_blk_xori_48 *a)
+{
+    return gen_blk_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_xori_tl);
+}
+
+static bool gen_blk_arith_iw_48(DisasContext *ctx, int SrcL, int RegDst,
+                                int64_t imm,
+                                void (*func)(TCGv, TCGv, int64_t))
+{
+    TCGv src_l = get_src_reg_extx(ctx, SrcL, EXT_SIGN);
+    TCGv dest = get_dst_regx(ctx, RegDst);
+    func(dest, src_l, imm);
+    tcg_gen_ext32s_tl(dest, dest);
+    set_dst_regx(ctx, dest, RegDst);
+    tcg_temp_free(src_l);
+    return true;
+}
+
+static bool trans_blk_addiw_48(DisasContext *ctx, arg_blk_addiw_48 *a)
+{
+    return gen_blk_arith_iw_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_addi_tl);
+}
+
+static bool trans_blk_subiw_48(DisasContext *ctx, arg_blk_subiw_48 *a)
+{
+    return gen_blk_arith_iw_48(ctx, a->SrcL, a->RegDst, -a->imm, tcg_gen_addi_tl);
+}
+
+static bool trans_blk_andiw_48(DisasContext *ctx, arg_blk_andiw_48 *a)
+{
+    return gen_blk_arith_iw_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_andi_tl);
+}
+
+static bool trans_blk_oriw_48(DisasContext *ctx, arg_blk_oriw_48 *a)
+{
+    return gen_blk_arith_iw_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_ori_tl);
+}
+
+static bool trans_blk_xoriw_48(DisasContext *ctx, arg_blk_xoriw_48 *a)
+{
+    return gen_blk_arith_iw_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_xori_tl);
+}
+
+static bool gen_blk_cmpi_48(DisasContext *ctx, int SrcL, int RegDst,
+                            int64_t imm, TCGCond cond)
+{
+    TCGv src1 = get_src_regx(ctx, SrcL);
+    TCGv dest = get_dst_regx(ctx, RegDst);
+    tcg_gen_setcondi_tl(cond, dest, src1, imm);
+    set_dst_regx(ctx, dest, RegDst);
+    return true;
+}
+
+static bool trans_blk_cmp_eqi_48(DisasContext *ctx, arg_blk_cmp_eqi_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_EQ);
+}
+
+static bool trans_blk_cmp_nei_48(DisasContext *ctx, arg_blk_cmp_nei_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_NE);
+}
+
+static bool trans_blk_cmp_lti_48(DisasContext *ctx, arg_blk_cmp_lti_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_LT);
+}
+
+static bool trans_blk_cmp_gei_48(DisasContext *ctx, arg_blk_cmp_gei_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_GE);
+}
+
+static bool trans_blk_cmp_ltui_48(DisasContext *ctx, arg_blk_cmp_ltui_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_LTU);
+}
+
+static bool trans_blk_cmp_geui_48(DisasContext *ctx, arg_blk_cmp_geui_48 *a)
+{
+    return gen_blk_cmpi_48(ctx, a->SrcL, a->RegDst, a->imm, TCG_COND_GEU);
+}
+
+static bool gen_blk_cmp_arith_i_48(DisasContext *ctx, int SrcL, int RegDst,
+                                   int64_t imm,
+                                   void (*func)(TCGv, TCGv, int64_t))
+{
+    TCGv src1 = get_src_regx(ctx, SrcL);
+    TCGv dest = get_dst_regx(ctx, RegDst);
+    TCGv res = temp_new(ctx);
+
+    func(res, src1, imm);
+    tcg_gen_setcondi_tl(TCG_COND_NE, dest, res, 0);
+    set_dst_regx(ctx, dest, RegDst);
+    return true;
+}
+
+static bool trans_blk_cmp_andi_48(DisasContext *ctx, arg_blk_cmp_andi_48 *a)
+{
+    return gen_blk_cmp_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_andi_tl);
+}
+
+static bool trans_blk_cmp_ori_48(DisasContext *ctx, arg_blk_cmp_ori_48 *a)
+{
+    return gen_blk_cmp_arith_i_48(ctx, a->SrcL, a->RegDst, a->imm, tcg_gen_ori_tl);
+}
+
+static bool gen_blk_setci_48(DisasContext *ctx, int SrcL, int64_t imm,
+                             TCGCond cond)
+{
+    if (ctx->brh_type != BRANCH_CONDITIONAL) {
+        gen_exception_illegal(ctx);
+    }
+
+    TCGv jump = temp_new(ctx);
+    TCGv src1 = get_src_regx(ctx, SrcL);
+    TCGv src2 = tcg_constant_tl(imm);
+
+    tcg_gen_movi_tl(carg_flag, BSTATE_CARG_CLEAN);
+    tcg_gen_setcond_tl(cond, jump, src1, src2);
+    tcg_gen_shli_tl(jump, jump, CARG_FLAG_PREDICATE_BIT);
+    tcg_gen_or_tl(carg_flag, jump, carg_flag);
+    return true;
+}
+
+static bool trans_blk_setc_eqi_48(DisasContext *ctx, arg_blk_setc_eqi_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_EQ);
+}
+
+static bool trans_blk_setc_nei_48(DisasContext *ctx, arg_blk_setc_nei_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_NE);
+}
+
+static bool trans_blk_setc_lti_48(DisasContext *ctx, arg_blk_setc_lti_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_LT);
+}
+
+static bool trans_blk_setc_gei_48(DisasContext *ctx, arg_blk_setc_gei_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_GE);
+}
+
+static bool trans_blk_setc_ltui_48(DisasContext *ctx, arg_blk_setc_ltui_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_LTU);
+}
+
+static bool trans_blk_setc_geui_48(DisasContext *ctx, arg_blk_setc_geui_48 *a)
+{
+    return gen_blk_setci_48(ctx, a->SrcL, a->imm, TCG_COND_GEU);
+}
+
+static bool gen_blk_setc_arith_i_48(DisasContext *ctx, int SrcL, int64_t imm,
+                                    void (*func)(TCGv, TCGv, int64_t))
+{
+    if (ctx->brh_type != BRANCH_CONDITIONAL) {
+        gen_exception_illegal(ctx);
+    }
+
+    TCGv jump = temp_new(ctx);
+    TCGv res = temp_new(ctx);
+    TCGv src1 = get_src_regx(ctx, SrcL);
+
+    tcg_gen_movi_tl(carg_flag, BSTATE_CARG_CLEAN);
+    func(res, src1, imm);
+    tcg_gen_setcondi_tl(TCG_COND_NE, jump, res, 0);
+    tcg_gen_shli_tl(jump, jump, CARG_FLAG_PREDICATE_BIT);
+    tcg_gen_or_tl(carg_flag, jump, carg_flag);
+    return true;
+}
+
+static bool trans_blk_setc_andi_48(DisasContext *ctx, arg_blk_setc_andi_48 *a)
+{
+    return gen_blk_setc_arith_i_48(ctx, a->SrcL, a->imm, tcg_gen_andi_tl);
+}
+
+static bool trans_blk_setc_ori_48(DisasContext *ctx, arg_blk_setc_ori_48 *a)
+{
+    return gen_blk_setc_arith_i_48(ctx, a->SrcL, a->imm, tcg_gen_ori_tl);
+}
+
+static void gen_blk_divrem_pair_48(DisasContext *ctx,
+                                   TCGv q, TCGv r, TCGv a, TCGv b,
+                                   bool is_unsigned)
+{
+    TCGv zero = tcg_constant_tl(0);
+    TCGLabel *div_zero = gen_new_label();
+    TCGLabel *overflow = gen_new_label();
+    TCGLabel *done = gen_new_label();
+
+    tcg_gen_brcondi_tl(TCG_COND_EQ, b, 0, div_zero);
+    if (!is_unsigned) {
+        TCGv is_min = temp_new(ctx);
+        TCGv is_neg_one = temp_new(ctx);
+        TCGv is_overflow = temp_new(ctx);
+
+        tcg_gen_setcondi_tl(TCG_COND_EQ, is_min, a, INT64_MIN);
+        tcg_gen_setcondi_tl(TCG_COND_EQ, is_neg_one, b, -1);
+        tcg_gen_and_tl(is_overflow, is_min, is_neg_one);
+        tcg_gen_brcondi_tl(TCG_COND_NE, is_overflow, 0, overflow);
+    }
+
+    if (is_unsigned) {
+        tcg_gen_divu_tl(q, a, b);
+        tcg_gen_remu_tl(r, a, b);
+    } else {
+        tcg_gen_div_tl(q, a, b);
+        tcg_gen_rem_tl(r, a, b);
+    }
+    tcg_gen_br(done);
+
+    gen_set_label(overflow);
+    tcg_gen_mov_tl(q, a);
+    tcg_gen_movi_tl(r, 0);
+    tcg_gen_br(done);
+
+    gen_set_label(div_zero);
+    tcg_gen_movi_tl(q, 0);
+    tcg_gen_mov_tl(r, a);
+
+    gen_set_label(done);
+    (void)zero;
+}
+
+static bool trans_blk_div_48(DisasContext *ctx, arg_blk_div_48 *a)
+{
+    TCGv src1 = get_src_regx(ctx, a->SrcL);
+    TCGv src2 = get_src_regx(ctx, a->SrcR);
+    TCGv q = get_dst_regx(ctx, a->RegDst0);
+    TCGv r = get_dst_regx(ctx, a->RegDst1);
+
+    gen_blk_divrem_pair_48(ctx, q, r, src1, src2, false);
+    set_dst_regx(ctx, q, a->RegDst0);
+    set_dst_regx(ctx, r, a->RegDst1);
+    return true;
+}
+
+static bool trans_blk_divu_48(DisasContext *ctx, arg_blk_divu_48 *a)
+{
+    TCGv src1 = get_src_regx(ctx, a->SrcL);
+    TCGv src2 = get_src_regx(ctx, a->SrcR);
+    TCGv q = get_dst_regx(ctx, a->RegDst0);
+    TCGv r = get_dst_regx(ctx, a->RegDst1);
+
+    gen_blk_divrem_pair_48(ctx, q, r, src1, src2, true);
+    set_dst_regx(ctx, q, a->RegDst0);
+    set_dst_regx(ctx, r, a->RegDst1);
+    return true;
+}
+
+static bool gen_blk_divrem_pair_w_48(DisasContext *ctx, arg_blk_div_48 *a,
+                                     bool is_unsigned)
+{
+    TCGv src1 = get_src_reg_extx(ctx, a->SrcL, is_unsigned ? EXT_ZERO : EXT_SIGN);
+    TCGv src2 = get_src_reg_extx(ctx, a->SrcR, is_unsigned ? EXT_ZERO : EXT_SIGN);
+    TCGv q = get_dst_regx(ctx, a->RegDst0);
+    TCGv r = get_dst_regx(ctx, a->RegDst1);
+
+    gen_blk_divrem_pair_48(ctx, q, r, src1, src2, is_unsigned);
+    tcg_gen_ext32s_tl(q, q);
+    tcg_gen_ext32s_tl(r, r);
+    set_dst_regx(ctx, q, a->RegDst0);
+    set_dst_regx(ctx, r, a->RegDst1);
+    tcg_temp_free(src1);
+    tcg_temp_free(src2);
+    return true;
+}
+
+static bool trans_blk_divw_48(DisasContext *ctx, arg_blk_divw_48 *a)
+{
+    return gen_blk_divrem_pair_w_48(ctx, (arg_blk_div_48 *)a, false);
+}
+
+static bool trans_blk_divuw_48(DisasContext *ctx, arg_blk_divuw_48 *a)
+{
+    return gen_blk_divrem_pair_w_48(ctx, (arg_blk_div_48 *)a, true);
+}
+
+static bool trans_blk_rem_48(DisasContext *ctx, arg_blk_rem_48 *a)
+{
+    return trans_blk_div_48(ctx, (arg_blk_div_48 *)a);
+}
+
+static bool trans_blk_remu_48(DisasContext *ctx, arg_blk_remu_48 *a)
+{
+    return trans_blk_divu_48(ctx, (arg_blk_div_48 *)a);
+}
+
+static bool trans_blk_remw_48(DisasContext *ctx, arg_blk_remw_48 *a)
+{
+    return gen_blk_divrem_pair_w_48(ctx, (arg_blk_div_48 *)a, false);
+}
+
+static bool trans_blk_remuw_48(DisasContext *ctx, arg_blk_remuw_48 *a)
+{
+    return gen_blk_divrem_pair_w_48(ctx, (arg_blk_div_48 *)a, true);
 }
 
 static bool trans_blk_mul_48(DisasContext *ctx, arg_blk_mul_48 *a)
@@ -100,7 +450,7 @@ static void gen_blk_load_48_op(DisasContext *ctx, MemOp memop, bool is_addr,
                                 TCGv addr, int dest0)
 {
     TCGv dest_Treg = get_dst_regx(ctx, dest0);
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 memop_t = tcg_constant_i32(memop);
         gen_helper_load_data(dest_Treg, cpu_env, addr, memop_t);
     } else {
@@ -300,10 +650,9 @@ static void gen_blk_load_po_48(DisasContext *ctx, MemOp memop, bool is_addr,
     /* shift becomes the "addr" */
     tcg_gen_add_tl(shift, addr_base, shift);
 
-    set_dst_regx(ctx, shift, dest1);
-
     /* Use the address to load data from memory */
     gen_blk_load_48_op(ctx, memop, is_addr, addr_base, dest0);
+    set_dst_regx(ctx, shift, dest1);
 }
 
 static bool trans_blk_lb_po_48(DisasContext *ctx, arg_blk_lb_po_48 *a)
@@ -366,9 +715,8 @@ static void gen_blk_load_po_48_imm(DisasContext *ctx, MemOp memop, bool is_addr,
     TCGv addr = temp_new(ctx);
     tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
 
-    set_dst_regx(ctx, addr_base, dest1);
-
-    gen_blk_load_48_op(ctx, memop, is_addr, addr, dest0);
+    gen_blk_load_48_op(ctx, memop, is_addr, addr_base, dest0);
+    set_dst_regx(ctx, addr, dest1);
 }
 
 static bool trans_blk_lbi_po_48(DisasContext *ctx, arg_blk_lbi_po_48 *a)
@@ -526,102 +874,111 @@ static bool trans_blk_lwup_pr_48(DisasContext *ctx, arg_blk_lwup_pr_48 *a)
 
 static void gen_blk_load_p_pr_48_imm(DisasContext *ctx, MemOp memop,
                                 bool is_addr, int imm, int SrcL_enc, int dest0,
+                                int dest1, int dest2, int scaled_shift);
+
+static bool trans_blk_lbip_48(DisasContext *ctx, arg_blk_lbip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_SB, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LB_SB);
+    return true;
+}
+
+static bool trans_blk_lhip_48(DisasContext *ctx, arg_blk_lhip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LH_SH);
+    return true;
+}
+
+static bool trans_blk_lwip_48(DisasContext *ctx, arg_blk_lwip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LW_SW);
+    return true;
+}
+
+static bool trans_blk_ldip_48(DisasContext *ctx, arg_blk_ldip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LD_SD);
+    return true;
+}
+
+static bool trans_blk_lbuip_48(DisasContext *ctx, arg_blk_lbuip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_UB, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LB_SB);
+    return true;
+}
+
+static bool trans_blk_lhuip_48(DisasContext *ctx, arg_blk_lhuip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LH_SH);
+    return true;
+}
+
+static bool trans_blk_lwuip_48(DisasContext *ctx, arg_blk_lwuip_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, OFFSET_LW_SW);
+    return true;
+}
+
+static bool trans_blk_lhip_u_48(DisasContext *ctx, arg_blk_lhip_u_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, UNSCALED);
+    return true;
+}
+
+static bool trans_blk_lwip_u_48(DisasContext *ctx, arg_blk_lwip_u_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, UNSCALED);
+    return true;
+}
+
+static bool trans_blk_ldip_u_48(DisasContext *ctx, arg_blk_ldip_u_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, UNSCALED);
+    return true;
+}
+
+static bool trans_blk_lhuip_u_48(DisasContext *ctx, arg_blk_lhuip_u_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, UNSCALED);
+    return true;
+}
+
+static bool trans_blk_lwuip_u_48(DisasContext *ctx, arg_blk_lwuip_u_48 *a)
+{
+    gen_blk_load_p_pr_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
+                        a->RegDst0, a->RegDst1, REGDST_0, UNSCALED);
+    return true;
+}
+
+static void gen_blk_load_p_pr_48_imm(DisasContext *ctx, MemOp memop,
+                                bool is_addr, int imm, int SrcL_enc, int dest0,
                                 int dest1, int dest2, int scaled_shift)
 {
     /* get SrcLreg  addr_base */
     TCGv addr_base = get_src_regx(ctx, SrcL_enc);
+    TCGv first_addr = temp_new(ctx);
+    TCGv second_addr = temp_new(ctx);
+    const int access_bytes = memop_size(memop);
 
-    TCGv addr = temp_new(ctx);
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    tcg_gen_addi_tl(first_addr, addr_base, imm << scaled_shift);
+    tcg_gen_addi_tl(second_addr, first_addr, access_bytes);
 
-    set_dst_regx(ctx, addr_base, dest2);
+    if (dest2 != REGDST_0) {
+        set_dst_regx(ctx, first_addr, dest2);
+    }
 
-    gen_blk_load_48_op(ctx, memop, is_addr, addr_base, dest0);
-    gen_blk_load_48_op(ctx, memop, is_addr, addr, dest1);
-}
-
-static bool trans_blk_lbip_pr_48(DisasContext *ctx, arg_blk_lbip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_SB, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LB_SB);
-    return true;
-}
-
-static bool trans_blk_lhip_pr_48(DisasContext *ctx, arg_blk_lhip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LH_SH);
-    return true;
-}
-
-static bool trans_blk_lwip_pr_48(DisasContext *ctx, arg_blk_lwip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LW_SW);
-    return true;
-}
-
-static bool trans_blk_ldip_pr_48(DisasContext *ctx, arg_blk_ldip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LD_SD);
-    return true;
-}
-
-static bool trans_blk_lbuip_pr_48(DisasContext *ctx, arg_blk_lbuip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_UB, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LB_SB);
-    return true;
-}
-
-static bool trans_blk_lhuip_pr_48(DisasContext *ctx, arg_blk_lhuip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LH_SH);
-    return true;
-}
-
-static bool trans_blk_lwuip_pr_48(DisasContext *ctx, arg_blk_lwuip_pr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LW_SW);
-    return true;
-}
-
-static bool trans_blk_lhip_upr_48(DisasContext *ctx, arg_blk_lhip_upr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lwip_upr_48(DisasContext *ctx, arg_blk_lwip_upr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
-                         a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_ldip_upr_48(DisasContext *ctx, arg_blk_ldip_upr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lhuip_upr_48(DisasContext *ctx, arg_blk_lhuip_upr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lwuip_upr_48(DisasContext *ctx, arg_blk_lwuip_upr_48 *a)
-{
-    gen_blk_load_p_pr_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
+    gen_blk_load_48_op(ctx, memop, is_addr, first_addr, dest0);
+    gen_blk_load_48_op(ctx, memop, is_addr, second_addr, dest1);
 }
 
 static void gen_blk_load_p_po_48(DisasContext *ctx, MemOp memop, bool is_addr,
@@ -699,105 +1056,25 @@ static void gen_blk_load_p_po_48_imm(DisasContext *ctx, MemOp memop,
 {
     /* get SrcLreg  addr_base */
     TCGv addr_base = get_src_regx(ctx, SrcL_enc);
+    TCGv writeback_addr = temp_new(ctx);
+    TCGv second_addr = temp_new(ctx);
+    const int access_bytes = memop_size(memop);
 
-    TCGv addr = temp_new(ctx);
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    tcg_gen_addi_tl(writeback_addr, addr_base, imm << scaled_shift);
+    tcg_gen_addi_tl(second_addr, addr_base, access_bytes);
 
-    set_dst_regx(ctx, addr, dest2);
-
-    gen_blk_load_48_op(ctx, memop, is_addr, addr, dest0);
-    gen_blk_load_48_op(ctx, memop, is_addr, addr_base, dest1);
-}
-
-static bool trans_blk_lbip_po_48(DisasContext *ctx, arg_blk_lbip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_SB, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LB_SB);
-    return true;
-}
-
-static bool trans_blk_lhip_po_48(DisasContext *ctx, arg_blk_lhip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LH_SH);
-    return true;
-}
-
-static bool trans_blk_lwip_po_48(DisasContext *ctx, arg_blk_lwip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LW_SW);
-    return true;
-}
-
-static bool trans_blk_ldip_po_48(DisasContext *ctx, arg_blk_ldip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LD_SD);
-    return true;
-}
-
-static bool trans_blk_lbuip_po_48(DisasContext *ctx, arg_blk_lbuip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_UB, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LB_SB);
-    return true;
-}
-
-static bool trans_blk_lhuip_po_48(DisasContext *ctx, arg_blk_lhuip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LH_SH);
-    return true;
-}
-
-static bool trans_blk_lwuip_po_48(DisasContext *ctx, arg_blk_lwuip_po_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, OFFSET_LW_SW);
-    return true;
-}
-
-static bool trans_blk_lhip_upo_48(DisasContext *ctx, arg_blk_lhip_upo_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TESW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lwip_upo_48(DisasContext *ctx, arg_blk_lwip_upo_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TESL, NO_ADDR, a->imm, a->SrcL,
-                         a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_ldip_upo_48(DisasContext *ctx, arg_blk_ldip_upo_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lhuip_upo_48(DisasContext *ctx, arg_blk_lhuip_upo_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEUW, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
-}
-
-static bool trans_blk_lwuip_upo_48(DisasContext *ctx, arg_blk_lwuip_upo_48 *a)
-{
-    gen_blk_load_p_po_48_imm(ctx, MO_TEUL, NO_ADDR, a->imm, a->SrcL,
-                        a->RegDst0, a->RegDst1, a->RegDst2, UNSCALED);
-    return true;
+    gen_blk_load_48_op(ctx, memop, is_addr, addr_base, dest0);
+    gen_blk_load_48_op(ctx, memop, is_addr, second_addr, dest1);
+    if (dest2 != REGDST_0) {
+        set_dst_regx(ctx, writeback_addr, dest2);
+    }
 }
 
 
 static void gen_blk_store_48_op(DisasContext *ctx, MemOp memop, bool is_addr,
                                 TCGv dest, TCGv data, int width, int RegDst)
 {
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 size = tcg_constant_i32(width);
         gen_helper_store_data(cpu_env, dest, data, size);
     } else {
@@ -898,8 +1175,24 @@ static void gen_blk_store_pr_48_imm(DisasContext *ctx, MemOp memop,
     TCGv addr_base = get_src_regx(ctx, SrcR);
     TCGv data = get_src_regx(ctx, SrcD);
     TCGv addr = temp_new(ctx);
+    int byte_off = imm;
 
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    if (scaled_shift > 0) {
+        byte_off = imm << (scaled_shift - 1);
+    }
+    tcg_gen_addi_tl(addr, addr_base, byte_off);
+
+    if (g_getenv("LINX_LOG_SIMT_ADDR") && ctx->base.pc_next == 0x14728) {
+        fprintf(stderr,
+                "LINX_BLK_STORE_PR pc=0x%llx SrcR=0x%x SrcD=0x%x imm=%d byte_off=%d\n",
+                (unsigned long long)ctx->base.pc_next, SrcR, SrcD, imm,
+                byte_off);
+        gen_helper_simt_addr_debug(cpu_env, tcg_constant_tl(ctx->base.pc_next),
+                                   addr_base, tcg_constant_tl(byte_off), addr,
+                                   tcg_constant_i32(0));
+        gen_helper_simt_val_debug(cpu_env, tcg_constant_tl(ctx->base.pc_next),
+                                  data, tcg_constant_i32(0));
+    }
 
     set_dst_regx(ctx, addr, reg);
 
@@ -929,9 +1222,20 @@ static bool trans_blk_swi_pr_48(DisasContext *ctx, arg_blk_swi_pr_48 *a)
 
 static bool trans_blk_sdi_pr_48(DisasContext *ctx, arg_blk_sdi_pr_48 *a)
 {
+    if (g_getenv("LINX_LOG_SIMT_ADDR") && ctx->base.pc_next == 0x14728) {
+        fprintf(stderr,
+                "LINX_TRANS_SDI_PR pc=0x%llx SrcR=0x%x SrcD=0x%x RegDst=0x%x imm=%d\n",
+                (unsigned long long)ctx->base.pc_next, a->SrcR, a->SrcD,
+                a->RegDst, a->imm);
+    }
     gen_blk_store_pr_48_imm(ctx, MO_TEQ, a->imm, a->SrcR, a->SrcD, BYTES_LD_SD,
                             OFFSET_LD_SD, NO_ADDR, REGDST_0, a->RegDst);
     return true;
+}
+
+static bool trans_blk_sdi_pr_alt_48(DisasContext *ctx, arg_blk_sdi_pr_alt_48 *a)
+{
+    return trans_blk_sdi_pr_48(ctx, (arg_blk_sdi_pr_48 *)a);
 }
 
 static bool trans_blk_shi_upr_48(DisasContext *ctx, arg_blk_shi_upr_48 *a)
@@ -953,6 +1257,11 @@ static bool trans_blk_sdi_upr_48(DisasContext *ctx, arg_blk_sdi_upr_48 *a)
     gen_blk_store_pr_48_imm(ctx, MO_TEQ, a->imm, a->SrcR, a->SrcD, BYTES_LD_SD,
                             UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
     return true;
+}
+
+static bool trans_blk_sdi_upr_alt_48(DisasContext *ctx, arg_blk_sdi_upr_alt_48 *a)
+{
+    return trans_blk_sdi_upr_48(ctx, (arg_blk_sdi_upr_48 *)a);
 }
 
 
@@ -1041,8 +1350,20 @@ static void gen_blk_store_po_48_imm(DisasContext *ctx, MemOp memop,
     TCGv addr_base = get_src_regx(ctx, SrcR);
     TCGv data = get_src_regx(ctx, SrcD);
     TCGv addr = temp_new(ctx);
+    int byte_off = imm;
 
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    if (scaled_shift > 0) {
+        byte_off = imm << (scaled_shift - 1);
+    }
+    tcg_gen_addi_tl(addr, addr_base, byte_off);
+
+    if (ctx->base.pc_next == 0xffffffff80a1ca6eULL ||
+        ctx->base.pc_next == 0x80a1ca6eULL) {
+        fprintf(stderr,
+                "LINX_STORE_PO_IMM pc=0x%llx SrcR=0x%x SrcD=0x%x RegDst=0x%x imm=%d byte_off=%d atomic=%d\n",
+                (unsigned long long)ctx->base.pc_next, SrcR, SrcD, reg, imm,
+                byte_off, linx_use_atomic_store_buf(ctx));
+    }
 
     set_dst_regx(ctx, addr, reg);
 
@@ -1111,16 +1432,20 @@ static void gen_blk_store_p_pr_48(DisasContext *ctx, MemOp memop,
     TCGv shift_base = get_src_regx(ctx, SrcR);
     TCGv shift = conver_src_value(ctx, shift_base, INSTR_TYPE_CMP_SETC_LD_ST,
                                   SrcRType);
+    TCGv second_addr = temp_new(ctx);
 
     tcg_gen_shli_tl(shift, shift, scaled_shift);
 
-    /* shift become dest */
+    /* shift becomes the first element address */
     tcg_gen_add_tl(shift, addr_base, shift);
+    tcg_gen_addi_tl(second_addr, shift, memop_size(memop));
 
-    set_dst_regx(ctx, shift, dest);
+    if (dest != REGDST_0) {
+        set_dst_regx(ctx, shift, dest);
+    }
 
     gen_blk_store_48_op(ctx, memop, is_addr, shift, data, width, RegDst);
-    gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data1, width, RegDst);
+    gen_blk_store_48_op(ctx, memop, is_addr, second_addr, data1, width, RegDst);
 }
 
 static bool trans_blk_sbp_pr_48(DisasContext *ctx, arg_blk_sbp_pr_48 *a)
@@ -1178,6 +1503,7 @@ static bool trans_blk_sdp_upr_48(DisasContext *ctx, arg_blk_sdp_upr_48 *a)
                           UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
     return true;
 }
+
 static void gen_blk_store_p_pr_48_imm(DisasContext *ctx, MemOp memop,
                                     int imm, int SrcR, int SrcD,
                                     int SrcD1, int width, int scaled_shift,
@@ -1187,68 +1513,76 @@ static void gen_blk_store_p_pr_48_imm(DisasContext *ctx, MemOp memop,
     TCGv data = get_src_regx(ctx, SrcD);
     TCGv data1 = get_src_regx(ctx, SrcD1);
     TCGv addr = temp_new(ctx);
+    TCGv second_addr = temp_new(ctx);
+    int byte_off = imm;
 
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    if (scaled_shift > 0) {
+        byte_off = imm << (scaled_shift - 1);
+    }
+    tcg_gen_addi_tl(addr, addr_base, byte_off);
+    tcg_gen_addi_tl(second_addr, addr, memop_size(memop));
 
-    set_dst_regx(ctx, addr, reg);
+    if (reg != REGDST_0) {
+        set_dst_regx(ctx, addr, reg);
+    }
 
     gen_blk_store_48_op(ctx, memop, is_addr, addr, data, width, RegDst);
-    gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data1, width, RegDst);
+    gen_blk_store_48_op(ctx, memop, is_addr, second_addr, data1, width, RegDst);
 }
 
-static bool trans_blk_sbip_pr_48(DisasContext *ctx, arg_blk_sbip_pr_48 *a)
+static bool trans_blk_sbip_48(DisasContext *ctx, arg_blk_sbip_48 *a)
 {
-    gen_blk_store_p_pr_48_imm(ctx, MO_SB, a->imm,  a->SrcR,
+    gen_blk_store_p_pr_48_imm(ctx, MO_SB, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LB_SB,
-                              OFFSET_LB_SB, NO_ADDR, REGDST_0, a->RegDst);
+                              OFFSET_LB_SB, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_ship_pr_48(DisasContext *ctx, arg_blk_ship_pr_48 *a)
+static bool trans_blk_ship_48(DisasContext *ctx, arg_blk_ship_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TESW, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LH_SH,
-                              OFFSET_LH_SH, NO_ADDR, REGDST_0, a->RegDst);
+                              OFFSET_LH_SH, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_swip_pr_48(DisasContext *ctx, arg_blk_swip_pr_48 *a)
+static bool trans_blk_swip_48(DisasContext *ctx, arg_blk_swip_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TESL, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LW_SW,
-                              OFFSET_LW_SW, NO_ADDR, REGDST_0, a->RegDst);
+                              OFFSET_LW_SW, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_sdip_pr_48(DisasContext *ctx, arg_blk_sdip_pr_48 *a)
+static bool trans_blk_sdip_48(DisasContext *ctx, arg_blk_sdip_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TEQ, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LD_SD,
-                              OFFSET_LD_SD, NO_ADDR, REGDST_0, a->RegDst);
+                              OFFSET_LD_SD, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_ship_upr_48(DisasContext *ctx, arg_blk_ship_upr_48 *a)
+static bool trans_blk_ship_u_48(DisasContext *ctx, arg_blk_ship_u_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TESW, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LH_SH,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
+                              UNSCALED, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_swip_upr_48(DisasContext *ctx, arg_blk_swip_upr_48 *a)
+static bool trans_blk_swip_u_48(DisasContext *ctx, arg_blk_swip_u_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TESL, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LW_SW,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
+                              UNSCALED, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
-static bool trans_blk_sdip_upr_48(DisasContext *ctx, arg_blk_sdip_upr_48 *a)
+static bool trans_blk_sdip_u_48(DisasContext *ctx, arg_blk_sdip_u_48 *a)
 {
     gen_blk_store_p_pr_48_imm(ctx, MO_TEQ, a->imm, a->SrcR,
                               a->SrcD, a->SrcD1, BYTES_LD_SD,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
+                              UNSCALED, NO_ADDR, REGDST_0, REGDST_0);
     return true;
 }
 
@@ -1265,73 +1599,22 @@ static void gen_blk_store_p_po_48(DisasContext *ctx, MemOp memop,
     TCGv shift_base = get_src_regx(ctx, SrcR);
     TCGv shift = conver_src_value(ctx, shift_base, INSTR_TYPE_CMP_SETC_LD_ST,
                                   SrcRType);
+    TCGv second_addr = temp_new(ctx);
 
     tcg_gen_shli_tl(shift, shift, scaled_shift);
 
-    /* shift become dest */
+    /* shift becomes the writeback address */
     tcg_gen_add_tl(shift, addr_base, shift);
+    tcg_gen_addi_tl(second_addr, addr_base, memop_size(memop));
 
-    set_dst_regx(ctx, shift, dest);
+    if (dest != REGDST_0) {
+        set_dst_regx(ctx, shift, dest);
+    }
 
-    gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data1, width, RegDst);
     gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data, width, RegDst);
+    gen_blk_store_48_op(ctx, memop, is_addr, second_addr, data1, width, RegDst);
 }
 
-static bool trans_blk_sbp_po_48(DisasContext *ctx, arg_blk_sbp_po_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_SB, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LB_SB,
-                          OFFSET_LB_SB, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_shp_po_48(DisasContext *ctx, arg_blk_shp_po_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TESW, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LH_SH,
-                          OFFSET_LH_SH, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_swp_po_48(DisasContext *ctx, arg_blk_swp_po_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TESL, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LW_SW,
-                          OFFSET_LW_SW, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_sdp_po_48(DisasContext *ctx, arg_blk_sdp_po_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TEQ, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LD_SD,
-                          OFFSET_LD_SD, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_shp_upo_48(DisasContext *ctx, arg_blk_shp_upo_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TESW, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LH_SH,
-                          UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_swp_upo_48(DisasContext *ctx, arg_blk_swp_upo_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TESL, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LW_SW,
-                          UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_sdp_upo_48(DisasContext *ctx, arg_blk_sdp_upo_48 *a)
-{
-    gen_blk_store_p_po_48(ctx, MO_TEQ, a->SrcD, a->SrcD1, a->SrcRType,
-                          a->SrcR, a->SrcL, BYTES_LD_SD,
-                          UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
 static void gen_blk_store_p_po_48_imm(DisasContext *ctx, MemOp memop,
                                     int imm, int SrcR, int SrcD,
                                     int SrcD1, int width, int scaled_shift,
@@ -1341,70 +1624,23 @@ static void gen_blk_store_p_po_48_imm(DisasContext *ctx, MemOp memop,
     TCGv data = get_src_regx(ctx, SrcD);
     TCGv data1 = get_src_regx(ctx, SrcD1);
     TCGv addr = temp_new(ctx);
+    TCGv second_addr = temp_new(ctx);
+    int byte_off = imm;
 
-    tcg_gen_addi_tl(addr, addr_base, imm << scaled_shift);
+    if (scaled_shift > 0) {
+        byte_off = imm << (scaled_shift - 1);
+    }
+    tcg_gen_addi_tl(addr, addr_base, byte_off);
+    tcg_gen_addi_tl(second_addr, addr_base, memop_size(memop));
 
-    set_dst_regx(ctx, addr, reg);
+    if (reg != REGDST_0) {
+        set_dst_regx(ctx, addr, reg);
+    }
 
     gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data, width, RegDst);
-    gen_blk_store_48_op(ctx, memop, is_addr, addr_base, data1, width, RegDst);
+    gen_blk_store_48_op(ctx, memop, is_addr, second_addr, data1, width, RegDst);
 }
 
-static bool trans_blk_sbip_po_48(DisasContext *ctx, arg_blk_sbip_po_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_SB, a->imm,  a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LB_SB,
-                              OFFSET_LB_SB, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_ship_po_48(DisasContext *ctx, arg_blk_ship_po_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TESW, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LH_SH,
-                              OFFSET_LH_SH, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_swip_po_48(DisasContext *ctx, arg_blk_swip_po_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TESL, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LW_SW,
-                              OFFSET_LW_SW, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_sdip_po_48(DisasContext *ctx, arg_blk_sdip_po_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TEQ, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LD_SD,
-                              OFFSET_LD_SD, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_ship_upo_48(DisasContext *ctx, arg_blk_ship_upo_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TESW, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LH_SH,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_swip_upo_48(DisasContext *ctx, arg_blk_swip_upo_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TESL, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LW_SW,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
-
-static bool trans_blk_sdip_upo_48(DisasContext *ctx, arg_blk_sdip_upo_48 *a)
-{
-    gen_blk_store_p_po_48_imm(ctx, MO_TEQ, a->imm, a->SrcR,
-                              a->SrcD, a->SrcD1, BYTES_LD_SD,
-                              UNSCALED, NO_ADDR, REGDST_0, a->RegDst);
-    return true;
-}
 
 static void gen_blk_load_48_symbol(DisasContext *ctx, MemOp memop,
                                    bool is_addr, int imm,
@@ -1484,28 +1720,28 @@ static void gen_blk_store_48_symbol(DisasContext *ctx, MemOp memop,
 static bool trans_blk_sb_pcr_48(DisasContext *ctx, arg_blk_sb_pcr_48 *a)
 {
     gen_blk_store_48_symbol(ctx, MO_SB, a->imm, a->SrcL, BYTES_LB_SB,
-                            OFFSET_LB_SB, NO_ADDR, REGDST_0);
+                            UNSCALED, NO_ADDR, REGDST_0);
     return true;
 }
 
 static bool trans_blk_sh_pcr_48(DisasContext *ctx, arg_blk_sh_pcr_48 *a)
 {
     gen_blk_store_48_symbol(ctx, MO_TESW, a->imm, a->SrcL, BYTES_LH_SH,
-                            OFFSET_LH_SH, NO_ADDR, REGDST_0);
+                            UNSCALED, NO_ADDR, REGDST_0);
     return true;
 }
 
 static bool trans_blk_sw_pcr_48(DisasContext *ctx, arg_blk_sw_pcr_48 *a)
 {
     gen_blk_store_48_symbol(ctx, MO_TESL, a->imm, a->SrcL, BYTES_LW_SW,
-                            OFFSET_LW_SW, NO_ADDR, REGDST_0);
+                            UNSCALED, NO_ADDR, REGDST_0);
     return true;
 }
 
 static bool trans_blk_sd_pcr_48(DisasContext *ctx, arg_blk_sd_pcr_48 *a)
 {
     gen_blk_store_48_symbol(ctx, MO_TEQ, a->imm, a->SrcL, BYTES_LD_SD,
-                            OFFSET_LD_SD, NO_ADDR, REGDST_0);
+                            UNSCALED, NO_ADDR, REGDST_0);
     return true;
 }
 
@@ -1549,7 +1785,7 @@ static bool trans_blk_ssrget_48(DisasContext *ctx, arg_blk_ssrget_48 *a)
 static bool trans_blk_ssrset_48(DisasContext *ctx, arg_blk_ssrset_48 *a)
 {
     TCGv src = get_src_regx(ctx, a->SrcL);
-    gen_helper_csrw(cpu_env, tcg_constant_i32(a->SSRID), src);
+    gen_csrw(ctx, a->SSRID, src);
 
     return true;
 }
@@ -1557,6 +1793,12 @@ static bool trans_blk_ssrset_48(DisasContext *ctx, arg_blk_ssrset_48 *a)
 static bool gen_amo_cmp_swap(DisasContext *ctx, arg_blk_casb_48 *a,
                              MemOp memop)
 {
+    /*
+     * HL.CAS* follows the canonical ISA form:
+     *   hl.cas* [SrcL], SrcR, SrcD, -> Rd
+     * where SrcL is the memory address, SrcR is the expected-old value,
+     * and SrcD is the swap-new value.
+     */
     TCGv addr_base = get_src_regx(ctx, a->SrcL);
     TCGv srcr = get_src_regx(ctx, a->SrcR);
     TCGv srcd = get_src_regx(ctx, a->SrcD);

@@ -136,7 +136,24 @@ target_ulong linx_load_kernel(const char *kernel_filename,
                                target_ulong kernel_start_addr,
                                symbol_fn_t sym_cb)
 {
-    uint64_t kernel_entry;
+    uint64_t kernel_load_base, kernel_entry;
+
+    /*
+     * For ELF kernels, boot from the low load address rather than the ELF
+     * entry point so direct kernel boot matches the raw-binary path and the
+     * Linux image's expected physical entry address.
+     */
+    if (load_elf_ram_sym(kernel_filename, NULL, NULL, NULL,
+                         NULL, &kernel_load_base, NULL, NULL,
+                         0, EM_LINX, 1, 0, NULL, true, sym_cb) > 0) {
+        return kernel_load_base;
+    }
+
+    if (load_elf_ram_sym(kernel_filename, NULL, NULL, NULL,
+                         NULL, &kernel_load_base, NULL, NULL,
+                         0, EM_LINX_LEGACY, 1, 0, NULL, true, sym_cb) > 0) {
+        return kernel_load_base;
+    }
 
     if (linx_try_load_elf(kernel_filename, &kernel_entry, NULL,
                           sym_cb) > 0) {

@@ -87,6 +87,9 @@ static void gen_linx_reset_bstate(void)
 {
     tcg_gen_movi_i32(in_body, false);
     tcg_gen_movi_tl(bpc, LINX_ILLEGAL_INSTR_ADDR);
+    tcg_gen_movi_tl(carg_tgt, LINX_ILLEGAL_INSTR_ADDR);
+    tcg_gen_movi_tl(carg_flag, BSTATE_CARG_CLEAN);
+    tcg_gen_movi_i64(header_info, 0);
 
 #ifndef CONFIG_USER_ONLY
     tcg_gen_movi_tl(tpc, LINX_ILLEGAL_INSTR_ADDR);
@@ -123,12 +126,31 @@ static void gen_do_jump(CPULINXState *env, DisasContext *ctx)
     case BRANCH_INDCALL:
     case BRANCH_RET:
     case BRANCH_IND:
+        gen_helper_ret_jump_trace(cpu_env, bpc, carg_tgt);
         tcg_gen_mov_tl(cpu_pc, carg_tgt);
         gen_linx_reset_bstate();
         tcg_gen_lookup_and_goto_ptr();
         break;
     case BRANCH_CALL:
+        if (g_getenv("LINX_LOG_CALL_BUNDLE") &&
+            (ctx->base.pc_next == 0x925b1c ||
+             ctx->base.pc_next == 0xffffffff80925b1cULL ||
+             ctx->base.pc_next == 0x925a74 ||
+             ctx->base.pc_next == 0xffffffff80925a74ULL ||
+             ctx->base.pc_next == 0x9259fc ||
+             ctx->base.pc_next == 0xffffffff809259fcULL)) {
+            fprintf(stderr,
+                    "LINX_CALL_BUNDLE_JUMP pc=0x%lx carg_tgt=0x%lx next_bpc=0x%lx succ=0x%lx\n",
+                    ctx->base.pc_next, ctx->carg_tgt,
+                    ctx->next_bpc_explicit ? ctx->next_bpc_target : ctx->pc_succ_insn,
+                    ctx->pc_succ_insn);
+        }
+        tcg_gen_mov_tl(cpu_gpr[xRA], next_bpc);
+        gen_linx_reset_bstate();
+        gen_goto_tb(ctx, 0, ctx->carg_tgt);
+        break;
     case BRANCH_DIRECT_LINK:
+        tcg_gen_mov_tl(cpu_gpr[xRA], next_bpc);
         gen_linx_reset_bstate();
         gen_goto_tb(ctx, 0, ctx->carg_tgt);
         break;
@@ -136,6 +158,13 @@ static void gen_do_jump(CPULINXState *env, DisasContext *ctx)
         l = gen_new_label();
         TCGv predicate = tcg_const_tl(CARG_FLAG_PREDICATE);
         tcg_gen_and_tl(temp2, carg_flag, predicate);
+        if (ctx->bpc == 0xffffffff809270c8ULL ||
+            ctx->bpc == 0x809270c8ULL) {
+            fprintf(stderr,
+                    "LINX_COND_COMMIT_270C8 pc=0x%lx succ=0x%lx tgt=0x%lx\n",
+                    ctx->base.pc_next, ctx->pc_succ_insn, ctx->carg_tgt);
+            gen_helper_log(cpu_env, carg_flag);
+        }
         gen_linx_reset_bstate();
         tcg_gen_brcondi_tl(TCG_COND_EQ, temp2, 1, l);
         gen_goto_tb(ctx, 0, ctx->pc_succ_insn);
@@ -152,7 +181,15 @@ static void gen_do_jump(CPULINXState *env, DisasContext *ctx)
         break;
 #endif
     default:
-        linx_debug_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "gen_do_jump: unexpected brh_type=%d blk_type=%d "
+                      "pc=0x%lx succ=0x%lx carg_tgt=0x%lx header=0x%lx; "
+                      "falling through\n",
+                      ctx->brh_type, ctx->blk_type, ctx->base.pc_next,
+                      ctx->pc_succ_insn, ctx->carg_tgt, ctx->header_info);
+        gen_linx_reset_bstate();
+        gen_goto_tb(ctx, 0, ctx->pc_succ_insn);
+        break;
     }
     tcg_temp_free(temp2);
 }
@@ -218,13 +255,24 @@ static void gen_dym_linx_blk_do_jump(CPULINXState *env, DisasContext *ctx)
          * inline blcok set next_bpc. else is decouple block set next_bpc in
          * gen_linx_decouple_head_jump_body
          */
-        if (!get_blkdcp(ctx->header_info)) {
+        if (!get_blkdcp(ctx->header_info) && !ctx->next_bpc_explicit) {
             tcg_gen_movi_tl(next_bpc, ctx->pc_succ_insn);
         }
         gen_do_jump(env, ctx);
         break;
     default:
-        linx_debug_not_reached();
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "gen_dym_linx_blk_do_jump: unexpected blk_type=%d "
+                      "brh_type=%d pc=0x%lx succ=0x%lx header=0x%lx; "
+                      "falling through\n",
+                      ctx->blk_type, ctx->brh_type, ctx->base.pc_next,
+                      ctx->pc_succ_insn, ctx->header_info);
+        if (!get_blkdcp(ctx->header_info)) {
+            tcg_gen_movi_tl(next_bpc, ctx->pc_succ_insn);
+        }
+        gen_linx_reset_bstate();
+        gen_goto_tb(ctx, 0, ctx->pc_succ_insn);
+        break;
     }
 }
 
@@ -286,6 +334,7 @@ void gen_linx_init_head_common(DisasContext *ctx, int brh_type, int blk_type,
                                int bnext_off)
 {
     CPULINXState *env = ctx->cs->env_ptr;
+    ctx->next_bpc_explicit = false;
     if (blk_type == HEAD_TYPE_SIMT) {
         tcg_gen_movi_tl(csr_lc[0], 0);
         tcg_gen_movi_tl(csr_lc[1], 0);
@@ -328,6 +377,14 @@ void gen_linx_init_head_common(DisasContext *ctx, int brh_type, int blk_type,
     ctx->bnext = bnext_off;
     tcg_gen_movi_tl(bpc, ctx->base.pc_next);
     tcg_gen_movi_i64(bnext, bnext_off);
+    /*
+     * Seed the architectural fall-through target as soon as the head opens.
+     * Some one-instruction blocks (for example BSTART.SYS + ebreak) can take
+     * an exception before the normal block-commit path reaches the later
+     * next_bpc write. Without this provisional value, EBPCN snapshots a stale
+     * continuation from an earlier block and ACRE resumes into garbage.
+     */
+    tcg_gen_movi_tl(next_bpc, ctx->pc_succ_insn);
     gen_init_header_info(ctx, blk_type, brh_type);
 }
 
@@ -384,6 +441,16 @@ static bool trans_blk_memset(DisasContext *ctx, arg_blk_memset *a)
                             tcg_constant_i32(a->reg_src1),
                             tcg_constant_i32(a->reg_src2));
     ctx->block_commit = true;
+    return true;
+}
+
+static bool trans_blk_esave_32(DisasContext *ctx, arg_blk_esave_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_ercov_32(DisasContext *ctx, arg_blk_ercov_32 *a)
+{
     return true;
 }
 
@@ -454,11 +521,6 @@ static bool trans_blk_fexit(DisasContext *ctx, arg_blk_fexit *a)
 static bool trans_blk_fret_ra(DisasContext *ctx, arg_blk_fret_ra *a)
 {
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_RET, HEAD_TYPE_FRET_RA, 0);
-#ifndef CONFIG_USER_ONLY
-    gen_helper_block_fret_ra(cpu_env, tcg_constant_i32(a->dst_begin),
-                             tcg_constant_i32(a->dst_end),
-                             tcg_constant_i32(a->imm));
-#else
     TCGv target_addr = tcg_temp_new_i64();
 
     tcg_gen_mov_tl(carg_tgt, cpu_gpr[xRA]);
@@ -479,7 +541,6 @@ static bool trans_blk_fret_ra(DisasContext *ctx, arg_blk_fret_ra *a)
         }
     }
     tcg_temp_free(target_addr);
-#endif
     ctx->block_commit = true;
     return true;
 }
@@ -487,11 +548,6 @@ static bool trans_blk_fret_ra(DisasContext *ctx, arg_blk_fret_ra *a)
 static bool trans_blk_fret_stk(DisasContext *ctx, arg_blk_fret_stk *a)
 {
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_RET, HEAD_TYPE_FRET_STK, 0);
-#ifndef CONFIG_USER_ONLY
-    gen_helper_block_fret_stk(cpu_env, tcg_constant_i32(a->dst_begin),
-                              tcg_constant_i32(a->dst_end),
-                              tcg_constant_i32(a->imm));
-#else
     TCGv target_addr = tcg_temp_new_i64();
     tcg_gen_addi_tl(cpu_gpr[xSP], cpu_gpr[xSP], a->imm);
     tcg_gen_mov_tl(target_addr, cpu_gpr[xSP]);
@@ -512,13 +568,19 @@ static bool trans_blk_fret_stk(DisasContext *ctx, arg_blk_fret_stk *a)
         }
     }
     tcg_temp_free(target_addr);
-#endif
     ctx->block_commit = true;
     return true;
 }
 
 static bool trans_blk_start_simt(DisasContext *ctx, arg_blk_start_simt *a)
 {
+    for (int i = 0; i < CPU_NB_LANE_NUM; ++i) {
+        ctx->fvec_t_idx[i] = 0;
+        ctx->fvec_u_idx[i] = 0;
+        ctx->fvec_m_idx[i] = 0;
+        ctx->fvec_n_idx[i] = 0;
+    }
+
     switch (a->para_mode) {
     case 0: /* vector mode */
     case 1: /* simt mode */
@@ -573,6 +635,18 @@ static bool trans_blk_start_cond(DisasContext *ctx, arg_blk_start_cond *a)
 static bool trans_blk_start_call(DisasContext *ctx, arg_blk_start_call *a)
 {
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CALL, a->blk_type, a->bnext_offset);
+    if (g_getenv("LINX_LOG_CALL_BUNDLE") &&
+        (ctx->base.pc_next == 0x925b1c ||
+         ctx->base.pc_next == 0xffffffff80925b1cULL ||
+         ctx->base.pc_next == 0x925a74 ||
+         ctx->base.pc_next == 0xffffffff80925a74ULL ||
+         ctx->base.pc_next == 0x9259fc ||
+         ctx->base.pc_next == 0xffffffff809259fcULL)) {
+        fprintf(stderr,
+                "LINX_START_CALL pc=0x%lx bpc=0x%lx bnext=0x%lx carg_tgt=0x%lx succ=0x%lx\n",
+                ctx->base.pc_next, ctx->bpc, ctx->bnext,
+                ctx->carg_tgt, ctx->pc_succ_insn);
+    }
 
     return true;
 }
@@ -608,18 +682,8 @@ static bool trans_blk_start_ret(DisasContext *ctx, arg_blk_start_ret *a)
 
 static bool trans_blk_offset_cond(DisasContext *ctx, arg_blk_offset_cond *a)
 {
-    uint64_t saved_header_info = ctx->header_info;
-    target_long saved_carg_tgt = ctx->carg_tgt;
-
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CONDITIONAL, HEAD_TYPE_STD,
                                   a->bnext_low);
-    /*
-     * Short offset headers are nested helper edges inside an outer block.
-     * Keep the conditional semantics for this tiny block, but restore the
-     * outer block state for the next TB when control falls through.
-     */
-    tcg_gen_movi_i64(header_info, saved_header_info);
-    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
 
     return true;
 }
@@ -627,18 +691,51 @@ static bool trans_blk_offset_cond(DisasContext *ctx, arg_blk_offset_cond *a)
 static bool trans_blk_offset_direct_call(DisasContext *ctx,
                                          arg_blk_offset_direct_call *a)
 {
-    uint64_t saved_header_info = ctx->header_info;
-    target_long saved_carg_tgt = ctx->carg_tgt;
-
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CALL, HEAD_TYPE_STD, a->bnext_low);
-    tcg_gen_movi_i64(header_info, saved_header_info);
-    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
+    if (g_getenv("LINX_LOG_CALL_BUNDLE") &&
+        (ctx->base.pc_next == 0x925b1c ||
+         ctx->base.pc_next == 0xffffffff80925b1cULL)) {
+        fprintf(stderr,
+                "LINX_CALL_BUNDLE_HEAD pc=0x%lx bpc=0x%lx bnext=0x%lx carg_tgt=0x%lx succ=0x%lx\n",
+                ctx->base.pc_next, ctx->bpc, ctx->bnext,
+                ctx->carg_tgt, ctx->pc_succ_insn);
+    }
     return true;
 }
 
 static bool trans_blk_biod(DisasContext *ctx, arg_blk_biod *a)
 {
     /* do nothing */
+    return true;
+}
+
+static bool trans_blk_b_arg_norm_32(DisasContext *ctx, arg_blk_b_arg_norm_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_b_arg_format_32(DisasContext *ctx, arg_blk_b_arg_format_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_b_arg_nz2dn_32(DisasContext *ctx, arg_blk_b_arg_nz2dn_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_b_arg_nd2zn_32(DisasContext *ctx, arg_blk_b_arg_nd2zn_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_b_arg_dn2zn_32(DisasContext *ctx, arg_blk_b_arg_dn2zn_32 *a)
+{
+    return true;
+}
+
+static bool trans_blk_b_arg_dn2nz_32(DisasContext *ctx, arg_blk_b_arg_dn2nz_32 *a)
+{
     return true;
 }
 
@@ -742,6 +839,14 @@ static bool trans_blk_catr(DisasContext *ctx, arg_blk_catr *a)
     uint64_t header = (a->far << 7) | (a->atom << 6) | (a->aq << 5) |
                       (a->rl << 4) | (a->dr << 2) | (a->trap);
 
+    if (ctx->base.pc_next == 0xffffffff801d220cULL ||
+        ctx->base.pc_next == 0x801d220cULL) {
+        fprintf(stderr,
+                "LINX_CAT220C pc=0x%llx atom=0x%llx prev_hdr=0x%llx\n",
+                (unsigned long long)ctx->base.pc_next,
+                (unsigned long long)header,
+                (unsigned long long)ctx->header_info);
+    }
 
     ctx->header_info = deposit64(ctx->header_info, HEADER_INFO_BATTR_START,
                                  HEADER_INFO_BATTR_LEN, header);
@@ -787,11 +892,11 @@ static bool trans_blk_hint_trace(DisasContext *ctx, arg_blk_hint_trace *a)
     return true;
 }
 
-static bool trans_blk_bdim(DisasContext *ctx, arg_blk_bdim *a)
+static bool trans_blk_bdim_fixed(DisasContext *ctx, int regsrc, int imm, int loopnest)
 {
     TCGv tmp = temp_new(ctx);
-    tcg_gen_addi_tl(tmp, cpu_gpr[a->RegSrc], a->imm);
-    switch (a->loopnest) {
+    tcg_gen_addi_tl(tmp, cpu_gpr[regsrc], imm);
+    switch (loopnest) {
     case 0:
         tcg_gen_mov_tl(csr_lb[0], tmp);
         break;
@@ -803,10 +908,25 @@ static bool trans_blk_bdim(DisasContext *ctx, arg_blk_bdim *a)
         break;
     default:
         gen_exception_illegal(ctx);
-            break;
+        break;
     }
 
     return true;
+}
+
+static bool trans_blk_bdim_lb0_32(DisasContext *ctx, arg_blk_bdim_lb0_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 0);
+}
+
+static bool trans_blk_bdim_lb1_32(DisasContext *ctx, arg_blk_bdim_lb1_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 1);
+}
+
+static bool trans_blk_bdim_lb2_32(DisasContext *ctx, arg_blk_bdim_lb2_32 *a)
+{
+    return trans_blk_bdim_fixed(ctx, a->RegSrc, a->imm, 2);
 }
 
 static bool trans_blk_start_stop(DisasContext *ctx, arg_blk_start_stop *a)

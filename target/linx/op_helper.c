@@ -58,6 +58,29 @@ struct simt_tmp_reg {
 
 static struct simt_tmp_reg *tmp_reg;
 
+static inline void linx_log_pc_rewrite(CPULINXState *env, const char *tag,
+                                       target_ulong old_pc,
+                                       target_ulong new_pc)
+{
+    if (!g_getenv("LINX_LOG_PC_REWRITE")) {
+        return;
+    }
+    if (old_pc < 0x10000 || new_pc >= 0x10000) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_PC_REWRITE %s old=%#" PRIx64 " new=%#" PRIx64
+            " ra=%#" PRIx64 " sp=%#" PRIx64 " bpc=%#" PRIx64
+            " tpc=%#" PRIx64 " tpc1=%#" PRIx64 " next=%#" PRIx64
+            " carg=%#" PRIx64 " evbase=%#" PRIx64 "\n",
+            tag, (uint64_t)old_pc, (uint64_t)new_pc,
+            (uint64_t)env->gpr[xRA], (uint64_t)env->gpr[xSP],
+            (uint64_t)env->bpc, (uint64_t)env->tpc, (uint64_t)env->tpc1,
+            (uint64_t)env->next_bpc, (uint64_t)env->carg_tgt,
+            (uint64_t)env->sysreg[ACR1].evbase);
+}
+
 bool is_cache_aligned(CPULINXState *env, target_ulong addr, int size);
 void load_store_prepare(CPULINXState *env, target_ulong addr, int size);
 
@@ -178,6 +201,51 @@ void helper_memprnt(target_ulong addr, target_ulong val, target_ulong type)
     } else if (type == WRITE) {
         qemu_log("(MEMW)%016lx:0x%lx\n", addr, val);
     }
+}
+
+void helper_simt_addr_debug(CPULINXState *env, target_ulong pc,
+                            target_ulong addr_base, target_ulong index,
+                            target_ulong addr, uint32_t lane_id)
+{
+    if (!g_getenv("LINX_LOG_SIMT_ADDR")) {
+        return;
+    }
+    fprintf(stderr,
+            "LINX_SIMT_ADDR pc=%#" PRIx64 " lane=%u base=%#" PRIx64
+            " index=%#" PRIx64 " addr=%#" PRIx64 "\n",
+            (uint64_t)pc, lane_id, (uint64_t)addr_base,
+            (uint64_t)index, (uint64_t)addr);
+}
+
+void helper_simt_val_debug(CPULINXState *env, target_ulong pc,
+                           target_ulong val, uint32_t lane_id)
+{
+    if (!g_getenv("LINX_LOG_SIMT_ADDR")) {
+        return;
+    }
+    fprintf(stderr,
+            "LINX_SIMT_VAL pc=%#" PRIx64 " lane=%u val=%#" PRIx64 "\n",
+            (uint64_t)pc, lane_id, (uint64_t)val);
+}
+
+void helper_ret_jump_trace(CPULINXState *env, target_ulong src_pc,
+                           target_ulong dst_pc)
+{
+    if (!g_getenv("LINX_LOG_RET_JUMP")) {
+        return;
+    }
+
+    if (src_pc < 0x10000 || dst_pc >= 0x10000) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_RET_JUMP src=%#" PRIx64 " dst=%#" PRIx64
+            " ra=%#" PRIx64 " sp=%#" PRIx64 " bpc=%#" PRIx64
+            " tpc1=%#" PRIx64 " evbase=%#" PRIx64 "\n",
+            (uint64_t)src_pc, (uint64_t)dst_pc, (uint64_t)env->gpr[xRA],
+            (uint64_t)env->gpr[xSP], (uint64_t)env->bpc,
+            (uint64_t)env->tpc1, (uint64_t)env->sysreg[ACR1].evbase);
 }
 
 void helper_vec_print(target_ulong val)
@@ -788,11 +856,12 @@ void helper_block_fret_stk(CPULINXState *env,
         env->gpr[i] = cpu_ldq_data_ra(env, target_addr, GETPC());
         if (i == ra_idx) {
             /*
-             * Preserve the restored return target as soon as RA is reloaded.
-             * If an exception or interrupt lands later in this template block,
-             * ebpcn must carry the return target rather than an older carg_tgt.
+             * FRET.STK returns through the first stack-restored slot. Mirror
+             * that slot into the architectural RA as soon as it is reloaded so
+             * both commit and later recovery use the real return target.
              */
-            env->carg_tgt = env->gpr[ra_idx];
+            env->gpr[xRA] = env->gpr[ra_idx];
+            env->carg_tgt = env->gpr[xRA];
         }
         if (qemu_loglevel_mask(CPU_LOG_LINX_MEM) &&
             qemu_log_in_addr_range(env->pc)) {
@@ -800,10 +869,327 @@ void helper_block_fret_stk(CPULINXState *env,
         }
     }
 
-    env->carg_tgt = env->gpr[ra_idx];
+    env->gpr[xRA] = env->gpr[ra_idx];
+    env->carg_tgt = env->gpr[xRA];
     env->gpr[xSP] = target_original + imm;
     env->tpc = LINX_ILLEGAL_INSTR_ADDR;
     env->in_body = false;
+}
+
+static inline uint64_t linx_pack_triplet16(const uint64_t vals[3])
+{
+    return (vals[0] & 0xffffULL) |
+           ((vals[1] & 0xffffULL) << 16) |
+           ((vals[2] & 0xffffULL) << 32);
+}
+
+static inline void linx_unpack_triplet16(uint64_t packed, uint64_t vals[3])
+{
+    vals[0] = packed & 0xffffULL;
+    vals[1] = (packed >> 16) & 0xffffULL;
+    vals[2] = (packed >> 32) & 0xffffULL;
+}
+
+static inline uint64_t linx_pack_pair32(uint32_t lo, uint32_t hi)
+{
+    return (uint64_t)lo | ((uint64_t)hi << 32);
+}
+
+static inline void linx_unpack_pair32(uint64_t packed, uint32_t *lo,
+                                      uint32_t *hi)
+{
+    *lo = packed & 0xffffffffU;
+    *hi = (packed >> 32) & 0xffffffffU;
+}
+
+static inline uint64_t linx_pack_block_indices(const CPULINXState *env)
+{
+    return (uint64_t)(env->t_idx & 0xffffU) |
+           ((uint64_t)(env->u_idx & 0xffffU) << 16) |
+           ((uint64_t)(env->ri_idx & 0xffffU) << 32) |
+           ((uint64_t)(env->ro_idx & 0xffffU) << 48);
+}
+
+static inline void linx_unpack_block_indices(CPULINXState *env, uint64_t packed)
+{
+    env->t_idx = packed & 0xffffU;
+    env->u_idx = (packed >> 16) & 0xffffU;
+    env->ri_idx = (packed >> 32) & 0xffffU;
+    env->ro_idx = (packed >> 48) & 0xffffU;
+}
+
+static void linx_save_block_locals_to_ebstate(CPULINXState *env, LinxSYSReg *sysreg)
+{
+    for (int i = 0; i < T_REG_SIZE; ++i) {
+        sysreg->elpr[5 + i] = env->blk_t[i];
+        sysreg->elpr[9 + i] = env->blk_u[i];
+    }
+    sysreg->elpr[13] = linx_pack_triplet16(env->csr_lb);
+    sysreg->elpr[14] = linx_pack_triplet16(env->csr_lc);
+
+    sysreg->elpr[18] = env->predm;
+    sysreg->elpr[19] = linx_pack_block_indices(env);
+    sysreg->elpr[20] = env->csr_lc_sum;
+    sysreg->elpr[21] = env->csr_lb_sum;
+    sysreg->elpr[22] = env->enable_lane_num;
+    sysreg->elpr[23] = env->tm_ext;
+    for (int i = 0; i < RI_SIZE; i += 2) {
+        sysreg->elpr[24 + (i / 2)] =
+            linx_pack_pair32(env->blk_ri[i], env->blk_ri[i + 1]);
+    }
+    for (int i = 0; i < RO_SIZE; i += 2) {
+        sysreg->elpr[30 + (i / 2)] =
+            linx_pack_pair32(env->blk_ro[i], env->blk_ro[i + 1]);
+    }
+}
+
+static void linx_restore_block_locals_from_ebstate(CPULINXState *env, const LinxSYSReg *sysreg)
+{
+    for (int i = 0; i < T_REG_SIZE; ++i) {
+        env->blk_t[i] = sysreg->elpr[5 + i];
+        env->blk_u[i] = sysreg->elpr[9 + i];
+    }
+    linx_unpack_triplet16(sysreg->elpr[13], env->csr_lb);
+    linx_unpack_triplet16(sysreg->elpr[14], env->csr_lc);
+
+    env->predm = sysreg->elpr[18];
+    linx_unpack_block_indices(env, sysreg->elpr[19]);
+    env->csr_lc_sum = sysreg->elpr[20];
+    env->csr_lb_sum = sysreg->elpr[21];
+    env->enable_lane_num = sysreg->elpr[22];
+    env->tm_ext = sysreg->elpr[23];
+    for (int i = 0; i < RI_SIZE; i += 2) {
+        linx_unpack_pair32(sysreg->elpr[24 + (i / 2)],
+                           &env->blk_ri[i], &env->blk_ri[i + 1]);
+    }
+    for (int i = 0; i < RO_SIZE; i += 2) {
+        linx_unpack_pair32(sysreg->elpr[30 + (i / 2)],
+                           &env->blk_ro[i], &env->blk_ro[i + 1]);
+    }
+}
+
+static uint32_t linx_live_cbranch_type(const CPULINXState *env)
+{
+    switch (get_brhtype(env->header_info)) {
+    case BRANCH_FALL:
+        return CBRANCH_FALL;
+    case BRANCH_DIRECT_LINK:
+    case BRANCH_CALL:
+        return CBRANCH_DIRECT;
+    case BRANCH_CONDITIONAL:
+        return CBRANCH_COND;
+    case BRANCH_IND:
+    case BRANCH_INDCALL:
+    case BRANCH_RET:
+        return CBRANCH_IND;
+    default:
+        return CBRANCH_FALL;
+    }
+}
+
+static uint64_t linx_live_ebpcn(const CPULINXState *env, uint32_t cbranch)
+{
+    return cbranch == CBRANCH_FALL ? env->next_bpc : env->carg_tgt;
+}
+
+static uint64_t linx_live_ebarg(const CPULINXState *env, const LinxSYSReg *sysreg)
+{
+    uint64_t ebarg = sysreg->ebarg;
+
+    ebarg = set_field(ebarg, EBARG_RL, get_rl(env->header_info));
+    ebarg = set_field(ebarg, EBARG_AQ, get_aq(env->header_info));
+    ebarg = set_field(ebarg, EBARG_TAKEN, env->carg_flag);
+    ebarg = set_field(ebarg, EBARG_TYPE, linx_live_cbranch_type(env));
+    ebarg = set_field(ebarg, EBARG_BLOCKTYPE, get_blktype(env->header_info));
+    ebarg = set_field(ebarg, EBARG_REGDST0, env->dsttile[0]);
+    ebarg = set_field(ebarg, EBARG_REGDST1, env->dsttile[1]);
+    ebarg = set_field(ebarg, EBARG_REGDST2, env->dsttile[2]);
+    ebarg = set_field(ebarg, EBARG_REGDST3, env->dsttile[3]);
+    return ebarg;
+}
+
+static void linx_apply_live_ebarg(CPULINXState *env, uint64_t ebarg)
+{
+    uint64_t hi = env->header_info;
+    uint32_t br_typ = get_field(ebarg, EBARG_TYPE);
+    uint32_t blk_typ = get_field(ebarg, EBARG_BLOCKTYPE);
+
+    env->carg_flag = get_field(ebarg, EBARG_TAKEN);
+    env->dsttile[0] = get_field(ebarg, EBARG_REGDST0);
+    env->dsttile[1] = get_field(ebarg, EBARG_REGDST1);
+    env->dsttile[2] = get_field(ebarg, EBARG_REGDST2);
+    env->dsttile[3] = get_field(ebarg, EBARG_REGDST3);
+
+    hi = set_field(hi, HEADER_INFO_AQ_MASK, get_field(ebarg, EBARG_AQ));
+    hi = set_field(hi, HEADER_INFO_RL_MASK, get_field(ebarg, EBARG_RL));
+    hi = set_field(hi, HEADER_INFO_BLKTYPE_MASK, blk_typ);
+    hi = set_field(hi, HEADER_INFO_BRHTYPE_MASK,
+                   br_typ == CBRANCH_DIRECT ? BRANCH_DIRECT_LINK :
+                   br_typ == CBRANCH_COND ? BRANCH_CONDITIONAL :
+                   br_typ == CBRANCH_IND ? BRANCH_IND : BRANCH_FALL);
+    hi = deposit64(hi, HEADER_INFO_DECOUPLE_START, HEADER_INFO_DECOUPLE_LEN,
+                   (blk_typ == HEAD_TYPE_STD || blk_typ == HEAD_TYPE_SYS ||
+                    blk_typ == HEAD_TYPE_FP) ? 0 : 1);
+    env->header_info = hi;
+}
+
+target_ulong linx_read_live_ebarg_group(CPULINXState *env, target_ulong acr,
+                                        int slot)
+{
+    LinxSYSReg *sysreg = &env->sysreg[acr];
+
+    switch (slot) {
+    case 0xF40:
+        return linx_live_ebarg(env, sysreg);
+    case 0xF41:
+        return env->bpc;
+    case 0xF42:
+        return linx_live_ebpcn(env, linx_live_cbranch_type(env));
+    case 0xF43:
+        return env->tpc;
+    case 0xF45:
+    case 0xF46:
+    case 0xF47:
+    case 0xF48:
+        return env->blk_t[slot - 0xF45];
+    case 0xF49:
+    case 0xF4A:
+    case 0xF4B:
+    case 0xF4C:
+        return env->blk_u[slot - 0xF49];
+    case 0xF4D:
+        return linx_pack_triplet16(env->csr_lb);
+    case 0xF4E:
+        return linx_pack_triplet16(env->csr_lc);
+    case 0xF52:
+        return env->predm;
+    case 0xF53:
+        return linx_pack_block_indices(env);
+    case 0xF54:
+        return env->csr_lc_sum;
+    case 0xF55:
+        return env->csr_lb_sum;
+    case 0xF56:
+        return env->enable_lane_num;
+    case 0xF57:
+        return env->tm_ext;
+    case 0xF58:
+    case 0xF59:
+    case 0xF5A:
+    case 0xF5B:
+    case 0xF5C:
+    case 0xF5D: {
+        int idx = (slot - 0xF58) * 2;
+        return linx_pack_pair32(env->blk_ri[idx], env->blk_ri[idx + 1]);
+    }
+    case 0xF5E:
+    case 0xF5F: {
+        int idx = (slot - 0xF5E) * 2;
+        return linx_pack_pair32(env->blk_ro[idx], env->blk_ro[idx + 1]);
+    }
+    default:
+        return slot == 0xF51 ? sysreg->ebarg_tplflags : sysreg->elpr[slot & 0x1f];
+    }
+}
+
+void linx_write_live_ebarg_group(CPULINXState *env, target_ulong acr, int slot,
+                                 target_ulong val)
+{
+    LinxSYSReg *sysreg = &env->sysreg[acr];
+
+    switch (slot) {
+    case 0xF40:
+        sysreg->ebarg = val;
+        linx_apply_live_ebarg(env, val);
+        return;
+    case 0xF41:
+        sysreg->ebpc = val;
+        env->bpc = val;
+        return;
+    case 0xF42:
+        sysreg->ebpcn = val;
+        if (get_field(sysreg->ebarg, EBARG_TYPE) == CBRANCH_FALL) {
+            env->next_bpc = val;
+        } else {
+            env->carg_tgt = val;
+        }
+        return;
+    case 0xF43:
+        sysreg->etpc = val;
+        env->tpc = val;
+        return;
+    case 0xF45:
+    case 0xF46:
+    case 0xF47:
+    case 0xF48:
+        sysreg->elpr[slot & 0x1f] = val;
+        env->blk_t[slot - 0xF45] = val;
+        return;
+    case 0xF49:
+    case 0xF4A:
+    case 0xF4B:
+    case 0xF4C:
+        sysreg->elpr[slot & 0x1f] = val;
+        env->blk_u[slot - 0xF49] = val;
+        return;
+    case 0xF4D:
+        sysreg->elpr[13] = val;
+        linx_unpack_triplet16(val, env->csr_lb);
+        return;
+    case 0xF4E:
+        sysreg->elpr[14] = val;
+        linx_unpack_triplet16(val, env->csr_lc);
+        return;
+    case 0xF52:
+        sysreg->elpr[18] = val;
+        env->predm = val;
+        return;
+    case 0xF53:
+        sysreg->elpr[19] = val;
+        linx_unpack_block_indices(env, val);
+        return;
+    case 0xF54:
+        sysreg->elpr[20] = val;
+        env->csr_lc_sum = val;
+        return;
+    case 0xF55:
+        sysreg->elpr[21] = val;
+        env->csr_lb_sum = val;
+        return;
+    case 0xF56:
+        sysreg->elpr[22] = val;
+        env->enable_lane_num = val;
+        return;
+    case 0xF57:
+        sysreg->elpr[23] = val;
+        env->tm_ext = val;
+        return;
+    case 0xF58:
+    case 0xF59:
+    case 0xF5A:
+    case 0xF5B:
+    case 0xF5C:
+    case 0xF5D: {
+        int idx = (slot - 0xF58) * 2;
+        sysreg->elpr[slot & 0x1f] = val;
+        linx_unpack_pair32(val, &env->blk_ri[idx], &env->blk_ri[idx + 1]);
+        return;
+    }
+    case 0xF5E:
+    case 0xF5F: {
+        int idx = (slot - 0xF5E) * 2;
+        sysreg->elpr[slot & 0x1f] = val;
+        linx_unpack_pair32(val, &env->blk_ro[idx], &env->blk_ro[idx + 1]);
+        return;
+    }
+    default:
+        if (slot == 0xF51) {
+            sysreg->ebarg_tplflags = val;
+        } else {
+            sysreg->elpr[slot & 0x1f] = val;
+        }
+        return;
+    }
 }
 
 static target_ulong get_src_regx_fvec_extx(target_ulong src, int src_width,
@@ -997,8 +1383,19 @@ void helper_update_lcreg(CPULINXState *env, uint32_t lane_id)
 
 target_ulong helper_update_predm(CPULINXState *env)
 {
+    static int simt_loop_logs;
     env->csr_lc_sum += env->enable_lane_num;
     int remain_lane = env->csr_lb_sum - env->csr_lc_sum;
+    if (g_getenv("LINX_LOG_SIMT_LOOP") && simt_loop_logs < 32) {
+        fprintf(stderr,
+                "LINX_SIMT_LOOP update pc=%#" PRIx64 " lc_sum=%#" PRIx64
+                " lb_sum=%#" PRIx64 " enable=%#" PRIx64 " remain=%d lb0=%#" PRIx64
+                " predm=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (uint64_t)env->csr_lc_sum,
+                (uint64_t)env->csr_lb_sum, (uint64_t)env->enable_lane_num,
+                remain_lane, (uint64_t)env->csr_lb[0], (uint64_t)env->predm);
+        simt_loop_logs++;
+    }
     if (!remain_lane) {
         if (qemu_loglevel_mask(CPU_LOG_LINX_MEM)) {
             int i = 0;
@@ -1324,14 +1721,31 @@ static void init_tile_outupt(CPULINXState *env)
 
 target_ulong helper_enable_loop(CPULINXState *env)
 {
+    static int simt_enable_logs;
     env->csr_lb_sum = env->csr_lb[0] * env->csr_lb[1] * env->csr_lb[2];
     uint64_t remain_lane = env->csr_lb[0] < env->csr_lb_sum ?
         env->csr_lb[0] : env->csr_lb_sum;
     env->predm = MAKE_64BIT_MASK(0, remain_lane);
+    env->enable_lane_num = remain_lane;
+    if (g_getenv("LINX_LOG_SIMT_LOOP") && simt_enable_logs < 16) {
+        fprintf(stderr,
+                "LINX_SIMT_LOOP enable pc=%#" PRIx64 " lb0=%#" PRIx64
+                " lb1=%#" PRIx64 " lb2=%#" PRIx64 " lb_sum=%#" PRIx64
+                " enable=%#" PRIx64 " predm=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (uint64_t)env->csr_lb[0],
+                (uint64_t)env->csr_lb[1], (uint64_t)env->csr_lb[2],
+                (uint64_t)env->csr_lb_sum, (uint64_t)env->enable_lane_num,
+                (uint64_t)env->predm);
+        simt_enable_logs++;
+    }
     if (!env->csr_lb[0] && !env->csr_lb[1] && !env->csr_lb[2]) {
         return 0;
     }
     env->csr_lc_sum = 0;
+    memset(env->fvec_t_idx, 0, sizeof(env->fvec_t_idx));
+    memset(env->fvec_u_idx, 0, sizeof(env->fvec_u_idx));
+    memset(env->fvec_m_idx, 0, sizeof(env->fvec_m_idx));
+    memset(env->fvec_n_idx, 0, sizeof(env->fvec_n_idx));
     init_tile_outupt(env);
     return 1;
 }
@@ -1539,6 +1953,20 @@ void helper_dynamic_reg_width_check(CPULINXState *env, target_ulong tpc,
 
 void helper_handle_exec_and_branch(CPULINXState *env)
 {
+    static int low_exec_logs;
+    target_ulong old_pc = env->pc;
+    uint8_t low_page[8];
+
+    if (g_getenv("LINX_LOG_EXEC_SIDE") && low_exec_logs < 8) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_EXEC_SIDE[before-jump pc=0x%016llx hdr=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)env->pc,
+                     (unsigned long long)env->header_info,
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
+
     switch (get_blktype(env->header_info)) {
     case HEAD_TYPE_STD:
     case HEAD_TYPE_FP:
@@ -1553,37 +1981,48 @@ void helper_handle_exec_and_branch(CPULINXState *env)
     case HEAD_TYPE_SYS:
         switch (get_brhtype(env->header_info)) {
         case BRANCH_DIRECT_LINK:
+            linx_log_pc_rewrite(env, "exec_direct_link", env->pc,
+                                env->bpc + env->bnext);
             env->pc = env->bpc + env->bnext;
             linx_reset_bstate(env);
             break;
         case BRANCH_CALL:
-            env->gpr[xA0] = env->next_bpc;
+            env->gpr[xRA] = env->next_bpc;
+            linx_log_pc_rewrite(env, "exec_call", env->pc,
+                                env->bpc + env->bnext);
             env->pc = env->bpc + env->bnext;
             linx_reset_bstate_short(env);
             break;
         case BRANCH_CONDITIONAL:
             if (env->carg_flag & CARG_FLAG_PREDICATE) {
+                linx_log_pc_rewrite(env, "exec_cond_taken", env->pc,
+                                    env->bpc + env->bnext);
                 env->pc = env->bpc + env->bnext;
             } else {
+                linx_log_pc_rewrite(env, "exec_cond_fall", env->pc,
+                                    env->next_bpc);
                 env->pc = env->next_bpc;
             }
             linx_reset_bstate_short(env);
-            assert(0);
             break;
         case BRANCH_FALL:
+            linx_log_pc_rewrite(env, "exec_fall", env->pc, env->next_bpc);
             env->pc = env->next_bpc;
             linx_reset_bstate(env);
             break;
         case BRANCH_IND:
+            linx_log_pc_rewrite(env, "exec_ind", env->pc, env->carg_tgt);
             env->pc = env->carg_tgt;
             linx_reset_bstate_short(env);
             break;
         case BRANCH_INDCALL:
-            env->gpr[xA0] = env->next_bpc;
+            env->gpr[xRA] = env->next_bpc;
+            linx_log_pc_rewrite(env, "exec_indcall", env->pc, env->carg_tgt);
             env->pc = env->carg_tgt;
             linx_reset_bstate_short(env);
             break;
         case BRANCH_RET:
+            linx_log_pc_rewrite(env, "exec_ret", env->pc, env->carg_tgt);
             env->pc = env->carg_tgt;
             linx_reset_bstate_short(env);
             break;
@@ -1594,6 +2033,18 @@ void helper_handle_exec_and_branch(CPULINXState *env)
     default:
          linx_debug_not_reached();
     }
+
+    if (g_getenv("LINX_LOG_EXEC_SIDE") && low_exec_logs < 8) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_EXEC_SIDE[after-jump pc=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)env->pc,
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+        low_exec_logs++;
+    }
+
+    (void)old_pc;
 }
 
 void helper_jump_to_atomic_context(CPULINXState *env)
@@ -1626,6 +2077,42 @@ void helper_log(CPULINXState *env, target_ulong id)
             id, cs->cflags_next_tb, env->tpc1);
 }
 
+void helper_trace_pc(CPULINXState *env, target_ulong pc)
+{
+    if (!g_getenv("LINX_LOG_TRACE_PC")) {
+        return;
+    }
+    fprintf(stderr,
+            "LINX_TRACE_PC pc=%#" PRIx64 " bpc=%#" PRIx64 " next=%#" PRIx64
+            " carg=%#" PRIx64 " hdr=%#" PRIx64 " ecause=%#" PRIx64 "\n",
+            (uint64_t)pc, (uint64_t)env->bpc, (uint64_t)env->next_bpc,
+            (uint64_t)env->carg_tgt, (uint64_t)env->header_info,
+            (uint64_t)env->sysreg[env->priv].ecause);
+    if (pc == 0xffffffff800480ecULL ||
+        pc == 0xffffffff80011094ULL ||
+        pc == 0xffffffff800110d8ULL ||
+        pc == 0xffffffff8004b1d4ULL ||
+        pc == 0xffffffff8004b360ULL ||
+        pc == 0xffffffff80926accULL ||
+        pc == 0xffffffff80926ed2ULL ||
+        pc == 0xffffffff80926f16ULL) {
+        fprintf(stderr,
+                "LINX_TRACE_STATE pc=%#" PRIx64
+                " a0=%#" PRIx64 " a1=%#" PRIx64 " a2=%#" PRIx64 " a3=%#" PRIx64
+                " sp=%#" PRIx64 " ra=%#" PRIx64
+                " s0=%#" PRIx64 " s1=%#" PRIx64 " s2=%#" PRIx64 " s3=%#" PRIx64
+                " s6=%#" PRIx64 " s7=%#" PRIx64 " s8=%#" PRIx64 "\n",
+                (uint64_t)pc,
+                (uint64_t)env->gpr[xA0], (uint64_t)env->gpr[xA1],
+                (uint64_t)env->gpr[xA2], (uint64_t)env->gpr[xA3],
+                (uint64_t)env->gpr[xSP], (uint64_t)env->gpr[xRA],
+                (uint64_t)env->gpr[11], (uint64_t)env->gpr[12],
+                (uint64_t)env->gpr[13], (uint64_t)env->gpr[14],
+                (uint64_t)env->gpr[17], (uint64_t)env->gpr[18],
+                (uint64_t)env->gpr[19]);
+    }
+}
+
 void helper_log_str(target_ulong ptr)
 {
     qemu_log("%s\n", (char *)ptr);
@@ -1644,18 +2131,53 @@ void load_store_prepare(CPULINXState *env, target_ulong addr, int size)
 {
     int i;
 
+    /*
+     * Real kernel code can emit multiple memory accesses under one B.CATR
+     * region that do not stay on a single cache line. Model this as a
+     * buffered line commit followed by a retarget to the new line instead of
+     * trapping the whole block as illegal.
+     */
+#define LINX_REFILL_STORE_BUF(new_addr)                                        \
+    do {                                                                       \
+        env->store_addr_valid = 1;                                             \
+        env->store_addr = (new_addr) & MAKE_64BIT_MASK(LINX_CACHE_LINE_SHIFT,  \
+                                                       64 - LINX_CACHE_LINE_SHIFT); \
+        for (i = 0; i < LINX_CACHE_LINE_SIZE / 8; i++) {                       \
+            env->store_buf[i] = cpu_ldq_data(env, env->store_addr + 8 * i);   \
+        }                                                                      \
+    } while (0)
+
+    if (env->pc == 0xffffffff80a1ca6eULL ||
+        env->pc == 0x80a1ca6eULL ||
+        env->pc == 0xffffffff801d2208ULL ||
+        env->pc == 0x801d2208ULL) {
+        fprintf(stderr,
+                "LINX_LOAD_STORE_PREP pc=%#" PRIx64 " addr=%#" PRIx64
+                " size=%d valid=%d store_addr=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (uint64_t)addr, size,
+                env->store_addr_valid, (uint64_t)env->store_addr);
+    }
+
     if (env->store_addr_valid == 0) {
-        env->store_addr_valid = 1;
-        env->store_addr = addr & MAKE_64BIT_MASK(LINX_CACHE_LINE_SHIFT,
-                                                 64 - LINX_CACHE_LINE_SHIFT);
-        for (i = 0; i < LINX_CACHE_LINE_SIZE / 8; i++) {
-            env->store_buf[i] = cpu_ldq_data(env, env->store_addr + 8 * i);
-        }
+        LINX_REFILL_STORE_BUF(addr);
     } else {
         if (!is_cache_aligned(env, addr, size)) {
-            linx_raise_exception(env, LINX_EXCP_INSN_ILLEGAL, GETPC());
+            if (env->pc == 0xffffffff80a1ca6eULL ||
+                env->pc == 0x80a1ca6eULL ||
+                env->pc == 0xffffffff801d2208ULL ||
+                env->pc == 0x801d2208ULL) {
+                fprintf(stderr,
+                        "LINX_LOAD_STORE_PREP_MISS pc=%#" PRIx64
+                        " addr=%#" PRIx64 " size=%d store_addr=%#" PRIx64 "\n",
+                        (uint64_t)env->pc, (uint64_t)addr, size,
+                        (uint64_t)env->store_addr);
+            }
+            helper_write_store_buf_to_mem(env);
+            LINX_REFILL_STORE_BUF(addr);
         }
     }
+
+#undef LINX_REFILL_STORE_BUF
 }
 
 void helper_store_data(CPULINXState *env, target_ulong addr,
@@ -1696,11 +2218,14 @@ void helper_write_store_buf_to_mem(CPULINXState *env)
         for (i = 0; i < LINX_CACHE_LINE_SIZE / 8; i++) {
             cpu_stq_data_ra(env, addr + 8 * i, env->store_buf[i], GETPC());
         }
+        helper_clear_store_buf(env);
     }
 }
 
 target_ulong helper_ssrswap(CPULINXState *env, target_ulong src, int csr)
 {
+    target_ulong old;
+    int orig_csr = csr;
 
 #ifndef CONFIG_USER_ONLY
     if (extract32(csr, 8, 4) == 0xf) {
@@ -1708,12 +2233,27 @@ target_ulong helper_ssrswap(CPULINXState *env, target_ulong src, int csr)
     }
 #endif
 
-    return helper_csrrw(env, csr, src, -1);
+    old = helper_csrrw(env, csr, src, -1);
+    if (g_getenv("LINX_LOG_ETEMP") && csr == A1_ETEMP) {
+        fprintf(stderr,
+                "LINX_ETEMP_SWAP pc=%#" PRIx64 " priv=%d orig=%#x csr=%#x old=%#" PRIx64 " src=%#" PRIx64 " new=%#" PRIx64 "\n",
+                (uint64_t)env->pc, env->priv, orig_csr, csr,
+                (uint64_t)old, (uint64_t)src,
+                (uint64_t)env->sysreg[ACR1].etemp);
+    }
+    return old;
 }
 
 target_ulong helper_csrr(CPULINXState *env, int csr)
 {
     target_ulong val = 0;
+
+#ifndef CONFIG_USER_ONLY
+    if (extract32(csr, 8, 4) == 0xf) {
+        csr = (env->priv << 12) | csr;
+    }
+#endif
+
     LINXException ret = linx_csrrw(env, csr, &val, 0, 0);
 
     if (ret != LINX_EXCP_NONE) {
@@ -1724,7 +2264,73 @@ target_ulong helper_csrr(CPULINXState *env, int csr)
 
 void helper_csrw(CPULINXState *env, int csr, target_ulong src)
 {
+    static int low_csr_logs;
+    static int mmu_csr_logs;
+    static int dt_leaf_logs;
+    uint8_t low_page[8];
+    int orig_csr = csr;
+#ifndef CONFIG_USER_ONLY
+    if (extract32(csr, 8, 4) == 0xf) {
+        csr = (env->priv << 12) | csr;
+    }
+#endif
+
+    if (g_getenv("LINX_LOG_MMU_CSR") &&
+        mmu_csr_logs < 32 &&
+        (csr == A1_MMTBASE || csr == A1_MMCONFIG || csr == A1_EVBASE)) {
+        fprintf(stderr,
+                "LINX_HELPER_CSRW pc=%#" PRIx64 " orig=%#x csr=%#x src=%#" PRIx64 "\n",
+                (uint64_t)env->pc, orig_csr, csr, (uint64_t)src);
+        mmu_csr_logs++;
+    }
+    if (g_getenv("LINX_LOG_DTB_LEAF") &&
+        csr == A1_MMTBASE && src == 0x3020 && dt_leaf_logs < 4) {
+        MemTxResult res0, res1, res2, res3;
+        uint64_t pgd1 = address_space_ldq(&address_space_memory, 0xc08008,
+                                          MEMTXATTRS_UNSPECIFIED, &res0);
+        uint64_t p4d0 = address_space_ldq(&address_space_memory, 0xc0d000,
+                                          MEMTXATTRS_UNSPECIFIED, &res1);
+        uint64_t pud0 = address_space_ldq(&address_space_memory, 0xc0e000,
+                                          MEMTXATTRS_UNSPECIFIED, &res2);
+        uint64_t pmd0 = address_space_ldq(&address_space_memory, 0xc0f000,
+                                          MEMTXATTRS_UNSPECIFIED, &res3);
+        fprintf(stderr,
+                "LINX_DTB_LEAF_DUMP pc=%#" PRIx64 " pgd1=%#" PRIx64 " p4d0=%#" PRIx64
+                " pud0=%#" PRIx64 " pmd0=%#" PRIx64 " res=%d/%d/%d/%d\n",
+                (uint64_t)env->pc, pgd1, p4d0, pud0, pmd0,
+                res0, res1, res2, res3);
+        dt_leaf_logs++;
+    }
+    if (g_getenv("LINX_LOG_ETEMP") && csr == A1_ETEMP) {
+        fprintf(stderr,
+                "LINX_ETEMP_WRITE pc=%#" PRIx64 " priv=%d orig=%#x csr=%#x src=%#" PRIx64 " old=%#" PRIx64 "\n",
+                (uint64_t)env->pc, env->priv, orig_csr, csr,
+                (uint64_t)src, (uint64_t)env->sysreg[ACR1].etemp);
+    }
+
+    if (g_getenv("LINX_LOG_EXEC_SIDE") &&
+        csr == A1_EVBASE && low_csr_logs < 4) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_EXEC_SIDE[before-csrw pc=0x%016llx csr=0x%x orig=0x%x src=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)env->pc, csr, orig_csr,
+                     (unsigned long long)src,
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
+
     LINXException ret = linx_csrrw(env, csr, NULL, src, -1);
+
+    if (g_getenv("LINX_LOG_EXEC_SIDE") &&
+        csr == A1_EVBASE && low_csr_logs < 4) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_EXEC_SIDE[after-csrw pc=0x%016llx csr=0x%x]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)env->pc, csr,
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+        low_csr_logs++;
+    }
 
     if (ret != LINX_EXCP_NONE) {
         linx_raise_exception(env, ret, GETPC());
@@ -1735,6 +2341,13 @@ target_ulong helper_csrrw(CPULINXState *env, int csr,
                           target_ulong src, target_ulong write_mask)
 {
     target_ulong val = 0;
+
+#ifndef CONFIG_USER_ONLY
+    if (extract32(csr, 8, 4) == 0xf) {
+        csr = (env->priv << 12) | csr;
+    }
+#endif
+
     LINXException ret = linx_csrrw(env, csr, &val, src, write_mask);
 
     if (ret != LINX_EXCP_NONE) {
@@ -1785,6 +2398,7 @@ void linx_recovery_bstate_by_ebstate(CPULINXState *env, target_ulong priv)
     }
     env->tpc1 = env->tpc_s;
     env->tileop_info = env->tileop_s;
+    linx_restore_block_locals_from_ebstate(env, sysreg);
     hi = set_field(hi, HEADER_INFO_BRHTYPE_MASK, br_typ);
 
     if (blk_typ == HEAD_TYPE_STD || blk_typ == HEAD_TYPE_SYS ||
@@ -1798,6 +2412,19 @@ void linx_recovery_bstate_by_ebstate(CPULINXState *env, target_ulong priv)
 
     hi = set_field(hi, HEADER_INFO_BLKTYPE_MASK, blk_typ);
     env->header_info = hi;
+    if (env->tpc_s == 0xffffffff80924724ULL ||
+        env->tpc_s == 0x80924724ULL ||
+        sysreg->etpc == 0xffffffff80924724ULL ||
+        sysreg->etpc == 0x80924724ULL) {
+        fprintf(stderr,
+                "LINX_RECOVER_4724 priv=%lu etpc=%#" PRIx64 " ebpc=%#" PRIx64
+                " ebpcn=%#" PRIx64 " ebarg=%#" PRIx64 " blk=%u br=%u"
+                " tpc_s=%#" PRIx64 " hdr=%#" PRIx64 "\n",
+                (unsigned long)priv, (uint64_t)sysreg->etpc,
+                (uint64_t)sysreg->ebpc, (uint64_t)sysreg->ebpcn,
+                (uint64_t)ebarg, blk_typ, br_typ, (uint64_t)env->tpc_s,
+                (uint64_t)env->header_info);
+    }
     env->dsttile[0] = get_field(ebarg, EBARG_REGDST0);
     env->dsttile[1] = get_field(ebarg, EBARG_REGDST1);
     env->dsttile[2] = get_field(ebarg, EBARG_REGDST2);
@@ -1820,6 +2447,20 @@ void linx_save_bstate(CPULINXState *env, target_ulong acr)
     ebarg = set_field(ebarg, EBARG_TAKEN, env->carg_flag);
     env->tpc_s = env->tpc1;
     env->tileop_s = env->tileop_info;
+    if (env->tpc1 == 0xffffffff80924724ULL ||
+        env->tpc1 == 0x80924724ULL ||
+        env->pc == 0xffffffff80924724ULL ||
+        env->pc == 0x80924724ULL) {
+        fprintf(stderr,
+                "LINX_SAVE_4724 acr=%lu pc=%#" PRIx64 " bpc=%#" PRIx64
+                " next=%#" PRIx64 " carg=%#" PRIx64 " hdr=%#" PRIx64
+                " br=%u blk=%u tpc1=%#" PRIx64 "\n",
+                (unsigned long)acr, (uint64_t)env->pc, (uint64_t)env->bpc,
+                (uint64_t)env->next_bpc, (uint64_t)env->carg_tgt,
+                (uint64_t)env->header_info, get_brhtype(env->header_info),
+                get_blktype(env->header_info), (uint64_t)env->tpc1);
+    }
+    linx_save_block_locals_to_ebstate(env, sysreg);
     switch (br_typ) {
     case BRANCH_FALL: {
         br_typ = CBRANCH_FALL;
@@ -1838,7 +2479,15 @@ void linx_save_bstate(CPULINXState *env, target_ulong acr)
         br_typ = CBRANCH_IND;
     } break;
     default:
-        assert(0);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "linx_save_bstate: unexpected br_typ=%u blk_typ=%u "
+                      "header_info=0x%lx pc=0x%lx bpc=0x%lx next_bpc=0x%lx "
+                      "carg_tgt=0x%lx; falling back to CBRANCH_FALL\n",
+                      br_typ, get_blktype(env->header_info), env->header_info,
+                      env->pc, env->bpc, env->next_bpc, env->carg_tgt);
+        br_typ = CBRANCH_FALL;
+        sysreg->ebpcn = env->next_bpc;
+        break;
     }
 
     ebarg = set_field(ebarg, EBARG_TYPE, br_typ);
@@ -1881,15 +2530,24 @@ void linx_save_bstate_layer1(CPULINXState *env, target_ulong acr)
 void linx_reset_bstate(CPULINXState *env)
 {
     memset(&env->tileop_info, 0, sizeof(struct TILEOPInfo));
+    env->header_info = 0;
+    env->carg_flag = BSTATE_CARG_CLEAN;
+    env->carg_tgt = LINX_ILLEGAL_INSTR_ADDR;
     env->tpc = LINX_ILLEGAL_INSTR_ADDR;
     env->bpc = LINX_ILLEGAL_INSTR_ADDR;
     env->next_bpc = LINX_ILLEGAL_INSTR_ADDR;
     env->tpc1 = LINX_ILLEGAL_INSTR_ADDR;
     env->in_body = false;
+    memset(env->fvec_t_idx, 0, sizeof(env->fvec_t_idx));
+    memset(env->fvec_u_idx, 0, sizeof(env->fvec_u_idx));
+    memset(env->fvec_m_idx, 0, sizeof(env->fvec_m_idx));
+    memset(env->fvec_n_idx, 0, sizeof(env->fvec_n_idx));
 }
 
 void linx_reset_bstate_short(CPULINXState *env)
 {
+    env->header_info = 0;
+    env->carg_flag = BSTATE_CARG_CLEAN;
     env->carg_tgt = LINX_ILLEGAL_INSTR_ADDR;
     env->tpc = LINX_ILLEGAL_INSTR_ADDR;
     env->tpc1 = LINX_ILLEGAL_INSTR_ADDR;
@@ -1978,6 +2636,7 @@ void helper_blk_do_recovery(CPULINXState *env)
     if (enable_delay_block_intr)
         helper_set_next_flags(env, CF_NOIRQ);
 
+    linx_log_pc_rewrite(env, "blk_recovery", env->pc, newpc);
     env->pc = newpc;
 }
 
@@ -2056,16 +2715,66 @@ target_ulong helper_acre(CPULINXState *env, uint32_t rra)
     old_env = *env;
     prev_acr = get_field(env->sysreg[env->priv].ecstate, ECSTATE_ACR);
 
+    if (g_getenv("LINX_LOG_ACRE")) {
+        fprintf(stderr,
+                "LINX_ACRE_ENTER pc=%#" PRIx64 " priv=%lu rra=%u ecause=%#" PRIx64
+                " ecstate=%#" PRIx64 " ebpc=%#" PRIx64 " ebpcn=%#" PRIx64
+                " etpc=%#" PRIx64 " bpc=%#" PRIx64 " next=%#" PRIx64
+                " carg=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (unsigned long)env->priv, rra,
+                (uint64_t)env->sysreg[env->priv].ecause,
+                (uint64_t)env->sysreg[env->priv].ecstate,
+                (uint64_t)env->sysreg[env->priv].ebpc,
+                (uint64_t)env->sysreg[env->priv].ebpcn,
+                (uint64_t)env->sysreg[env->priv].etpc,
+                (uint64_t)env->bpc, (uint64_t)env->next_bpc,
+                (uint64_t)env->carg_tgt);
+        fflush(stderr);
+    }
+
     if (env->priv > ACR1) {
          linx_raise_exception(env, LINX_EXCP_INSN_ILLEGAL, GETPC());
     }
 
     ecstate = env->sysreg[env->priv].ecstate;
     env->cstate = ecstate;
-    if (env->cstate & ECSTATE_BI) {
+    if (get_field(env->sysreg[env->priv].ecause, ECAUSE_TRAPNUM) == 17) {
+        /*
+         * Linux break handling updates pt_regs->tpc via skip_over_break().
+         * restore_all reloads that into SSR_ETPC before ACRE, so breakpoint
+         * return should continue from ETPC, not from the saved EBPC head.
+         */
+        retpc = env->sysreg[env->priv].etpc;
+    } else if (env->cstate & ECSTATE_BI) {
         retpc = env->sysreg[env->priv].etpc;
     } else {
         retpc = sextract64(env->sysreg[env->priv].ebpc, 0, 48);
+    }
+
+    if (g_getenv("LINX_LOG_BREAK_FLOW") &&
+        (env->sysreg[env->priv].ebpc == 0xa12d6c ||
+         env->sysreg[env->priv].ebpc == 0xffffffff80a12d6cULL ||
+         env->sysreg[env->priv].ebpc == 0xa12d8e ||
+         env->sysreg[env->priv].ebpc == 0xffffffff80a12d8eULL ||
+         env->sysreg[env->priv].etpc == 0xa12d68 ||
+         env->sysreg[env->priv].etpc == 0xffffffff80a12d68ULL ||
+         env->sysreg[env->priv].etpc == 0xa12d8a ||
+         env->sysreg[env->priv].etpc == 0xffffffff80a12d8aULL ||
+         env->sysreg[env->priv].ebpc == 0x000100382001000dULL ||
+         env->sysreg[env->priv].etpc == 0x000100382001000dULL ||
+         get_field(env->sysreg[env->priv].ecause, ECAUSE_TRAPNUM) == 17)) {
+        fprintf(stderr,
+                "LINX_BREAK_FLOW acre pc=%#" PRIx64 " priv=%lu rra=%u"
+                " ecstate=%#" PRIx64 " ebpc=%#" PRIx64
+                " ebpcn=%#" PRIx64 " etpc=%#" PRIx64
+                " ebarg=%#" PRIx64 " retpc=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (unsigned long)env->priv, rra,
+                (uint64_t)env->sysreg[env->priv].ecstate,
+                (uint64_t)env->sysreg[env->priv].ebpc,
+                (uint64_t)env->sysreg[env->priv].ebpcn,
+                (uint64_t)env->sysreg[env->priv].etpc,
+                (uint64_t)env->sysreg[env->priv].ebarg,
+                (uint64_t)retpc);
     }
     /* is this a sret in block commit stage? */
 
@@ -2095,6 +2804,27 @@ target_ulong helper_acre(CPULINXState *env, uint32_t rra)
                       env->lxlcid, old_env.pc, retpc,
                       old_env.priv, env->priv);
         linx_cs_log(env);
+    }
+
+    linx_log_pc_rewrite(env, "acre", old_env.pc, retpc);
+    if (g_getenv("LINX_LOG_PC_REWRITE") &&
+        (old_env.pc < 0x20000 || retpc < 0x10000)) {
+        fprintf(stderr,
+                "LINX_ACRE_STATE old=%#" PRIx64 " ret=%#" PRIx64
+                " priv=%lu prev_acr=%#" PRIx64 " ecstate=%#" PRIx64
+                " ebpc=%#" PRIx64 " ebpcn=%#" PRIx64 " etpc=%#" PRIx64
+                " ebarg=%#" PRIx64 " in_body=%d tpc=%#" PRIx64
+                " bpc=%#" PRIx64 " next=%#" PRIx64 " carg=%#" PRIx64 "\n",
+                (uint64_t)old_env.pc, (uint64_t)retpc,
+                (unsigned long)old_env.priv, (uint64_t)prev_acr,
+                (uint64_t)old_env.sysreg[old_env.priv].ecstate,
+                (uint64_t)old_env.sysreg[old_env.priv].ebpc,
+                (uint64_t)old_env.sysreg[old_env.priv].ebpcn,
+                (uint64_t)old_env.sysreg[old_env.priv].etpc,
+                (uint64_t)old_env.sysreg[old_env.priv].ebarg,
+                old_env.in_body, (uint64_t)old_env.tpc,
+                (uint64_t)old_env.bpc, (uint64_t)old_env.next_bpc,
+                (uint64_t)old_env.carg_tgt);
     }
 
     return retpc;
@@ -4320,6 +5050,7 @@ static void tileop_ercov(CPULINXState *env)
     }
     reader += 128;
 
+    linx_log_pc_rewrite(env, "tileop_ercov", env->pc, ((uint64_t *)reader)[0]);
     env->pc = ((uint64_t *)reader)[0];
     reader += 8;
 

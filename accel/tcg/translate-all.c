@@ -58,6 +58,7 @@
 #include "sysemu/tcg.h"
 #include "qapi/error.h"
 #include "hw/core/tcg-cpu-ops.h"
+#include "exec/address-spaces.h"
 #include "tb-hash.h"
 #include "tb-context.h"
 #include "internal.h"
@@ -1391,6 +1392,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     target_ulong virt_page2;
     tcg_insn_unit *gen_code_buf;
     int gen_code_size, search_size, max_insns;
+    uint8_t low_page[8];
 #ifdef CONFIG_PROFILER
     TCGProfile *prof = &tcg_ctx->prof;
     int64_t ti;
@@ -1448,7 +1450,21 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tcg_func_start(tcg_ctx);
 
     tcg_ctx->cpu = env_cpu(env);
+    if (g_getenv("LINX_LOG_TB_GEN_LOW") && pc == 0) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_TB_GEN_LOW[before-icode]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
     gen_intermediate_code(cpu, tb, max_insns);
+    if (g_getenv("LINX_LOG_TB_GEN_LOW") && pc == 0) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_TB_GEN_LOW[after-icode]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
     assert(tb->size != 0);
     tcg_ctx->cpu = NULL;
     max_insns = tb->icount;

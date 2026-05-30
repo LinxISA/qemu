@@ -35,6 +35,7 @@ static int qemu_loglevel_save = -1;
 static int log_append = 0;
 static GArray *debug_regions;
 uint64_t start_exec_from_pc;
+bool start_exec_from_pc_set;
 
 void qemu_enable_log(void)
 {
@@ -218,7 +219,9 @@ void qemu_set_start_exec_pc(const char *spec_str, Error **errp)
     if (qemu_strtou64(spec_str, NULL, 0, &start_exec_from_pc)) {
         error_setg(errp,
             "Bad specifier! Please: -start_exec specified_pc");
+        return;
     }
+    start_exec_from_pc_set = true;
 
 }
 

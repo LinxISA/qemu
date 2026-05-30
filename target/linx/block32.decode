@@ -26,6 +26,7 @@
 %cmt                   25:7
 %cross_bid             25:7
 %arc_id                15:10
+%barg_format            7:5
 
 %reg_dst                7:5
 %reg_src0              15:5
@@ -43,17 +44,18 @@
 %srctile0               20:6
 %srctile1               26:6
 %dsttile                7:3
+%catr_reserve          15:11
 
 %s0r                    10:1
 %s1r                    11:1
 %imm4                   15:4
 %l                      19:1
 
-%rl                    15:1
-%aq                    16:1
-%atom                  17:1
-%far                   18:1
-%trap                  19:1
+%rl                    28:1
+%aq                    29:1
+%atom                  30:1
+%far                   27:1
+%trap                  31:1
 %c                     25:1
 %dr                    26:1
 %pad                   27:2
@@ -91,17 +93,19 @@
 &fret_stk           dst_end dst_begin imm
 
 &btext              btext
+&barg_format        format
 
 &bior               reg_src2 reg_src1 reg_src0 reg_dst
 &biod               DepSrc0 DepDst
 &biot               s1r s0r l dsttile srctile1 srctile0 imm
 
-&catr               dr far trap atom aq rl
+&catr               reserve dr far trap atom aq rl
 &datr               cm pad sat c dat_typ rm layout
 &bhint              prefetch_size temp l_ul v
 &bhint_trace        b_e
 
 &bdim               imm loopnest RegSrc
+&bdim_fixed         imm RegSrc
 &ebrk      imm
 
 # Formats 32:
@@ -123,16 +127,18 @@
 @fret_stk       ....... ..... ..... ... ..... ... ....              &fret_stk           dst_end=%reg_src1 dst_begin=%reg_src0 imm=%template_imm
 
 @btext          ......................... ... ....                  &btext              btext=%bnext_offset_branch
+@barg_format    ......................... ... ....                  &barg_format        format=%barg_format
 
 @bior           .. ... . . ..... ..... ... .. ... ... ....          &bior               %reg_src2 %reg_src1 %reg_src0 %reg_dst
 @biod           ..... .. ..... ..... ... ..... ... ....             &biod               %DepSrc0 %DepDst
 @biot           .. . . . .. ..... ..... ... ..... ... ....          &biot               %s1r %s0r %l %dsttile %srctile1 %srctile0 imm=%imm4
 
-@catr          ......... . . . . . . . . ... ..... ... ....         &catr              %dr %far %trap %atom %aq %rl
+@catr          ......... . . . . . . . . ... ..... ... ....         &catr              reserve=%catr_reserve %dr %far %trap %atom %aq %rl
 @datr          ......... . . . . . . . . ... ..... ... ....         &datr              %cm %pad %sat %c %dat_typ %rm layout=%reg_dst
 @bhint          ............ . .. . . ... ..... ... ....            &bhint              %prefetch_size %temp %l_ul %v
 @bhint_trace    ................ . ... ..... ... ....               &bhint_trace        b_e=%v
 @bdim           ............ ..... ... ..... ... ....               &bdim               imm=%imm17 %loopnest RegSrc=%RegSrc_1
+@bdim_fixed     ............ ..... ... ..... ... ....               &bdim_fixed         imm=%imm17 RegSrc=%RegSrc_1
 
 @ebrk           .... .... .... .....  ... ..... .......             &ebrk               imm=%imm_ebrk
 
@@ -162,6 +168,8 @@ blk_offset_btext    ......................... 000 0011              @btext
 blk_memcopy         ..... 00 ..... ..... 000 00000 011 0001         @memory
 blk_memmove         ..... 01 ..... ..... 000 00000 011 0001         @memory
 blk_memset          ..... 00 ..... ..... 001 00000 011 0001         @memory
+blk_esave_32        ..... 00 ..... ..... 010 00000 011 0001         @memory
+blk_ercov_32        ..... 00 ..... ..... 011 00000 011 0001         @memory
 
 blk_fentry          ....... ..... ..... 000 ..... 100 0001          @fentry
 blk_fexit           ....... ..... ..... 001 ..... 100 0001          @fexit
@@ -173,14 +181,22 @@ blk_biod            00000 00 00000 ..... 001 ..... 001 0011         @biod
 blk_biot1           ...... ...... . .... 100 . . ... 001 0011       @biot
 blk_biot2           ...... ...... . .... 101 . . ... 001 0011       @biot
 blk_biot3           ...... ...... . .... 110 . . ... 001 0011       @biot
+blk_b_arg_norm_32   00000000000011111010000000100011                @empty
+blk_b_arg_format_32 00000000000000000011.....1000011               @barg_format
+blk_b_arg_nz2dn_32  00000010000011111010111000100011                @empty
+blk_b_arg_nd2zn_32  00011000000000100010000110100011                @empty
+blk_b_arg_dn2zn_32  00011000000000100010010000100011                @empty
+blk_b_arg_dn2nz_32  00011000000000001010010010100011                @empty
 
-blk_catr           00000 . 0 00000 . . . . . 000 00000 010 0011    @catr
+blk_catr           ................. 000 00000 010 0011             @catr
 blk_datr           ... .. . . ..... 00   ... 001 ..... 010 0011    @datr
 
 blk_hint            ............ 0 .. . . 000 00000 011 0011        @bhint
 blk_hint_trace      ---------------- . 001 00000 011 0011           @bhint_trace
 
-blk_bdim            ............ ..... ... ..... 100 0011           @bdim
+blk_bdim_lb0_32     ............ ..... 000 ..... 100 0011           @bdim_fixed
+blk_bdim_lb1_32     ............ ..... 001 ..... 100 0011           @bdim_fixed
+blk_bdim_lb2_32     ............ ..... 010 ..... 100 0011           @bdim_fixed
 
 #-----------------------------------------------------------------------------------------------------
 
@@ -248,6 +264,8 @@ blk_bdim            ............ ..... ... ..... 100 0011           @bdim
 &arg_store              SrcD SrcRType SrcR SrcL
 &arg_store_imm          imm SrcR SrcL
 &arg_store_symbol       imm SrcL
+&arg_prf32              shamt SrcRType SrcR SrcL
+&arg_prfi32             imm SrcL
 &arg_atomic             far aq rl SrcR SrcL RegDst
 &arg_exec_ctrl          SrcL
 &arg_fence_d            PRED_IMM SUCC_IMM
@@ -294,6 +312,8 @@ blk_bdim            ............ ..... ... ..... 100 0011           @bdim
 @arg_store              ..... .. ..... ..... ... ..... ... ....             &arg_store          SrcD=%shamt_5 %SrcRType %SrcR %SrcL
 @arg_store_imm          ....... ..... ..... ... ..... ... ....              &arg_store_imm      imm=%s_imm_12_1 %SrcR %SrcL
 @arg_store_symbol       ............ ..... ... ..... ... ....               &arg_store_symbol   imm=%s_imm_17_1 %SrcL
+@arg_prf32              ..... .. ..... ..... ... ..... ... ....             &arg_prf32          shamt=%shamt_5 %SrcRType %SrcR %SrcL
+@arg_prfi32             ............ ..... ... ..... ... ....               &arg_prfi32         imm=%s_imm_12 %SrcL
 @arg_lr                 .... . . . ..... ..... ... ..... ... ....           &arg_atomic         far=%far_1 aq=%aq_1 rl=%rl_1 SrcR=0 %SrcL %RegDst
 @arg_sc                 .... . . . ..... ..... ... ..... ... ....           &arg_atomic         far=%far_1 aq=%aq_1 rl=%rl_1 %SrcR %SrcL %RegDst
 @arg_atomic_ld          .... . . . ..... ..... ... ..... ... ....           &arg_atomic         far=%far_1 aq=%aq_1 rl=%rl_1 %SrcR %SrcL %RegDst
@@ -458,6 +478,7 @@ blk_ld_32               ..... .. ..... ..... 011 ..... 000 1001             @arg
 blk_lbu_32              ..... .. ..... ..... 100 ..... 000 1001             @arg_arith
 blk_lhu_32              ..... .. ..... ..... 101 ..... 000 1001             @arg_arith
 blk_lwu_32              ..... .. ..... ..... 110 ..... 000 1001             @arg_arith
+blk_prf_32              ..... .. ..... ..... 111 00000 000 1001             @arg_prf32
 
 # Load imm offset
 blk_lb_i_32             ............ ..... 000 ..... 001 1001               @arg_arith_si
@@ -474,6 +495,7 @@ blk_lw_ui_32            ............ ..... 010 ..... 010 1001               @arg
 blk_ld_ui_32            ............ ..... 011 ..... 010 1001               @arg_arith_si
 blk_lhu_ui_32           ............ ..... 101 ..... 010 1001               @arg_arith_si
 blk_lwu_ui_32           ............ ..... 110 ..... 010 1001               @arg_arith_si
+blk_prfi_u_32           ............ ..... 111 00000 010 1001               @arg_prfi32
 
 # Load symbol
 blk_lbl_32              ................. 000 ..... 011 1001                @arg_load_symbol

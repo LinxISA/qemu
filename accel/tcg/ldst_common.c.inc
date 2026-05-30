@@ -100,6 +100,14 @@ void cpu_stl_be_mmuidx_ra(CPUArchState *env, abi_ptr addr, uint32_t val,
 void cpu_stq_be_mmuidx_ra(CPUArchState *env, abi_ptr addr, uint64_t val,
                           int mmu_idx, uintptr_t ra)
 {
+    if (g_getenv("LINX_LOG_PT_SLOT_WRITES") &&
+        ((addr >= 0xc08000 && addr < 0xc0c000) ||
+         (addr >= 0xffffffff80c08000ULL && addr < 0xffffffff80c0c000ULL))) {
+        fprintf(stderr,
+                "LINX_PTQ_STORE pc=%#" PRIx64 " addr=%#" PRIx64
+                " val=%#" PRIx64 " mmu_idx=%d ra=%#" PRIxPTR "\n",
+                (uint64_t)env->pc, (uint64_t)addr, val, mmu_idx, ra);
+    }
     MemOpIdx oi = make_memop_idx(MO_BEUQ | MO_UNALN, mmu_idx);
     cpu_stq_be_mmu(env, addr, val, oi, ra);
 }
@@ -121,6 +129,14 @@ void cpu_stl_le_mmuidx_ra(CPUArchState *env, abi_ptr addr, uint32_t val,
 void cpu_stq_le_mmuidx_ra(CPUArchState *env, abi_ptr addr, uint64_t val,
                           int mmu_idx, uintptr_t ra)
 {
+    if (g_getenv("LINX_LOG_PT_SLOT_WRITES") &&
+        ((addr >= 0xc08000 && addr < 0xc0c000) ||
+         (addr >= 0xffffffff80c08000ULL && addr < 0xffffffff80c0c000ULL))) {
+        fprintf(stderr,
+                "LINX_PTQ_STORE pc=%#" PRIx64 " addr=%#" PRIx64
+                " val=%#" PRIx64 " mmu_idx=%d ra=%#" PRIxPTR "\n",
+                (uint64_t)env->pc, (uint64_t)addr, val, mmu_idx, ra);
+    }
     MemOpIdx oi = make_memop_idx(MO_LEUQ | MO_UNALN, mmu_idx);
     cpu_stq_le_mmu(env, addr, val, oi, ra);
 }

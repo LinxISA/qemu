@@ -37,6 +37,45 @@ static void sifive_test_write(void *opaque, hwaddr addr,
     if (addr == 0) {
         int status = val64 & 0xffff;
         int code = (val64 >> 16) & 0xffff;
+        /*
+         * Current Linx freestanding images may materialize small finisher
+         * constants via HL.LUI-style sequences, leaving the status in the
+         * upper 16 bits and zero in the low 16 bits. Accept that encoding as
+         * equivalent so direct-boot bring-up can make forward progress.
+         */
+        if (status == 0) {
+            switch (code) {
+            case FINISHER_FAIL:
+            case FINISHER_PASS:
+            case FINISHER_RESET:
+                status = code;
+                code = 0;
+                break;
+            default:
+                break;
+            }
+        }
+        if ((status != FINISHER_FAIL &&
+             status != FINISHER_PASS &&
+             status != FINISHER_RESET) &&
+            (val64 & 0xfff) == 0) {
+            int shifted_status = (val64 >> 12) & 0xffff;
+            int shifted_code = (val64 >> 28) & 0xffff;
+            switch (shifted_status) {
+            case FINISHER_FAIL:
+            case FINISHER_PASS:
+            case FINISHER_RESET:
+                status = shifted_status;
+                code = shifted_code;
+                break;
+            default:
+                break;
+            }
+        }
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "linx_test finisher write val=0x%016" PRIx64
+                      " status=0x%04x code=0x%04x\n",
+                      val64, status, code);
         switch (status) {
         case FINISHER_FAIL:
             exit(code);

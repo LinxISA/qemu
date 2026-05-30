@@ -28,6 +28,7 @@
 #include "sysemu/runstate.h"
 #include "sysemu/numa.h"
 #include "qemu/error-report.h"
+#include "exec/address-spaces.h"
 #include "sysemu/qtest.h"
 #include "hw/pci/pci.h"
 #include "hw/mem/nvdimm.h"
@@ -1247,7 +1248,25 @@ void qdev_machine_creation_done(void)
        clock values from the log. */
     replay_checkpoint(CHECKPOINT_RESET);
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
+    if (g_getenv("LINX_LOG_MACHINE_LOW")) {
+        uint8_t low_page[8];
+
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_MACHINE_LOW[after-system-reset]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
     register_global_state();
+    if (g_getenv("LINX_LOG_MACHINE_LOW")) {
+        uint8_t low_page[8];
+
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_MACHINE_LOW[after-register-global-state]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
 }
 
 static const TypeInfo machine_info = {

@@ -28,6 +28,26 @@
 #define CAPA             0x0024
 #define CAPA_EN          0x0025
 
+#define CSR_SCRATCH0     0x0030
+#define CSR_SCRATCH1     0x0031
+#define CSR_SCRATCH2     0x0032
+#define CSR_SCRATCH3     0x0033
+#define CSR_SCRATCH4     0x0034
+#define CSR_SCRATCH5     0x0035
+#define CSR_SCRATCH6     0x0036
+#define CSR_SCRATCH7     0x0037
+#define CSR_SCRATCH8     0x0038
+#define CSR_SCRATCH9     0x0039
+#define CSR_SCRATCH10    0x003a
+#define CSR_SCRATCH11    0x003b
+#define CSR_SCRATCH12    0x003c
+#define CSR_SCRATCH13    0x003d
+#define CSR_SCRATCH14    0x003e
+#define CSR_SCRATCH15    0x003f
+#define CSR_SCRATCH16    0x0040
+#define CSR_SCRATCH17    0x0041
+#define CSR_SCRATCH18    0x0042
+
 #define CSR_LC0          0x0050
 #define CSR_LB0          0x0051
 #define CSR_LPCB0        0x0052
@@ -47,8 +67,6 @@
 #define CSR_TR2          0x0801
 
 #define CSR_CW           0x0820
-
-#define CSR_FSSR         0x0038
 
 /* ACR0 System Register Address Macro Definition */
 #define  A0_ECSTATE      0x0f00
@@ -71,23 +89,56 @@
 #define  A0_TIMECMP      0x0f21
 #define  A0_XBINFO       0x0f30
 #define  A0_ACR_PARAM    0x0f31
-#define  A0_ELPR0        0x0f40
-#define  A0_ELPR1        0x0f41
-#define  A0_ELPR2        0x0f42
-#define  A0_ELPR3        0x0f43
-#define  A0_ELPR4        0x0f44
-#define  A0_ELPR5        0x0f45
-#define  A0_ELPR6        0x0f46
-#define  A0_ELPR7        0x0f47
-#define  A0_ELPR8        0x0f48
-#define  A0_ELPR9        0x0f49
-#define  A0_ELPR10       0x0f4a
-#define  A0_ELPR11       0x0f4b
-#define  A0_ELPR12       0x0f4c
-#define  A0_ELPR13       0x0f4d
-#define  A0_ELPR14       0x0f4e
-#define  A0_ELPR15       0x0f4f
-#define  A0_ELPR16       0x0f50
+#define  A0_EBARG0       0x0f40
+#define  A0_EBARG_BPC_CUR 0x0f41
+#define  A0_EBARG_BPC_TGT 0x0f42
+#define  A0_EBARG_TPC    0x0f43
+#define  A0_EBARG_LRA    0x0f44
+#define  A0_EBARG_TQ0    0x0f45
+#define  A0_EBARG_TQ1    0x0f46
+#define  A0_EBARG_TQ2    0x0f47
+#define  A0_EBARG_TQ3    0x0f48
+#define  A0_EBARG_UQ0    0x0f49
+#define  A0_EBARG_UQ1    0x0f4a
+#define  A0_EBARG_UQ2    0x0f4b
+#define  A0_EBARG_UQ3    0x0f4c
+#define  A0_EBARG_LB     0x0f4d
+#define  A0_EBARG_LC     0x0f4e
+#define  A0_EBARG_EXTCTX_PTR 0x0f4f
+#define  A0_EBARG_EXTCTX_META 0x0f50
+#define  A0_EBARG_TPLFLAGS 0x0f51
+#define  A0_EBSTATE_EXT0  0x0f52
+#define  A0_EBSTATE_EXT1  0x0f53
+#define  A0_EBSTATE_EXT2  0x0f54
+#define  A0_EBSTATE_EXT3  0x0f55
+#define  A0_EBSTATE_EXT4  0x0f56
+#define  A0_EBSTATE_EXT5  0x0f57
+#define  A0_EBSTATE_EXT6  0x0f58
+#define  A0_EBSTATE_EXT7  0x0f59
+#define  A0_EBSTATE_EXT8  0x0f5a
+#define  A0_EBSTATE_EXT9  0x0f5b
+#define  A0_EBSTATE_EXT10 0x0f5c
+#define  A0_EBSTATE_EXT11 0x0f5d
+#define  A0_EBSTATE_EXT12 0x0f5e
+#define  A0_EBSTATE_EXT13 0x0f5f
+/* Legacy aliases retained for bring-up compatibility. */
+#define  A0_ELPR0        A0_EBARG0
+#define  A0_ELPR1        A0_EBARG_BPC_CUR
+#define  A0_ELPR2        A0_EBARG_BPC_TGT
+#define  A0_ELPR3        A0_EBARG_TPC
+#define  A0_ELPR4        A0_EBARG_LRA
+#define  A0_ELPR5        A0_EBARG_TQ0
+#define  A0_ELPR6        A0_EBARG_TQ1
+#define  A0_ELPR7        A0_EBARG_TQ2
+#define  A0_ELPR8        A0_EBARG_TQ3
+#define  A0_ELPR9        A0_EBARG_UQ0
+#define  A0_ELPR10       A0_EBARG_UQ1
+#define  A0_ELPR11       A0_EBARG_UQ2
+#define  A0_ELPR12       A0_EBARG_UQ3
+#define  A0_ELPR13       A0_EBARG_LB
+#define  A0_ELPR14       A0_EBARG_LC
+#define  A0_ELPR15       A0_EBARG_EXTCTX_PTR
+#define  A0_ELPR16       A0_EBARG_EXTCTX_META
 
 /* ACR1 System Register Address Macro Definition */
 #define  A1_ECSTATE      0x1f00
@@ -110,23 +161,56 @@
 #define  A1_TIMECMP      0x1f21
 #define  A1_XBINFO       0x1f30
 #define  A1_ACR_PARAM    0x1f31
-#define  A1_ELPR0        0x1f40
-#define  A1_ELPR1        0x1f41
-#define  A1_ELPR2        0x1f42
-#define  A1_ELPR3        0x1f43
-#define  A1_ELPR4        0x1f44
-#define  A1_ELPR5        0x1f45
-#define  A1_ELPR6        0x1f46
-#define  A1_ELPR7        0x1f47
-#define  A1_ELPR8        0x1f48
-#define  A1_ELPR9        0x1f49
-#define  A1_ELPR10       0x1f4a
-#define  A1_ELPR11       0x1f4b
-#define  A1_ELPR12       0x1f4c
-#define  A1_ELPR13       0x1f4d
-#define  A1_ELPR14       0x1f4e
-#define  A1_ELPR15       0x1f4f
-#define  A1_ELPR16       0x1f50
+#define  A1_EBARG0       0x1f40
+#define  A1_EBARG_BPC_CUR 0x1f41
+#define  A1_EBARG_BPC_TGT 0x1f42
+#define  A1_EBARG_TPC    0x1f43
+#define  A1_EBARG_LRA    0x1f44
+#define  A1_EBARG_TQ0    0x1f45
+#define  A1_EBARG_TQ1    0x1f46
+#define  A1_EBARG_TQ2    0x1f47
+#define  A1_EBARG_TQ3    0x1f48
+#define  A1_EBARG_UQ0    0x1f49
+#define  A1_EBARG_UQ1    0x1f4a
+#define  A1_EBARG_UQ2    0x1f4b
+#define  A1_EBARG_UQ3    0x1f4c
+#define  A1_EBARG_LB     0x1f4d
+#define  A1_EBARG_LC     0x1f4e
+#define  A1_EBARG_EXTCTX_PTR 0x1f4f
+#define  A1_EBARG_EXTCTX_META 0x1f50
+#define  A1_EBARG_TPLFLAGS 0x1f51
+#define  A1_EBSTATE_EXT0  0x1f52
+#define  A1_EBSTATE_EXT1  0x1f53
+#define  A1_EBSTATE_EXT2  0x1f54
+#define  A1_EBSTATE_EXT3  0x1f55
+#define  A1_EBSTATE_EXT4  0x1f56
+#define  A1_EBSTATE_EXT5  0x1f57
+#define  A1_EBSTATE_EXT6  0x1f58
+#define  A1_EBSTATE_EXT7  0x1f59
+#define  A1_EBSTATE_EXT8  0x1f5a
+#define  A1_EBSTATE_EXT9  0x1f5b
+#define  A1_EBSTATE_EXT10 0x1f5c
+#define  A1_EBSTATE_EXT11 0x1f5d
+#define  A1_EBSTATE_EXT12 0x1f5e
+#define  A1_EBSTATE_EXT13 0x1f5f
+/* Legacy aliases retained for bring-up compatibility. */
+#define  A1_ELPR0        A1_EBARG0
+#define  A1_ELPR1        A1_EBARG_BPC_CUR
+#define  A1_ELPR2        A1_EBARG_BPC_TGT
+#define  A1_ELPR3        A1_EBARG_TPC
+#define  A1_ELPR4        A1_EBARG_LRA
+#define  A1_ELPR5        A1_EBARG_TQ0
+#define  A1_ELPR6        A1_EBARG_TQ1
+#define  A1_ELPR7        A1_EBARG_TQ2
+#define  A1_ELPR8        A1_EBARG_TQ3
+#define  A1_ELPR9        A1_EBARG_UQ0
+#define  A1_ELPR10       A1_EBARG_UQ1
+#define  A1_ELPR11       A1_EBARG_UQ2
+#define  A1_ELPR12       A1_EBARG_UQ3
+#define  A1_ELPR13       A1_EBARG_LB
+#define  A1_ELPR14       A1_EBARG_LC
+#define  A1_ELPR15       A1_EBARG_EXTCTX_PTR
+#define  A1_ELPR16       A1_EBARG_EXTCTX_META
 
 #define CSTATE_PERMIT       0x200ULL
 #define CSTATE_IE           0x10ULL
@@ -364,17 +448,23 @@ typedef struct {
 /* Load/Store support only EXT_NONE, EXT_SW, EXT_UW, except AU_NEG */
 #define INSTR_TYPE_CMP_SETC_LD_ST  4
 
-/* register ext operation type*/
-#define REG_EXT_NONE  0
-#define REG_EXT_SW    1
-#define REG_EXT_UW    2
-#define REG_EXT_NOT   3
+/*
+ * v0.56 SrcRType encoding shared with the current LLVM backend:
+ *   0 = .sw
+ *   1 = .uw
+ *   2 = .neg / .not
+ *   3 = no modifier
+ */
+#define REG_EXT_SW    0
+#define REG_EXT_UW    1
+#define REG_EXT_NOT   2
+#define REG_EXT_NONE  3
 
 
-#define AU_NONE  0
-#define AU_SW  1
-#define AU_UW  2
-#define AU_NEG  3
+#define AU_SW    0
+#define AU_UW    1
+#define AU_NEG   2
+#define AU_NONE  3
 
 #define ATOMIC_B   0
 #define ATOMIC_H   1

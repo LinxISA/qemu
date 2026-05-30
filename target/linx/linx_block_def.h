@@ -6,7 +6,8 @@
 
 #define T_REG_SIZE       4
 #define U_REG_SIZE       4
-#define FVEC_REG_SIZE    8
+#define FVEC_REG_SIZE    32
+#define FVEC_WIDTH_TRACKED_SIZE 8
 #define FVEC_REG_IDX_MASK    (FVEC_REG_SIZE - 1)
 #define GPR_REG_SIZE     24
 #define RI_SIZE          12

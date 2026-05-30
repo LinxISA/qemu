@@ -5,6 +5,7 @@
 #include "hw/core/cpu.h"
 #include "disas/disas.h"
 extern uint64_t start_exec_from_pc;
+extern bool start_exec_from_pc_set;
 
 /* cpu_dump_state() logging functions: */
 /**

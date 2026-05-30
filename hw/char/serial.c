@@ -344,6 +344,12 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
             serial_update_parameters(s);
         } else {
             s->thr = (uint8_t) val;
+            if (g_getenv("LINX_LOG_UART_TX")) {
+                fprintf(stderr,
+                        "LINX_UART_TX reg=%" HWADDR_PRIx " val=%#x char=%c\n",
+                        addr, (unsigned)val & 0xff,
+                        (val >= 32 && val < 127) ? (char)val : '.');
+            }
             if(s->fcr & UART_FCR_FE) {
                 /* xmit overruns overwrite data, so make space if needed */
                 if (fifo8_is_full(&s->xmit_fifo)) {

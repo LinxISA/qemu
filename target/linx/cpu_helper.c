@@ -48,6 +48,14 @@ linx_exception_route exception_route_table[LINX_EXCP_TABLESIZE] = {
     [LINX_EXCP_ILLSSR]               = {{ 0, 1, 1}},
 };
 
+static inline int linx_get_inst_len_from_opcode(uint16_t opcode)
+{
+    if (extract64(opcode, 0, 1) == 0) {
+        return extract16(opcode, 1, 3) == 0b111 ? 6 : 2;
+    }
+    return extract64(opcode, 0, 4) == 0b1111 ? 8 : 4;
+}
+
 int linx_cpu_mmu_index(CPULINXState *env, bool ifetch)
 {
 #ifdef CONFIG_USER_ONLY
@@ -238,11 +246,32 @@ static int get_physical_address(CPULINXState *env, hwaddr *physical,
 
     /* if EN == 1, Address translation enable, default value is 0 */
     int en = get_field(env->sysreg[ACR1].mmconfig, MMCONFIG_EN);
+    bool watch_addr =
+        addr == 0x342 || addr == 0xcc || addr == 0x10000000 ||
+        addr == 0x1803ff8 || addr == 0x1806510 || addr == 0x1806518 ||
+        addr == 0x0001000000000000ULL || addr == 0x0001000000000004ULL ||
+        addr == 0xffffffff81746350ULL || addr == 0xffffffff81746363ULL ||
+        addr == 0xffffffff81810ad0ULL || addr == 0xffffffff81810af0ULL ||
+        addr == 0xffffffff80a00278ULL || addr == 0xffffffff800126a2ULL;
 
+    if (watch_addr) {
+        fprintf(stderr,
+                "LINX_WALK_START addr=%#" PRIx64 " priv=%d en=%d base=%#" PRIx64
+                " mmtbase=%#" PRIx64 " mmconfig=%#" PRIx64 "\n",
+                (uint64_t)addr, priv, en,
+                (uint64_t)get_field(env->sysreg[ACR1].mmtbase, MMTBASE_TN0PB) << PGSHIFT,
+                (uint64_t)env->sysreg[ACR1].mmtbase,
+                (uint64_t)env->sysreg[ACR1].mmconfig);
+    }
 
     if (priv == ACR0 || en == 0) {
         *physical = addr;
         *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+        if (watch_addr) {
+            fprintf(stderr,
+                    "LINX_WALK_BYPASS addr=%#" PRIx64 " priv=%d en=%d\n",
+                    (uint64_t)addr, priv, en);
+        }
         return TRANSLATE_SUCCESS;
     }
     *prot = 0;
@@ -262,6 +291,15 @@ static int get_physical_address(CPULINXState *env, hwaddr *physical,
         widened = 0;
     }
     hwaddr tmp_base = base;
+
+    if (watch_addr) {
+        fprintf(stderr,
+                "LINX_WALK_START addr=%#" PRIx64 " priv=%d en=%d base=%#" PRIx64
+                " mmtbase=%#" PRIx64 " mmconfig=%#" PRIx64 " vm=%d q=%d\n",
+                (uint64_t)addr, priv, en, (uint64_t)base,
+                (uint64_t)env->sysreg[ACR1].mmtbase,
+                (uint64_t)env->sysreg[ACR1].mmconfig, vm, is_qtne);
+    }
 
     switch (vm) {
     case VM_0_VA36_VA39:
@@ -318,7 +356,20 @@ restart:
                       i, pte_addr, pte, tmp_base);
 
         if (res != MEMTX_OK) {
+            if (watch_addr) {
+                fprintf(stderr,
+                        "LINX_WALK_PTE_FAULT addr=%#" PRIx64 " level=%d pte_addr=%#" PRIx64 "\n",
+                        (uint64_t)addr, i, (uint64_t)pte_addr);
+            }
             return TRANSLATE_FAIL;
+        }
+
+        if (watch_addr) {
+            fprintf(stderr,
+                    "LINX_WALK_LEVEL addr=%#" PRIx64 " level=%d base=%#" PRIx64
+                    " idx=%#" PRIx64 " pte_addr=%#" PRIx64 " pte=%#" PRIx64 "\n",
+                    (uint64_t)addr, i, (uint64_t)base, (uint64_t)idx,
+                    (uint64_t)pte_addr, (uint64_t)pte);
         }
 
         hwaddr ppn = pte >> PTE_PPN_SHIFT;
@@ -420,6 +471,13 @@ restart:
             if ((pte & TNE_W) &&
                     (access_type == MMU_DATA_STORE || (pte & TNE_D))) {
                 *prot |= PAGE_WRITE;
+            }
+            if (addr == 0x0001000000000000ULL || addr == 0x0001000000000004ULL) {
+                fprintf(stderr,
+                        "LINX_WALK_SUCCESS addr=%#" PRIx64 " phys=%#" PRIx64
+                        " prot=%d pte=%#" PRIx64 " level=%d\n",
+                        (uint64_t)addr, (uint64_t)*physical, *prot,
+                        (uint64_t)pte, i);
             }
             return TRANSLATE_SUCCESS;
         }
@@ -697,6 +755,16 @@ void linx_cpu_do_interrupt(CPUState *cs)
 
     /* FIXME: the fixup needs to be redesigned later */
     if (linx_should_do_fixup(env, cause, sync)) {
+        if (g_getenv("LINX_LOG_PC_REWRITE") &&
+            env->pc >= 0x10000 && (env->bpc + env->bnext) < 0x10000) {
+            fprintf(stderr,
+                    "LINX_PC_REWRITE cpu_fixup old=%#" PRIx64
+                    " new=%#" PRIx64 " bpc=%#" PRIx64 " bnext=%#" PRIx64
+                    " cause=%#" PRIx64 "\n",
+                    (uint64_t)env->pc, (uint64_t)(env->bpc + env->bnext),
+                    (uint64_t)env->bpc, (uint64_t)env->bnext,
+                    (uint64_t)cause);
+        }
         env->pc = env->bpc + env->bnext;
         linx_reset_bstate(env);
         goto ret_label;
@@ -719,6 +787,45 @@ void linx_cpu_do_interrupt(CPUState *cs)
                   ", earg0:0x"TARGET_FMT_lx", desc=%s\n",
                   __func__, env->lxlcid, sync, trapnum, syndrome, env->pc,
                   earg0, linx_cpu_get_trap_name(cause, sync));
+
+    if (sync && trapnum == 17 && env->priv == ACR1) {
+        uint32_t insn32 = cpu_ldl_code(env, env->pc);
+        target_ulong next_pc = env->pc +
+            linx_get_inst_len_from_opcode(cpu_lduw_code(env, env->pc));
+        uint16_t next16 = cpu_lduw_code(env, next_pc);
+
+        if (insn32 == 0x0010102bU) {
+            if (next16 == 0x0000) {
+                next_pc += 2;
+            }
+            env->pc = next_pc;
+            env->bpc = next_pc;
+            env->tpc = next_pc;
+            env->next_bpc = next_pc;
+            env->carg_tgt = next_pc;
+            env->tpc1 = LINX_ILLEGAL_INSTR_ADDR;
+            env->header_info = 0;
+            env->in_body = false;
+            linx_reset_bstate(env);
+            goto ret_label;
+        }
+    }
+
+    if (env->pc == 0xffffffff809270f2ULL ||
+        env->pc == 0x809270f2ULL) {
+        fprintf(stderr,
+                "LINX_PF270F2 s8=%#" PRIx64 " s2=%#" PRIx64
+                " a0=%#" PRIx64 " a1=%#" PRIx64
+                " a2=%#" PRIx64 " a3=%#" PRIx64 " hdr=%#" PRIx64
+                " pred=%#" PRIx64 " bpc=%#" PRIx64 " next=%#" PRIx64
+                " carg=%#" PRIx64 "\n",
+                (uint64_t)env->gpr[19], (uint64_t)env->gpr[13],
+                (uint64_t)env->gpr[xA0], (uint64_t)env->gpr[xA1],
+                (uint64_t)env->gpr[xA2], (uint64_t)env->gpr[xA3],
+                (uint64_t)env->header_info, (uint64_t)env->predm,
+                (uint64_t)env->bpc, (uint64_t)env->next_bpc,
+                (uint64_t)env->carg_tgt);
+    }
 
     CPULINXState old_env = *env;
 
@@ -756,17 +863,51 @@ void linx_cpu_do_interrupt(CPUState *cs)
      */
     linx_cpu_set_mode(env, handle_acr);
 
-    if (is_valid_linx_addr(env->bpc)) {
-        sysreg->ebpc = env->bpc;
-    } else {
-        sysreg->ebpc = env->pc;
+    /*
+     * An interrupt can land while a prior EBSTATE restore has already made the
+     * recovered block body live again (`tpc` valid) but before the block head
+     * has been reopened (`bpc` still invalid). In that window the architectural
+     * block state is the recovered EBSTATE, not the transient exception-vector
+     * PC. Overwriting ebpc/ebpcn/etpc here loses the original block target and
+     * later resumes into garbage or zero.
+     */
+    bool recovering_bstate = env->in_body &&
+                             !is_valid_linx_addr(env->bpc) &&
+                             is_valid_linx_addr(env->tpc);
+    if (!recovering_bstate) {
+        if (is_valid_linx_addr(env->bpc)) {
+            sysreg->ebpc = env->bpc;
+        } else {
+            sysreg->ebpc = env->pc;
+        }
+        if (trapnum == 17) {
+            sysreg->ebpcn = env->pc +
+                linx_get_inst_len_from_opcode(cpu_lduw_code(env, env->pc));
+        } else if (get_brhtype(env->header_info) == BRANCH_FALL) {
+            sysreg->ebpcn = env->next_bpc;
+        } else {
+            sysreg->ebpcn = env->carg_tgt;
+        }
+        sysreg->etpc = env->pc;
     }
-    if (get_brhtype(env->header_info) == BRANCH_FALL) {
-        sysreg->ebpcn = env->next_bpc;
-    } else {
-        sysreg->ebpcn = env->carg_tgt;
+
+    if (g_getenv("LINX_LOG_BREAK_FLOW") &&
+        (env->pc == 0xa12d68 || env->pc == 0xffffffff80a12d68ULL ||
+         trapnum == 17)) {
+        fprintf(stderr,
+                "LINX_BREAK_FLOW trap pc=%#" PRIx64 " trapnum=%#" PRIx64
+                " hdr=%#" PRIx64 " br=%u in_body=%d recovering=%d"
+                " bpc=%#" PRIx64 " next=%#" PRIx64 " carg=%#" PRIx64
+                " save_ebpc=%#" PRIx64 " save_ebpcn=%#" PRIx64
+                " save_etpc=%#" PRIx64 " save_ebarg=%#" PRIx64 "\n",
+                (uint64_t)env->pc, (uint64_t)trapnum,
+                (uint64_t)env->header_info, get_brhtype(env->header_info),
+                env->in_body, recovering_bstate,
+                (uint64_t)env->bpc, (uint64_t)env->next_bpc,
+                (uint64_t)env->carg_tgt, (uint64_t)sysreg->ebpc,
+                (uint64_t)sysreg->ebpcn, (uint64_t)sysreg->etpc,
+                (uint64_t)sysreg->ebarg);
     }
-    sysreg->etpc =  env->pc;
 
     /*
      * Are we in the middle of block?
@@ -784,11 +925,23 @@ void linx_cpu_do_interrupt(CPUState *cs)
         }
         /* save bstate to ebstate */
         if (!linx_is_atomic_blk(get_blk_atomic(env->header_info))) {
-            linx_save_bstate(env, handle_acr);
-            save_state = true;
+            if (recovering_bstate) {
+                save_state = true;
+            } else {
+                linx_save_bstate(env, handle_acr);
+                save_state = true;
+            }
         }
     }
     /* normal exceptions handling process. */
+    if (g_getenv("LINX_LOG_PC_REWRITE") &&
+        env->pc >= 0x10000 && sysreg->evbase < 0x10000) {
+        fprintf(stderr,
+                "LINX_PC_REWRITE cpu_exception old=%#" PRIx64
+                " new=%#" PRIx64 " cause=%#" PRIx64 " sync=%d\n",
+                (uint64_t)env->pc, (uint64_t)sysreg->evbase,
+                (uint64_t)cause, sync);
+    }
     env->pc = sysreg->evbase;
 
     /* Log state before switch out to interrupt handler */

@@ -45,7 +45,7 @@ static const MemMapEntry virt_memmap[] = {
     [VIRT_DEBUG] =       {        0x0,         0x100 },
     [VIRT_MROM] =        {     0x1000,        0x1000 },
     [VIRT_RESET] =       {     0x2000,        0x1000 },
-    [VIRT_TEST] =        {   0x100000,        0x1000 },
+    [VIRT_TEST] =        { 0x10009000,        0x1000 },
     [VIRT_RTC] =         {   0x101000,        0x1000 },
     [VIRT_PCIE_PIO] =    {  0x3000000,       0x10000 },
     [VIRT_LXIC] =        {  VIRT_LXIC_BASE, VIRT_LXIC_SIZE(VIRT_CPUS_MAX) },
@@ -69,6 +69,60 @@ static uint32_t mmio_mask, virtio_mask, pcie_mask;
 
 int linx_cpus_total_num;
 static target_ulong linx_boot_stack_top;
+
+static void linx_virt_log_low_page(MachineState *machine, const char *tag)
+{
+    void *ram;
+    uint8_t *p;
+
+    if (!g_getenv("LINX_LOG_LOW_PAGE_INIT")) {
+        return;
+    }
+
+    ram = memory_region_get_ram_ptr(machine->ram);
+    if (!ram) {
+        error_report("LINX_LOW_PAGE_INIT[%s]: ram=NULL", tag);
+        return;
+    }
+
+    p = (uint8_t *)ram + 0x5c;
+    error_report("LINX_LOW_PAGE_INIT[%s]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                 tag, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+}
+
+static void linx_virt_debug_protect_low_page(MachineState *machine)
+{
+    void *ram;
+    long page_size;
+
+    if (!g_getenv("LINX_PROTECT_LOW_PAGE") &&
+        !g_getenv("LINX_LOG_LOW_PAGE_BASE")) {
+        return;
+    }
+
+    ram = memory_region_get_ram_ptr(machine->ram);
+    page_size = qemu_real_host_page_size;
+    if (!ram || page_size <= 0) {
+        return;
+    }
+
+    if (g_getenv("LINX_LOG_LOW_PAGE_BASE")) {
+        error_report("LINX_LOW_PAGE_BASE: host %p", ram);
+    }
+
+    if (!g_getenv("LINX_PROTECT_LOW_PAGE")) {
+        return;
+    }
+
+    if (mprotect(ram, page_size, PROT_READ) != 0) {
+        warn_report("LINX_PROTECT_LOW_PAGE: mprotect(%p, %ld) failed: %s",
+                    ram, page_size, strerror(errno));
+        return;
+    }
+
+    error_report("LINX_PROTECT_LOW_PAGE: protected guest low page at host %p",
+                 ram);
+}
 
 static void linx_virt_kernel_sym_cb(const char *st_name, int st_info,
                                     uint64_t st_value, uint64_t st_size)
@@ -108,6 +162,28 @@ static void linx_virt_seed_boot_stack(LINXVirtState *s, MachineState *machine,
                 cpu->env.gpr[xSP] = boot_sp;
                 return;
             }
+        }
+    }
+}
+
+static void linx_virt_seed_boot_args(LINXVirtState *s, MachineState *machine,
+                                     target_ulong kernel_entry,
+                                     uint32_t fdt_load_addr)
+{
+    for (int socket = 0; socket < linx_socket_count(machine); socket++) {
+        LINXHartArrayState *hart_array = &s->soc[socket];
+
+        for (int hart = 0; hart < hart_array->num_harts; hart++) {
+            LINXCPU *cpu = &hart_array->harts[hart];
+
+            if (cpu->env.lxlcid != hart_array->boot_hartid) {
+                continue;
+            }
+
+            cpu->env.gpr[xA0] = hart_array->boot_hartid;
+            cpu->env.gpr[xA1] = fdt_load_addr;
+            cpu->env.gpr[xA2] = kernel_entry;
+            return;
         }
     }
 }
@@ -686,9 +762,11 @@ static void virt_machine_init(MachineState *machine)
     /* register system main memory (actual RAM) */
     memory_region_add_subregion(system_memory, memmap[VIRT_DRAM].base,
         machine->ram);
+    linx_virt_log_low_page(machine, "after-add-ram");
 
     /* create device tree */
     create_fdt(s, memmap, machine->ram_size, machine->kernel_cmdline, false);
+    linx_virt_log_low_page(machine, "after-create-fdt");
 
     /* boot rom */
     memory_region_init_rom(mask_rom, NULL, "linx_virt_board.mrom",
@@ -698,6 +776,7 @@ static void virt_machine_init(MachineState *machine)
 
     firmware_end_addr = linx_find_and_load_firmware(machine,
                                 LINX_BIOS_BIN, start_addr, NULL);
+    linx_virt_log_low_page(machine, "after-load-firmware");
 
     if (machine->kernel_filename) {
         linx_boot_stack_top = 0;
@@ -707,6 +786,7 @@ static void virt_machine_init(MachineState *machine)
         kernel_entry = linx_load_kernel(machine->kernel_filename,
                                          kernel_start_addr,
                                          linx_virt_kernel_sym_cb);
+        linx_virt_log_low_page(machine, "after-load-kernel");
 
         if (machine->initrd_filename) {
             hwaddr start;
@@ -718,6 +798,7 @@ static void virt_machine_init(MachineState *machine)
             qemu_fdt_setprop_cell(machine->fdt, "/chosen", "linux,initrd-end",
                                   end);
         }
+        linx_virt_log_low_page(machine, "after-load-initrd");
     } else {
        /*
         * If dynamic firmware is used, it doesn't know where is the next mode
@@ -726,8 +807,10 @@ static void virt_machine_init(MachineState *machine)
         kernel_entry = 0;
     }
 
-    if (machine->firmware && !strcmp(machine->firmware, "none") &&
-        kernel_entry != 0) {
+    bool direct_kernel_boot = machine->kernel_filename != NULL &&
+                              firmware_end_addr == start_addr;
+
+    if (direct_kernel_boot) {
         reset_target_addr = kernel_entry;
         linx_virt_override_resetvec(s, machine, reset_target_addr);
         if (linx_boot_stack_top != 0) {
@@ -739,17 +822,29 @@ static void virt_machine_init(MachineState *machine)
     /* Compute the fdt load address in dram */
     fdt_load_addr = linx_load_fdt(memmap[VIRT_DRAM].base,
                                    machine->ram_size, machine->fdt);
-    /* load the reset vector */
-    linx_setup_rom_reset_vec(machine, &s->soc[0], reset_target_addr,
-                              virt_memmap[VIRT_MROM].base,
-                              virt_memmap[VIRT_MROM].size, kernel_entry,
-                              fdt_load_addr, machine->fdt);
+    linx_virt_log_low_page(machine, "after-load-fdt");
+    if (direct_kernel_boot) {
+        linx_virt_seed_boot_args(s, machine, kernel_entry, fdt_load_addr);
+        linx_virt_log_low_page(machine, "after-seed-boot-args");
+    } else {
+        /* load the reset vector */
+        linx_setup_rom_reset_vec(machine, &s->soc[0], reset_target_addr,
+                                 virt_memmap[VIRT_MROM].base,
+                                 virt_memmap[VIRT_MROM].size, kernel_entry,
+                                 fdt_load_addr, machine->fdt);
+        linx_virt_log_low_page(machine, "after-setup-resetvec");
+    }
+
+    linx_virt_debug_protect_low_page(machine);
+    linx_virt_log_low_page(machine, "after-debug-hooks");
 
     /* Linx Reset MMIO device */
     linx_reset_create(memmap[VIRT_RESET].base);
+    linx_virt_log_low_page(machine, "after-reset-dev");
 
     /* SiFive Test MMIO device */
     sifive_test_create(memmap[VIRT_TEST].base);
+    linx_virt_log_low_page(machine, "after-test-dev");
 
     /* VirtIO MMIO devices */
     for (i = 0; i < VIRTIO_COUNT; i++) {
@@ -757,6 +852,7 @@ static void virt_machine_init(MachineState *machine)
             memmap[VIRT_VIRTIO].base + i * memmap[VIRT_VIRTIO].size,
             qdev_get_gpio_in(DEVICE(virtio_lxic), VIRTIO_IRQ + i));
     }
+    linx_virt_log_low_page(machine, "after-virtio");
 
     gpex_pcie_init(system_memory,
                    memmap[VIRT_PCIE_ECAM].base,
@@ -767,13 +863,16 @@ static void virt_machine_init(MachineState *machine)
                    virt_high_pcie_memmap.size,
                    memmap[VIRT_PCIE_PIO].base,
                    DEVICE(pcie_lxic));
+    linx_virt_log_low_page(machine, "after-pcie");
 
     serial_mm_init(system_memory, memmap[VIRT_UART0].base,
         0, qdev_get_gpio_in(DEVICE(mmio_lxic), UART0_IRQ), 399193,
         serial_hd(0), DEVICE_LITTLE_ENDIAN);
+    linx_virt_log_low_page(machine, "after-serial");
 
     sysbus_create_simple("goldfish_rtc", memmap[VIRT_RTC].base,
         qdev_get_gpio_in(DEVICE(mmio_lxic), RTC_IRQ));
+    linx_virt_log_low_page(machine, "after-rtc");
 
 }
 

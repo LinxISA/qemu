@@ -45,6 +45,7 @@
 #include "sysemu/tcg.h"
 #include "sysemu/tcg-bp.h"
 #include "exec/helper-proto.h"
+#include "exec/address-spaces.h"
 #include "tb-hash.h"
 #include "tb-context.h"
 #include "internal.h"
@@ -380,9 +381,33 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     uintptr_t ret;
     TranslationBlock *last_tb;
     const void *tb_ptr = itb->tc.ptr;
-    if (itb->pc == start_exec_from_pc) {
+    static int low_tb_logs;
+    static bool low_tb_changed;
+    uint8_t low_before[8];
+    uint8_t low_after[8];
+    uint8_t nd_before[8];
+    uint8_t nd_after[8];
+    if (start_exec_from_pc_set && itb->pc == start_exec_from_pc) {
         qemu_enable_log();
         qemu_loglevel |= CPU_LOG_EXEC;
+    }
+
+    if (g_getenv("LINX_LOG_TB_EXEC_LOW") &&
+        (!low_tb_changed || low_tb_logs < 64)) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_before,
+                           sizeof(low_before));
+        address_space_read(&address_space_memory, 0x1006b50,
+                           MEMTXATTRS_UNSPECIFIED, nd_before,
+                           sizeof(nd_before));
+        error_report("LINX_TB_EXEC_LOW[before pc=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)itb->pc,
+                     low_before[0], low_before[1], low_before[2], low_before[3],
+                     low_before[4], low_before[5], low_before[6], low_before[7]);
+        error_report("LINX_TB_EXEC_ND[before pc=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)itb->pc,
+                     nd_before[0], nd_before[1], nd_before[2], nd_before[3],
+                     nd_before[4], nd_before[5], nd_before[6], nd_before[7]);
     }
 
     log_cpu_exec(itb->pc, cpu, itb);
@@ -404,6 +429,28 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     *tb_exit = ret & TB_EXIT_MASK;
 
     trace_exec_tb_exit(last_tb, *tb_exit);
+
+    if (g_getenv("LINX_LOG_TB_EXEC_LOW") &&
+        (!low_tb_changed || low_tb_logs < 64)) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_after,
+                           sizeof(low_after));
+        address_space_read(&address_space_memory, 0x1006b50,
+                           MEMTXATTRS_UNSPECIFIED, nd_after,
+                           sizeof(nd_after));
+        error_report("LINX_TB_EXEC_LOW[after pc=0x%016llx exit=%d]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)itb->pc, *tb_exit,
+                     low_after[0], low_after[1], low_after[2], low_after[3],
+                     low_after[4], low_after[5], low_after[6], low_after[7]);
+        error_report("LINX_TB_EXEC_ND[after pc=0x%016llx exit=%d]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     (unsigned long long)itb->pc, *tb_exit,
+                     nd_after[0], nd_after[1], nd_after[2], nd_after[3],
+                     nd_after[4], nd_after[5], nd_after[6], nd_after[7]);
+        if (memcmp(low_after, "\x1e\x00\x3b\x10\x01\xf1\x0e\x08", 8) != 0) {
+            low_tb_changed = true;
+        }
+        low_tb_logs++;
+    }
 
     if (*tb_exit > TB_EXIT_IDX1) {
         /* We didn't start executing this TB (eg because the instruction
@@ -1043,9 +1090,19 @@ int cpu_exec(CPUState *cpu)
 {
     int ret;
     SyncClocks sc = { 0 };
+    uint8_t low_page[8];
+    static int low_loop_logs;
 
     /* replay_interrupt may need current_cpu */
     current_cpu = cpu;
+
+    if (g_getenv("LINX_LOG_CPU_EXEC_LOW")) {
+        address_space_read(&address_space_memory, 0x5c,
+                           MEMTXATTRS_UNSPECIFIED, low_page, sizeof(low_page));
+        error_report("LINX_CPU_EXEC_LOW[entry]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                     low_page[0], low_page[1], low_page[2], low_page[3],
+                     low_page[4], low_page[5], low_page[6], low_page[7]);
+    }
 
     if (cpu_handle_halt(cpu)) {
         return EXCP_HALTED;
@@ -1101,10 +1158,21 @@ int cpu_exec(CPUState *cpu)
         TranslationBlock *last_tb = NULL;
         int tb_exit = 0;
 
+        if (g_getenv("LINX_LOG_CPU_EXEC_LOW") && low_loop_logs < 4) {
+            low_loop_logs++;
+            address_space_read(&address_space_memory, 0x5c,
+                               MEMTXATTRS_UNSPECIFIED, low_page,
+                               sizeof(low_page));
+            error_report("LINX_CPU_EXEC_LOW[before-loop]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                         low_page[0], low_page[1], low_page[2], low_page[3],
+                         low_page[4], low_page[5], low_page[6], low_page[7]);
+        }
+
         while (!cpu_handle_interrupt(cpu, &last_tb)) {
             TranslationBlock *tb;
             target_ulong cs_base, pc;
             uint32_t flags, cflags;
+            static bool logged_before_tb_lookup;
 
             cpu_get_tb_cpu_state(cpu->env_ptr, &pc, &cs_base, &flags);
 
@@ -1124,6 +1192,18 @@ int cpu_exec(CPUState *cpu)
 
             if (check_for_breakpoints(cpu, pc, &cflags)) {
                 break;
+            }
+
+            if (g_getenv("LINX_LOG_CPU_EXEC_LOW") && !logged_before_tb_lookup) {
+                logged_before_tb_lookup = true;
+                address_space_read(&address_space_memory, 0x5c,
+                                   MEMTXATTRS_UNSPECIFIED, low_page,
+                                   sizeof(low_page));
+                error_report("LINX_CPU_EXEC_LOW[before-tb-lookup]");
+                error_report("LINX_CPU_EXEC_LOW[before-tb-lookup-pc=0x%016llx]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                             (unsigned long long)pc,
+                             low_page[0], low_page[1], low_page[2], low_page[3],
+                             low_page[4], low_page[5], low_page[6], low_page[7]);
             }
 
             tb = tb_lookup(cpu, pc, cs_base, flags, cflags);

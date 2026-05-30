@@ -1139,6 +1139,8 @@ static void rom_reset(void *unused)
     Rom *rom;
 
     QTAILQ_FOREACH(rom, &roms, next) {
+        bool log_low = false;
+
         if (rom->fw_file) {
             continue;
         }
@@ -1161,6 +1163,27 @@ static void rom_reset(void *unused)
         if (rom->data == NULL) {
             continue;
         }
+
+        if (g_getenv("LINX_LOG_ROM_LOW")) {
+            hwaddr start = rom->addr;
+            hwaddr end = rom->addr + rom->romsize;
+
+            log_low = start <= 0x63 && end > 0x5c;
+            if (log_low) {
+                error_report("LINX_ROM_LOW[%s] addr=0x%" HWADDR_PRIx
+                             " datasize=0x%zx romsize=0x%zx",
+                             rom->name, rom->addr, rom->datasize, rom->romsize);
+                if (rom->data && rom->datasize > 0x5c - rom->addr + 7) {
+                    size_t off = 0x5c - rom->addr;
+                    uint8_t *p = rom->data + off;
+                    error_report("LINX_ROM_LOW[%s] src_5c=%02x %02x %02x %02x %02x %02x %02x %02x",
+                                 rom->name,
+                                 p[0], p[1], p[2], p[3],
+                                 p[4], p[5], p[6], p[7]);
+                }
+            }
+        }
+
         if (rom->mr) {
             void *host = memory_region_get_ram_ptr(rom->mr);
             memcpy(host, rom->data, rom->datasize);
@@ -1171,6 +1194,17 @@ static void rom_reset(void *unused)
             address_space_set(rom->as, rom->addr + rom->datasize, 0,
                               rom->romsize - rom->datasize,
                               MEMTXATTRS_UNSPECIFIED);
+        }
+
+        if (log_low) {
+            uint8_t buf[8];
+
+            address_space_read(rom->as, 0x5c, MEMTXATTRS_UNSPECIFIED,
+                               buf, sizeof(buf));
+            error_report("LINX_ROM_LOW[%s] dst_5c=%02x %02x %02x %02x %02x %02x %02x %02x",
+                         rom->name,
+                         buf[0], buf[1], buf[2], buf[3],
+                         buf[4], buf[5], buf[6], buf[7]);
         }
         if (rom->isrom) {
             /* rom needs to be written only once */

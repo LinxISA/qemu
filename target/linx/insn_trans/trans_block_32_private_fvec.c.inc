@@ -82,6 +82,14 @@
 static bool is_vec_reg(uint32_t dst_code)
 {
     int dst = extract16(dst_code, 0, 7);
+    int queue_class = 0;
+    int slot_index = 0;
+    int width_offset = 0;
+
+    if (decode_regid10_queue_dest(dst_code, &queue_class, &slot_index,
+                                  &width_offset)) {
+        return true;
+    }
     switch (dst) {
     case DST_FVEC_VT:
     case DST_FVEC_VU:
@@ -129,6 +137,9 @@ static bool simt_scalar_set_dst(DisasContext *ctx, uint32_t RegDst, TCGv dest)
         set_dst_regx(ctx, dest, TARGET_REG_U);
         break;
     default:
+        fprintf(stderr, "simt_scalar_set_dst bad RegDst=0x%x low7=0x%x pc=0x%llx\n",
+                RegDst, extract16(RegDst, 0, 7),
+                (unsigned long long)ctx->base.pc_next);
         assert(0);
     }
     return true;
@@ -160,6 +171,17 @@ static inline bool gen_simt_arith(DisasContext *ctx, arg_simt_arith *a,
         return gen_scalar_arith(ctx, a, type, func);
     }
 
+    if (g_getenv("LINX_LOG_SIMT_ADDR") &&
+        (ctx->base.pc_next == 0x149c2 || ctx->base.pc_next == 0x149ca ||
+         ctx->base.pc_next == 0x1479e || ctx->base.pc_next == 0x147a6 ||
+         ctx->base.pc_next == 0x148a2 || ctx->base.pc_next == 0x148aa ||
+         ctx->base.pc_next == 0x148b2)) {
+        fprintf(stderr,
+                "LINX_SIMT_ARITH_DECODE pc=0x%llx SrcL=0x%x SrcR=0x%x RegDst=0x%x shamt=%d SrcRType=%d type=%d\n",
+                (unsigned long long)ctx->base.pc_next, a->SrcL, a->SrcR,
+                a->RegDst, a->shamt, a->SrcRType, type);
+    }
+
     SIMT_WRAP_BEGIN
 
     TCGv src_l = get_src_regx_fvec_with_width(ctx, a->SrcL, lane_id);
@@ -170,6 +192,11 @@ static inline bool gen_simt_arith(DisasContext *ctx, arg_simt_arith *a,
     tcg_gen_shli_tl(src_r, src_r, a->shamt);
 
     func(dest, src_l, src_r);
+    if (ctx->base.pc_next == 0x148a2 || ctx->base.pc_next == 0x148aa ||
+        ctx->base.pc_next == 0x148b2) {
+        gen_helper_simt_val_debug(cpu_env, tcg_constant_tl(ctx->base.pc_next),
+                                  dest, tcg_constant_i32(lane_id));
+    }
 
     SIMT_WRAP_END_DEST_EXT(a->RegDst)
     if (DST_FVEC_PRED == extract16(a->RegDst, 0, 7)) {
@@ -1084,7 +1111,7 @@ static TCGv gen_simt_load_32_op(DisasContext *ctx, MemOp memop, bool is_addr,
 {
     int src = extract16(SrcL, 0, 7);
     TCGv dest_Treg = tcg_temp_local_new();
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 memop_t = tcg_constant_i32(memop);
         gen_helper_load_data(dest_Treg, cpu_env, addr, memop_t);
     } else {
@@ -1187,6 +1214,15 @@ static void gen_simt_load_32(DisasContext *ctx, MemOp memop, bool is_addr,
                              int shamt, int SrcR, int SrcL, int l,
                              int reg_dst, int scaled_lc0, bool has_lc0)
 {
+    if (g_getenv("LINX_LOG_SIMT_ADDR") &&
+        (ctx->base.pc_next == 0x148ba || ctx->base.pc_next == 0x149d2 ||
+         ctx->base.pc_next == 0x149da || ctx->base.pc_next == 0x149e2)) {
+        fprintf(stderr,
+                "LINX_SIMT_LOAD_DECODE pc=0x%llx SrcL=0x%x SrcR=0x%x RegDst=0x%x shamt=%d has_lc0=%d\n",
+                (unsigned long long)ctx->base.pc_next, SrcL, SrcR, reg_dst,
+                shamt, has_lc0);
+    }
+
     if (!is_vec_reg(reg_dst)) {
         return gen_scalar_load_32(ctx, memop, is_addr, shamt,
             SrcR, SrcL, l, reg_dst, scaled_lc0, has_lc0);
@@ -1204,6 +1240,12 @@ static void gen_simt_load_32(DisasContext *ctx, MemOp memop, bool is_addr,
     /* shift becomes the "addr" */
     tcg_gen_add_tl(shift, addr_base, shift);
     shift = add_offset_lc0(shift, lane_id, scaled_lc0, has_lc0);
+    if (ctx->base.pc_next == 0x148ba || ctx->base.pc_next == 0x149d2 ||
+        ctx->base.pc_next == 0x149da || ctx->base.pc_next == 0x149e2) {
+        gen_helper_simt_addr_debug(cpu_env, tcg_constant_tl(ctx->base.pc_next),
+                                   addr_base, SrcRreg, shift,
+                                   tcg_constant_i32(lane_id));
+    }
 
     TCGv dest = gen_simt_load_32_op(ctx, memop, is_addr, shift, reg_dst,
                         lane_id, SrcL);
@@ -1515,7 +1557,7 @@ static void gen_simt_store_32_op(DisasContext *ctx, MemOp memop,
 {
     int dst = extract16(label, 0, 7);
     int local = extract16(label, 15, 1);
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 size = tcg_constant_i32(width);
         gen_helper_store_data(cpu_env, dest, data, size);
     } else {
@@ -1557,6 +1599,13 @@ static void gen_simt_store_32(DisasContext *ctx, MemOp memop,
                              int width, int scaled_shift,
                              int scaled_lc0, bool has_lc0)
 {
+    if (g_getenv("LINX_LOG_SIMT_ADDR") && ctx->base.pc_next == 0x1582a) {
+        fprintf(stderr,
+                "LINX_SIMT_STORE_DECODE pc=0x%llx SrcD=0x%x SrcR=0x%x SrcL=0x%x width=%d scaled_shift=%d has_lc0=%d\n",
+                (unsigned long long)ctx->base.pc_next, SrcD, SrcR, SrcL,
+                width, scaled_shift, has_lc0);
+    }
+
     SIMT_WRAP_BEGIN
 
     TCGv addr_base = get_src_regx_fvec(ctx, SrcL, lane_id);
@@ -1570,6 +1619,11 @@ static void gen_simt_store_32(DisasContext *ctx, MemOp memop,
     /* shift become dest */
     tcg_gen_add_tl(shift, addr_base, shift);
     shift = add_offset_lc0(shift, lane_id, scaled_lc0, has_lc0);
+    if (ctx->base.pc_next == 0x1582a) {
+        gen_helper_simt_addr_debug(cpu_env, tcg_constant_tl(ctx->base.pc_next),
+                                   addr_base, shift_base, shift,
+                                   tcg_constant_i32(lane_id));
+    }
 
     gen_simt_store_32_op(ctx, memop, shift, data, width,
                             ((SrcL & 0x3F) | (l << 15)));
@@ -2524,7 +2578,7 @@ static bool trans_simt_csel_32(DisasContext *ctx, arg_simt_csel_32 *a)
     TCGv dest = get_dst_regx_fvec(ctx, a->RegDst, lane_id);
     TCGv zero = tcg_constant_tl(0);
 
-    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src1, src2);
+    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src2, src1);
 
     SIMT_WRAP_END_DEST_EXT(a->RegDst)
 
@@ -2544,7 +2598,7 @@ static bool trans_simt_psel_32(DisasContext *ctx, arg_simt_csel_32 *a)
     TCGv cnd = tcg_temp_new();
     tcg_gen_andi_tl(cnd, SrcP, 1 << lane_id);
 
-    tcg_gen_movcond_tl(TCG_COND_NE, dest, cnd, zero, src1, src2);
+    tcg_gen_movcond_tl(TCG_COND_NE, dest, cnd, zero, src2, src1);
     tcg_temp_free(cnd);
     SIMT_WRAP_END_DEST_EXT(a->RegDst)
 

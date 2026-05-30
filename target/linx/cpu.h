@@ -128,13 +128,20 @@ typedef struct LinxSYSReg {
     uint64_t etpc;
     uint64_t ebpcn;
     uint64_t ebarg;
+    uint64_t ebarg_tplflags;
     uint64_t mmconfig;
     uint64_t mmtbase;
     uint64_t time;
     uint64_t timecmp;
     uint64_t xbinfo;
     uint64_t acr_param;
-    uint64_t elpr[17];
+    /*
+     * EBSTATE exposes a 32-slot seSR register bank through the 0xF44-0xF63
+     * CSR window. The CSR helpers index this array with `slot & 0x1f`, so the
+     * backing storage must cover all 32 slots or block-state save/restore will
+     * scribble over adjacent sysreg fields during exception recovery.
+     */
+    uint64_t elpr[32];
 #define EBSTATE_MAX_VALID_REG 46
 } LinxSYSReg;
 
@@ -226,6 +233,10 @@ struct CPUArchState {
     uint32_t u_idx;
     uint32_t ri_idx;
     uint32_t ro_idx;
+    uint32_t fvec_t_idx[CPU_NB_LANE_NUM];
+    uint32_t fvec_u_idx[CPU_NB_LANE_NUM];
+    uint32_t fvec_m_idx[CPU_NB_LANE_NUM];
+    uint32_t fvec_n_idx[CPU_NB_LANE_NUM];
     uint32_t blk_ri[RI_SIZE];
     uint32_t blk_ro[RO_SIZE];
 
@@ -315,6 +326,7 @@ struct CPUArchState {
 
     uint64_t csr_tp;
     uint64_t csr_gp;
+    uint64_t csr_scratch[19];
     uint64_t csr_cw;
     uint64_t csr_tr1;
     uint64_t csr_tr2;
@@ -459,6 +471,10 @@ void linx_reset_bstate_short(CPULINXState *env);
 void linx_save_bstate(CPULINXState *env, target_ulong handle_acr);
 void linx_save_bstate_layer1(CPULINXState *env, target_ulong handle_acr);
 void linx_recovery_bstate_by_ebstate(CPULINXState *env, target_ulong priv);
+target_ulong linx_read_live_ebarg_group(CPULINXState *env, target_ulong acr,
+                                        int slot);
+void linx_write_live_ebarg_group(CPULINXState *env, target_ulong acr, int slot,
+                                 target_ulong val);
 void linx_cs_log(CPULINXState *env);
 
 #define TB_FLAGS_PRIV_MMU_MASK                3

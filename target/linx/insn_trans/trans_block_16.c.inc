@@ -39,12 +39,20 @@ static bool trans_blk_c_movi_16(DisasContext *ctx, arg_blk_c_movi_16 *a)
 
 static bool trans_blk_c_setret_16(DisasContext *ctx, arg_blk_c_setret_16 *a)
 {
-    static_brh_type_check(ctx, (1 << BRANCH_CALL) | (1 << BRANCH_INDCALL));
-    TCGv imm = tcg_constant_tl((a->imm) * 2);
+    /*
+     * LLVM/MC encodes C.SETRET as a halfword-scaled PC-relative target from
+     * the SETRET instruction address. During translation ctx->base.pc_next is
+     * still the current SETRET PC, so the runtime target is current_pc +
+     * imm*2.
+     */
+    TCGv imm = tcg_constant_tl((target_long)a->imm * 2);
     TCGv addr = get_dst_regx(ctx, a->RegDst);
     tcg_gen_addi_tl(addr, imm, ctx->base.pc_next);
 
     set_dst_regx(ctx, addr, a->RegDst);
+    tcg_gen_mov_tl(next_bpc, addr);
+    ctx->next_bpc_explicit = true;
+    ctx->next_bpc_target = ctx->base.pc_next + (target_ulong)a->imm * 2;
     return true;
 }
 
@@ -84,9 +92,7 @@ static bool trans_blk_c_or_16(DisasContext *ctx, arg_blk_c_or_16 *a)
 static bool gen_comp_setc(DisasContext *ctx, arg_blk_c_setc_eq_16 *a,
                           TCGCond cond)
 {
-    if (ctx->brh_type != BRANCH_CONDITIONAL) {
-        gen_exception_illegal(ctx);
-    }
+    allow_setc_writer(ctx);
 
     TCGv jump = temp_new(ctx);
     TCGv src1 = get_src_regx(ctx, a->SrcL);
@@ -96,6 +102,12 @@ static bool gen_comp_setc(DisasContext *ctx, arg_blk_c_setc_eq_16 *a,
     tcg_gen_setcond_tl(cond, jump, src1, src2);
     tcg_gen_shli_tl(jump, jump, CARG_FLAG_PREDICATE_BIT);
     tcg_gen_or_tl(carg_flag, jump, carg_flag);
+    if (ctx->base.pc_next == 0xffffffff809270eeULL ||
+        ctx->base.pc_next == 0x809270eeULL) {
+        fprintf(stderr,
+                "LINX_SETC_270EE pc=0x%llx srcl=%d srcr=%d cond=%d\n",
+                (unsigned long long)ctx->base.pc_next, a->SrcL, a->SrcR, cond);
+    }
     return true;
 }
 
@@ -118,7 +130,7 @@ static void gen_comp_load(DisasContext *ctx, MemOp memop, arg_blk_c_lwi_16 *a,
     TCGv addr = temp_new(ctx);
     tcg_gen_addi_tl(addr, addr_base, a->imm << scaled_shift);
 
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 memop_t = tcg_constant_i32(memop);
         gen_helper_load_data(dest_Treg, cpu_env, addr, memop_t);
     } else {
@@ -154,7 +166,7 @@ static void gen_comp_store(DisasContext *ctx, MemOp memop, arg_blk_c_swi_16 *a,
 
     tcg_gen_addi_tl(dest, addr_base, a->imm << scaled_shift);
 
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 size = tcg_constant_i32(width);
         gen_helper_store_data(cpu_env, dest, data, size);
     } else {
@@ -192,11 +204,6 @@ static bool trans_blk_c_addi_16(DisasContext *ctx, arg_blk_c_addi_16 *a)
 
 static bool trans_blk_c_setc_tgt_16(DisasContext *ctx, arg_blk_c_setc_tgt_16 *a)
 {
-    if (ctx->brh_type != BRANCH_INDCALL &&
-        ctx->brh_type != BRANCH_IND && ctx->brh_type != BRANCH_RET) {
-        gen_exception_illegal(ctx);
-    }
-
     TCGv srcl = get_src_regx(ctx, a->SrcL);
 
     tcg_gen_mov_tl(carg_tgt, srcl);

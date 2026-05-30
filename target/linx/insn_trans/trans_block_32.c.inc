@@ -530,9 +530,7 @@ static bool trans_blk_cmp_ori_32(DisasContext *ctx, arg_blk_cmp_ori_32 *a)
 static bool blk_gen_setc(DisasContext *ctx, arg_blk_setc_eq_32 *a, int type,
                          TCGCond cond)
 {
-    if (ctx->brh_type != BRANCH_CONDITIONAL) {
-        gen_exception_illegal(ctx);
-    }
+    allow_setc_writer(ctx);
 
     TCGv jump = temp_new(ctx);
     TCGv src1 = get_src_regx(ctx, a->SrcL);
@@ -579,9 +577,7 @@ static bool trans_blk_setc_geu_32(DisasContext *ctx, arg_blk_setc_geu_32 *a)
 static bool blk_gen_setc_arith(DisasContext *ctx, arg_blk_setc_and_32 *a,
                                 void (*func)(TCGv, TCGv, TCGv))
 {
-    if (ctx->brh_type != BRANCH_CONDITIONAL) {
-        gen_exception_illegal(ctx);
-    }
+    allow_setc_writer(ctx);
 
     TCGv jump = temp_new(ctx);
     TCGv res = temp_new(ctx);
@@ -612,9 +608,7 @@ static bool trans_blk_setc_or_32(DisasContext *ctx, arg_blk_setc_or_32 *a)
 static bool gen_blk_setci(DisasContext *ctx, arg_blk_setc_eqi_32 *a,
                           TCGCond cond)
 {
-    if (ctx->brh_type != BRANCH_CONDITIONAL) {
-        gen_exception_illegal(ctx);
-    }
+    allow_setc_writer(ctx);
 
     TCGv jump = temp_new(ctx);
     TCGv src1 = get_src_regx(ctx, a->SrcL);
@@ -661,9 +655,7 @@ static bool trans_blk_setc_geui_32(DisasContext *ctx, arg_blk_setc_geui_32 *a)
 static bool blk_gen_setc_arith_i(DisasContext *ctx, arg_blk_setc_andi_32 *a,
                                 void (*func)(TCGv, TCGv, int64_t))
 {
-    if (ctx->brh_type != BRANCH_CONDITIONAL) {
-        gen_exception_illegal(ctx);
-    }
+    allow_setc_writer(ctx);
 
     TCGv jump = temp_new(ctx);
     TCGv res = temp_new(ctx);
@@ -865,7 +857,7 @@ static bool trans_blk_rev_32(DisasContext *ctx, arg_blk_rev_32 *a)
 
 static bool trans_blk_csel_32(DisasContext *ctx, arg_blk_csel_32 *a)
 {
-    /* result = (operand3 != 0 ? operand1 : operand2) */
+    /* v0.56 compiler lowering expects pred != 0 ? SrcR : SrcL. */
     TCGv src1 = get_src_regx(ctx, a->SrcL);
     TCGv src2 = get_src_regx(ctx, a->SrcR);
     /* .neg field */
@@ -874,7 +866,7 @@ static bool trans_blk_csel_32(DisasContext *ctx, arg_blk_csel_32 *a)
     TCGv dest = get_dst_regx(ctx, a->RegDst);
     TCGv zero = tcg_constant_tl(0);
 
-    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src1, src2);
+    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src2, src1);
 
     set_dst_regx(ctx, dest, a->RegDst);
 
@@ -1206,9 +1198,11 @@ static bool trans_blk_maddw_32(DisasContext *ctx, arg_blk_maddw_32 *a)
 
 static bool trans_blk_addtpc_32(DisasContext *ctx, arg_blk_addtpc_32 *a)
 {
-    TCGv imm = tcg_constant_tl(a->imm);
+    /* ADDTPC carries the page-scaled HI20 part for PC-relative materialization. */
+    TCGv imm = tcg_constant_tl((target_long)a->imm);
     TCGv addr = get_dst_regx(ctx, a->RegDst);
-    tcg_gen_addi_tl(addr, imm, ctx->base.pc_next);
+    tcg_gen_movi_tl(addr, ctx->base.pc_next & TARGET_PAGE_MASK);
+    tcg_gen_add_tl(addr, addr, imm);
 
     set_dst_regx(ctx, addr, a->RegDst);
     return true;
@@ -1216,12 +1210,18 @@ static bool trans_blk_addtpc_32(DisasContext *ctx, arg_blk_addtpc_32 *a)
 
 static bool trans_blk_setret_32(DisasContext *ctx, arg_blk_setret_32 *a)
 {
-    static_brh_type_check(ctx, (1 << BRANCH_CALL) | (1 << BRANCH_INDCALL));
-    TCGv imm = tcg_constant_tl(a->imm);
+    /*
+     * setret immediates are already byte offsets from the following PC.
+     * Doubling them skips the in-block fixup window after call sites.
+     */
+    TCGv imm = tcg_constant_tl((target_long)a->imm);
     TCGv addr = get_dst_regx(ctx, a->RegDst);
     tcg_gen_addi_tl(addr, imm, ctx->base.pc_next);
 
     set_dst_regx(ctx, addr, a->RegDst);
+    tcg_gen_mov_tl(next_bpc, addr);
+    ctx->next_bpc_explicit = true;
+    ctx->next_bpc_target = ctx->base.pc_next + (target_ulong)a->imm;
     return true;
 }
 
@@ -1359,7 +1359,7 @@ static bool trans_blk_ssrget_32(DisasContext *ctx, arg_blk_ssrget_32 *a)
 static bool trans_blk_ssrset_32(DisasContext *ctx, arg_blk_ssrset_32 *a)
 {
     TCGv src = get_src_regx(ctx, a->SrcL);
-    gen_helper_csrw(cpu_env, tcg_constant_i32(a->SSRID), src);
+    gen_csrw(ctx, a->SSRID, src);
 
     return true;
 }
@@ -1402,11 +1402,6 @@ static bool trans_blk_lsrget_32(DisasContext *ctx, arg_blk_lsrget_32 *a)
 
 static bool trans_blk_setc_tgt_32(DisasContext *ctx, arg_blk_setc_tgt_32 *a)
 {
-    if (ctx->brh_type != BRANCH_INDCALL &&
-        ctx->brh_type != BRANCH_IND && ctx->brh_type != BRANCH_RET) {
-        gen_exception_illegal(ctx);
-    }
-
     TCGv tgt = get_src_regx(ctx, a->SrcL);
     tcg_gen_mov_tl(carg_tgt, tgt);
     return true;
@@ -1417,8 +1412,9 @@ static void gen_blk_load_32_op(DisasContext *ctx, MemOp memop, bool is_addr,
 {
     linx_block_constraint_check(ctx, CONSTRAINT_A6_4);
 
-    TCGv dest_Treg = get_dst_regx(ctx, dest_reg_enc);
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    const bool discard_result = (dest_reg_enc == REGDST_0);
+    TCGv dest_Treg = discard_result ? temp_new(ctx) : get_dst_regx(ctx, dest_reg_enc);
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 memop_t = tcg_constant_i32(memop);
         gen_helper_load_data(dest_Treg, cpu_env, addr, memop_t);
     } else {
@@ -1429,7 +1425,9 @@ static void gen_blk_load_32_op(DisasContext *ctx, MemOp memop, bool is_addr,
         gen_helper_memprnt(addr, dest_Treg, tcg_constant_tl(READ));
     }
 
-    if (is_addr) {
+    if (discard_result) {
+        tcg_temp_free(dest_Treg);
+    } else if (is_addr) {
         set_dst_regx(ctx, addr, dest_reg_enc);
     } else {
         set_dst_regx(ctx, dest_Treg, dest_reg_enc);
@@ -1526,6 +1524,13 @@ static bool trans_blk_lwu_32(DisasContext *ctx, arg_blk_lwu_32 *a)
     return true;
 }
 
+static bool trans_blk_prf_32(DisasContext *ctx, arg_blk_prf_32 *a)
+{
+    gen_blk_load_32(ctx, MO_TEQ, NO_ADDR, a->shamt, a->SrcRType,
+                    a->SrcR, a->SrcL, REGDST_0);
+    return true;
+}
+
 static bool trans_blk_lb_i_32(DisasContext *ctx, arg_blk_lb_i_32 *a)
 {
     gen_blk_load_32_imm(ctx, MO_SB, NO_ADDR, a->imm, a->SrcL,
@@ -1610,6 +1615,13 @@ static bool trans_blk_lwu_ui_32(DisasContext *ctx, arg_blk_lwu_ui_32 *a)
     return true;
 }
 
+static bool trans_blk_prfi_u_32(DisasContext *ctx, arg_blk_prfi_u_32 *a)
+{
+    gen_blk_load_32_imm(ctx, MO_TEQ, NO_ADDR, a->imm, a->SrcL,
+                        REGDST_0, UNSCALED);
+    return true;
+}
+
 static bool trans_blk_lbl_32(DisasContext *ctx, arg_blk_lbl_32 *a)
 {
     gen_blk_load_32_symbol(ctx, MO_SB, NO_ADDR, a->imm,
@@ -1664,7 +1676,7 @@ static void gen_blk_store_32_op(DisasContext *ctx, MemOp memop, bool is_addr,
 {
     linx_block_constraint_check(ctx, CONSTRAINT_A6_4);
 
-    if (tb_cflags(ctx->base.tb) & CF_ATOMIC) {
+    if (linx_use_atomic_store_buf(ctx)) {
         TCGv_i32 size = tcg_constant_i32(width);
         gen_helper_store_data(cpu_env, dest, data, size);
     } else {
@@ -2100,8 +2112,18 @@ static bool trans_blk_acre_32(DisasContext *ctx, arg_blk_acre_32 *a)
 {
     static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
 #ifndef CONFIG_USER_ONLY
+    TCGv retpc = temp_new(ctx);
     tcg_gen_movi_i32(scall_arg, a->RRA_Type);
-    ctx->brh_type = BRANCH_ACRE;
+    if (g_getenv("LINX_LOG_ACRE")) {
+        gen_helper_trace_pc(cpu_env, tcg_constant_tl(0xaced0001));
+    }
+    gen_helper_acre(retpc, cpu_env, scall_arg);
+    if (g_getenv("LINX_LOG_ACRE")) {
+        gen_helper_trace_pc(cpu_env, tcg_constant_tl(0xaced0002));
+    }
+    tcg_gen_mov_tl(cpu_pc, retpc);
+    tcg_gen_lookup_and_goto_ptr();
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 #else
     return false;
@@ -2338,79 +2360,79 @@ static bool trans_blk_swap_d_32(DisasContext *ctx, arg_blk_swap_d_32 *a)
 
 static bool trans_blk_bc_iva_32(DisasContext *ctx, arg_blk_bc_iva_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_bc_iall_32(DisasContext *ctx, arg_blk_bc_iall_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_ic_iva_32(DisasContext *ctx, arg_blk_ic_iva_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_ic_iall_32(DisasContext *ctx, arg_blk_ic_iall_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_iva_32(DisasContext *ctx, arg_blk_dc_iva_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_iall_32(DisasContext *ctx, arg_blk_dc_iall_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_cva_32(DisasContext *ctx, arg_blk_dc_cva_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_civa_32(DisasContext *ctx, arg_blk_dc_civa_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_isw_32(DisasContext *ctx, arg_blk_dc_isw_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_csw_32(DisasContext *ctx, arg_blk_dc_csw_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_cisw_32(DisasContext *ctx, arg_blk_dc_cisw_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_dc_zva_32(DisasContext *ctx, arg_blk_dc_zva_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
     return false;
 }
 
 static bool trans_blk_tc_ia_32(DisasContext *ctx, arg_blk_tc_ia_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
 #ifndef CONFIG_USER_ONLY
     gen_helper_tlb_flush(cpu_env);
     return true;
@@ -2420,7 +2442,7 @@ static bool trans_blk_tc_ia_32(DisasContext *ctx, arg_blk_tc_ia_32 *a)
 
 static bool trans_blk_tc_iv_32(DisasContext *ctx, arg_blk_tc_iv_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
 #ifndef CONFIG_USER_ONLY
     gen_helper_tlb_flush(cpu_env);
     return true;
@@ -2430,7 +2452,7 @@ static bool trans_blk_tc_iv_32(DisasContext *ctx, arg_blk_tc_iv_32 *a)
 
 static bool trans_blk_tc_iav_32(DisasContext *ctx, arg_blk_tc_iav_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
 #ifndef CONFIG_USER_ONLY
     gen_helper_tlb_flush(cpu_env);
     return true;
@@ -2440,7 +2462,7 @@ static bool trans_blk_tc_iav_32(DisasContext *ctx, arg_blk_tc_iav_32 *a)
 
 static bool trans_blk_tc_iall_32(DisasContext *ctx, arg_blk_tc_iall_32 *a)
 {
-    static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
+    static_blk_type_check(ctx, (1 << HEAD_TYPE_SYS) | (1 << HEAD_TYPE_STD));
 #ifndef CONFIG_USER_ONLY
     gen_helper_tlb_flush(cpu_env);
     return true;
