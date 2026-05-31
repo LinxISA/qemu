@@ -820,17 +820,17 @@ static TCGv_i64 linx_srcR_addsub(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* raw 64-bit register */
-        tcg_gen_mov_i64(tmp, r);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    default: /* .neg */
+    case 2: /* .neg */
         tcg_gen_neg_i64(tmp, r);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -846,17 +846,17 @@ static TCGv_i64 linx_srcR_logic(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* raw 64-bit register */
-        tcg_gen_mov_i64(tmp, r);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    default: /* .not */
+    case 2: /* .not */
         tcg_gen_not_i64(tmp, r);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -1175,6 +1175,12 @@ static bool trans_bstart_call(DisasContext *ctx, arg_bstart_call *a)
     }
     linx_block_begin(ctx, LINX_BR_CALL, linx_pcrel_target(current_pc, a->simm17));
     return true;
+}
+
+static bool trans_bstart_fall(DisasContext *ctx, arg_bstart_fall *a)
+{
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
 static bool trans_bstart_direct(DisasContext *ctx, arg_bstart_direct *a)
@@ -3018,17 +3024,17 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
     TCGv_i64 addr = tcg_temp_new_i64();
 
     switch (idx_type & 0x3) {
-    case 0: /* raw 64-bit register */
-        tcg_gen_mov_i64(t, i);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(t, i);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(t, i);
         break;
-    default: /* .neg */
+    case 2: /* .neg */
         tcg_gen_neg_i64(t, i);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(t, i);
         break;
     }
     if (shamt) {
@@ -6805,33 +6811,41 @@ static bool trans_fence_i(DisasContext *ctx, arg_fence_i *a)
 
 static bool trans_tlb_iall(DisasContext *ctx, arg_tlb_iall *a)
 {
-    (void)ctx;
     (void)a;
     gen_helper_linx_tlb_iall(tcg_env);
+    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
 static bool trans_tlb_ia(DisasContext *ctx, arg_tlb_ia *a)
 {
-    (void)ctx;
     (void)a;
     gen_helper_linx_tlb_iall(tcg_env);
+    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
 static bool trans_tlb_iv(DisasContext *ctx, arg_tlb_iv *a)
 {
-    (void)ctx;
     (void)a;
     gen_helper_linx_tlb_iall(tcg_env);
+    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
 static bool trans_tlb_iav(DisasContext *ctx, arg_tlb_iav *a)
 {
-    (void)ctx;
     (void)a;
     gen_helper_linx_tlb_iall(tcg_env);
+    tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
