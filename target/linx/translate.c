@@ -1249,9 +1249,8 @@ static bool trans_bstart_ret(DisasContext *ctx, arg_bstart_ret *a)
 
 static bool trans_bstart_fp_fall(DisasContext *ctx, arg_bstart_fp_fall *a)
 {
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
-                                    linx_pcrel_target(current_pc, a->simm17));
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
 static bool trans_bstart_fp_direct(DisasContext *ctx, arg_bstart_fp_direct *a)
@@ -1295,9 +1294,8 @@ static bool trans_bstart_fp_ret(DisasContext *ctx, arg_bstart_fp_ret *a)
 
 static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
 {
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
-                                    linx_pcrel_target(current_pc, a->simm17));
+    (void)a;
+    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
 static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)

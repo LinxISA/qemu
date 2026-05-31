@@ -353,6 +353,7 @@ typedef struct LinxVirtMachineState {
     LinxCPU *cpu;
 
     hwaddr entry;
+    bool entry_valid;
     hwaddr initial_sp;
     hwaddr exit_trampoline;
     hwaddr fdt_addr;
@@ -2264,6 +2265,7 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
     hwaddr end = 0;
     hwaddr entry_addr;
     hwaddr entry_seg_start = load_base;
+    bool use_phys_layout = false;
 
     size_t i;
 
@@ -2308,7 +2310,10 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
         }
-        addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        if (ph->p_paddr != 0 || (hwaddr)ph->p_vaddr != (hwaddr)ph->p_paddr) {
+            use_phys_layout = true;
+        }
+        addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         if (addr < min_load) {
             min_load = addr;
         }
@@ -2336,7 +2341,7 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
             return false;
         }
 
-        seg_addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        seg_addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         seg_start = seg_addr + bias;
         seg_end = seg_start + (hwaddr)ph->p_memsz;
 
@@ -2359,9 +2364,29 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
     }
 
     entry_addr = (hwaddr)eh->e_entry + bias;
-    if (entry_addr == 0) {
-        error_setg(errp, "invalid entry point (0x0)");
-        return false;
+    if (use_phys_layout) {
+        bool found_entry = false;
+        for (i = 0; i < eh->e_phnum; i++) {
+            const Elf32_Phdr *ph = &phdrs[i];
+            hwaddr virt_start, virt_end, phys_start;
+
+            if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
+                continue;
+            }
+            virt_start = (hwaddr)ph->p_vaddr;
+            virt_end = virt_start + (hwaddr)ph->p_memsz;
+            if ((hwaddr)eh->e_entry < virt_start || (hwaddr)eh->e_entry >= virt_end) {
+                continue;
+            }
+            phys_start = (hwaddr)ph->p_paddr + bias;
+            entry_addr = phys_start + ((hwaddr)eh->e_entry - virt_start);
+            found_entry = true;
+            break;
+        }
+        if (!found_entry) {
+            error_setg(errp, "entry point does not map to a PT_LOAD segment");
+            return false;
+        }
     }
     if ((uint64_t)entry_addr + 2 > (uint64_t)ram_size) {
         error_setg(errp, "entry point out of RAM bounds @ 0x%" HWADDR_PRIx,
@@ -2379,10 +2404,13 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
         }
-        seg_addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        seg_addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         seg_start = seg_addr + bias;
         seg_end = seg_start + (hwaddr)ph->p_memsz;
-        if (entry_addr >= seg_start && entry_addr < seg_end) {
+        if ((!use_phys_layout && entry_addr >= seg_start && entry_addr < seg_end) ||
+            (use_phys_layout &&
+             (hwaddr)eh->e_entry >= (hwaddr)ph->p_vaddr &&
+             (hwaddr)eh->e_entry < (hwaddr)ph->p_vaddr + (hwaddr)ph->p_memsz)) {
             entry_seg_start = seg_start;
             break;
         }
@@ -3002,6 +3030,7 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
     hwaddr end = 0;
     hwaddr entry_addr;
     hwaddr entry_seg_start = load_base;
+    bool use_phys_layout = false;
 
     size_t i;
 
@@ -3046,7 +3075,10 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
         }
-        addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        if (ph->p_paddr != 0 || (hwaddr)ph->p_vaddr != (hwaddr)ph->p_paddr) {
+            use_phys_layout = true;
+        }
+        addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         if (addr < min_load) {
             min_load = addr;
         }
@@ -3074,7 +3106,7 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
             return false;
         }
 
-        seg_addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        seg_addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         seg_start = seg_addr + bias;
         seg_end = seg_start + (hwaddr)ph->p_memsz;
 
@@ -3097,9 +3129,29 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
     }
 
     entry_addr = (hwaddr)eh->e_entry + bias;
-    if (entry_addr == 0) {
-        error_setg(errp, "invalid entry point (0x0)");
-        return false;
+    if (use_phys_layout) {
+        bool found_entry = false;
+        for (i = 0; i < eh->e_phnum; i++) {
+            const Elf64_Phdr *ph = &phdrs[i];
+            hwaddr virt_start, virt_end, phys_start;
+
+            if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
+                continue;
+            }
+            virt_start = (hwaddr)ph->p_vaddr;
+            virt_end = virt_start + (hwaddr)ph->p_memsz;
+            if ((hwaddr)eh->e_entry < virt_start || (hwaddr)eh->e_entry >= virt_end) {
+                continue;
+            }
+            phys_start = (hwaddr)ph->p_paddr + bias;
+            entry_addr = phys_start + ((hwaddr)eh->e_entry - virt_start);
+            found_entry = true;
+            break;
+        }
+        if (!found_entry) {
+            error_setg(errp, "entry point does not map to a PT_LOAD segment");
+            return false;
+        }
     }
     if ((uint64_t)entry_addr + 2 > (uint64_t)ram_size) {
         error_setg(errp, "entry point out of RAM bounds @ 0x%" HWADDR_PRIx,
@@ -3117,10 +3169,13 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
         }
-        seg_addr = ph->p_paddr ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
+        seg_addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         seg_start = seg_addr + bias;
         seg_end = seg_start + (hwaddr)ph->p_memsz;
-        if (entry_addr >= seg_start && entry_addr < seg_end) {
+        if ((!use_phys_layout && entry_addr >= seg_start && entry_addr < seg_end) ||
+            (use_phys_layout &&
+             (hwaddr)eh->e_entry >= (hwaddr)ph->p_vaddr &&
+             (hwaddr)eh->e_entry < (hwaddr)ph->p_vaddr + (hwaddr)ph->p_memsz)) {
             entry_seg_start = seg_start;
             break;
         }
@@ -3188,8 +3243,8 @@ static void linx_virt_reset(void *opaque)
 
     cpu_reset(cs);
 
-    if (s->entry == 0) {
-        error_report("linx virt: invalid entry point (0x0)");
+    if (!s->entry_valid) {
+        error_report("linx virt: invalid entry point");
         exit(1);
     }
 
@@ -3584,9 +3639,17 @@ static void linx_virt_init(MachineState *machine)
     }
 
     s->entry = entry;
+    s->entry_valid = true;
     s->initial_sp = sp;
     s->exit_trampoline = tramp;
     s->fdt_addr = fdt_addr;
+
+    s->cpu->boot_pc = entry;
+    s->cpu->boot_sp = sp;
+    s->cpu->boot_ra = tramp;
+    s->cpu->boot_a0 = 0;
+    s->cpu->boot_a1 = fdt_addr;
+    s->cpu->boot_a2 = 0;
 
     qemu_register_reset(linx_virt_reset, s);
 }

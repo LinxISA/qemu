@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINX_ROOT="$(cd "${ROOT}/../.." && pwd)"
 
-LINXISA_DIR="${LINXISA_DIR:-$HOME/linxisa}"
-LLVM_BUILD="${LLVM_BUILD:-$HOME/llvm-project/build-linxisa-clang}"
+LINXISA_DIR="${LINXISA_DIR:-$LINX_ROOT}"
+LLVM_BUILD="${LLVM_BUILD:-$LINX_ROOT/compiler/llvm/build-linxisa-clang}"
 CLANG="${CLANG:-$LLVM_BUILD/bin/clang}"
 QEMU_BUILD="${QEMU_BUILD:-$ROOT/build}"
 
@@ -28,6 +29,14 @@ find_qemu() {
     fi
   done
   return 1
+}
+
+qemu_direct_kernel_args() {
+  local kernel="$1"
+  QEMU_DIRECT_KERNEL_ARGS=(-nographic -monitor none -machine virt -kernel "$kernel")
+  if [[ "$(basename -- "$qemu_bin")" != *bios-none ]]; then
+    QEMU_DIRECT_KERNEL_ARGS+=(-bios none)
+  fi
 }
 
 QEMU_LINX64="$(find_qemu qemu-system-linx64 || true)"
@@ -313,8 +322,9 @@ run_one() {
   echo "[cc] $triple"
   "$CLANG" -target "$triple" "${COMMON_FLAGS[@]}" -I "$SRC_DIR" -c "$TMP/runner.c" -o "$out_o"
 
-  echo "[run] $qemu_bin -kernel $out_o"
-  "$qemu_bin" -nographic -monitor none -machine virt -kernel "$out_o"
+  qemu_direct_kernel_args "$out_o"
+  echo "[run] $qemu_bin ${QEMU_DIRECT_KERNEL_ARGS[*]}"
+  "$qemu_bin" "${QEMU_DIRECT_KERNEL_ARGS[@]}"
 }
 
 run_one linx64-unknown-elf "$QEMU_LINX64"

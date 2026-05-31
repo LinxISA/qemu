@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINX_ROOT="$(cd "${ROOT}/../.." && pwd)"
 
-LLVM_BUILD="${LLVM_BUILD:-$HOME/llvm-project/build-linxisa-clang}"
+LLVM_BUILD="${LLVM_BUILD:-$LINX_ROOT/compiler/llvm/build-linxisa-clang}"
 CLANG="${CLANG:-$LLVM_BUILD/bin/clang}"
 
 QEMU_BUILD="${QEMU_BUILD:-$ROOT/build}"
@@ -25,6 +26,14 @@ if [[ -z "$QEMU_BIN" ]]; then
     fi
   done
 fi
+
+qemu_direct_kernel_args() {
+  local kernel="$1"
+  QEMU_DIRECT_KERNEL_ARGS=(-nographic -monitor none -machine virt -kernel "$kernel")
+  if [[ "$(basename -- "$QEMU_BIN")" != *bios-none ]]; then
+    QEMU_DIRECT_KERNEL_ARGS+=(-bios none)
+  fi
+}
 
 if [[ ! -x "$CLANG" ]]; then
   echo "error: clang not found/executable: $CLANG" >&2
@@ -56,5 +65,6 @@ COMMON_FLAGS=(
 echo "[cc] linx64-unknown-elf $SRC"
 "$CLANG" -target linx64-unknown-elf "${COMMON_FLAGS[@]}" -c "$SRC" -o "$OUT_O"
 
-echo "[run] $QEMU_BIN -kernel $OUT_O"
-"$QEMU_BIN" -nographic -monitor none -machine virt -kernel "$OUT_O"
+qemu_direct_kernel_args "$OUT_O"
+echo "[run] $QEMU_BIN ${QEMU_DIRECT_KERNEL_ARGS[*]}"
+"$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}"

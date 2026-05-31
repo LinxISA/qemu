@@ -728,6 +728,14 @@ struct ArchCPU {
 
     CPULinxState env;
 
+    /* Machine-provided bootstrap state restored on every CPU reset. */
+    uint64_t boot_pc;
+    uint64_t boot_sp;
+    uint64_t boot_ra;
+    uint64_t boot_a0;
+    uint64_t boot_a1;
+    uint64_t boot_a2;
+
     /* Optional bring-up DFX: insert a CPU watchpoint on realize(). */
     uint64_t dfx_watch_addr;
     uint32_t dfx_watch_len;

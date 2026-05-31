@@ -1162,12 +1162,18 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 static void linx_cpu_reset_hold(Object *obj, ResetType type)
 {
     CPUState *cs = CPU(obj);
+    LinxCPU *cpu = LINX_CPU(obj);
     CPULinxState *env = cpu_env(cs);
 
     memset(env, 0, offsetof(CPULinxState, end_reset_fields));
 
     env->gpr[LINX_REG_ZERO] = 0;
-    env->pc = 0;
+    env->pc = cpu->boot_pc;
+    env->gpr[LINX_REG_SP] = cpu->boot_sp;
+    env->gpr[LINX_REG_RA] = cpu->boot_ra;
+    env->gpr[LINX_REG_A0] = cpu->boot_a0;
+    env->gpr[LINX_REG_A1] = cpu->boot_a1;
+    env->gpr[LINX_REG_A2] = cpu->boot_a2;
     env->fcsr = 0;
     env->acr = 0;
     set_float_exception_flags(0, &env->fp_status);

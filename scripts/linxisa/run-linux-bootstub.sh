@@ -2,11 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LINX_ROOT="$(cd "${ROOT}/../.." && pwd)"
 
-LINUX_DIR="${LINUX_DIR:-$HOME/linux}"
+LINUX_DIR="${LINUX_DIR:-$LINX_ROOT/kernel/linux}"
 BOOTSTUB_DIR="$LINUX_DIR/tools/linxisa/bootstub"
 
-LLVM_BUILD="${LLVM_BUILD:-$HOME/llvm-project/build-linxisa-clang}"
+LLVM_BUILD="${LLVM_BUILD:-$LINX_ROOT/compiler/llvm/build-linxisa-clang}"
 
 QEMU_BUILD="${QEMU_BUILD:-$ROOT/build}"
 QEMU_BIN="${QEMU_BIN:-}"
@@ -35,6 +36,15 @@ if [[ -z "$QEMU_BIN" ]]; then
   QEMU_BIN="$(find_qemu qemu-system-linx64 || true)"
 fi
 
+qemu_direct_kernel_args() {
+  local kernel="$1"
+  shift || true
+  QEMU_DIRECT_KERNEL_ARGS=(-nographic -monitor none -machine virt -kernel "$kernel" "$@")
+  if [[ "$(basename -- "$QEMU_BIN")" != *bios-none ]]; then
+    QEMU_DIRECT_KERNEL_ARGS+=(-bios none)
+  fi
+}
+
 if [[ ! -d "$BOOTSTUB_DIR" ]]; then
   echo "error: bootstub dir not found: $BOOTSTUB_DIR" >&2
   echo "       set LINUX_DIR=... or run scripts/linxisa/setup-linux.sh first." >&2
@@ -56,6 +66,6 @@ if [[ ! -f "$VMLINUX" ]]; then
   exit 1
 fi
 
-echo "[run] $QEMU_BIN -kernel $VMLINUX"
-"$QEMU_BIN" -nographic -monitor none -machine virt -kernel "$VMLINUX" "$@"
-
+qemu_direct_kernel_args "$VMLINUX" "$@"
+echo "[run] $QEMU_BIN ${QEMU_DIRECT_KERNEL_ARGS[*]}"
+"$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}"
