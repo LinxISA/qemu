@@ -963,6 +963,26 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: block fault @ 0x%" VADDR_PRIx " legacy=%u ec=0x%x\n",
                   pc, legacy_cause, (unsigned)((cause >> 8) & 0xffu));
+    if (linx_debug_local_enabled_p()) {
+        uint8_t dbg_bytes[8] = {0};
+        CPUState *cs = env_cpu(ctx->env);
+        int dbg_rc = cpu_memory_rw_debug(cs, pc, dbg_bytes, sizeof(dbg_bytes), 0);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: block fault detail pc_first=0x%" VADDR_PRIx
+                      " pc_next=0x%" VADDR_PRIx " len=%u raw=0x%016" PRIx64
+                      " brtype=%u brtarget=0x%" VADDR_PRIx
+                      " ra_set=%u in_body=%u block_idx=%u tb_flags=0x%x\n",
+                      ctx->base.pc_first, ctx->base.pc_next, ctx->cur_insn_len,
+                      ctx->cur_insn_raw, ctx->brtype, ctx->brtarget,
+                      ctx->ra_set ? 1u : 0u, ctx->in_body ? 1u : 0u,
+                      ctx->block_insn_index,
+                      ctx->base.tb ? ctx->base.tb->flags : 0u);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: block fault bytes rc=%d data=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                      dbg_rc,
+                      dbg_bytes[0], dbg_bytes[1], dbg_bytes[2], dbg_bytes[3],
+                      dbg_bytes[4], dbg_bytes[5], dbg_bytes[6], dbg_bytes[7]);
+    }
 
     tcg_gen_movi_i64(cpu_pending_trap_arg0, traparg0);
     tcg_gen_movi_i32(cpu_pending_trap_cause, cause);
@@ -7500,26 +7520,62 @@ static bool trans_hl_qpop(DisasContext *ctx, arg_hl_qpop *a)
 
 static bool trans_hl_casb(DisasContext *ctx, arg_hl_casb *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 cmp64 = linx_get_reg(a->SrcR);
+    TCGv_i64 new64 = linx_get_reg(a->SrcD1);
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, cmp64);
+    tcg_gen_extrl_i64_i32(new32, new64);
+    gen_helper_linx_casb(old, tcg_env, addr, cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
 }
 
 static bool trans_hl_cash(DisasContext *ctx, arg_hl_cash *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 cmp64 = linx_get_reg(a->SrcR);
+    TCGv_i64 new64 = linx_get_reg(a->SrcD1);
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, cmp64);
+    tcg_gen_extrl_i64_i32(new32, new64);
+    gen_helper_linx_cash(old, tcg_env, addr, cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
 }
 
 static bool trans_hl_casw(DisasContext *ctx, arg_hl_casw *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 cmp64 = linx_get_reg(a->SrcR);
+    TCGv_i64 new64 = linx_get_reg(a->SrcD1);
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, cmp64);
+    tcg_gen_extrl_i64_i32(new32, new64);
+    gen_helper_linx_casw(old, tcg_env, addr, cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
 }
 
 static bool trans_hl_casd(DisasContext *ctx, arg_hl_casd *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+    TCGv_i64 cmpv = linx_get_reg(a->SrcR);
+    TCGv_i64 newv = linx_get_reg(a->SrcD1);
+    TCGv_i64 old = tcg_temp_new_i64();
+
+    gen_helper_linx_casd(old, tcg_env, addr, cmpv, newv);
+    linx_set_dest(a->RegDst, old);
+    return true;
 }
 
 static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
@@ -7552,6 +7608,18 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     if (linx_is_call_continuation(env, pc)) {
         ctx->brtype = LINX_BR_FALL;
         ctx->brtarget = 0;
+        return;
+    }
+
+    /*
+     * Entering a fresh block header must not inherit branch metadata from the
+     * previously executed block. The new header will re-establish its own
+     * brtype/target/return contract during decode.
+     */
+    if (!ctx->in_body && linx_is_bstart_at_pc(env, pc)) {
+        ctx->brtype = 0;
+        ctx->brtarget = 0;
+        ctx->ra_set = false;
         return;
     }
 

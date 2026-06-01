@@ -109,6 +109,19 @@ enum {
     LINX_SSR_DWVR0           = 0xFB1,
 };
 
+#define LINX_LEGACY_MMTBASE_MASK        UINT64_C(0x000000fffffffffc)
+#define LINX_LEGACY_MMTBASE_TO_PA(v)    (((v) & LINX_LEGACY_MMTBASE_MASK) << 10)
+#define LINX_LEGACY_MMCONFIG_MODE_MASK  UINT64_C(0x3)
+#define LINX_LEGACY_MMCONFIG_Q_BIT      (UINT64_C(1) << 7)
+#define LINX_LEGACY_MMCONFIG_ENABLE_BIT (UINT64_C(1) << 63)
+#define LINX_LEGACY_PTE_V               UINT64_C(1) << 0
+#define LINX_LEGACY_PTE_X               UINT64_C(1) << 1
+#define LINX_LEGACY_PTE_W               UINT64_C(1) << 2
+#define LINX_LEGACY_PTE_R               UINT64_C(1) << 3
+#define LINX_LEGACY_PTE_U               UINT64_C(1) << 4
+#define LINX_LEGACY_PTE_AF              UINT64_C(1) << 22
+#define LINX_LEGACY_PTE_LEAF_MASK       (LINX_LEGACY_PTE_R | LINX_LEGACY_PTE_W | LINX_LEGACY_PTE_X)
+
 /* Common (non-banked) SSR indices. */
 enum {
     LINX_SSR_CSTATE = 0x0020,
@@ -134,13 +147,18 @@ enum {
     LINX_TRAPNUM_ILLEGAL_INST     = 4,
     LINX_TRAPNUM_BLOCK_TRAP       = 5,
     LINX_TRAPNUM_SYSCALL          = 6,
+    /*
+     * Linux currently routes EBREAK through ECAUSE_TRAPNUM_BREAKPOINT_EXP=17.
+     * Keep software breakpoints aligned with that contract so WARN/BUG fixups
+     * land in do_trap_break() instead of the generic unknown-exception path.
+     */
+    LINX_TRAPNUM_SW_BREAKPOINT    = 17,
     LINX_TRAPNUM_INST_PC_FAULT    = 32,
     LINX_TRAPNUM_INST_PAGE_FAULT  = 33,
     LINX_TRAPNUM_DATA_ALIGN_FAULT = 34,
     LINX_TRAPNUM_DATA_PAGE_FAULT  = 35,
     LINX_TRAPNUM_INTERRUPT        = 44,
     LINX_TRAPNUM_HW_BREAKPOINT    = 49,
-    LINX_TRAPNUM_SW_BREAKPOINT    = 50,
     LINX_TRAPNUM_HW_WATCHPOINT    = 51,
 };
 
@@ -169,6 +187,28 @@ static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, u
     const uint64_t c = ((uint64_t)(cause & LINX_TRAPNO_CAUSE_MASK)) << LINX_TRAPNO_CAUSE_SHIFT;
     const uint64_t t = (uint64_t)(trapnum & LINX_TRAPNO_TRAPNUM_MASK);
     return e | a | c | t;
+}
+
+static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next)
+{
+    uint8_t buf[4];
+
+    if (cpu_memory_rw_debug(cs, tpc_next, buf, 2, 0) == 0) {
+        const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+        if (hw == 0x0000u) {
+            return tpc_next + 2;
+        }
+    }
+
+    if (cpu_memory_rw_debug(cs, tpc_next, buf, 4, 0) == 0) {
+        const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                              ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+        if (insn == 0x00000001u) {
+            return tpc_next + 4;
+        }
+    }
+
+    return tpc_next;
 }
 
 static void linx_dump_q4(FILE *f, const char *name, const uint64_t q[4],
@@ -303,6 +343,8 @@ static void linx_dump_event_state(CPUState *cs, const char *tag, int exception)
 
 static bool linx_disable_timer_irq_inited;
 static bool linx_disable_timer_irq;
+static const vaddr linx_debug_jiffy_sched_clock_page =
+    UINT64_C(0xffffffff800a6000);
 
 static inline bool linx_timer_irq_enabled(void)
 {
@@ -329,10 +371,11 @@ static inline hwaddr linx_nommu_phys_addr(vaddr va)
     /*
      * NOMMU bring-up profile:
      * - keep identity mapping for normal low addresses (including MMIO windows),
-     * - fold only sign-extended legacy 29-bit addresses back into the low
-     *   physical region.
+     * - fold sign-extended low-31-bit addresses back into the low physical
+     *   region so high-half kernel text/data still resolves to the loaded RAM
+     *   window before full MMU enablement.
      */
-    const uint64_t low_mask = 0x1fffffffULL;
+    const uint64_t low_mask = 0x7fffffffULL;
     const uint64_t high_mask = ~low_mask;
     const uint64_t raw = (uint64_t)va;
 
@@ -600,11 +643,12 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         /* Software breakpoint trap (EBREAK). */
         env->pending_trap_arg0 = last_pc;
         /* pending_trap_cause may carry the imm value (profile-defined). */
-        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+        linx_deliver_sync_trap(cs, env, last_pc,
+                               linx_break_resume_pc(cs, env->insn_pc_next),
                                LINX_TRAPNUM_SW_BREAKPOINT,
                                true,  /* argv */
-                               true,  /* is_trap (resume at next PC) */
-                               true   /* BI */
+                               false, /* Linux do_trap_break() advances past EBREAK */
+                               false  /* resume via BPC after skip_over_break() */
                                );
         return;
 
@@ -830,6 +874,15 @@ static inline bool linx_va_is_canonical(vaddr va)
     return top == (sign ? 0xffffu : 0x0000u);
 }
 
+static inline bool linx_va_is_canonical_width(vaddr va, unsigned bits)
+{
+    const uint64_t raw = (uint64_t)va;
+    const uint64_t sign = (raw >> (bits - 1u)) & 1u;
+    const uint64_t upper = raw >> bits;
+    const uint64_t expect = sign ? (~UINT64_C(0) >> bits) : 0;
+    return upper == expect;
+}
+
 static inline uint8_t linx_fault_acc(MMUAccessType access_type)
 {
     switch (access_type) {
@@ -849,17 +902,140 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
                                hwaddr *tlb_size_out, uint8_t *cause_out)
 {
     (void)cs;
+#define LEGACY_FETCH_FAULT(_why, _addr, _level, _desc)                                 \
+    do {                                                                                \
+        if (access_type == MMU_INST_FETCH &&                                            \
+            (linx_cpu_dump_debug() || linx_cpu_dump_on_event()))                        \
+            qemu_log_mask(LOG_GUEST_ERROR,                                              \
+                          "Linx legacy MMU fetch fault: %s va=0x%" VADDR_PRIx           \
+                          " level=%u addr=0x%" HWADDR_PRIx " desc=0x%" PRIx64           \
+                          " ttbr0=0x%" PRIx64 " mmconfig=0x%" PRIx64 "\n",              \
+                          _why, va, (unsigned)(_level), (hwaddr)(_addr),                \
+                          (uint64_t)(_desc), env->ssr_acr[1][LINX_SSR_TTBR0],           \
+                          legacy_mmconfig);                                             \
+        *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PF, acc);              \
+        return false;                                                                   \
+    } while (0)
     const uint64_t tcr = env->ssr_acr[1][LINX_SSR_TCR];
+    const uint64_t legacy_mmconfig = env->ssr_acr[1][LINX_SSR_TTBR1];
+    const bool legacy_mmu =
+        tcr == 0 && (legacy_mmconfig & LINX_LEGACY_MMCONFIG_ENABLE_BIT) != 0;
     const bool mme = (tcr & 1u) != 0;
     const uint8_t acc = linx_fault_acc(access_type);
 
-    if (!mme) {
+    if (!legacy_mmu && !mme) {
         /* Identity mapping for NOMMU / MME=0. */
         *pa_out = linx_nommu_phys_addr(va);
         *prot_out = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
         *tlb_size_out = TARGET_PAGE_SIZE;
         *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
         return true;
+    }
+
+    if (legacy_mmu) {
+        const bool qpte = (legacy_mmconfig & LINX_LEGACY_MMCONFIG_Q_BIT) != 0;
+        const unsigned mode = (unsigned)(legacy_mmconfig & LINX_LEGACY_MMCONFIG_MODE_MASK);
+        const unsigned levels = 3u + mode;
+        const unsigned va_bits = qpte ? (36u + mode * 8u) : (39u + mode * 9u);
+        if (access_type == MMU_INST_FETCH &&
+            (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
+            (((uint64_t)va) & 0xfffffu) < 0x2000u) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx legacy MMU fetch probe: va=0x%" VADDR_PRIx
+                          " ttbr0=0x%" PRIx64 " mmconfig=0x%" PRIx64 "\n",
+                          va, env->ssr_acr[1][LINX_SSR_TTBR0], legacy_mmconfig);
+        }
+        if (qpte || levels < 3u || levels > 5u ||
+            !linx_va_is_canonical_width(va, va_bits)) {
+            LEGACY_FETCH_FAULT("bad-config-or-canonical", 0, 0, 0);
+        }
+
+        hwaddr table = (hwaddr)LINX_LEGACY_MMTBASE_TO_PA(env->ssr_acr[1][LINX_SSR_TTBR0]);
+        for (unsigned level = 0; level < levels; level++) {
+            const unsigned shift = 12u + 9u * (levels - 1u - level);
+            const uint64_t idx = (((uint64_t)va) >> shift) & 0x1ffu;
+            const hwaddr desc_addr = table + (hwaddr)(idx * 8u);
+            MemTxResult result = MEMTX_OK;
+            const uint64_t desc =
+                address_space_ldq_le(&address_space_memory, desc_addr,
+                                     MEMTXATTRS_UNSPECIFIED, &result);
+            if (result != MEMTX_OK) {
+                LEGACY_FETCH_FAULT("desc-read", desc_addr, level, 0);
+            }
+
+            if ((desc & LINX_LEGACY_PTE_V) == 0) {
+                LEGACY_FETCH_FAULT("type0", desc_addr, level, desc);
+            }
+
+            const bool is_leaf = (desc & LINX_LEGACY_PTE_LEAF_MASK) != 0;
+            if (!is_leaf) {
+                if ((desc & 0xffeULL) != 0 || (desc >> 48) != 0) {
+                    LEGACY_FETCH_FAULT("bad-table-desc", desc_addr, level, desc);
+                }
+                table = (hwaddr)(((uint64_t)(desc >> 32)) << 12);
+                continue;
+            }
+
+            if (level == 0) {
+                LEGACY_FETCH_FAULT("leaf-at-l0", desc_addr, level, desc);
+            }
+
+            const hwaddr block_size = (hwaddr)1ull << shift;
+            const hwaddr out_base = (hwaddr)(((uint64_t)(desc >> 32)) << 12);
+            const bool u = (desc & LINX_LEGACY_PTE_U) != 0;
+            const bool x = (desc & LINX_LEGACY_PTE_X) != 0;
+            const bool w = (desc & LINX_LEGACY_PTE_W) != 0;
+            const bool r = (desc & LINX_LEGACY_PTE_R) != 0;
+            if ((out_base & (block_size - 1u)) != 0) {
+                LEGACY_FETCH_FAULT("bad-leaf-desc", desc_addr, level, desc);
+            }
+            if ((mmu_idx == 1 && !u) ||
+                (access_type == MMU_INST_FETCH && !(x || r)) ||
+                (access_type == MMU_DATA_LOAD && !r) ||
+                (access_type == MMU_DATA_STORE && !w)) {
+                if (access_type == MMU_INST_FETCH &&
+                    (linx_cpu_dump_debug() || linx_cpu_dump_on_event())) {
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "Linx legacy MMU perm fault: va=0x%" VADDR_PRIx
+                                  " level=%u desc=0x%" PRIx64 " mmu=%d u=%d r=%d w=%d x=%d\n",
+                                  va, level, desc, mmu_idx, u ? 1 : 0, r ? 1 : 0,
+                                  w ? 1 : 0, x ? 1 : 0);
+                }
+                *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PERM, acc);
+                return false;
+            }
+
+            const hwaddr pa =
+                out_base | (hwaddr)((uint64_t)va & (uint64_t)(block_size - 1u));
+            if (((uint64_t)pa >> 48) != 0) {
+                *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PF, acc);
+                return false;
+            }
+
+            int prot = 0;
+            if (r) prot |= PAGE_READ;
+            if (w) prot |= PAGE_WRITE;
+            if (x) prot |= PAGE_EXEC;
+            if (access_type == MMU_INST_FETCH &&
+                (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
+                ((((uint64_t)va) & 0xfffffu) == 0xa2c ||
+                 (((uint64_t)va) & 0xfffffu) == 0xa5c ||
+                 (((uint64_t)va) & 0xfffffu) == 0x1000 ||
+                 (((uint64_t)va) & 0xfffffu) == 0x10bc0)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Linx legacy MMU fetch ok: va=0x%" VADDR_PRIx
+                              " level=%u pa=0x%" HWADDR_PRIx " desc=0x%" PRIx64
+                              " prot=0x%x\n",
+                              va, level, pa, desc, prot);
+            }
+            *pa_out = pa;
+            *prot_out = prot;
+            *tlb_size_out = block_size;
+            *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
+            return true;
+        }
+
+        LEGACY_FETCH_FAULT("walk-fell-through", 0, levels, 0);
     }
 
     if (!linx_va_is_canonical(va)) {
@@ -1032,6 +1208,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
 
     *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PF, acc);
     return false;
+#undef LEGACY_FETCH_FAULT
 }
 
 static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
@@ -1053,6 +1230,25 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 
     if (linx_mmu_translate(cs, env, addr, access_type, mmu_idx,
                            &pa, &prot, &tlb_size, &cause)) {
+        if (access_type == MMU_INST_FETCH &&
+            (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
+            ((((uint64_t)addr) & 0xfffffu) == 0xa2c ||
+             (((uint64_t)addr) & 0xfffffu) == 0xa5c ||
+             (((uint64_t)addr) & 0xfffffu) == 0x1000 ||
+             (((uint64_t)addr) & 0xfffffu) == 0x10bc0)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx tlb fill ok: va=0x%" VADDR_PRIx " pa=0x%" HWADDR_PRIx
+                          " prot=0x%x tlb_size=0x%" HWADDR_PRIx " mmu=%d probe=%d\n",
+                          addr, pa, prot, tlb_size, mmu_idx, probe ? 1 : 0);
+        }
+        if (linx_cpu_dump_debug() &&
+            access_type == MMU_INST_FETCH &&
+            (addr & ~(vaddr)(TARGET_PAGE_SIZE - 1u)) == linx_debug_jiffy_sched_clock_page) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: tlb ok va=0x%" VADDR_PRIx " pa=0x%" HWADDR_PRIx
+                          " prot=0x%x tlb_size=0x%" HWADDR_PRIx " mmu=%d probe=%d\n",
+                          addr, pa, prot, tlb_size, mmu_idx, probe ? 1 : 0);
+        }
         /*
          * Bring-up: map only TARGET_PAGE_SIZE granularity in the softmmu TLB,
          * even when the page table descriptor is a larger block mapping.
@@ -1074,6 +1270,15 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 
     if (probe) {
         return false;
+    }
+
+    if ((linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
+        access_type == MMU_INST_FETCH &&
+        ((((uint64_t)addr) & 0xfffffu) < 0x2000u ||
+         (addr & ~(vaddr)(TARGET_PAGE_SIZE - 1u)) == linx_debug_jiffy_sched_clock_page)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: tlb miss/fault va=0x%" VADDR_PRIx " cause=0x%x mmu=%d probe=%d\n",
+                      addr, cause, mmu_idx, probe ? 1 : 0);
     }
 
     env->pending_trap_arg0 = (uint64_t)addr;

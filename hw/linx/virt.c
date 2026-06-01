@@ -96,6 +96,12 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_VIRTIO_MMIO_IRQ_BASE 1
 #define LINX_VIRTIO_MMIO_COUNT 4
 
+/* The Linx Linux timer driver reads SSR_TIMER_TIME as a free-running cycle
+ * source. QEMU currently models that register with QEMU_CLOCK_VIRTUAL in ns,
+ * so advertise a 1 GHz timebase in the generated DT.
+ */
+#define LINX_TIMEBASE_FREQUENCY 1000000000U
+
 /* ACR-scoped SSR low-12 indices used for external IRQ injection. */
 #define LINX_SSR_IPENDING 0xF08
 
@@ -528,6 +534,8 @@ static void *linx_virt_build_fdt(MachineState *machine,
     qemu_fdt_add_subnode(fdt, "/cpus");
     qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 0x1);
     qemu_fdt_setprop_cell(fdt, "/cpus", "#size-cells", 0x0);
+    qemu_fdt_setprop_cell(fdt, "/cpus", "timebase-frequency",
+                          LINX_TIMEBASE_FREQUENCY);
     qemu_fdt_add_subnode(fdt, "/cpus/cpu@0");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "device_type", "cpu");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "compatible", "linx,linxisa");
@@ -550,6 +558,13 @@ static void *linx_virt_build_fdt(MachineState *machine,
                            0x0, (uint32_t)LINX_UART_BASE,
                            0x0, (uint32_t)LINX_UART_SIZE);
     qemu_fdt_setprop_cell(fdt, nodename, "current-speed", 115200);
+
+    qemu_fdt_add_subnode(fdt, "/soc/timer");
+    qemu_fdt_setprop_string(fdt, "/soc/timer", "compatible",
+                            "linx,linx-timer");
+    qemu_fdt_setprop(fdt, "/soc/timer", "always-on", NULL, 0);
+    qemu_fdt_setprop_cells(fdt, "/soc/timer", "interrupts-extended",
+                           0x1, 0x4);
 
     for (int i = 0; i < LINX_VIRTIO_MMIO_COUNT; i++) {
         const hwaddr base = (hwaddr)LINX_VIRTIO_MMIO_BASE + (hwaddr)i * (hwaddr)LINX_VIRTIO_MMIO_STRIDE;
