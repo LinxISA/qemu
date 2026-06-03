@@ -770,13 +770,25 @@ static TCGv conver_src_value(DisasContext *ctx, TCGv SrcReg, int SrcType, int fl
 {
     TCGv t = temp_new(ctx);
 
-    if (SrcType == INSTR_TYPE_CMP_SETC_LD_ST) {
+    if (SrcType == INSTR_TYPE_CMP_SETC_SWUW) {
+        if (flag == AU_NONE || flag == AU_NEG) {
+            tcg_gen_mov_tl(t, SrcReg);
+        } else if (flag == AU_SW) {
+            tcg_gen_ext32s_tl(t, SrcReg);
+        } else if (flag == AU_UW) {
+            tcg_gen_ext32u_tl(t, SrcReg);
+        } else {
+            g_assert_not_reached();
+        }
+    } else if (SrcType == INSTR_TYPE_CMP_SETC_LD_ST) {
         if (flag == AU_NONE) {
             tcg_gen_mov_tl(t, SrcReg);
         } else if (flag == AU_SW) {
             tcg_gen_ext32s_tl(t, SrcReg);
         } else if (flag == AU_UW) {
             tcg_gen_ext32u_tl(t, SrcReg);
+        } else if (flag == AU_NEG) {
+            tcg_gen_neg_tl(t, SrcReg);
         } else {
             fprintf(stderr, "error SrcRType:%d in INSTR_TYPE_AU_LD_ST\n", flag);
             g_assert_not_reached();
@@ -933,6 +945,22 @@ static int get_inst_len(uint16_t opcode)
         inst_size = 4;
     }
     return inst_size;
+}
+
+static bool is_blk_setret_32(uint32_t opcode)
+{
+    return extract32(opcode, 0, 4) == 0x7 &&
+           extract32(opcode, 4, 3) == 0x0 &&
+           extract32(opcode, 7, 5) == xRA;
+}
+
+static bool has_head_setret_padding(DisasContext *ctx, int head_size)
+{
+    CPULINXState *env = ctx->cs->env_ptr;
+    uint16_t pad = cpu_lduw_code(env, ctx->base.pc_next + head_size);
+    uint32_t next = cpu_ldl_code(env, ctx->base.pc_next + head_size + 2);
+
+    return pad == 0xfffe && is_blk_setret_32(next);
 }
 
 /* Determine if it's the head command */
@@ -1111,11 +1139,13 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     CPULINXState *env = cpu->env_ptr;
     uint64_t opcode = cpu_lduw_code(env, ctx->base.pc_next);
+    bool is_head;
 
     ctx->instr_attr = 0;
     ctx->insn_size = get_inst_len(opcode);
+    is_head = is_head_block(ctx, opcode);
 
-    if (!is_head_block(ctx, opcode)) {
+    if (!is_head) {
         if (!is_valid_linx_addr(ctx->tpc1)) {
             ctx->tpc1 = ctx->base.pc_next;
             tcg_gen_movi_i64(tpc1, ctx->base.pc_next);
@@ -1139,8 +1169,12 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
     trace_linx_mini(ctx->base.pc_next);
     ctx->pc_succ_insn = ctx->base.pc_next + ctx->insn_size;
+    if (is_head && (ctx->insn_size == 4 || ctx->insn_size == 6) &&
+        has_head_setret_padding(ctx, ctx->insn_size)) {
+        ctx->pc_succ_insn += 2;
+    }
 
-    if (!is_head_block(ctx, opcode) &&
+    if (!is_head &&
         ctx->brh_type == BRANCH_RET &&
         ctx->carg_tgt == ctx->base.pc_next) {
         /*

@@ -102,10 +102,10 @@ static inline const char *get_dest_reg1_name(int reg_enc)
     return linx_dest_reg1_name[reg_enc];
 }
 
-static const char srctype_au[4][5] = { "", ".sw", ".uw" , ".neg"};
-static const char srctype_lu[4][5] = { "", ".sw", ".uw" , ".not"};
-static const char srctype_cmp_sect_lu[4][5] = { "", ".sw", ".uw", ".not"};
-static const char srctype_cmp_sect[4][5] = { "", ".sw", ".uw", ".N/A"};
+static const char srctype_au[4][5] = { ".sw", ".uw", ".neg", ""};
+static const char srctype_lu[4][5] = { ".sw", ".uw", ".not", ""};
+static const char srctype_cmp_sect_lu[4][5] = { ".sw", ".uw", ".not", ""};
+static const char srctype_cmp_sect[4][5] = { ".sw", ".uw", "", ""};
 
 
 static const char cachetype_prf[4][5] = { ".l1", ".l2", ".l3" , ""};
@@ -889,6 +889,17 @@ print_block_insn_srcl_srcr_dst(DisasContext *ctx, arg_arg_shift *a,
 static void
 print_block_insn_srcl_imm_dst(DisasContext *ctx, arg_arg_arith_i *a,
                               const char *mnemonic)
+{
+    const char *srcl_name = get_src_reg_name(a->SrcL);
+    const char *dest_name = get_dest_reg_name(a->RegDst);
+
+    OUTPUT(ctx, mnemonic, "%s, %d%s", srcl_name, a->imm, dest_name);
+}
+
+/* hl.addi SrcL, imm, {->t, ->u, ->RegDst} */
+static void
+print_block_insn_hl_srcl_imm_dst(DisasContext *ctx, arg_arg_hl_arith_i *a,
+                                 const char *mnemonic)
 {
     const char *srcl_name = get_src_reg_name(a->SrcL);
     const char *dest_name = get_dest_reg_name(a->RegDst);
@@ -2630,6 +2641,17 @@ INSN(srliw, srliw, srcl_shamt_dst)
 INSN(sraiw, sraiw, srcl_shamt_dst)
 INSN(slliw, slliw, srcl_shamt_dst)
 
+HL_INSN(addi, hl.addi, hl_srcl_imm_dst)
+HL_INSN(subi, hl.subi, hl_srcl_imm_dst)
+HL_INSN(andi, hl.andi, hl_srcl_imm_dst)
+HL_INSN(ori, hl.ori, hl_srcl_imm_dst)
+HL_INSN(xori, hl.xori, hl_srcl_imm_dst)
+HL_INSN(addiw, hl.addiw, hl_srcl_imm_dst)
+HL_INSN(subiw, hl.subiw, hl_srcl_imm_dst)
+HL_INSN(andiw, hl.andiw, hl_srcl_imm_dst)
+HL_INSN(oriw, hl.oriw, hl_srcl_imm_dst)
+HL_INSN(xoriw, hl.xoriw, hl_srcl_imm_dst)
+
 SIMT_AND_NORMAL_INSN(cmp_eq, cmp.eq, srcl_srcr_au_dst)
 SIMT_AND_NORMAL_INSN(cmp_ne, cmp.ne, srcl_srcr_au_dst)
 SIMT_AND_NORMAL_INSN(cmp_and, cmp.and, srcl_srcr_lu_dst)
@@ -3117,6 +3139,15 @@ IMM_HL_INSN(shi_upo, hl.shi.upo, imm_srcr_srcd_dst, 0)
 IMM_HL_INSN(swi_upo, hl.swi.upo, imm_srcr_srcd_dst, 0)
 IMM_HL_INSN(sdi_upo, hl.sdi.upo, imm_srcr_srcd_dst, 0)
 
+/* Store Pair Immediate */
+IMM_HL_INSN(sbip, hl.sbip, imm_srcr_srcd_dst_srcd1, 0)
+IMM_HL_INSN(ship, hl.ship, imm_srcr_srcd_dst_srcd1, 1)
+IMM_HL_INSN(swip, hl.swip, imm_srcr_srcd_dst_srcd1, 2)
+IMM_HL_INSN(sdip, hl.sdip, imm_srcr_srcd_dst_srcd1, 3)
+IMM_HL_INSN(ship_u, hl.ship.u, imm_srcr_srcd_dst_srcd1, 0)
+IMM_HL_INSN(swip_u, hl.swip.u, imm_srcr_srcd_dst_srcd1, 0)
+IMM_HL_INSN(sdip_u, hl.sdip.u, imm_srcr_srcd_dst_srcd1, 0)
+
 /* Store Pair Pre-Index */
 HL_INSN(sbp_pr, hl.sbp.pr, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(shp_pr, hl.shp.pr, srcd_au_srcr_srcl_dst_srcd1)
@@ -3142,14 +3173,6 @@ HL_INSN(sdp_po, hl.sdp.po, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(shp_upo, hl.shp.upo, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(swp_upo, hl.swp.upo, srcd_au_srcr_srcl_dst_srcd1)
 HL_INSN(sdp_upo, hl.sdp.upo, srcd_au_srcr_srcl_dst_srcd1)
-
-IMM_HL_INSN(sbip_po, hl.sbip.po, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(ship_po, hl.ship.po, imm_srcr_srcd_dst_srcd1, 1)
-IMM_HL_INSN(swip_po, hl.swip.po, imm_srcr_srcd_dst_srcd1, 2)
-IMM_HL_INSN(sdip_po, hl.sdip.po, imm_srcr_srcd_dst_srcd1, 3)
-IMM_HL_INSN(ship_upo, hl.ship.upo, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(swip_upo, hl.swip.upo, imm_srcr_srcd_dst_srcd1, 0)
-IMM_HL_INSN(sdip_upo, hl.sdip.upo, imm_srcr_srcd_dst_srcd1, 0)
 
 HL_INSN(lb_pcr, hl.lb.pcr, ld_imm_dst)
 HL_INSN(lh_pcr, hl.lh.pcr, ld_imm_dst)

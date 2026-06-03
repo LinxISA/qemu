@@ -2524,7 +2524,7 @@ static bool trans_simt_csel_32(DisasContext *ctx, arg_simt_csel_32 *a)
     TCGv dest = get_dst_regx_fvec(ctx, a->RegDst, lane_id);
     TCGv zero = tcg_constant_tl(0);
 
-    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src1, src2);
+    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src2, src1);
 
     SIMT_WRAP_END_DEST_EXT(a->RegDst)
 

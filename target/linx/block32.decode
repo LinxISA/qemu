@@ -207,7 +207,8 @@ blk_bdim            ............ ..... ... ..... 100 0011           @bdim
 %s_imm_12_1          7:s5 25:7
 %s_imm_17           15:s17
 %s_imm_17_1          7:s5 20:12
-%s_imm_20           12:s20          !function=ex_shift_12
+%s_imm_20           12:s20
+%s_imm_20_12        12:s20          !function=ex_shift_12
 %s_imm_20_1         12:s20          !function=ex_shift_1
 %imms               26:6
 %imml               20:6
@@ -280,7 +281,7 @@ blk_bdim            ............ ..... ... ..... 100 0011           @bdim
 @arg_setc_ui            ............ ..... ... ..... ... ....               &arg_setc_i         imm=%u_imm_12 %SrcL shamt=%RegDst
 @arg_addtpc             .................... ..... ... ....                 &arg_pc             imm=%s_imm_20 %RegDst
 @arg_setret             .................... ..... ... ....                 &arg_pc             imm=%s_imm_20_1 RegDst=10
-@arg_lui                .................... ..... ... ....                 &arg_pc             imm=%s_imm_20 %RegDst
+@arg_lui                .................... ..... ... ....                 &arg_pc             imm=%s_imm_20_12 %RegDst
 
 @arg_branch             ....... ..... ..... ... ..... .... . . .            &arg_branch         imm=%imm_12_1 %SrcR %SrcL
 @arg_jr                 ....... ..... ..... ... ..... .... . . .            &arg_branch         imm=%imm_12_1 SrcR=0 %SrcL

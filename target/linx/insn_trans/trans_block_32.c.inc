@@ -404,32 +404,32 @@ static bool blk_gen_cmp(DisasContext *ctx, arg_blk_cmp_eq_32 *a, int type,
 
 static bool trans_blk_cmp_eq_32(DisasContext *ctx, arg_blk_cmp_eq_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_EQ);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_EQ);
 }
 
 static bool trans_blk_cmp_ne_32(DisasContext *ctx, arg_blk_cmp_ne_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_NE);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_NE);
 }
 
 static bool trans_blk_cmp_lt_32(DisasContext *ctx, arg_blk_cmp_lt_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_LT);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_LT);
 }
 
 static bool trans_blk_cmp_ge_32(DisasContext *ctx, arg_blk_cmp_ge_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_GE);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_GE);
 }
 
 static bool trans_blk_cmp_ltu_32(DisasContext *ctx, arg_blk_cmp_ltu_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_LTU);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_LTU);
 }
 
 static bool trans_blk_cmp_geu_32(DisasContext *ctx, arg_blk_cmp_geu_32 *a)
 {
-    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_GEU);
+    return blk_gen_cmp(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_GEU);
 }
 
 static bool gen_blk_cmp_arith(DisasContext *ctx, arg_blk_cmp_and_32 *a,
@@ -548,32 +548,32 @@ static bool blk_gen_setc(DisasContext *ctx, arg_blk_setc_eq_32 *a, int type,
 
 static bool trans_blk_setc_eq_32(DisasContext *ctx, arg_blk_setc_eq_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_EQ);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_EQ);
 }
 
 static bool trans_blk_setc_ne_32(DisasContext *ctx, arg_blk_setc_ne_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_NE);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_NE);
 }
 
 static bool trans_blk_setc_lt_32(DisasContext *ctx, arg_blk_setc_lt_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_LT);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_LT);
 }
 
 static bool trans_blk_setc_ge_32(DisasContext *ctx, arg_blk_setc_ge_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_GE);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_GE);
 }
 
 static bool trans_blk_setc_ltu_32(DisasContext *ctx, arg_blk_setc_ltu_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_LTU);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_LTU);
 }
 
 static bool trans_blk_setc_geu_32(DisasContext *ctx, arg_blk_setc_geu_32 *a)
 {
-    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_LD_ST, TCG_COND_GEU);
+    return blk_gen_setc(ctx, a, INSTR_TYPE_CMP_SETC_SWUW, TCG_COND_GEU);
 }
 
 static bool blk_gen_setc_arith(DisasContext *ctx, arg_blk_setc_and_32 *a,
@@ -865,7 +865,7 @@ static bool trans_blk_rev_32(DisasContext *ctx, arg_blk_rev_32 *a)
 
 static bool trans_blk_csel_32(DisasContext *ctx, arg_blk_csel_32 *a)
 {
-    /* result = (operand3 != 0 ? operand1 : operand2) */
+    /* result = (SrcP != 0 ? SrcR : SrcL) */
     TCGv src1 = get_src_regx(ctx, a->SrcL);
     TCGv src2 = get_src_regx(ctx, a->SrcR);
     /* .neg field */
@@ -874,7 +874,7 @@ static bool trans_blk_csel_32(DisasContext *ctx, arg_blk_csel_32 *a)
     TCGv dest = get_dst_regx(ctx, a->RegDst);
     TCGv zero = tcg_constant_tl(0);
 
-    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src1, src2);
+    tcg_gen_movcond_tl(TCG_COND_NE, dest, SrcP, zero, src2, src1);
 
     set_dst_regx(ctx, dest, a->RegDst);
 
@@ -1206,9 +1206,11 @@ static bool trans_blk_maddw_32(DisasContext *ctx, arg_blk_maddw_32 *a)
 
 static bool trans_blk_addtpc_32(DisasContext *ctx, arg_blk_addtpc_32 *a)
 {
-    TCGv imm = tcg_constant_tl(a->imm);
     TCGv addr = get_dst_regx(ctx, a->RegDst);
-    tcg_gen_addi_tl(addr, imm, ctx->base.pc_next);
+    target_ulong page_base = ctx->base.pc_next & TARGET_PAGE_MASK;
+    target_long offset = (target_long)a->imm << TARGET_PAGE_BITS;
+
+    tcg_gen_movi_tl(addr, page_base + offset);
 
     set_dst_regx(ctx, addr, a->RegDst);
     return true;
@@ -2079,18 +2081,23 @@ static bool trans_blk_fence_i_32(DisasContext *ctx, arg_blk_fence_i_32 *a)
 
 static bool trans_blk_acrc_32(DisasContext *ctx, arg_blk_acrc_32 *a)
 {
+#ifndef CONFIG_USER_ONLY
     static_blk_type_check(ctx, 1 << HEAD_TYPE_SYS);
     if (get_brhtype(ctx->header_info) != BRANCH_FALL) {
         qemu_log("acrc do not in the fall block.\n");
     }
 
-#ifndef CONFIG_USER_ONLY
     gen_helper_acrc(cpu_env, tcg_constant_i32(a->RST_Type));
 #else
-    /* In user mode, we do not check request_type. */
+    /*
+     * Linux user-mode treats ACRC SCT_SYS as the syscall instruction.  Keep
+     * the current block state intact so compiler-generated code can resume in
+     * the same conditional/fall-through block after the syscall returns.
+     */
     tcg_gen_movi_i32(scall_arg, a->RST_Type);
     tcg_gen_movi_tl(next_bpc, ctx->pc_succ_insn);
     gen_helper_raise_exception(cpu_env, tcg_constant_i32(LINX_EXCP_SCALL));
+    ctx->base.is_jmp = DISAS_NORETURN;
 #endif
 
     return true;

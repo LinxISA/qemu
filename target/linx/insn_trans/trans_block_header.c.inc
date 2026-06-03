@@ -608,31 +608,15 @@ static bool trans_blk_start_ret(DisasContext *ctx, arg_blk_start_ret *a)
 
 static bool trans_blk_offset_cond(DisasContext *ctx, arg_blk_offset_cond *a)
 {
-    uint64_t saved_header_info = ctx->header_info;
-    target_long saved_carg_tgt = ctx->carg_tgt;
-
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CONDITIONAL, HEAD_TYPE_STD,
                                   a->bnext_low);
-    /*
-     * Short offset headers are nested helper edges inside an outer block.
-     * Keep the conditional semantics for this tiny block, but restore the
-     * outer block state for the next TB when control falls through.
-     */
-    tcg_gen_movi_i64(header_info, saved_header_info);
-    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
-
     return true;
 }
 
 static bool trans_blk_offset_direct_call(DisasContext *ctx,
                                          arg_blk_offset_direct_call *a)
 {
-    uint64_t saved_header_info = ctx->header_info;
-    target_long saved_carg_tgt = ctx->carg_tgt;
-
     GEN_LINX_INIT_HEAD(ctx, a, BRANCH_CALL, HEAD_TYPE_STD, a->bnext_low);
-    tcg_gen_movi_i64(header_info, saved_header_info);
-    tcg_gen_movi_tl(carg_tgt, saved_carg_tgt);
     return true;
 }
 

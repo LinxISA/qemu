@@ -363,27 +363,29 @@ typedef struct {
 #define INSTR_TYPE_FP  3
 /* Load/Store support only EXT_NONE, EXT_SW, EXT_UW, except AU_NEG */
 #define INSTR_TYPE_CMP_SETC_LD_ST  4
+/* CMP/SETC syntax only exposes .sw/.uw; SrcRType=3 is treated as none. */
+#define INSTR_TYPE_CMP_SETC_SWUW  5
 
 /* register ext operation type*/
-#define REG_EXT_NONE  0
-#define REG_EXT_SW    1
-#define REG_EXT_UW    2
-#define REG_EXT_NOT   3
+#define REG_EXT_SW    0
+#define REG_EXT_UW    1
+#define REG_EXT_NOT   2
+#define REG_EXT_NONE  3
 
 
-#define AU_NONE  0
-#define AU_SW  1
-#define AU_UW  2
-#define AU_NEG  3
+#define AU_SW  0
+#define AU_UW  1
+#define AU_NEG  2
+#define AU_NONE  3
 
 #define ATOMIC_B   0
 #define ATOMIC_H   1
 #define ATOMIC_S   2
 #define ATOMIC_D   3
 
-#define SETC_NONE  0
-#define SETC_SW  1
-#define SETC_UW 2
+#define SETC_SW  0
+#define SETC_UW 1
+#define SETC_NONE  3
 
 #define SRC_FVEC_VT_1       0b0000000
 #define SRC_FVEC_VT_4       0b0000011
