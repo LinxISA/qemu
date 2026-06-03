@@ -184,7 +184,7 @@ typedef struct mips_elf_abiflags_v0 {
 
 #define EM_LOONGARCH    258     /* LoongArch */
 
-#define EM_LINX         261     /* Let's use same value with RISCV currently */
+#define EM_LINX         233     /* LinxISA */
 
 /*
  * This is an interim value that we will use until the committee comes

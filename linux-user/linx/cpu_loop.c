@@ -27,9 +27,6 @@
 #include "elf.h"
 #include "semihosting/common-semi.h"
 
-extern uint64_t kenny_tb_exec;
-extern uint64_t kenny_tb_trans;
-
 void cpu_loop(CPULINXState *env)
 {
     CPUState *cs = env_cpu(env);
@@ -60,14 +57,12 @@ void cpu_loop(CPULINXState *env)
         case LINX_EXCP_SCALL:
             env->pc = env->next_bpc;
 
-            linx_reset_bstate(env);
-
-            if (env->gpr[xX1] == TARGET_NR_linx_flush_icache) {
+            if (env->gpr[xA7] == TARGET_NR_linx_flush_icache) {
                 /* linx_flush_icache_syscall is a no-op in QEMU as
                    self-modifying code is automatically detected */
                 ret = 0;
             } else {
-                ret = do_syscall(env, env->gpr[xX1],
+                ret = do_syscall(env, env->gpr[xA7],
                                  env->gpr[xA0],
                                  env->gpr[xA1],
                                  env->gpr[xA2],
@@ -76,14 +71,14 @@ void cpu_loop(CPULINXState *env)
                                  env->gpr[xA5],
                                  0, 0);
             }
-            if (ret == -TARGET_ERESTARTSYS) {
+            if (ret == -QEMU_ERESTARTSYS) {
                 /*
                  * Regenerate the exception so that cpu_exec can exit before
                  * executing the instruction.
                  */
                 cs->exception_index = LINX_EXCP_SCALL;
             } else {
-                if (ret != -TARGET_QEMU_ESIGRETURN)
+                if (ret != -QEMU_ESIGRETURN)
                     env->gpr[xA0] = ret;
             }
 
