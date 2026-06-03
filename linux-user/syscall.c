@@ -13153,9 +13153,6 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
     return ret;
 }
 
-extern uint64_t kenny_tb_exec;
-extern uint64_t kenny_tb_trans;
-
 abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg2, abi_long arg3, abi_long arg4,
                     abi_long arg5, abi_long arg6, abi_long arg7,
@@ -13177,9 +13174,6 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         }
     }
 #endif
-
-    if(num==TARGET_NR_exit || num == TARGET_NR_exit_group)
-        printf("kenny: TB exec = %lu, trans = %lu\n", kenny_tb_exec, kenny_tb_trans);
 
     record_syscall_start(cpu, num, arg1,
                          arg2, arg3, arg4, arg5, arg6, arg7, arg8);

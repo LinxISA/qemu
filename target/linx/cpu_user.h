@@ -11,6 +11,7 @@
 #define xA4 6
 #define xA5 7
 #define xA6 8
+#define xA7 9
 #define xX1 21  /* syscall number */
 
 #endif

@@ -52,9 +52,6 @@
 #include "sysemu/runstate-action.h"
 #include "qemu/timer.h"
 
-uint64_t kenny_tb_exec = 0;
-uint64_t kenny_tb_trans = 0;
-
 bool enable_delay_block_intr = false;
 
 /* -icount align implementation. */
@@ -214,8 +211,6 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, target_ulong pc,
 static inline void log_cpu_exec(target_ulong pc, CPUState *cpu,
                                 const TranslationBlock *tb)
 {
-    kenny_tb_exec++;
-
     if (unlikely(qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC))
         && qemu_log_in_addr_range(pc)) {
 
