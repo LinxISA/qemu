@@ -33,6 +33,7 @@ typedef struct DisasContext {
     bool decoupled_header;
     bool tgt_modified;
     bool ra_set;
+    vaddr call_ra_target;
     uint32_t block_insn_index;
 } DisasContext;
 
@@ -325,6 +326,7 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
     ctx->tgt_modified = false;
     ctx->decoupled_header = false;
     ctx->ra_set = false;
+    ctx->call_ra_target = 0;
     ctx->block_insn_index = 0;
     tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
                    offsetof(CPULinxState, call_ra_set));
@@ -1019,6 +1021,20 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
+    if (current_pc != ctx->base.pc_first &&
+        (ctx->brtype == LINX_BR_CALL || ctx->brtype == LINX_BR_ICALL) &&
+        ctx->ra_set &&
+        ctx->call_ra_target != 0 &&
+        current_pc != ctx->call_ra_target) {
+        /*
+         * Current Linx LLVM lowering can emit extra headers inside an open
+         * CALL/ICALL block before the recorded SETRET continuation. Keep
+         * translating through those internal markers so the call prelude
+         * executes before control transfers to the callee. The CALL should
+         * only commit once we actually reach the continuation header.
+         */
+        return true;
+    }
     if (current_pc != ctx->base.pc_first) {
         /* BSTART in the middle of a translation block - end the previous block */
         linx_gen_block_end(ctx, current_pc);
@@ -1098,6 +1114,10 @@ static bool trans_c_bstart_cond(DisasContext *ctx, arg_c_bstart_cond *a)
 static bool trans_c_bstart_sys(DisasContext *ctx, arg_c_bstart_sys *a)
 {
     (void)a;
+    if (ctx->base.pc_next - ctx->cur_insn_len != ctx->base.pc_first &&
+        ctx->brtype != 0) {
+        return true;
+    }
     return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
@@ -1321,6 +1341,10 @@ static bool trans_bstart_fp_ret(DisasContext *ctx, arg_bstart_fp_ret *a)
 static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
 {
     (void)a;
+    if (ctx->base.pc_next - ctx->cur_insn_len != ctx->base.pc_first &&
+        ctx->brtype != 0) {
+        return true;
+    }
     return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
@@ -1847,6 +1871,7 @@ static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw)
         vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
         vaddr tgt = pc + ((vaddr)imm_hw << 1);
         linx_set_dest(LINX_REG_RA, tcg_constant_i64(tgt));
+        ctx->call_ra_target = tgt;
     }
     ctx->ra_set = true;
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
@@ -6580,6 +6605,9 @@ static bool trans_hl_bstart_fp_call(DisasContext *ctx, arg_hl_bstart_fp_call *a)
 static bool trans_hl_bstart_sys(DisasContext *ctx, arg_hl_bstart_sys *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (current_pc != ctx->base.pc_first && ctx->brtype != 0) {
+        return true;
+    }
     return linx_begin_header_target(ctx, LINX_BR_FALL,
                                     linx_pcrel_target(current_pc, a->simm));
 }
@@ -6666,6 +6694,9 @@ static bool trans_l_bstart_sys(DisasContext *ctx, arg_l_bstart_sys *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
+    if (current_pc != ctx->base.pc_first && ctx->brtype != 0) {
+        return true;
+    }
     return linx_begin_header_target(ctx, LINX_BR_FALL,
                                     linx_pcrel_target(current_pc, simm));
 }
@@ -7598,6 +7629,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     ctx->decoupled_header = false;
     ctx->tgt_modified = false;
     ctx->ra_set = (env->call_ra_set != 0);
+    ctx->call_ra_target = ctx->ra_set ? env->gpr[LINX_REG_RA] : 0;
     ctx->block_insn_index = 0;
 
     /*
@@ -7608,6 +7640,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     if (linx_is_call_continuation(env, pc)) {
         ctx->brtype = LINX_BR_FALL;
         ctx->brtarget = 0;
+        ctx->call_ra_target = 0;
         return;
     }
 
@@ -7620,6 +7653,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
         ctx->brtype = 0;
         ctx->brtarget = 0;
         ctx->ra_set = false;
+        ctx->call_ra_target = 0;
         return;
     }
 
@@ -7630,6 +7664,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
         !linx_is_bstart_at_pc(env, pc)) {
         ctx->brtype = LINX_BR_FALL;
         ctx->brtarget = 0;
+        ctx->call_ra_target = 0;
     }
 }
 

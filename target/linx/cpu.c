@@ -969,7 +969,13 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
 
             const bool is_leaf = (desc & LINX_LEGACY_PTE_LEAF_MASK) != 0;
             if (!is_leaf) {
-                if ((desc & 0xffeULL) != 0 || (desc >> 48) != 0) {
+                /*
+                 * Legacy Linx table descriptors encode the next-level PFN in
+                 * desc[63:32], matching the Linux port's _PAGE_PFN_SHIFT=32
+                 * layout. Only the permission/attribute bits below PFN are
+                 * reserved for non-leaf entries.
+                 */
+                if ((desc & 0xffeULL) != 0) {
                     LEGACY_FETCH_FAULT("bad-table-desc", desc_addr, level, desc);
                 }
                 table = (hwaddr)(((uint64_t)(desc >> 32)) << 12);
@@ -1342,6 +1348,250 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
                  ",0x%016" PRIx64 "]\n",
                  env->lb[0], env->lb[1], env->lb[2],
                  env->lc[0], env->lc[1], env->lc[2]);
+
+    {
+        const hwaddr sp = (hwaddr)env->gpr[LINX_REG_SP];
+        MemTxResult result = MEMTX_OK;
+        const uint64_t w0 = address_space_ldq_le(&address_space_memory, sp + 0,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w1 = address_space_ldq_le(&address_space_memory, sp + 8,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w2 = address_space_ldq_le(&address_space_memory, sp + 16,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w3 = address_space_ldq_le(&address_space_memory, sp + 24,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w4 = address_space_ldq_le(&address_space_memory, sp + 32,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w5 = address_space_ldq_le(&address_space_memory, sp + 40,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w6 = address_space_ldq_le(&address_space_memory, sp + 48,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w7 = address_space_ldq_le(&address_space_memory, sp + 56,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w8 = address_space_ldq_le(&address_space_memory, sp + 64,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w9 = address_space_ldq_le(&address_space_memory, sp + 72,
+                                                 MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w10 = address_space_ldq_le(&address_space_memory, sp + 80,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w11 = address_space_ldq_le(&address_space_memory, sp + 88,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w12 = address_space_ldq_le(&address_space_memory, sp + 96,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w13 = address_space_ldq_le(&address_space_memory, sp + 104,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w14 = address_space_ldq_le(&address_space_memory, sp + 112,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w15 = address_space_ldq_le(&address_space_memory, sp + 120,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w16 = address_space_ldq_le(&address_space_memory, sp + 128,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w17 = address_space_ldq_le(&address_space_memory, sp + 136,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w18 = address_space_ldq_le(&address_space_memory, sp + 144,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w19 = address_space_ldq_le(&address_space_memory, sp + 152,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w20 = address_space_ldq_le(&address_space_memory, sp + 160,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w21 = address_space_ldq_le(&address_space_memory, sp + 168,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w22 = address_space_ldq_le(&address_space_memory, sp + 176,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w23 = address_space_ldq_le(&address_space_memory, sp + 184,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w24 = address_space_ldq_le(&address_space_memory, sp + 192,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w25 = address_space_ldq_le(&address_space_memory, sp + 200,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w26 = address_space_ldq_le(&address_space_memory, sp + 208,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w27 = address_space_ldq_le(&address_space_memory, sp + 216,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w28 = address_space_ldq_le(&address_space_memory, sp + 224,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w29 = address_space_ldq_le(&address_space_memory, sp + 232,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w30 = address_space_ldq_le(&address_space_memory, sp + 240,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w31 = address_space_ldq_le(&address_space_memory, sp + 248,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w32 = address_space_ldq_le(&address_space_memory, sp + 256,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w33 = address_space_ldq_le(&address_space_memory, sp + 264,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w34 = address_space_ldq_le(&address_space_memory, sp + 272,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w35 = address_space_ldq_le(&address_space_memory, sp + 280,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w36 = address_space_ldq_le(&address_space_memory, sp + 288,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w37 = address_space_ldq_le(&address_space_memory, sp + 296,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w38 = address_space_ldq_le(&address_space_memory, sp + 304,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w39 = address_space_ldq_le(&address_space_memory, sp + 312,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w40 = address_space_ldq_le(&address_space_memory, sp + 320,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w41 = address_space_ldq_le(&address_space_memory, sp + 328,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w42 = address_space_ldq_le(&address_space_memory, sp + 336,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w43 = address_space_ldq_le(&address_space_memory, sp + 344,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w44 = address_space_ldq_le(&address_space_memory, sp + 352,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w45 = address_space_ldq_le(&address_space_memory, sp + 360,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w46 = address_space_ldq_le(&address_space_memory, sp + 368,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w47 = address_space_ldq_le(&address_space_memory, sp + 376,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w48 = address_space_ldq_le(&address_space_memory, sp + 384,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w49 = address_space_ldq_le(&address_space_memory, sp + 392,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w50 = address_space_ldq_le(&address_space_memory, sp + 400,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w51 = address_space_ldq_le(&address_space_memory, sp + 408,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w52 = address_space_ldq_le(&address_space_memory, sp + 416,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w53 = address_space_ldq_le(&address_space_memory, sp + 424,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w54 = address_space_ldq_le(&address_space_memory, sp + 432,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w55 = address_space_ldq_le(&address_space_memory, sp + 440,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w56 = address_space_ldq_le(&address_space_memory, sp + 448,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w57 = address_space_ldq_le(&address_space_memory, sp + 456,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w93 = address_space_ldq_le(&address_space_memory, sp + 744,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w94 = address_space_ldq_le(&address_space_memory, sp + 752,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w95 = address_space_ldq_le(&address_space_memory, sp + 760,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w96 = address_space_ldq_le(&address_space_memory, sp + 768,
+                                                  MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w143 = address_space_ldq_le(&address_space_memory, sp + 1144,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w144 = address_space_ldq_le(&address_space_memory, sp + 1152,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w145 = address_space_ldq_le(&address_space_memory, sp + 1160,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w146 = address_space_ldq_le(&address_space_memory, sp + 1168,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w151 = address_space_ldq_le(&address_space_memory, sp + 1208,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w152 = address_space_ldq_le(&address_space_memory, sp + 1216,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w157 = address_space_ldq_le(&address_space_memory, sp + 1256,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w158 = address_space_ldq_le(&address_space_memory, sp + 1260,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w159 = address_space_ldq_le(&address_space_memory, sp + 1264,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        const uint64_t w188 = address_space_ldq_le(&address_space_memory, sp + 1512,
+                                                   MEMTXATTRS_UNSPECIFIED, &result);
+        qemu_fprintf(f,
+                     "debug.stack sp=0x%016" PRIx64
+                     " [0]=0x%016" PRIx64
+                     " [8]=0x%016" PRIx64
+                     " [16]=0x%016" PRIx64
+                     " [24]=0x%016" PRIx64
+                     " [32]=0x%016" PRIx64
+                     " [40]=0x%016" PRIx64
+                     " [48]=0x%016" PRIx64
+                     " [56]=0x%016" PRIx64
+                     " [64]=0x%016" PRIx64
+                     " [72]=0x%016" PRIx64
+                     " [80]=0x%016" PRIx64
+                     " [88]=0x%016" PRIx64
+                     " [96]=0x%016" PRIx64
+                     " [104]=0x%016" PRIx64
+                     " [112]=0x%016" PRIx64
+                     " [120]=0x%016" PRIx64
+                     " [128]=0x%016" PRIx64
+                     " [136]=0x%016" PRIx64
+                     " [144]=0x%016" PRIx64
+                     " [152]=0x%016" PRIx64
+                     " [160]=0x%016" PRIx64
+                     " [168]=0x%016" PRIx64
+                     " [176]=0x%016" PRIx64
+                     " [184]=0x%016" PRIx64
+                     " [192]=0x%016" PRIx64
+                     " [200]=0x%016" PRIx64
+                     " [208]=0x%016" PRIx64
+                     " [216]=0x%016" PRIx64
+                     " [224]=0x%016" PRIx64
+                     " [232]=0x%016" PRIx64
+                     " [240]=0x%016" PRIx64
+                     " [248]=0x%016" PRIx64
+                     " [256]=0x%016" PRIx64
+                     " [264]=0x%016" PRIx64
+                     " [272]=0x%016" PRIx64
+                     " [280]=0x%016" PRIx64
+                     " [288]=0x%016" PRIx64
+                     " [296]=0x%016" PRIx64
+                     " [304]=0x%016" PRIx64
+                     " [312]=0x%016" PRIx64
+                     " [320]=0x%016" PRIx64
+                     " [328]=0x%016" PRIx64
+                     " [336]=0x%016" PRIx64
+                     " [344]=0x%016" PRIx64
+                     " [352]=0x%016" PRIx64
+                     " [360]=0x%016" PRIx64
+                     " [368]=0x%016" PRIx64
+                     " [376]=0x%016" PRIx64
+                     " [384]=0x%016" PRIx64
+                     " [392]=0x%016" PRIx64
+                     " [400]=0x%016" PRIx64
+                     " [408]=0x%016" PRIx64
+                     " [416]=0x%016" PRIx64
+                     " [424]=0x%016" PRIx64
+                     " [432]=0x%016" PRIx64
+                     " [440]=0x%016" PRIx64
+                     " [448]=0x%016" PRIx64
+                     " [456]=0x%016" PRIx64
+                     " [744]=0x%016" PRIx64
+                     " [752]=0x%016" PRIx64
+                     " [760]=0x%016" PRIx64
+                     " [768]=0x%016" PRIx64
+                     " [1144]=0x%016" PRIx64
+                     " [1152]=0x%016" PRIx64
+                     " [1160]=0x%016" PRIx64
+                     " [1168]=0x%016" PRIx64
+                     " [1208]=0x%016" PRIx64
+                     " [1216]=0x%016" PRIx64
+                     " [1256]=0x%016" PRIx64
+                     " [1260]=0x%016" PRIx64
+                     " [1264]=0x%016" PRIx64
+                     " [1512]=0x%016" PRIx64 "\n",
+                     env->gpr[LINX_REG_SP], w0, w1, w2, w3, w4, w5, w6, w7,
+                     w8, w9, w10, w11, w12, w13, w14, w15,
+                     w16, w17, w18, w19, w20, w21, w22, w23,
+                     w24, w25, w26, w27, w28, w29, w30, w31,
+                     w32, w33, w34, w35, w36, w37, w38, w39,
+                     w40, w41, w42, w43, w44, w45, w46, w47,
+                     w48, w49, w50, w51, w52, w53, w54, w55,
+                     w56, w57, w93, w94, w95, w96,
+                     w143, w144, w145, w146, w151, w152,
+                     w157, w158, w159, w188);
+    }
+
+    {
+        const hwaddr mem_map_sym = UINT64_C(0xffffffff81109be8);
+        MemTxResult result = MEMTX_OK;
+        const uint64_t mem_map_val =
+            address_space_ldq_le(&address_space_memory, mem_map_sym,
+                                 MEMTXATTRS_UNSPECIFIED, &result);
+        qemu_fprintf(f,
+                     "debug.globals mem_map@0x%016" PRIx64 "=0x%016" PRIx64 "\n",
+                     (uint64_t)mem_map_sym, mem_map_val);
+    }
 
     linx_dump_q4(f, "debug.queue.tq", env->tq, "t#1", "t#4", "T-hand");
     linx_dump_q4(f, "debug.queue.uq", env->uq, "u#1", "u#4", "U-hand");
