@@ -38,6 +38,13 @@ static bool linx_virt_print_insn_count_enabled(void)
     return v && v[0] && strcmp(v, "0") != 0;
 }
 
+static bool linx_test_finisher_enabled(void)
+{
+    const char *v = getenv("LINX_VIRT_TEST_FINISHER");
+
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
 #if TARGET_LONG_BITS == 32
 static const char *linx_elf32_sym_name(const uint8_t *buf, size_t len,
                                        const Elf32_Shdr *strtab_sh,
@@ -78,8 +85,12 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_UART_BASE 0x10000000
 #define LINX_UART_SIZE 0x100
 
-/* Exit register address */
+/* Legacy exit register address */
 #define LINX_EXIT_REG 0x10000004
+
+/* Canonical AVS/system test finisher MMIO */
+#define LINX_TEST_FINISHER_BASE 0x10009000
+#define LINX_TEST_FINISHER_SIZE 0x4
 
 /* Linx virt-uart MMIO register layout (offsets from LINX_UART_BASE). */
 #define LINX_UART_DATA_REG 0x0
@@ -93,7 +104,7 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_VIRTIO_MMIO_BASE 0x30001000
 #define LINX_VIRTIO_MMIO_STRIDE 0x200
 #define LINX_VIRTIO_MMIO_SIZE 0x200
-#define LINX_VIRTIO_MMIO_IRQ_BASE 1
+#define LINX_VIRTIO_MMIO_IRQ_BASE 8
 #define LINX_VIRTIO_MMIO_COUNT 4
 
 /* The Linx Linux timer driver reads SSR_TIMER_TIME as a free-running cycle
@@ -158,6 +169,7 @@ static inline uint32_t linx_set_lo12_s(uint32_t insn, uint32_t imm)
 /* Simple UART state */
 typedef struct LinxUARTState {
     MemoryRegion mmio;
+    MemoryRegion finisher_mmio;
     QemuMutex lock;
     LinxCPU *cpu;
 
@@ -167,6 +179,23 @@ typedef struct LinxUARTState {
     uint32_t rx_head;
     uint32_t rx_tail;
 } LinxUARTState;
+
+static void linx_finish_guest(LinxUARTState *s, uint64_t value)
+{
+    if (s->cpu) {
+        CPULinxState *env = &s->cpu->env;
+        if (linx_virt_print_insn_count_enabled()) {
+            fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
+            fflush(stderr);
+        }
+        /* Stop commit tracing after the exit store commits (difftest). */
+        env->commit_trace.stop_after_commit = 1;
+        env->minst_trace.stop_after_commit = 1;
+    }
+    trace_linx_virt_exit_write(value);
+    qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
+                                           (int)(uint32_t)value);
+}
 
 static int linx_uart_can_receive(void *opaque)
 {
@@ -247,19 +276,7 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
 
     /* Handle exit register */
     if (addr == LINX_EXIT_REG - LINX_UART_BASE) {
-        if (s->cpu) {
-            CPULinxState *env = &s->cpu->env;
-            if (linx_virt_print_insn_count_enabled()) {
-                fprintf(stderr, "LINX_INSN_COUNT=%" PRIu64 "\n", env->insn_count);
-                fflush(stderr);
-            }
-            /* Stop commit tracing after the exit store commits (difftest). */
-            env->commit_trace.stop_after_commit = 1;
-            env->minst_trace.stop_after_commit = 1;
-        }
-        trace_linx_virt_exit_write(value);
-        qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
-                                               (int)(uint32_t)value);
+        linx_finish_guest(s, value);
         return;
     }
 
@@ -290,6 +307,34 @@ static const MemoryRegionOps linx_uart_ops = {
     },
 };
 
+static uint64_t linx_finisher_read(void *opaque, hwaddr addr, unsigned size)
+{
+    (void)opaque;
+    (void)addr;
+    (void)size;
+    return 0;
+}
+
+static void linx_finisher_write(void *opaque, hwaddr addr, uint64_t value,
+                                unsigned size)
+{
+    LinxUARTState *s = opaque;
+    (void)size;
+    if (addr == 0) {
+        linx_finish_guest(s, value);
+    }
+}
+
+static const MemoryRegionOps linx_finisher_ops = {
+    .read = linx_finisher_read,
+    .write = linx_finisher_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+    },
+};
+
 static void linx_uart_init(LinxUARTState *s, LinxCPU *cpu)
 {
     Chardev *chr;
@@ -301,6 +346,12 @@ static void linx_uart_init(LinxUARTState *s, LinxCPU *cpu)
                           "linx-uart", LINX_UART_SIZE);
     memory_region_add_subregion(get_system_memory(), LINX_UART_BASE,
                                 &s->mmio);
+    if (linx_test_finisher_enabled()) {
+        memory_region_init_io(&s->finisher_mmio, NULL, &linx_finisher_ops, s,
+                              "linx-test-finisher", LINX_TEST_FINISHER_SIZE);
+        memory_region_add_subregion(get_system_memory(), LINX_TEST_FINISHER_BASE,
+                                    &s->finisher_mmio);
+    }
 
     s->rx_head = 0;
     s->rx_tail = 0;
@@ -382,6 +433,8 @@ static hwaddr linx_align_up(hwaddr v, hwaddr align)
     }
     return (v + align - 1) & ~(align - 1);
 }
+
+#define LINX_LINUX_PMD_ALIGN 0x200000ULL
 
 static void linx_set_body_ranges(CPULinxState *env,
                                  LinxBodyRange *ranges,
@@ -538,11 +591,21 @@ static void *linx_virt_build_fdt(MachineState *machine,
                           LINX_TIMEBASE_FREQUENCY);
     qemu_fdt_add_subnode(fdt, "/cpus/cpu@0");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "device_type", "cpu");
-    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "compatible", "linx,linxisa");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "compatible", "linx");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "riscv,isa", "rv64imac");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "linx,isa", "rv64imac");
     qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "reg", 0x0);
-    qemu_fdt_setprop(fdt, "/cpus/cpu@0", "interrupt-controller", NULL, 0);
-    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "#interrupt-cells", 0x1);
-    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "phandle", 0x1);
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "status", "okay");
+
+    qemu_fdt_add_subnode(fdt, "/cpus/cpu@0/interrupt-controller");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0/interrupt-controller",
+                            "compatible", "linx,cpu-intc");
+    qemu_fdt_setprop(fdt, "/cpus/cpu@0/interrupt-controller",
+                     "interrupt-controller", NULL, 0);
+    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0/interrupt-controller",
+                          "#interrupt-cells", 0x1);
+    qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0/interrupt-controller",
+                          "phandle", 0x1);
 
     qemu_fdt_add_subnode(fdt, "/soc");
     qemu_fdt_setprop(fdt, "/soc", "ranges", NULL, 0);
@@ -3567,7 +3630,11 @@ static void linx_virt_init(MachineState *machine)
 
     trace_linx_virt_loaded_elf(entry, image_end);
 
-    cur = linx_align_up(image_end, 0x1000);
+    /*
+     * Linux reserves the loaded image through PMD-aligned _end when strict
+     * kernel RWX is enabled. Keep initrd/FDT payloads outside that range.
+     */
+    cur = linx_align_up(image_end, LINX_LINUX_PMD_ALIGN);
 
     if (machine->initrd_filename) {
         GError *gerr = NULL;
