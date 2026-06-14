@@ -373,12 +373,16 @@ static void linx_dump_event_state(CPUState *cs, const char *tag, int exception)
                  " ecstate_mgr=0x%016" PRIx64
                  " trapno_mgr=0x%016" PRIx64
                  " traparg0_mgr=0x%016" PRIx64
-                 " ipending_mgr=0x%016" PRIx64 "\n",
+                 " ipending_mgr=0x%016" PRIx64
+                 " pending_cause=0x%08" PRIx32
+                 " pending_arg0=0x%016" PRIx64 "\n",
                  tag, exception, env->pc, env->acr & 0xFu, env->ssr[LINX_SSR_CSTATE],
                  env->ssr_acr[mgr][LINX_SSR_ECSTATE],
                  env->ssr_acr[mgr][LINX_SSR_TRAPNO],
                  env->ssr_acr[mgr][LINX_SSR_TRAPARG0],
-                 env->ssr_acr[mgr][LINX_SSR_IPENDING]);
+                 env->ssr_acr[mgr][LINX_SSR_IPENDING],
+                 env->pending_trap_cause,
+                 env->pending_trap_arg0);
     linx_cpu_dump_state(cs, stderr, 0);
     fflush(stderr);
 }
@@ -1362,11 +1366,21 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         return false;
     }
 
-    if ((linx_cpu_dump_debug() || linx_cpu_dump_on_event() ||
-         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL)) &&
-        ((((uint64_t)addr) & 0xfffffu) < 0x2000u ||
-         (addr & ~(vaddr)(TARGET_PAGE_SIZE - 1u)) == linx_debug_jiffy_sched_clock_page ||
-         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL))) {
+    if (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) {
+        qemu_fprintf(stderr,
+                     "Linx: tlb miss/fault pc=0x%" PRIx64
+                     " va=0x%" VADDR_PRIx " access=%d cause=0x%x mmu=%d probe=%d"
+                     " tp=0x%" PRIx64 " x1=0x%" PRIx64 " sp=0x%" PRIx64
+                     " tcr=0x%" PRIx64 " ttbr0=0x%" PRIx64
+                     " ttbr1=0x%" PRIx64 "\n",
+                     env->pc, addr, access_type, cause, mmu_idx, probe ? 1 : 0,
+                     env->ssr[LINX_SSR_TP], env->gpr[1], env->gpr[2],
+                     env->ssr_acr[1][LINX_SSR_TCR],
+                     env->ssr_acr[1][LINX_SSR_TTBR0],
+                     env->ssr_acr[1][LINX_SSR_TTBR1]);
+        fflush(stderr);
+    } else if (env->pc >= 0xffffffff80010bc0ULL &&
+               env->pc < 0xffffffff80010c40ULL) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: tlb miss/fault pc=0x%" PRIx64
                       " va=0x%" VADDR_PRIx " access=%d cause=0x%x mmu=%d probe=%d"
