@@ -1370,11 +1370,26 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         qemu_fprintf(stderr,
                      "Linx: tlb miss/fault pc=0x%" PRIx64
                      " va=0x%" VADDR_PRIx " access=%d cause=0x%x mmu=%d probe=%d"
-                     " tp=0x%" PRIx64 " x1=0x%" PRIx64 " sp=0x%" PRIx64
+                     " tp=0x%" PRIx64 " sp=0x%" PRIx64
+                     " ra=0x%" PRIx64 " a0=0x%" PRIx64
+                     " a1=0x%" PRIx64 " a2=0x%" PRIx64
+                     " a3=0x%" PRIx64 " a4=0x%" PRIx64
+                     " a5=0x%" PRIx64 " a6=0x%" PRIx64
+                     " a7=0x%" PRIx64
                      " tcr=0x%" PRIx64 " ttbr0=0x%" PRIx64
                      " ttbr1=0x%" PRIx64 "\n",
                      env->pc, addr, access_type, cause, mmu_idx, probe ? 1 : 0,
-                     env->ssr[LINX_SSR_TP], env->gpr[1], env->gpr[2],
+                     env->ssr[LINX_SSR_TP],
+                     env->gpr[LINX_REG_SP],
+                     env->gpr[LINX_REG_RA],
+                     env->gpr[LINX_REG_A0],
+                     env->gpr[LINX_REG_A1],
+                     env->gpr[LINX_REG_A2],
+                     env->gpr[LINX_REG_A3],
+                     env->gpr[LINX_REG_A4],
+                     env->gpr[LINX_REG_A5],
+                     env->gpr[LINX_REG_A6],
+                     env->gpr[LINX_REG_A7],
                      env->ssr_acr[1][LINX_SSR_TCR],
                      env->ssr_acr[1][LINX_SSR_TTBR0],
                      env->ssr_acr[1][LINX_SSR_TTBR1]);
@@ -1384,9 +1399,15 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: tlb miss/fault pc=0x%" PRIx64
                       " va=0x%" VADDR_PRIx " access=%d cause=0x%x mmu=%d probe=%d"
-                      " tp=0x%" PRIx64 " x1=0x%" PRIx64 " sp=0x%" PRIx64 "\n",
+                      " tp=0x%" PRIx64 " sp=0x%" PRIx64
+                      " ra=0x%" PRIx64 " a0=0x%" PRIx64
+                      " a1=0x%" PRIx64 "\n",
                       env->pc, addr, access_type, cause, mmu_idx, probe ? 1 : 0,
-                      env->ssr[LINX_SSR_TP], env->gpr[1], env->gpr[2]);
+                      env->ssr[LINX_SSR_TP],
+                      env->gpr[LINX_REG_SP],
+                      env->gpr[LINX_REG_RA],
+                      env->gpr[LINX_REG_A0],
+                      env->gpr[LINX_REG_A1]);
     }
 
     env->pending_trap_arg0 = (uint64_t)addr;
