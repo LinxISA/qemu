@@ -255,6 +255,7 @@ static uint64_t linx_uart_read(void *opaque, hwaddr addr, unsigned size)
     } else if (addr >= LINX_UART_STATUS_REG && addr < LINX_UART_STATUS_REG + 4) {
         uint64_t st = LINX_UART_STATUS_TX_READY;
 
+        qemu_chr_fe_accept_input(&s->chr);
         qemu_mutex_lock(&s->lock);
         if (s->rx_head != s->rx_tail) {
             st |= LINX_UART_STATUS_RX_READY;
