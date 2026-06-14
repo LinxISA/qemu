@@ -2677,8 +2677,9 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         fprintf(stderr,
                 "linx_acre_enter: staged target=%u cstate=0x%" PRIx64
                 " pc=0x%" PRIx64 " bpc=0x%" PRIx64
-                " etemp1=0x%" PRIx64 " tp=0x%" PRIx64 "\n",
+                " sp=0x%" PRIx64 " etemp1=0x%" PRIx64 " tp=0x%" PRIx64 "\n",
                 env->acr, env->ssr[LINX_SSR_CSTATE], env->pc, env->bpc,
+                env->gpr[LINX_REG_SP],
                 env->ssr_acr[1][LINX_SSR_ETEMP], env->ssr[LINX_SSR_TP]);
         if (env->acr == 2) {
             uint8_t buf[8] = {0};

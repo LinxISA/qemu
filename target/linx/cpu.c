@@ -954,6 +954,30 @@ static inline uint8_t linx_fault_acc(MMUAccessType access_type)
     }
 }
 
+static inline bool linx_debug_fetch_va(vaddr va)
+{
+    const uint64_t low = ((uint64_t)va) & 0xfffffu;
+
+    return low < 0x2000u || low == 0x10bc0u;
+}
+
+static void linx_debug_log_fetch_bytes(const char *tag, vaddr va, hwaddr pa,
+                                       int prot, int mmu_idx, bool probe)
+{
+    uint8_t buf[8] = {0};
+    MemTxResult result;
+
+    result = address_space_read(&address_space_memory, pa,
+                                MEMTXATTRS_UNSPECIFIED, buf, sizeof(buf));
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx %s: va=0x%" VADDR_PRIx " pa=0x%" HWADDR_PRIx
+                  " prot=0x%x mmu=%d probe=%d phys_read=%d"
+                  " bytes=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                  tag, va, pa, prot, mmu_idx, probe ? 1 : 0, (int)result,
+                  buf[0], buf[1], buf[2], buf[3],
+                  buf[4], buf[5], buf[6], buf[7]);
+}
+
 static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
                                MMUAccessType access_type, int mmu_idx,
                                hwaddr *pa_out, int *prot_out,
@@ -997,7 +1021,8 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
         const unsigned va_bits = qpte ? (36u + mode * 8u) : (39u + mode * 9u);
         if (access_type == MMU_INST_FETCH &&
             (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
-            (((uint64_t)va) & 0xfffffu) < 0x2000u) {
+            mmu_idx == 1 &&
+            linx_debug_fetch_va(va)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx legacy MMU fetch probe: va=0x%" VADDR_PRIx
                           " ttbr0=0x%" PRIx64 " mmconfig=0x%" PRIx64 "\n",
@@ -1082,10 +1107,8 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
             if (x) prot |= PAGE_EXEC;
             if (access_type == MMU_INST_FETCH &&
                 (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
-                ((((uint64_t)va) & 0xfffffu) == 0xa2c ||
-                 (((uint64_t)va) & 0xfffffu) == 0xa5c ||
-                 (((uint64_t)va) & 0xfffffu) == 0x1000 ||
-                 (((uint64_t)va) & 0xfffffu) == 0x10bc0)) {
+                mmu_idx == 1 &&
+                linx_debug_fetch_va(va)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "Linx legacy MMU fetch ok: va=0x%" VADDR_PRIx
                               " level=%u pa=0x%" HWADDR_PRIx " desc=0x%" PRIx64
@@ -1296,14 +1319,14 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                            &pa, &prot, &tlb_size, &cause)) {
         if (access_type == MMU_INST_FETCH &&
             (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
-            ((((uint64_t)addr) & 0xfffffu) == 0xa2c ||
-             (((uint64_t)addr) & 0xfffffu) == 0xa5c ||
-             (((uint64_t)addr) & 0xfffffu) == 0x1000 ||
-             (((uint64_t)addr) & 0xfffffu) == 0x10bc0)) {
+            mmu_idx == 1 &&
+            linx_debug_fetch_va(addr)) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx tlb fill ok: va=0x%" VADDR_PRIx " pa=0x%" HWADDR_PRIx
                           " prot=0x%x tlb_size=0x%" HWADDR_PRIx " mmu=%d probe=%d\n",
                           addr, pa, prot, tlb_size, mmu_idx, probe ? 1 : 0);
+            linx_debug_log_fetch_bytes("tlb fill fetch bytes", addr, pa, prot,
+                                       mmu_idx, probe);
         }
         if (linx_cpu_dump_debug() &&
             access_type == MMU_INST_FETCH &&
