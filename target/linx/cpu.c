@@ -124,6 +124,7 @@ enum {
 
 /* Common (non-banked) SSR indices. */
 enum {
+    LINX_SSR_TP     = 0x0000,
     LINX_SSR_CSTATE = 0x0020,
 };
 
@@ -135,28 +136,26 @@ enum {
 #define LINX_ECSTATE_BI_BIT        (1ULL << 62)
 
 /* TRAPNO encoding (v0.2 bring-up profile). */
-#define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=async interrupt */
+#define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=exception, 0=interrupt */
 #define LINX_TRAPNO_ARGV_BIT       (1ULL << 62)
 #define LINX_TRAPNO_CAUSE_SHIFT    24u
 #define LINX_TRAPNO_CAUSE_MASK     0xFFFFFFu
 #define LINX_TRAPNO_TRAPNUM_MASK   0x3Fu
 
 enum {
-    /* v0.2 bring-up trap major classes (TRAPNO.TRAPNUM). */
+    /* Linux-compatible trap major classes (TRAPNO.TRAPNUM). */
+    LINX_TRAPNUM_INSN_EXP         = 0,
+    LINX_TRAPNUM_DATA_EXP         = 1,
     LINX_TRAPNUM_EXEC_STATE_CHECK = 0,
-    LINX_TRAPNUM_ILLEGAL_INST     = 4,
+    LINX_TRAPNUM_ILLEGAL_INST     = 0,
     LINX_TRAPNUM_BLOCK_TRAP       = 5,
-    LINX_TRAPNUM_SYSCALL          = 6,
+    LINX_TRAPNUM_SYSCALL          = 16,
     /*
      * Linux currently routes EBREAK through ECAUSE_TRAPNUM_BREAKPOINT_EXP=17.
      * Keep software breakpoints aligned with that contract so WARN/BUG fixups
      * land in do_trap_break() instead of the generic unknown-exception path.
      */
     LINX_TRAPNUM_SW_BREAKPOINT    = 17,
-    LINX_TRAPNUM_INST_PC_FAULT    = 32,
-    LINX_TRAPNUM_INST_PAGE_FAULT  = 33,
-    LINX_TRAPNUM_DATA_ALIGN_FAULT = 34,
-    LINX_TRAPNUM_DATA_PAGE_FAULT  = 35,
     LINX_TRAPNUM_INTERRUPT        = 44,
     LINX_TRAPNUM_HW_BREAKPOINT    = 49,
     LINX_TRAPNUM_HW_WATCHPOINT    = 51,
@@ -175,27 +174,67 @@ enum {
     LINX_TRAPCAUSE_ACC_INST  = 2,
 };
 
-static inline uint8_t linx_trapcause_make(uint8_t cat, uint8_t acc)
+static inline uint8_t linx_linux_fault_syndrome(uint8_t cat, uint8_t acc)
 {
-    return (uint8_t)((cat << 4) | (acc & 0xfu));
+    switch (acc) {
+    case LINX_TRAPCAUSE_ACC_INST:
+        switch (cat) {
+        case LINX_TRAPCAUSE_CAT_NONE:
+            return 0; /* ECAUSE_INSN_SYD_ACCESS_FAULT */
+        case LINX_TRAPCAUSE_CAT_MMU_PERM:
+            return 4; /* ECAUSE_INSN_SYD_PERM_FAULT */
+        case LINX_TRAPCAUSE_CAT_MMU_PF:
+        default:
+            return 5; /* ECAUSE_INSN_SYD_PAGE_FAULT */
+        }
+    case LINX_TRAPCAUSE_ACC_STORE:
+        switch (cat) {
+        case LINX_TRAPCAUSE_CAT_NONE:
+            return 3; /* ECAUSE_DATA_SYD_ST_AOP_ACCESS_FAULT */
+        case LINX_TRAPCAUSE_CAT_MMU_PERM:
+        case LINX_TRAPCAUSE_CAT_MMU_PF:
+        default:
+            return 5; /* ECAUSE_DATA_SYD_ST_AOP_PAGE_FAULT */
+        }
+    case LINX_TRAPCAUSE_ACC_LOAD:
+    default:
+        switch (cat) {
+        case LINX_TRAPCAUSE_CAT_NONE:
+            return 0; /* ECAUSE_DATA_SYD_LD_ACCESS_FAULT */
+        case LINX_TRAPCAUSE_CAT_MMU_PERM:
+        case LINX_TRAPCAUSE_CAT_MMU_PF:
+        default:
+            return 2; /* ECAUSE_DATA_SYD_LD_PAGE_FAULT */
+        }
+    }
 }
 
-static inline uint64_t linx_trapno_make(bool async, bool argv, uint32_t cause, uint8_t trapnum)
+static inline uint8_t linx_trapcause_make(uint8_t cat, uint8_t acc)
 {
-    const uint64_t e = async ? LINX_TRAPNO_E_BIT : 0;
+    return linx_linux_fault_syndrome(cat, acc);
+}
+
+static inline uint64_t linx_trapno_make(bool exception, bool argv,
+                                        uint32_t cause, uint8_t trapnum)
+{
+    const uint64_t e = exception ? LINX_TRAPNO_E_BIT : 0;
     const uint64_t a = argv ? LINX_TRAPNO_ARGV_BIT : 0;
     const uint64_t c = ((uint64_t)(cause & LINX_TRAPNO_CAUSE_MASK)) << LINX_TRAPNO_CAUSE_SHIFT;
     const uint64_t t = (uint64_t)(trapnum & LINX_TRAPNO_TRAPNUM_MASK);
     return e | a | c | t;
 }
 
-static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next)
+static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next,
+                                     bool in_body)
 {
     uint8_t buf[4];
 
     if (cpu_memory_rw_debug(cs, tpc_next, buf, 2, 0) == 0) {
         const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
         if (hw == 0x0000u) {
+            if (in_body) {
+                return tpc_next;
+            }
             return tpc_next + 2;
         }
     }
@@ -204,6 +243,9 @@ static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next)
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
                               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
         if (insn == 0x00000001u) {
+            if (in_body) {
+                return tpc_next;
+            }
             return tpc_next + 4;
         }
     }
@@ -358,7 +400,7 @@ static inline bool linx_timer_irq_enabled(void)
 
 /* Simple timer interrupt ID (bring-up). */
 enum {
-    LINX_IRQ_TIMER0 = 0,
+    LINX_IRQ_TIMER0 = 4,
 };
 
 static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
@@ -603,7 +645,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
     env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
-        linx_trapno_make(false, argv, env->pending_trap_cause, trapnum);
+        linx_trapno_make(true, argv, env->pending_trap_cause, trapnum);
     env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = env->pending_trap_arg0;
 
     env->pending_trap_arg0 = 0;
@@ -611,9 +653,29 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
 
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
+    if (src_acr == 2 && dst_acr == 1) {
+        /*
+         * Linux bring-up currently relies on exception entry finding the
+         * current task pointer in live SSR_TP during the first kernel-origin
+         * save block, even for user-origin faults that immediately demand-page
+         * executable text. Seed SSR_TP from the manager-bank ETEMP snapshot so
+         * the trap prologue can recover thread_info deterministically.
+         */
+        env->ssr[LINX_SSR_TP] = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
+    }
     env->ssr[LINX_SSR_CSTATE] =
         linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
     env->pc = evbase ? evbase : tpc;
+    if (src_acr == 2 && dst_acr == 1 && linx_cpu_dump_debug()) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx user trap handoff: tpc=0x%" PRIx64
+                      " next=0x%" PRIx64 " trapno=%u arg0=0x%" PRIx64
+                      " etemp1=0x%" PRIx64 " tp=0x%" PRIx64
+                      " acr=%u cstate=0x%" PRIx64 "\n",
+                      tpc, tpc_next, trapnum, env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0],
+                      env->ssr_acr[1][LINX_SSR_ETEMP], env->ssr[LINX_SSR_TP],
+                      env->acr, env->ssr[LINX_SSR_CSTATE]);
+    }
     cs->exception_index = -1;
     linx_dump_event_state(cs, "sync-delivered", trapnum);
 }
@@ -644,7 +706,8 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         env->pending_trap_arg0 = last_pc;
         /* pending_trap_cause may carry the imm value (profile-defined). */
         linx_deliver_sync_trap(cs, env, last_pc,
-                               linx_break_resume_pc(cs, env->insn_pc_next),
+                               linx_break_resume_pc(cs, env->insn_pc_next,
+                                                    env->in_body != 0),
                                LINX_TRAPNUM_SW_BREAKPOINT,
                                true,  /* argv */
                                false, /* Linux do_trap_break() advances past EBREAK */
@@ -720,16 +783,11 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     case LINX_EXCP_LOAD_ACCESS_FAULT:
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
-        /*
-         * v0.3 split policy:
-         * - MMU body-fetch faults are reported through E_DATA (BI=1).
-         * - non-body instruction fetch faults keep INST_PAGE_FAULT.
-         */
         const bool in_body = env->in_body != 0;
         const uint8_t trapnum =
             (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
-                ? LINX_TRAPNUM_INST_PAGE_FAULT
-                : LINX_TRAPNUM_DATA_PAGE_FAULT;
+                ? LINX_TRAPNUM_INSN_EXP
+                : LINX_TRAPNUM_DATA_EXP;
         linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                trapnum,
                                true,  /* argv (TRAPARG0=fault VA) */
@@ -815,7 +873,7 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                                      env->ssr_acr[dst_acr][LINX_SSR_IPENDING]);
 
         env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
-            linx_trapno_make(true, true, 0, LINX_TRAPNUM_INTERRUPT);
+            linx_trapno_make(false, true, 0, LINX_TRAPNUM_INTERRUPT);
         env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)irq_id;
 
         /* Switch to managing ring and vector. */
@@ -1278,13 +1336,17 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         return false;
     }
 
-    if ((linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
-        access_type == MMU_INST_FETCH &&
+    if ((linx_cpu_dump_debug() || linx_cpu_dump_on_event() ||
+         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL)) &&
         ((((uint64_t)addr) & 0xfffffu) < 0x2000u ||
-         (addr & ~(vaddr)(TARGET_PAGE_SIZE - 1u)) == linx_debug_jiffy_sched_clock_page)) {
+         (addr & ~(vaddr)(TARGET_PAGE_SIZE - 1u)) == linx_debug_jiffy_sched_clock_page ||
+         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL))) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: tlb miss/fault va=0x%" VADDR_PRIx " cause=0x%x mmu=%d probe=%d\n",
-                      addr, cause, mmu_idx, probe ? 1 : 0);
+                      "Linx: tlb miss/fault pc=0x%" PRIx64
+                      " va=0x%" VADDR_PRIx " access=%d cause=0x%x mmu=%d probe=%d"
+                      " tp=0x%" PRIx64 " x1=0x%" PRIx64 " sp=0x%" PRIx64 "\n",
+                      env->pc, addr, access_type, cause, mmu_idx, probe ? 1 : 0,
+                      env->ssr[LINX_SSR_TP], env->gpr[1], env->gpr[2]);
     }
 
     env->pending_trap_arg0 = (uint64_t)addr;
