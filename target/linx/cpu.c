@@ -489,9 +489,12 @@ static hwaddr linx_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
     LinxCPU *cpu = LINX_CPU(cs);
     CPULinxState *env = &cpu->env;
     const uint64_t tcr = env->ssr_acr[1][LINX_SSR_TCR];
+    const uint64_t legacy_mmconfig = env->ssr_acr[1][LINX_SSR_TTBR1];
+    const bool legacy_mmu =
+        tcr == 0 && (legacy_mmconfig & LINX_LEGACY_MMCONFIG_ENABLE_BIT) != 0;
     const bool mme = (tcr & 1u) != 0;
 
-    if (!mme) {
+    if (!legacy_mmu && !mme) {
         return linx_nommu_phys_addr(addr);
     }
 
