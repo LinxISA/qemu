@@ -61,6 +61,8 @@ static bool linx_debug_pc_watch_inited;
 static unsigned linx_debug_pc_watch_count;
 static uint64_t linx_debug_pc_watch[16];
 static unsigned linx_debug_pc_watch_hits[16];
+static unsigned linx_debug_pc_watch_dump_a0_words;
+static uint64_t linx_debug_pc_watch_dump_a0_offset;
 
 static inline bool linx_print_insn_count(void)
 {
@@ -164,12 +166,28 @@ static void linx_debug_pc_watch_init(void)
     }
     linx_debug_pc_watch_inited = true;
 
-    v = getenv("LINX_DEBUG_PC_WATCH");
-    if (!v || !v[0] || strcmp(v, "0") == 0) {
+    const char *watch = getenv("LINX_DEBUG_PC_WATCH");
+    if (!watch || !watch[0] || strcmp(watch, "0") == 0) {
         return;
     }
 
-    copy = g_strdup(v);
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_A0_WORDS");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t words;
+        if (linx_parse_u64(v, &words) && words != 0) {
+            linx_debug_pc_watch_dump_a0_words = MIN((uint64_t)16, words);
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_A0_OFFSET");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t offset;
+        if (linx_parse_u64(v, &offset)) {
+            linx_debug_pc_watch_dump_a0_offset = offset;
+        }
+    }
+
+    copy = g_strdup(watch);
     for (tok = strtok_r(copy, ",", &saveptr);
          tok && linx_debug_pc_watch_count < ARRAY_SIZE(linx_debug_pc_watch);
          tok = strtok_r(NULL, ",", &saveptr)) {
@@ -196,15 +214,30 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 "linx_pc_watch: pc=0x%" PRIx64 " hit=%u sp=0x%" PRIx64
                 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64
                 " ra=0x%" PRIx64 " tp=0x%" PRIx64 " cstate=0x%" PRIx64
-                " in_body=%u blocktype=%u brtype=%u body_tpc=0x%" PRIx64
+                " cond=%u carg=%u brtype=%u tgt=0x%" PRIx64
+                " bpc=0x%" PRIx64 " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+                " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+                " in_body=%u blocktype=%u body_tpc=0x%" PRIx64
                 " return_pc=0x%" PRIx64 " call_ra_set=%u call_setret_pending=%u\n",
                 pc, linx_debug_pc_watch_hits[i], env->gpr[LINX_REG_SP],
                 env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
                 env->gpr[LINX_REG_A2], env->gpr[LINX_REG_RA], tp, env->ssr[0x20],
-                env->in_body, env->blocktype, env->brtype, env->body_tpc,
+                env->cond, env->carg, env->brtype, env->tgt, env->bpc,
+                env->tq[0], env->tq[1], env->uq[0], env->uq[1],
+                env->in_body, env->blocktype, env->body_tpc,
                 env->return_pc, env->call_ra_set, env->call_setret_pending);
         if (tp) {
             linx_debug_dump_guest_words(env, tp, 4, "  tp");
+        }
+        if (linx_debug_pc_watch_dump_a0_words && env->gpr[LINX_REG_A0]) {
+            char label[48];
+            uint64_t addr = env->gpr[LINX_REG_A0] +
+                            linx_debug_pc_watch_dump_a0_offset;
+            g_snprintf(label, sizeof(label), "  a0+0x%" PRIx64,
+                       linx_debug_pc_watch_dump_a0_offset);
+            linx_debug_dump_guest_words(env, addr,
+                                        linx_debug_pc_watch_dump_a0_words,
+                                        label);
         }
         if (pc == UINT64_C(0xffffffff80007bf8) ||
             pc == UINT64_C(0xffffffff80007bac)) {

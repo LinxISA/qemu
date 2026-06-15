@@ -457,6 +457,89 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     return false;
 }
 
+/*
+ * Current LLVM can lower a predicated forward edge as:
+ *
+ *   FALL block with SETC
+ *   BSTART DIRECT, cold_trampoline
+ *   BSTART COND, hot_target
+ *
+ * When the FALL block commits with CARG set and COND true, the immediate
+ * direct trampoline is not the semantic successor. Skip to the following block
+ * header and let that header's normal branch semantics choose the target.
+ */
+static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
+                                             vaddr *skip_pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+    uint16_t hw;
+    unsigned len;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+
+    if (len == 2) {
+        if ((hw & 0x000f) == 0x0002 ||
+            ((hw & 0xc7ff) == 0x0000 &&
+             ((hw >> 11) & 0x7) == LINX_BR_DIRECT)) {
+            *skip_pc = pc + len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 4) {
+        uint32_t insn;
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        insn = ldl_le_p(buf);
+        if ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) == LINX_BR_DIRECT) {
+            *skip_pc = pc + len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 6) {
+        uint32_t main32;
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+        if ((lduw_le_p(buf) & 0xf) != 0xe) {
+            return false;
+        }
+        main32 = ldl_le_p(buf + 2);
+        if ((main32 & 0xff) == 0x01 &&
+            ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
+            *skip_pc = pc + len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 8) {
+        uint32_t main32;
+        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+            return false;
+        }
+        main32 = ldl_le_p(buf + 4);
+        if ((main32 & 0x7f) == 0x01 &&
+            ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
+            *skip_pc = pc + len;
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
 static bool linx_is_c_bstop_at_pc(CPULinxState *env, vaddr pc)
 {
     CPUState *cs = env_cpu(env);
@@ -649,10 +732,22 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
     gen_helper_linx_tile_commit(tcg_env);
 
     switch (ctx->brtype & 0x7) {
-    case LINX_BR_FALL:
-        /* Always fall through */
-        linx_gen_goto_tb(ctx, 0, fallthrough, false);
+    case LINX_BR_FALL: {
+        vaddr skip_pc = 0;
+        if (linx_predicated_fall_skip_target(ctx->env, fallthrough, &skip_pc)) {
+            TCGLabel *normal = gen_new_label();
+            TCGLabel *skip = gen_new_label();
+            tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_carg, 0, normal);
+            tcg_gen_brcondi_i32(TCG_COND_NE, cpu_cond, 0, skip);
+            gen_set_label(normal);
+            linx_gen_goto_tb(ctx, 0, fallthrough, false);
+            gen_set_label(skip);
+            linx_gen_goto_tb(ctx, 1, skip_pc, false);
+        } else {
+            linx_gen_goto_tb(ctx, 0, fallthrough, false);
+        }
         break;
+    }
     case LINX_BR_DIRECT:
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             /*
