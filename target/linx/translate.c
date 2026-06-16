@@ -474,6 +474,24 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     return false;
 }
 
+static bool linx_is_b_attr_at_pc(CPULinxState *env, vaddr pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[4];
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+    if (linx_insn_len(lduw_le_p(buf)) != 4) {
+        return false;
+    }
+    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
+        return false;
+    }
+
+    return (ldl_le_p(buf) & 0x707fu) == 0x23u;
+}
+
 /*
  * Current LLVM can lower a predicated forward edge as:
  *
@@ -1132,6 +1150,18 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    /*
+     * Linux bitops can emit an in-body BSTART.STD immediately followed by
+     * B.CATR to annotate scalar memory operations.  Treat that descriptor as
+     * part of the current block so the pending branch does not commit before
+     * the memory side effect.
+     */
+    if (current_pc != ctx->base.pc_first &&
+        brtype == LINX_BR_FALL &&
+        ctx->brtype != 0 &&
+        linx_is_b_attr_at_pc(ctx->env, ctx->base.pc_next)) {
+        return true;
     }
     if (current_pc != ctx->base.pc_first &&
         (ctx->brtype == LINX_BR_CALL || ctx->brtype == LINX_BR_ICALL) &&
