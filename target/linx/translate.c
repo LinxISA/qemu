@@ -292,13 +292,17 @@ static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
     gen_helper_linx_trace_operands_begin(tcg_env, tcg_constant_i64(insn_raw), tcg_constant_i32((int32_t)len));
 }
 
-static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_target)
+static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
+                                    vaddr initial_target,
+                                    bool preserve_scalar_queues)
 {
     int i;
     tcg_gen_movi_i64(cpu_bpc, ctx->base.pc_first);
-    for (i = 0; i < 4; i++) {
-        tcg_gen_movi_i64(cpu_tq[i], 0);
-        tcg_gen_movi_i64(cpu_uq[i], 0);
+    if (!preserve_scalar_queues) {
+        for (i = 0; i < 4; i++) {
+            tcg_gen_movi_i64(cpu_tq[i], 0);
+            tcg_gen_movi_i64(cpu_uq[i], 0);
+        }
     }
     tcg_gen_movi_i32(cpu_cond, 0);
     tcg_gen_movi_i32(cpu_carg, 0);
@@ -349,6 +353,19 @@ static void linx_block_begin(DisasContext *ctx, uint8_t brtype, vaddr initial_ta
 
     ctx->brtype = brtype;
     ctx->brtarget = initial_target; /* Keep for fallback/fallthrough calculation */
+}
+
+static void linx_block_begin(DisasContext *ctx, uint8_t brtype,
+                             vaddr initial_target)
+{
+    linx_block_begin_common(ctx, brtype, initial_target, false);
+}
+
+static void linx_block_begin_preserve_scalar_queues(DisasContext *ctx,
+                                                    uint8_t brtype,
+                                                    vaddr initial_target)
+{
+    linx_block_begin_common(ctx, brtype, initial_target, true);
 }
 
 /* Helper to check if an address points to a block-start instruction.
@@ -1139,6 +1156,20 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     return true;
 }
 
+static bool linx_begin_sys_header_target(DisasContext *ctx, vaddr target)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin_preserve_scalar_queues(ctx, LINX_BR_FALL, target);
+    return true;
+}
+
 /* C.BSTART.STD helper - also used by explicit 16-bit overlap handling. */
 static bool linx_trans_c_bstart_std(DisasContext *ctx, uint8_t brtype)
 {
@@ -1213,7 +1244,7 @@ static bool trans_c_bstart_sys(DisasContext *ctx, arg_c_bstart_sys *a)
         ctx->brtype != 0) {
         return true;
     }
-    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
+    return linx_begin_sys_header_target(ctx, 0);
 }
 
 static bool trans_c_bstart_mpar(DisasContext *ctx, arg_c_bstart_mpar *a)
@@ -1440,7 +1471,7 @@ static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
         ctx->brtype != 0) {
         return true;
     }
-    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
+    return linx_begin_sys_header_target(ctx, 0);
 }
 
 static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
@@ -6736,8 +6767,8 @@ static bool trans_hl_bstart_sys(DisasContext *ctx, arg_hl_bstart_sys *a)
     if (current_pc != ctx->base.pc_first && ctx->brtype != 0) {
         return true;
     }
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
-                                    linx_pcrel_target(current_pc, a->simm));
+    return linx_begin_sys_header_target(ctx,
+                                        linx_pcrel_target(current_pc, a->simm));
 }
 
 static bool trans_l_bstart_std_fall(DisasContext *ctx, arg_l_bstart_std_fall *a)
@@ -6825,8 +6856,8 @@ static bool trans_l_bstart_sys(DisasContext *ctx, arg_l_bstart_sys *a)
     if (current_pc != ctx->base.pc_first && ctx->brtype != 0) {
         return true;
     }
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
-                                    linx_pcrel_target(current_pc, simm));
+    return linx_begin_sys_header_target(ctx,
+                                        linx_pcrel_target(current_pc, simm));
 }
 
 /* ===================== System Instructions ===================== */

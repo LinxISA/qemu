@@ -63,6 +63,7 @@ static uint64_t linx_debug_pc_watch[16];
 static unsigned linx_debug_pc_watch_hits[16];
 static unsigned linx_debug_pc_watch_dump_a0_words;
 static uint64_t linx_debug_pc_watch_dump_a0_offset;
+static bool linx_debug_pc_watch_exit;
 
 static inline bool linx_print_insn_count(void)
 {
@@ -187,6 +188,9 @@ static void linx_debug_pc_watch_init(void)
         }
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_EXIT");
+    linx_debug_pc_watch_exit = v && v[0] && strcmp(v, "0") != 0;
+
     copy = g_strdup(watch);
     for (tok = strtok_r(copy, ",", &saveptr);
          tok && linx_debug_pc_watch_count < ARRAY_SIZE(linx_debug_pc_watch);
@@ -244,6 +248,10 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
             linx_debug_dump_guest_words(env, sp + 280, 5, "  pt_tail");
         }
         fflush(stderr);
+        if (linx_debug_pc_watch_exit) {
+            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+            cpu_loop_exit_noexc(env_cpu(env));
+        }
     }
 }
 
