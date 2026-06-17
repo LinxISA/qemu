@@ -7876,6 +7876,51 @@ static unsigned linx_insn_len(uint16_t hw)
     return ((hw & 0xf) == 0xf) ? 8 : 4;
 }
 
+static bool linx_is_c_setret_hw(uint16_t hw)
+{
+    return (hw & 0xf83f) == 0x5016;
+}
+
+static uint8_t linx_c_setret_uimm5(uint16_t hw)
+{
+    return (uint8_t)((hw >> 6) & 0x1fu);
+}
+
+static bool linx_trans_c_bstart_call_setret(DisasContext *ctx,
+                                            int64_t call_simm12,
+                                            uint8_t ret_uimm5)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_CALL,
+                     linx_pcrel_target(current_pc, call_simm12));
+
+    /*
+     * LLVM's fused 32-bit BSTART.CALL form packs a 16-bit compressed
+     * fixed-target header followed by compact C.SETRET. The return target is
+     * encoded relative to the implicit C.SETRET halfword, not the BSTART PC.
+     */
+    {
+        vaddr ret_target = current_pc + 2 + ((vaddr)ret_uimm5 << 1);
+        linx_set_dest(LINX_REG_RA, tcg_constant_i64(ret_target));
+        ctx->ra_set = true;
+        ctx->call_ra_target = ret_target;
+        tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
+                       offsetof(CPULinxState, call_ra_set));
+        tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                       offsetof(CPULinxState, call_setret_pending));
+    }
+    return true;
+}
+
 static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
@@ -7906,6 +7951,27 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     switch (len) {
            case 2:
                insn_val = hw;
+               if ((hw & 0x000f) == 0x0002) {
+                   uint16_t hw2 = translator_lduw_end(env, &ctx->base,
+                                                       pc + 2, MO_LE);
+                   if (linx_is_c_setret_hw(hw2)) {
+                       len = 4;
+                       ctx->cur_insn_len = len;
+                       ctx->base.pc_next = pc + len;
+                       tcg_gen_movi_i64(cpu_insn_pc_next, ctx->base.pc_next);
+                       insn_val = (uint32_t)hw | ((uint32_t)hw2 << 16);
+                       ctx->cur_insn_raw = insn_val;
+                       linx_trace_begin(pc, (uint64_t)insn_val, len);
+                       decoded = linx_trans_c_bstart_call_setret(
+                           ctx, sextract32(hw, 4, 12),
+                           linx_c_setret_uimm5(hw2));
+                       if (decoded) {
+                           trace_linx_insn_exec(pc, insn_val, len,
+                                                "c-bstart-call-setret");
+                       }
+                       break;
+                   }
+               }
                linx_trace_begin(pc, (uint64_t)hw, len);
                /* Explicit check for c_bstop (0x0000) - decode tree should handle this but workaround for now */
                if (hw == 0x0000) {
@@ -7935,9 +8001,10 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                            trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                        }
                    }
-               } else if ((hw & 0xf83f) == 0x5016) {
+               } else if (linx_is_c_setret_hw(hw)) {
                    /* C.SETRET compact alias (decoded outside decodetree due overlap with C.MOVI). */
-                   decoded = linx_setret_common(ctx, (int64_t)((hw >> 6) & 0x1fu));
+                   decoded = linx_setret_common(ctx,
+                                                (int64_t)linx_c_setret_uimm5(hw));
                    if (decoded) {
                        trace_linx_insn_exec(pc, insn_val, len, "16-bit");
                    }
