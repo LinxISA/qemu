@@ -1392,6 +1392,12 @@ static LinxMinstCanonicalInfo linx_minst_canonical_info(const LinxOpcodeMeta *me
     if (strcmp(mnemonic, "b_text") == 0) {
         return (LinxMinstCanonicalInfo){ "B.TEXT", "1ce09f50e5dd", "system", "tma" };
     }
+    if (strcmp(mnemonic, "bstart_split_direct") == 0) {
+        return (LinxMinstCanonicalInfo){ "BSTART", "7eb93b649748", "system", NULL };
+    }
+    if (strcmp(mnemonic, "bstart_split_cond") == 0) {
+        return (LinxMinstCanonicalInfo){ "BSTART", "e11e678a32ac", "system", NULL };
+    }
     if (strcmp(mnemonic, "bstart_tma") == 0) {
         return (LinxMinstCanonicalInfo){ "BSTART.TLOAD", "d0c18bb0ab15", "system", "tma" };
     }
@@ -1628,7 +1634,8 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
         return;
     }
     if (next_pc_out == pc_out &&
-        (strncmp(info.mnemonic, "BSTART.", 7) == 0 ||
+        (strcmp(info.mnemonic, "BSTART") == 0 ||
+         strncmp(info.mnemonic, "BSTART.", 7) == 0 ||
          strncmp(info.mnemonic, "C.BSTART", 8) == 0)) {
         return;
     }
@@ -1682,6 +1689,7 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
     if (activate_sys_context) {
         env->minst_trace.active_block_kind = 1;
     } else if (strcmp(info.mnemonic, "C.BSTOP") == 0 ||
+               strcmp(info.mnemonic, "BSTART") == 0 ||
                strncmp(info.mnemonic, "BSTART.", 7) == 0 ||
                strncmp(info.mnemonic, "C.BSTART.", 9) == 0 ||
                strcmp(info.mnemonic, "C.BSTART") == 0) {
@@ -8077,6 +8085,11 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
                               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
 
         if (linx_is_legacy_ret_j_wrapper_target(env, pc)) {
+            return true;
+        }
+
+        /* Generic BSTART split forms: low opcode 0x11/0x21 with simm25 target. */
+        if ((insn & 0x7f) == 0x11 || (insn & 0x7f) == 0x21) {
             return true;
         }
 

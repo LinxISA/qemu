@@ -419,6 +419,11 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
         }
         const uint32_t insn = ldl_le_p(buf);
 
+        /* Generic BSTART split forms: low opcode 0x11/0x21 with simm25 target. */
+        if ((insn & 0x7f) == 0x11 || (insn & 0x7f) == 0x21) {
+            return true;
+        }
+
         /* BSTART.*: bits[6:0]=0x01, branch kind in bits [14:12] is non-zero. */
         if ((insn & 0x7f) == 0x01 && ((insn >> 12) & 0x7) != 0) {
             return true;
@@ -492,6 +497,42 @@ static bool linx_is_b_attr_at_pc(CPULinxState *env, vaddr pc)
     return (ldl_le_p(buf) & 0x707fu) == 0x23u;
 }
 
+static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    const uint16_t hw = lduw_le_p(buf);
+    const unsigned len = linx_insn_len(hw);
+
+    if (len == 2) {
+        return (hw & 0xf83f) == 0x5016;
+    }
+
+    if (len == 4) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        return (ldl_le_p(buf) & 0xfffu) == 0x507u;
+    }
+
+    if (len == 6) {
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+        const uint64_t insn48 = (uint64_t)lduw_le_p(buf) |
+                                ((uint64_t)ldl_le_p(buf + 2) << 16);
+        return (insn48 & UINT64_C(0x00000fff000f)) ==
+               UINT64_C(0x00000507000e);
+    }
+
+    return false;
+}
+
 /*
  * Current LLVM can lower a predicated forward edge as:
  *
@@ -534,7 +575,8 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
             return false;
         }
         insn = ldl_le_p(buf);
-        if ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) == LINX_BR_DIRECT) {
+        if ((insn & 0x7f) == 0x11 ||
+            ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) == LINX_BR_DIRECT)) {
             *skip_pc = pc + len;
             return true;
         }
@@ -1275,6 +1317,26 @@ static bool trans_c_bstart_sys(DisasContext *ctx, arg_c_bstart_sys *a)
         return true;
     }
     return linx_begin_sys_header_target(ctx, 0);
+}
+
+static bool trans_bstart_split_direct(DisasContext *ctx,
+                                      arg_bstart_split_direct *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    uint8_t brtype = linx_is_setret_at_pc(ctx->env, ctx->base.pc_next)
+                         ? LINX_BR_CALL
+                         : LINX_BR_DIRECT;
+
+    return linx_begin_header_target(ctx, brtype,
+                                    linx_pcrel_target(current_pc, a->simm25));
+}
+
+static bool trans_bstart_split_cond(DisasContext *ctx,
+                                    arg_bstart_split_cond *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    return linx_begin_header_target(ctx, LINX_BR_COND,
+                                    linx_pcrel_target(current_pc, a->simm25));
 }
 
 static bool trans_c_bstart_mpar(DisasContext *ctx, arg_c_bstart_mpar *a)

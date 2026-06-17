@@ -81,6 +81,8 @@
 %S0V 28:1
 
 # Block headers
+bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
+bstart_split_cond   .... .... .... .... .... .... .010 0001 %simm25
 bstart_fall   .... .... .... .... .001 0000 0000 0001 %simm17
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
