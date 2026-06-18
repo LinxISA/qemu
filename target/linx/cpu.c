@@ -661,14 +661,16 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
     if (src_acr == 2 && dst_acr == 1) {
+        const uint64_t user_tp = env->ssr[LINX_SSR_TP];
+
         /*
          * Linux bring-up currently relies on exception entry finding the
          * current task pointer in live SSR_TP during the first kernel-origin
-         * save block, even for user-origin faults that immediately demand-page
-         * executable text. Seed SSR_TP from the manager-bank ETEMP snapshot so
-         * the trap prologue can recover thread_info deterministically.
+         * save block. Preserve the interrupted user TLS pointer in ETEMP0 so
+         * the trap prologue can save it into pt_regs before ACRE restores it.
          */
         env->ssr[LINX_SSR_TP] = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
+        env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
     }
     env->ssr[LINX_SSR_CSTATE] =
         linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);

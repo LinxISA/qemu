@@ -2576,6 +2576,19 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
         linx_trapno_make(true, true, (uint32_t)request_type, 16 /* SYSCALL */);
     env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)request_type;
 
+    /*
+     * Linux user entry expects live SSR_TP and manager ETEMP to hold
+     * thread_info during the first save blocks. Preserve the interrupted user
+     * TLS pointer in ETEMP0 so the kernel can restore PT_TP on ACRE.
+     */
+    if (src_acr == 2 && dst_acr == 1) {
+        const uint64_t user_tp = env->ssr[LINX_SSR_TP];
+        const uint64_t thread_info = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
+
+        env->ssr[LINX_SSR_TP] = thread_info;
+        env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+    }
+
     /* Disable interrupts and switch to managing ring, then vector to EVBASE. */
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
