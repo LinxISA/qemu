@@ -538,6 +538,15 @@ static TCGTBCPUState linx_get_tb_cpu_state(CPUState *cs)
     if (env->in_body) {
         flags |= LINX_TB_FLAG_IN_BODY;
     }
+    if ((env->acr & 0xFu) == 2) {
+        flags |= LINX_TB_FLAG_USER_MMU;
+    }
+    if (env->tb_dbg_active) {
+        flags |= LINX_TB_FLAG_DBG_ACTIVE;
+    }
+    if (env->tb_cosim_precheck) {
+        flags |= LINX_TB_FLAG_COSIM_PRECHECK;
+    }
     return (TCGTBCPUState){ .pc = env->pc, .flags = flags };
 }
 
@@ -624,7 +633,19 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         src_cstate &= ~LINX_ECSTATE_BI_BIT;
     }
     const uint64_t src_bpc = env->bpc;
-    trace_linx_deliver_sync_trap(trapnum, src_acr, dst_acr, tpc, src_bpc, src_cstate);
+    /*
+     * Non-BI instruction/data exceptions are precise instruction faults.  A
+     * data fault can happen after earlier instructions in the same block have
+     * already updated architectural registers; returning to the block header
+     * would replay those updates with mutated inputs. Resume these faults at
+     * the faulting instruction itself.
+     */
+    const bool precise_user_exception =
+        src_acr == 2 && !bi &&
+        (trapnum == LINX_TRAPNUM_INSN_EXP ||
+         trapnum == LINX_TRAPNUM_DATA_EXP);
+    const uint64_t report_bpc = precise_user_exception ? tpc : src_bpc;
+    trace_linx_deliver_sync_trap(trapnum, src_acr, dst_acr, tpc, report_bpc, src_cstate);
 
     linx_acr_save_block_state(env, src_acr);
     const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
@@ -634,7 +655,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
 
     env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
-    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = src_bpc;
+    env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = report_bpc;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = tpc_next;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = is_trap ? tpc_next : tpc;
     env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
@@ -793,15 +814,26 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
         const bool in_body = env->in_body != 0;
+        const bool user_mid_block_data_fault =
+            (env->acr & 0xFu) == 2 &&
+            exception != LINX_EXCP_INST_ACCESS_FAULT &&
+            env->brtype != 0 &&
+            env->bpc != last_pc;
+        const bool bi = in_body || user_mid_block_data_fault;
         const uint8_t trapnum =
             (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
                 ? LINX_TRAPNUM_INSN_EXP
                 : LINX_TRAPNUM_DATA_EXP;
+        /*
+         * User page faults inside an open scalar block must return through
+         * RRAT_RESTORE: the resume PC is the faulting TPC, but the block BPC
+         * and SETC/branch metadata must remain the original header state.
+         */
         linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                trapnum,
                                true,  /* argv (TRAPARG0=fault VA) */
                                false, /* fault */
-                               in_body /* BI */
+                               bi     /* BI */
                                );
         return;
     }
@@ -884,6 +916,20 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
             linx_trapno_make(false, true, 0, LINX_TRAPNUM_INTERRUPT);
         env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)irq_id;
+
+        /*
+         * Linux entry expects live SSR_TP to name thread_info for user-origin
+         * traps.  Synchronous traps and service requests already perform this
+         * handoff; asynchronous interrupts need the same TLS save so the
+         * from_user prologue can switch to the kernel stack.
+         */
+        if (src_acr == 2 && dst_acr == 1) {
+            const uint64_t user_tp = env->ssr[LINX_SSR_TP];
+            const uint64_t thread_info = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
+
+            env->ssr[LINX_SSR_TP] = thread_info;
+            env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+        }
 
         /* Switch to managing ring and vector. */
         env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;

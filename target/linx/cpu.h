@@ -182,6 +182,9 @@ typedef enum LinxTemplateKind {
 #define LINX_BSTART_CACHE_SIZE 64u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
+#define LINX_TB_FLAG_USER_MMU (1u << 1)
+#define LINX_TB_FLAG_DBG_ACTIVE (1u << 2)
+#define LINX_TB_FLAG_COSIM_PRECHECK (1u << 3)
 
 /*
  * EBARG preservation stack (bring-up).

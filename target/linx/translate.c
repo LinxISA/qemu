@@ -35,6 +35,7 @@ typedef struct DisasContext {
     bool ra_set;
     vaddr call_ra_target;
     uint32_t block_insn_index;
+    int mem_idx;
 } DisasContext;
 
 enum {
@@ -101,6 +102,8 @@ static bool linx_commit_trace_enabled;
 static bool linx_opcode_meta_strict = true;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
+static bool linx_host_insn_hook_inited;
+static bool linx_host_insn_hook_enabled;
 
 static inline bool linx_debug_local_enabled_p(void)
 {
@@ -110,6 +113,22 @@ static inline bool linx_debug_local_enabled_p(void)
         linx_debug_local_inited = true;
     }
     return linx_debug_local_enabled;
+}
+
+static inline bool linx_host_insn_hook_enabled_p(void)
+{
+    if (!linx_host_insn_hook_inited) {
+        const char *cosim = getenv("LINX_COSIM_ENABLE");
+        const char *pc_watch = getenv("LINX_DEBUG_PC_WATCH");
+        const char *work_grab = getenv("LINX_DEBUG_WORK_GRAB");
+
+        linx_host_insn_hook_enabled =
+            (cosim && cosim[0] && strcmp(cosim, "0") != 0) ||
+            (pc_watch && pc_watch[0] && strcmp(pc_watch, "0") != 0) ||
+            (work_grab && work_grab[0] && strcmp(work_grab, "0") != 0);
+        linx_host_insn_hook_inited = true;
+    }
+    return linx_host_insn_hook_enabled;
 }
 
 static unsigned linx_insn_len(uint16_t hw);
@@ -293,11 +312,12 @@ static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
 }
 
 static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
+                                    vaddr block_pc,
                                     vaddr initial_target,
                                     bool preserve_scalar_queues)
 {
     int i;
-    tcg_gen_movi_i64(cpu_bpc, ctx->base.pc_first);
+    tcg_gen_movi_i64(cpu_bpc, block_pc);
     if (!preserve_scalar_queues) {
         for (i = 0; i < 4; i++) {
             tcg_gen_movi_i64(cpu_tq[i], 0);
@@ -358,14 +378,24 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
 static void linx_block_begin(DisasContext *ctx, uint8_t brtype,
                              vaddr initial_target)
 {
-    linx_block_begin_common(ctx, brtype, initial_target, false);
+    linx_block_begin_common(ctx, brtype, ctx->base.pc_first,
+                            initial_target, false);
 }
 
 static void linx_block_begin_preserve_scalar_queues(DisasContext *ctx,
                                                     uint8_t brtype,
                                                     vaddr initial_target)
 {
-    linx_block_begin_common(ctx, brtype, initial_target, true);
+    linx_block_begin_common(ctx, brtype, ctx->base.pc_first,
+                            initial_target, true);
+}
+
+static void linx_block_begin_preserve_scalar_queues_at(DisasContext *ctx,
+                                                       vaddr block_pc,
+                                                       uint8_t brtype,
+                                                       vaddr initial_target)
+{
+    linx_block_begin_common(ctx, brtype, block_pc, initial_target, true);
 }
 
 /* Helper to check if an address points to a block-start instruction.
@@ -497,6 +527,44 @@ static bool linx_is_b_attr_at_pc(CPULinxState *env, vaddr pc)
     return (ldl_le_p(buf) & 0x707fu) == 0x23u;
 }
 
+static bool linx_is_scalar_mem_at_pc(CPULinxState *env, vaddr pc)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+    uint16_t hw;
+    unsigned len;
+    uint64_t insn_raw;
+    const LinxOpcodeMeta *meta;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+    if (len > sizeof(buf)) {
+        return false;
+    }
+    if (len > 2 && cpu_memory_rw_debug(cs, pc, buf, len, 0) != 0) {
+        return false;
+    }
+
+    insn_raw = (uint64_t)lduw_le_p(buf);
+    if (len >= 4) {
+        insn_raw |= (uint64_t)lduw_le_p(buf + 2) << 16;
+    }
+    if (len >= 6) {
+        insn_raw |= (uint64_t)lduw_le_p(buf + 4) << 32;
+    }
+    if (len >= 8) {
+        insn_raw |= (uint64_t)lduw_le_p(buf + 6) << 48;
+    }
+
+    meta = linx_opcode_meta_lookup(insn_raw, len);
+    return meta && (meta->major_cat == LINX_CAT_LOAD ||
+                    meta->major_cat == LINX_CAT_STORE);
+}
+
 static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
 {
     CPUState *cs = env_cpu(env);
@@ -544,6 +612,24 @@ static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
  * direct trampoline is not the semantic successor. Skip to the following block
  * header and let that header's normal branch semantics choose the target.
  */
+static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
+                                             unsigned len, vaddr *skip_pc)
+{
+    vaddr next_pc = pc + len;
+
+    /*
+     * Only skip marker-only direct trampolines.  A direct BSTART followed by a
+     * normal instruction owns a real body; skipping just the header would execute
+     * that body with stale block metadata.
+     */
+    if (!linx_is_bstart_at_pc(env, next_pc)) {
+        return false;
+    }
+
+    *skip_pc = next_pc;
+    return true;
+}
+
 static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
                                              vaddr *skip_pc)
 {
@@ -563,8 +649,7 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
         if ((hw & 0x000f) == 0x0002 ||
             ((hw & 0xc7ff) == 0x0000 &&
              ((hw >> 11) & 0x7) == LINX_BR_DIRECT)) {
-            *skip_pc = pc + len;
-            return true;
+            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
         }
         return false;
     }
@@ -577,8 +662,7 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
         insn = ldl_le_p(buf);
         if ((insn & 0x7f) == 0x11 ||
             ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) == LINX_BR_DIRECT)) {
-            *skip_pc = pc + len;
-            return true;
+            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
         }
         return false;
     }
@@ -594,8 +678,7 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
         main32 = ldl_le_p(buf + 2);
         if ((main32 & 0xff) == 0x01 &&
             ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
-            *skip_pc = pc + len;
-            return true;
+            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
         }
         return false;
     }
@@ -608,8 +691,7 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
         main32 = ldl_le_p(buf + 4);
         if ((main32 & 0x7f) == 0x01 &&
             ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
-            *skip_pc = pc + len;
-            return true;
+            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
         }
         return false;
     }
@@ -706,7 +788,6 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest,
     }
     ctx->base.is_jmp = DISAS_NORETURN;
 }
-
 
 static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
 {
@@ -1205,17 +1286,33 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
         linx_is_b_attr_at_pc(ctx->env, ctx->base.pc_next)) {
         return true;
     }
+    /*
+     * Linux uaccess emits an internal FALL header with a fixup target directly
+     * before the protected scalar load/store. Start that block at the internal
+     * header while preserving scalar queues already prepared by the prologue,
+     * so exception delivery reports the fixup header as BPC.
+     */
+    if (current_pc != ctx->base.pc_first &&
+        brtype == LINX_BR_FALL &&
+        ctx->brtype != 0 &&
+        linx_is_scalar_mem_at_pc(ctx->env, ctx->base.pc_next)) {
+        linx_block_begin_preserve_scalar_queues_at(ctx, current_pc,
+                                                   LINX_BR_FALL, target);
+        return true;
+    }
     if (current_pc != ctx->base.pc_first &&
         (ctx->brtype == LINX_BR_CALL || ctx->brtype == LINX_BR_ICALL) &&
         ctx->ra_set &&
         ctx->call_ra_target != 0 &&
-        current_pc != ctx->call_ra_target) {
+        ctx->call_ra_target > ctx->base.pc_first &&
+        current_pc < ctx->call_ra_target) {
         /*
          * Current Linx LLVM lowering can emit extra headers inside an open
          * CALL/ICALL block before the recorded SETRET continuation. Keep
          * translating through those internal markers so the call prelude
-         * executes before control transfers to the callee. The CALL should
-         * only commit once we actually reach the continuation header.
+         * executes before control transfers to the callee. This applies only
+         * to forward continuations; self-returning noreturn-call encodings
+         * must commit at the next header.
          */
         return true;
     }
@@ -2109,9 +2206,6 @@ static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw)
                                 LINX_BLOCKFMT_FAMILY_ARG);
     }
     if (ctx->brtype != LINX_BR_CALL && ctx->brtype != LINX_BR_ICALL) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_CALL_INVALID_SEQUENCE, 0);
-    }
-    if (ctx->block_insn_index != 1) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_CALL_INVALID_SEQUENCE, 0);
     }
     if (ctx->ra_set) {
@@ -3358,7 +3452,7 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
         gen_helper_linx_dbg_check_load(tcg_env, tcg_constant_i64(pc), addr64,
                                        tcg_constant_i32((int32_t)size));
     }
-    tcg_gen_qemu_ld_i64(out, addr, 0, mop | linx_mo_endian());
+    tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
 
     if (linx_commit_trace_enabled) {
         TCGv_i64 addr64;
@@ -4185,7 +4279,7 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
     }
 
     linx_lr_invalidate();
-    tcg_gen_qemu_st_i64(val, addr, 0, mop | linx_mo_endian());
+    tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
     return true;
 }
 
@@ -7877,6 +7971,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     }
     ctx->cur_insn_len = 0;
     ctx->in_body = (ctx->base.tb->flags & LINX_TB_FLAG_IN_BODY) != 0;
+    ctx->mem_idx = (ctx->base.tb->flags & LINX_TB_FLAG_USER_MMU) != 0 ? 1 : 0;
     ctx->decoupled_header = false;
     ctx->tgt_modified = false;
     ctx->ra_set = (env->call_ra_set != 0);
@@ -7892,6 +7987,35 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
         ctx->brtype = 0;
         ctx->brtarget = 0;
         ctx->ra_set = false;
+        ctx->call_ra_target = 0;
+        return;
+    }
+
+    /*
+     * A data fault can resume in the middle of a plain fallthrough block.  There
+     * is no pending target to preserve for FALL, and carrying the old brtype
+     * forward makes the next BSTART look like a delimiter for the already
+     * completed block instead of a fresh header.
+     */
+    if (!ctx->in_body && ctx->brtype == LINX_BR_FALL) {
+        ctx->brtype = 0;
+        ctx->brtarget = 0;
+        ctx->call_ra_target = 0;
+        return;
+    }
+
+    /*
+     * Non-header entries can come from precise user returns or from branches
+     * to compiler-emitted continuation instructions.  If the live BPC is not a
+     * block header either, the fixed-target state is stale metadata rather than
+     * the suffix fragment's control-flow contract.  Translate the suffix as
+     * fallthrough until the next header.
+     */
+    if (!ctx->in_body && ctx->brtype != 0 &&
+        !linx_is_bstart_at_pc(env, pc) &&
+        (env->bpc == pc || !linx_is_bstart_at_pc(env, env->bpc))) {
+        ctx->brtype = LINX_BR_FALL;
+        ctx->brtarget = 0;
         ctx->call_ra_target = 0;
         return;
     }
@@ -7997,7 +8121,10 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
      * Arm co-sim exactly at instruction start so trigger snapshot captures
      * pre-execution architectural state for the trigger instruction.
      */
-    gen_helper_linx_cosim_before_insn(tcg_env, tcg_constant_i64(pc));
+    if (linx_host_insn_hook_enabled_p() ||
+        (ctx->base.tb->flags & LINX_TB_FLAG_COSIM_PRECHECK)) {
+        gen_helper_linx_cosim_before_insn(tcg_env, tcg_constant_i64(pc));
+    }
 
     /* LinxISA is little-endian: bytes in memory like [00 08] should be read as 0x0800 */
     /* Use MO_LE to read instruction in little-endian format */
@@ -8008,7 +8135,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     /* Always update pc_next to ensure tb->size is non-zero even if exception occurs */
     ctx->base.pc_next = pc + len;
     tcg_gen_movi_i64(cpu_insn_pc_next, ctx->base.pc_next);
-    gen_helper_linx_dbg_check_pc(tcg_env, tcg_constant_i64(pc));
+    if (ctx->base.tb->flags & LINX_TB_FLAG_DBG_ACTIVE) {
+        gen_helper_linx_dbg_check_pc(tcg_env, tcg_constant_i64(pc));
+    }
 
     switch (len) {
            case 2:
