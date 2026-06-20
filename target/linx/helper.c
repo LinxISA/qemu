@@ -8318,6 +8318,22 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
         uint8_t buf[8] = { 0 };
         int rc = cpu_memory_rw_debug(cs, target, buf, sizeof(buf), 0);
         if (rc == 0) {
+            bool all_zero = true;
+            for (size_t i = 0; i < sizeof(buf); i++) {
+                if (buf[i] != 0) {
+                    all_zero = false;
+                    break;
+                }
+            }
+            if ((env->acr & 0xfu) == 2 && all_zero) {
+                /*
+                 * User text can be demand-paged.  cpu_memory_rw_debug() may
+                 * observe an unpopulated executable page as zeros instead of
+                 * raising the fetch fault that would page it in.  Defer to the
+                 * real fetch path so Linux can service the instruction fault.
+                 */
+                return;
+            }
             const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
             const unsigned len = linx_insn_len(hw);
             trace_linx_cfi_bad_target(env->pc, target, (uint32_t)hw, len);
