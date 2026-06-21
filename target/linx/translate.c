@@ -100,10 +100,17 @@ static TCGv_i64 cpu_trace_traparg0;
 
 static bool linx_commit_trace_enabled;
 static bool linx_opcode_meta_strict = true;
+static bool linx_pc_sample_enabled;
+static bool linx_call_trace_translate_enabled;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_host_insn_hook_inited;
 static bool linx_host_insn_hook_enabled;
+
+enum {
+    LINX_CALL_TRACE_SETRET = 1,
+    LINX_CALL_TRACE_CALL_COMMIT = 2,
+};
 
 static inline bool linx_debug_local_enabled_p(void)
 {
@@ -934,6 +941,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (!ctx->ra_set) {
             linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
         }
+        if (linx_call_trace_translate_enabled) {
+            gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(source_pc),
+                                             tcg_constant_i32(LINX_CALL_TRACE_CALL_COMMIT),
+                                             tcg_constant_i64(fallthrough));
+        }
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
         } else {
@@ -1037,6 +1049,11 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
          */
         if (!ctx->ra_set) {
             linx_set_dest(LINX_REG_RA, tcg_constant_i64(fallthrough));
+        }
+        if (linx_call_trace_translate_enabled) {
+            gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(source_pc),
+                                             tcg_constant_i32(LINX_CALL_TRACE_CALL_COMMIT),
+                                             tcg_constant_i64(fallthrough));
         }
         if (!ctx->tgt_modified && ctx->brtarget == 0) {
             (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT, 0);
@@ -2217,6 +2234,11 @@ static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw)
         vaddr tgt = pc + ((vaddr)imm_hw << 1);
         linx_set_dest(LINX_REG_RA, tcg_constant_i64(tgt));
         ctx->call_ra_target = tgt;
+        if (linx_call_trace_translate_enabled) {
+            gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(pc),
+                                             tcg_constant_i32(LINX_CALL_TRACE_SETRET),
+                                             tcg_constant_i64(tgt));
+        }
     }
     ctx->ra_set = true;
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
@@ -8045,6 +8067,9 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 
 static void linx_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
+    if (linx_pc_sample_enabled) {
+        gen_helper_linx_pc_sample(tcg_env, tcg_constant_i64(db->pc_first));
+    }
 }
 
 static void linx_tr_insn_start(DisasContextBase *dcbase, CPUState *cpu)
@@ -8350,6 +8375,8 @@ void linx_translate_init(void)
     const char *minst_trace = getenv("LINX_MINST_TRACE");
     const char *cosim_enable = getenv("LINX_COSIM_ENABLE");
     const char *opcode_meta_strict = getenv("LINX_OPCODE_META_STRICT");
+    const char *pc_sample_interval = getenv("LINX_PC_SAMPLE_INTERVAL");
+    const char *call_trace = getenv("LINX_CALL_TRACE");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -8363,6 +8390,11 @@ void linx_translate_init(void)
         (minst_trace && minst_trace[0] && strcmp(minst_trace, "0") != 0) ||
         (cosim_enable && cosim_enable[0] && strcmp(cosim_enable, "0") != 0);
     linx_opcode_meta_strict = !(opcode_meta_strict && opcode_meta_strict[0] && strcmp(opcode_meta_strict, "0") == 0);
+    linx_pc_sample_enabled =
+        pc_sample_interval && pc_sample_interval[0] &&
+        strcmp(pc_sample_interval, "0") != 0;
+    linx_call_trace_translate_enabled =
+        call_trace && call_trace[0] && strcmp(call_trace, "0") != 0;
     
     for (i = 0; i < LINX_GPR_COUNT; i++) {
         cpu_gpr[i] = tcg_global_mem_new_i64(tcg_env,
