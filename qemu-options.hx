@@ -327,6 +327,14 @@ SRST
 
 ERST
 
+DEF("singlestep", 0, QEMU_OPTION_singlestep,
+    "-singlestep      compatibility alias for -accel tcg,one-insn-per-tb=on\n",
+    QEMU_ARCH_ALL)
+SRST
+``-singlestep``
+    Compatibility alias for ``-accel tcg,one-insn-per-tb=on``.
+ERST
+
 DEF("smp", HAS_ARG, QEMU_OPTION_smp,
     "-smp [[cpus=]n][,maxcpus=maxcpus][,drawers=drawers][,books=books][,sockets=sockets]\n"
     "               [,dies=dies][,clusters=clusters][,modules=modules][,cores=cores]\n"

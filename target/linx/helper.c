@@ -1241,7 +1241,8 @@ static inline bool linx_minst_trace_active(CPULinxState *env)
 static inline bool linx_trace_capture_active(CPULinxState *env)
 {
     linx_cosim_init(env);
-    return linx_commit_trace_active(env) || linx_minst_trace_active(env) || env->cosim.active;
+    return linx_commit_trace_active(env) || linx_minst_trace_active(env) ||
+           env->cosim.active || qemu_loglevel_mask(LOG_LINX_MEM);
 }
 
 static inline uint32_t linx_trace_len_to_meta_len(uint32_t len)
@@ -2008,6 +2009,20 @@ void HELPER(linx_commit_trace)(CPULinxState *env, uint64_t next_pc)
             env->commit_trace.enabled = 0;
             env->commit_trace.stop_after_commit = 0;
         }
+    }
+
+    if (env->trace_mem_valid) {
+        const uint64_t pc = env->trace_pc;
+
+        qemu_log_mask_and_addr(LOG_LINX_MEM, pc,
+                               "LinxMem: pc=0x%016" PRIx64 " %s"
+                               " addr=0x%016" PRIx64 " size=%u"
+                               " data=0x%016" PRIx64 "\n",
+                               pc,
+                               env->trace_mem_is_store ? "store" : "load ",
+                               env->trace_mem_addr, env->trace_mem_size,
+                               env->trace_mem_is_store ?
+                               env->trace_mem_wdata : env->trace_mem_rdata);
     }
 
     if (env->cosim.active) {

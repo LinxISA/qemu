@@ -2848,6 +2848,7 @@ void qemu_init(int argc, char **argv)
     const char *optarg;
     MachineClass *machine_class;
     bool userconfig = true;
+    bool legacy_singlestep = false;
     FILE *vmstate_dump_file = NULL;
 
     qemu_add_opts(&qemu_drive_opts);
@@ -3438,6 +3439,9 @@ void qemu_init(int argc, char **argv)
                     exit(0);
                 }
                 break;
+            case QEMU_OPTION_singlestep:
+                legacy_singlestep = true;
+                break;
             case QEMU_OPTION_usb:
                 qdict_put_str(machine_opts_dict, "usb", "on");
                 break;
@@ -3784,6 +3788,16 @@ void qemu_init(int argc, char **argv)
     qemu_apply_machine_options(machine_opts_dict);
     qobject_unref(machine_opts_dict);
     phase_advance(PHASE_MACHINE_CREATED);
+
+    if (legacy_singlestep) {
+        if (!QTAILQ_EMPTY(&qemu_accel_opts.head) || accelerators) {
+            error_report("-singlestep is incompatible with explicit accelerator"
+                         " configuration; use -accel tcg,one-insn-per-tb=on");
+            exit(1);
+        }
+        qemu_opts_parse_noisily(qemu_find_opts("accel"),
+                                "tcg,one-insn-per-tb=on", true);
+    }
 
     /*
      * Note: uses machine properties such as kernel-irqchip, must run
