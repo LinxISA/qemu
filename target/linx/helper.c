@@ -2832,6 +2832,7 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
     linx_bstart_cache_reset(env);
+    linx_refresh_tb_dbg_active(env);
     env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
     const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
     env->pc = evbase ? evbase : tpc;
@@ -2974,6 +2975,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
 
     env->acr = target;
     linx_bstart_cache_reset(env);
+    linx_refresh_tb_dbg_active(env);
     env->ssr[LINX_SSR_CSTATE] = ecstate & ~LINX_ECSTATE_BI_BIT;
     env->pc = resume_pc;
     linx_call_trace_emit(env, LINX_CALL_TRACE_ACRE_STAGED, env->pc,

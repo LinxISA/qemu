@@ -214,6 +214,30 @@ enum {
     LINX_SSR_DWVR0           = 0xFB1,
 };
 
+static inline bool linx_dbg_active_for_acr(const CPULinxState *env, uint32_t acr)
+{
+    for (uint32_t n = 0; n < 4; n++) {
+        if (env->ssr_acr[acr][LINX_SSR_DBCR0 + 2u * n] & 1u) {
+            return true;
+        }
+        if (env->ssr_acr[acr][LINX_SSR_DWCR0 + 2u * n] & 1u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline void linx_refresh_tb_dbg_active(CPULinxState *env)
+{
+    const uint32_t acr = env->acr & 0xFu;
+
+    if (acr >= LINX_ACR_COUNT) {
+        env->tb_dbg_active = 0;
+        return;
+    }
+    env->tb_dbg_active = linx_dbg_active_for_acr(env, acr) ? 1 : 0;
+}
+
 #define LINX_LEGACY_MMTBASE_MASK        UINT64_C(0x000000fffffffffc)
 #define LINX_LEGACY_MMTBASE_TO_PA(v)    (((v) & LINX_LEGACY_MMTBASE_MASK) << 10)
 #define LINX_LEGACY_MMCONFIG_MODE_MASK  UINT64_C(0x3)
@@ -931,6 +955,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
 
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
+    linx_refresh_tb_dbg_active(env);
     if (src_acr == 2 && dst_acr == 1) {
         const uint64_t user_tp = env->ssr[LINX_SSR_TP];
 
@@ -1193,6 +1218,7 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         /* Switch to managing ring and vector. */
         env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
         env->acr = dst_acr;
+        linx_refresh_tb_dbg_active(env);
         env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
         env->pc = evbase ? evbase : last_pc;
         cs->exception_index = -1;
