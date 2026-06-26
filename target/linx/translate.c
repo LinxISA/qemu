@@ -8014,12 +8014,13 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     }
 
     /*
-     * A data fault can resume in the middle of a plain fallthrough block.  There
-     * is no pending target to preserve for FALL, and carrying the old brtype
-     * forward makes the next BSTART look like a delimiter for the already
-     * completed block instead of a fresh header.
+     * A data fault can resume with stale FALL metadata and no owning header.
+     * Drop that state only when BPC does not still identify the live block;
+     * split TBs may enter a plain fallthrough block at a descriptor such as
+     * SETC, and those descriptors must retain the header context.
      */
-    if (!ctx->in_body && ctx->brtype == LINX_BR_FALL) {
+    if (!ctx->in_body && ctx->brtype == LINX_BR_FALL &&
+        (env->bpc == pc || !linx_is_bstart_at_pc(env, env->bpc))) {
         ctx->brtype = 0;
         ctx->brtarget = 0;
         ctx->call_ra_target = 0;
