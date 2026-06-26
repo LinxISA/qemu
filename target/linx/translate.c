@@ -8388,7 +8388,8 @@ void linx_translate_init(void)
     linx_commit_trace_enabled =
         (commit_trace && commit_trace[0] && strcmp(commit_trace, "0") != 0) ||
         (minst_trace && minst_trace[0] && strcmp(minst_trace, "0") != 0) ||
-        (cosim_enable && cosim_enable[0] && strcmp(cosim_enable, "0") != 0);
+        (cosim_enable && cosim_enable[0] && strcmp(cosim_enable, "0") != 0) ||
+        qemu_loglevel_mask(LOG_LINX_MEM);
     linx_opcode_meta_strict = !(opcode_meta_strict && opcode_meta_strict[0] && strcmp(opcode_meta_strict, "0") == 0);
     linx_pc_sample_enabled =
         pc_sample_interval && pc_sample_interval[0] &&
