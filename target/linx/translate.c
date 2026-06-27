@@ -3462,7 +3462,7 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     TCGv_i64 out = tcg_temp_new_i64();
 
-    {
+    if (ctx->base.tb->flags & LINX_TB_FLAG_DBG_ACTIVE) {
         const unsigned size = memop_size(mop);
         TCGv_i64 addr64;
 #if TARGET_LONG_BITS == 32
@@ -4271,7 +4271,7 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
                                 MemOp mop)
 {
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    {
+    if (ctx->base.tb->flags & LINX_TB_FLAG_DBG_ACTIVE) {
         const unsigned size = memop_size(mop);
         TCGv_i64 addr64;
 #if TARGET_LONG_BITS == 32

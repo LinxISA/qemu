@@ -82,6 +82,8 @@ static uint64_t linx_call_trace_count_lo;
 static uint64_t linx_call_trace_count_hi;
 static uint64_t linx_call_trace_limit;
 static uint64_t linx_call_trace_emitted;
+static bool linx_cfi_trace_inited;
+static bool linx_cfi_trace_enabled;
 
 enum {
     LINX_CALL_TRACE_SETRET = 1,
@@ -699,6 +701,15 @@ static inline bool linx_env_enabled(const char *name)
 {
     const char *v = getenv(name);
     return v && v[0] && strcmp(v, "0") != 0;
+}
+
+static inline bool linx_cfi_trace_enabled_p(void)
+{
+    if (!linx_cfi_trace_inited) {
+        linx_cfi_trace_enabled = linx_env_enabled("LINX_CFI_TRACE");
+        linx_cfi_trace_inited = true;
+    }
+    return linx_cfi_trace_enabled;
 }
 
 static inline bool linx_ssr_idx_is_debug(uint32_t idx)
@@ -8549,7 +8560,7 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 {
     const size_t slot = (size_t)((target >> 1) % LINX_BSTART_CACHE_SIZE);
 
-    if (linx_env_enabled("LINX_CFI_TRACE")) {
+    if (linx_cfi_trace_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: indirect target check pc=0x%" PRIx64
                       " target=0x%" PRIx64 "\n",
