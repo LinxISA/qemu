@@ -25,6 +25,7 @@
 #include "accel/tcg/internal-common.h"
 #include "exec/cputlb.h"
 #include "exec/target_page.h"
+#include "exec/tlb-flags.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include <inttypes.h>
@@ -8385,16 +8386,42 @@ static unsigned linx_insn_len(uint16_t hw)
     return ((hw & 0xf) == 0xf) ? 8 : 4;
 }
 
+static bool linx_read_code_bytes(CPULinxState *env, uint64_t pc,
+                                 uint8_t *buf, size_t len)
+{
+    size_t done = 0;
+    const int mmu_idx = linx_env_mmu_index(env);
+
+    while (done < len) {
+        const vaddr va = (vaddr)(pc + done);
+        size_t page_left = TARGET_PAGE_SIZE -
+            (size_t)(va & (TARGET_PAGE_SIZE - 1));
+        const size_t n = MIN(len - done, page_left);
+        void *host = NULL;
+        const int flags =
+            probe_access_flags(env, va, (int)n, MMU_INST_FETCH, mmu_idx,
+                               true, &host, 0);
+
+        if ((flags & (TLB_INVALID_MASK | TLB_MMIO)) || host == NULL) {
+            return false;
+        }
+
+        memcpy(buf + done, host, n);
+        done += n;
+    }
+
+    return true;
+}
+
 static bool linx_is_legacy_ret_j_wrapper_target(CPULinxState *env, uint64_t pc)
 {
-    CPUState *cs = env_cpu(env);
     uint8_t buf[8];
     uint32_t insn;
 
     if (pc < 2) {
         return false;
     }
-    if (cpu_memory_rw_debug(cs, pc - 2, buf, sizeof(buf), 0) != 0) {
+    if (!linx_read_code_bytes(env, pc - 2, buf, sizeof(buf))) {
         return false;
     }
 
@@ -8406,10 +8433,9 @@ static bool linx_is_legacy_ret_j_wrapper_target(CPULinxState *env, uint64_t pc)
 
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
 {
-    CPUState *cs = env_cpu(env);
     uint8_t buf[8];
 
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+    if (!linx_read_code_bytes(env, pc, buf, 2)) {
         return false;
     }
 
@@ -8444,7 +8470,7 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
     }
 
     if (len == 4) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+        if (!linx_read_code_bytes(env, pc, buf, 4)) {
             return false;
         }
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
@@ -8477,7 +8503,7 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
     }
 
     if (len == 6) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+        if (!linx_read_code_bytes(env, pc, buf, 6)) {
             return false;
         }
 
@@ -8496,7 +8522,7 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
     }
 
     if (len == 8) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+        if (!linx_read_code_bytes(env, pc, buf, 8)) {
             return false;
         }
 
@@ -8520,10 +8546,9 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
 static bool linx_is_call_fallthrough_target(CPULinxState *env, uint64_t pc,
                                             uint64_t target)
 {
-    CPUState *cs = env_cpu(env);
     uint8_t buf[8] = { 0 };
 
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+    if (!linx_read_code_bytes(env, pc, buf, 2)) {
         return false;
     }
 
@@ -8541,7 +8566,7 @@ static bool linx_is_call_fallthrough_target(CPULinxState *env, uint64_t pc,
         return false;
     }
 
-    if (cpu_memory_rw_debug(cs, pc, buf, len, 0) != 0) {
+    if (!linx_read_code_bytes(env, pc, buf, len)) {
         return false;
     }
 
@@ -8616,8 +8641,7 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 
     {
         uint8_t buf[8] = { 0 };
-        int rc = cpu_memory_rw_debug(cs, target, buf, sizeof(buf), 0);
-        if (rc == 0) {
+        if (linx_read_code_bytes(env, target, buf, sizeof(buf))) {
             bool all_zero = true;
             for (size_t i = 0; i < sizeof(buf); i++) {
                 if (buf[i] != 0) {
