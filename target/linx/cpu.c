@@ -41,8 +41,27 @@ static uint64_t linx_fault_trace_filter_hi;
 static bool linx_fault_trace_count_filter_enabled;
 static uint64_t linx_fault_trace_count_lo;
 static uint64_t linx_fault_trace_count_hi;
+static bool linx_fault_trace_trapnum_filter_enabled;
+static uint64_t linx_fault_trace_trapnum;
 static uint64_t linx_fault_trace_limit;
 static uint64_t linx_fault_trace_emitted;
+static bool linx_tlb_fault_trace_inited;
+static bool linx_tlb_fault_trace_enabled;
+static uint64_t linx_tlb_fault_trace_limit;
+static uint64_t linx_tlb_fault_trace_emitted;
+
+typedef struct LinxLegacyMmuProbe {
+    bool legacy;
+    bool ok;
+    unsigned level;
+    hwaddr desc_addr;
+    uint64_t desc;
+    hwaddr pa;
+    hwaddr block_size;
+    int prot;
+    uint8_t cause;
+    const char *why;
+} LinxLegacyMmuProbe;
 
 static bool linx_cpu_parse_u64(const char *s, uint64_t *out)
 {
@@ -120,6 +139,12 @@ static void linx_fault_trace_init(void)
         linx_fault_trace_count_filter_enabled = true;
     }
 
+    const char *trapnum_s = getenv("LINX_FAULT_TRACE_TRAPNUM");
+    if (trapnum_s &&
+        linx_cpu_parse_u64(trapnum_s, &linx_fault_trace_trapnum)) {
+        linx_fault_trace_trapnum_filter_enabled = true;
+    }
+
     const char *limit_s = getenv("LINX_FAULT_TRACE_LIMIT");
     if (limit_s) {
         (void)linx_cpu_parse_u64(limit_s, &linx_fault_trace_limit);
@@ -135,12 +160,34 @@ static bool linx_fault_trace_addr_matches(uint64_t addr)
             addr <= linx_fault_trace_filter_hi);
 }
 
-static bool linx_fault_trace_matches(CPULinxState *env, uint64_t tpc,
-                                     uint64_t tpc_next, uint64_t src_bpc,
-                                     uint64_t report_bpc)
+static void linx_tlb_fault_trace_init(void)
+{
+    if (linx_tlb_fault_trace_inited) {
+        return;
+    }
+
+    const char *enabled_s = getenv("LINX_TLB_FAULT_TRACE");
+    linx_tlb_fault_trace_enabled =
+        enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
+
+    const char *limit_s = getenv("LINX_TLB_FAULT_TRACE_LIMIT");
+    if (limit_s) {
+        (void)linx_cpu_parse_u64(limit_s, &linx_tlb_fault_trace_limit);
+    }
+
+    linx_tlb_fault_trace_inited = true;
+}
+
+static bool linx_fault_trace_matches(CPULinxState *env, uint8_t trapnum,
+                                     uint64_t tpc, uint64_t tpc_next,
+                                     uint64_t src_bpc, uint64_t report_bpc)
 {
     linx_fault_trace_init();
     if (!linx_fault_trace_enabled) {
+        return false;
+    }
+    if (linx_fault_trace_trapnum_filter_enabled &&
+        trapnum != linx_fault_trace_trapnum) {
         return false;
     }
     if (linx_fault_trace_count_filter_enabled &&
@@ -161,6 +208,33 @@ static bool linx_fault_trace_matches(CPULinxState *env, uint64_t tpc,
         return false;
     }
     linx_fault_trace_emitted++;
+    return true;
+}
+
+static bool linx_fault_trace_tlb_matches(CPULinxState *env, uint64_t va)
+{
+    linx_fault_trace_init();
+    linx_tlb_fault_trace_init();
+    if (!linx_tlb_fault_trace_enabled) {
+        return false;
+    }
+    if (linx_fault_trace_count_filter_enabled &&
+        (env->insn_count < linx_fault_trace_count_lo ||
+         env->insn_count > linx_fault_trace_count_hi)) {
+        return false;
+    }
+    if (linx_tlb_fault_trace_limit &&
+        linx_tlb_fault_trace_emitted >= linx_tlb_fault_trace_limit) {
+        return false;
+    }
+    if (!linx_fault_trace_addr_matches(env->pc) &&
+        !linx_fault_trace_addr_matches(env->insn_pc_next) &&
+        !linx_fault_trace_addr_matches(env->bpc) &&
+        !linx_fault_trace_addr_matches(env->body_tpc) &&
+        !linx_fault_trace_addr_matches(va)) {
+        return false;
+    }
+    linx_tlb_fault_trace_emitted++;
     return true;
 }
 
@@ -353,12 +427,55 @@ static inline uint64_t linx_trapno_make(bool exception, bool argv,
     return e | a | c | t;
 }
 
+static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
+                               MMUAccessType access_type, int mmu_idx,
+                               hwaddr *pa_out, int *prot_out,
+                               hwaddr *tlb_size_out, uint8_t *cause_out);
+static LinxLegacyMmuProbe linx_probe_legacy_mmu(CPULinxState *env, vaddr va,
+                                                MMUAccessType access_type,
+                                                int mmu_idx);
+
+static bool linx_read_insn_bytes(CPUState *cs, uint64_t pc,
+                                 uint8_t *buf, size_t len)
+{
+    CPULinxState *env = cpu_env(cs);
+    size_t done = 0;
+
+    while (done < len) {
+        const vaddr va = (vaddr)(pc + done);
+        const int mmu_idx = ((env->acr & 0xFu) == 2) ? 1 : 0;
+        hwaddr pa = 0;
+        int prot = 0;
+        hwaddr tlb_size = TARGET_PAGE_SIZE;
+        uint8_t cause = 0;
+
+        if (!linx_mmu_translate(cs, env, va, MMU_INST_FETCH, mmu_idx,
+                                &pa, &prot, &tlb_size, &cause)) {
+            return false;
+        }
+
+        const size_t page_left =
+            TARGET_PAGE_SIZE - (size_t)(pa & (TARGET_PAGE_SIZE - 1));
+        const size_t n = MIN(len - done, page_left);
+        MemTxResult result =
+            address_space_read(&address_space_memory, pa,
+                               MEMTXATTRS_UNSPECIFIED, buf + done, n);
+
+        if (result != MEMTX_OK) {
+            return false;
+        }
+        done += n;
+    }
+
+    return true;
+}
+
 static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next,
                                      bool in_body)
 {
     uint8_t buf[4];
 
-    if (cpu_memory_rw_debug(cs, tpc_next, buf, 2, 0) == 0) {
+    if (linx_read_insn_bytes(cs, tpc_next, buf, 2)) {
         const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
         if (hw == 0x0000u) {
             if (in_body) {
@@ -368,7 +485,7 @@ static uint64_t linx_break_resume_pc(CPUState *cs, uint64_t tpc_next,
         }
     }
 
-    if (cpu_memory_rw_debug(cs, tpc_next, buf, 4, 0) == 0) {
+    if (linx_read_insn_bytes(cs, tpc_next, buf, 4)) {
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
                               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
         if (insn == 0x00000001u) {
@@ -386,7 +503,7 @@ static unsigned linx_fetch_insn_len(CPUState *cs, uint64_t pc)
 {
     uint8_t buf[2];
 
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
+    if (!linx_read_insn_bytes(cs, pc, buf, sizeof(buf))) {
         return 0;
     }
 
@@ -401,7 +518,7 @@ static bool linx_cpu_is_bstart_at_addr(CPUState *cs, uint64_t pc)
 {
     uint8_t buf[8];
 
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+    if (!linx_read_insn_bytes(cs, pc, buf, 2)) {
         return false;
     }
 
@@ -431,7 +548,7 @@ static bool linx_cpu_is_bstart_at_addr(CPUState *cs, uint64_t pc)
     }
 
     if (len == 4) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+        if (!linx_read_insn_bytes(cs, pc, buf, 4)) {
             return false;
         }
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
@@ -454,7 +571,7 @@ static bool linx_cpu_is_bstart_at_addr(CPUState *cs, uint64_t pc)
     }
 
     if (len == 6) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+        if (!linx_read_insn_bytes(cs, pc, buf, 6)) {
             return false;
         }
         const uint16_t prefix = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
@@ -468,7 +585,7 @@ static bool linx_cpu_is_bstart_at_addr(CPUState *cs, uint64_t pc)
     }
 
     if (len == 8) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+        if (!linx_read_insn_bytes(cs, pc, buf, 8)) {
             return false;
         }
         const uint32_t main32 = (uint32_t)buf[4] |
@@ -503,6 +620,51 @@ static uint64_t linx_containing_insn_start(CPUState *cs, uint64_t block_pc,
     }
 
     return reported_pc;
+}
+
+static bool linx_resolve_user_fault_block(CPUState *cs, uint64_t seed_bpc,
+                                          uint64_t reported_pc,
+                                          uint64_t *block_pc_out,
+                                          uint64_t *insn_pc_out)
+{
+    uint64_t block_pc = seed_bpc;
+
+    if (block_pc != 0 && block_pc <= reported_pc &&
+        linx_cpu_is_bstart_at_addr(cs, block_pc)) {
+        *block_pc_out = block_pc;
+        *insn_pc_out = linx_containing_insn_start(cs, block_pc, reported_pc);
+        return true;
+    }
+
+    /*
+     * TCG restore can occasionally surface a data fault with env->pc already
+     * inside the faulting instruction and env->bpc polluted by the same suffix
+     * address.  Recover the nearest decoded block header so Linux resumes at a
+     * real instruction boundary instead of feeding a halfword PC back to ACRE.
+     */
+    const uint64_t scan_limit = 512;
+    const uint64_t lo = reported_pc > scan_limit ? reported_pc - scan_limit : 0;
+    uint64_t cand = reported_pc & ~UINT64_C(1);
+
+    while (cand >= lo) {
+        if (linx_cpu_is_bstart_at_addr(cs, cand)) {
+            uint64_t insn_pc = linx_containing_insn_start(cs, cand, reported_pc);
+            const unsigned len = linx_fetch_insn_len(cs, insn_pc);
+
+            if (len != 0 && reported_pc >= insn_pc &&
+                reported_pc < insn_pc + len) {
+                *block_pc_out = cand;
+                *insn_pc_out = insn_pc;
+                return true;
+            }
+        }
+        if (cand < 2) {
+            break;
+        }
+        cand -= 2;
+    }
+
+    return false;
 }
 
 static void linx_dump_q4(FILE *f, const char *name, const uint64_t q[4],
@@ -898,30 +1060,111 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
          trapnum == LINX_TRAPNUM_DATA_EXP);
     const uint64_t report_bpc = precise_user_exception ? tpc : src_bpc;
     trace_linx_deliver_sync_trap(trapnum, src_acr, dst_acr, tpc, report_bpc, src_cstate);
-    if (linx_fault_trace_matches(env, tpc, tpc_next, src_bpc, report_bpc)) {
+    if (linx_fault_trace_matches(env, trapnum, tpc, tpc_next, src_bpc,
+                                 report_bpc)) {
+        uint8_t trace_bytes[8] = {0};
+        const int trace_bytes_rc =
+            linx_read_insn_bytes(cs, tpc, trace_bytes, sizeof(trace_bytes));
+        const int trace_mmu_idx = ((env->acr & 0xFu) == 2) ? 1 : 0;
+        hwaddr trace_fetch_pa = 0;
+        int trace_fetch_prot = 0;
+        hwaddr trace_fetch_tlb_size = TARGET_PAGE_SIZE;
+        uint8_t trace_fetch_cause = 0;
+        const bool trace_fetch_ok =
+            linx_mmu_translate(cs, env, (vaddr)tpc, MMU_INST_FETCH,
+                               trace_mmu_idx, &trace_fetch_pa,
+                               &trace_fetch_prot, &trace_fetch_tlb_size,
+                               &trace_fetch_cause);
+        hwaddr trace_store_pa = 0;
+        int trace_store_prot = 0;
+        hwaddr trace_store_tlb_size = TARGET_PAGE_SIZE;
+        uint8_t trace_store_cause = 0;
+        const bool trace_store_ok =
+            linx_mmu_translate(cs, env, (vaddr)tpc, MMU_DATA_STORE,
+                               trace_mmu_idx, &trace_store_pa,
+                               &trace_store_prot, &trace_store_tlb_size,
+                               &trace_store_cause);
+        const LinxLegacyMmuProbe trace_fetch_probe =
+            linx_probe_legacy_mmu(env, (vaddr)tpc, MMU_INST_FETCH,
+                                  trace_mmu_idx);
+        const LinxLegacyMmuProbe trace_store_probe =
+            linx_probe_legacy_mmu(env, (vaddr)tpc, MMU_DATA_STORE,
+                                  trace_mmu_idx);
         fprintf(stderr,
                 "LINX_FAULT_TRACE count=%" PRIu64
-                " trapnum=%u src_acr=%u dst_acr=%u bi=%u precise=%u"
+                " trapnum=%u src_acr=%u dst_acr=%u argv=%u is_trap=%u"
+                " bi=%u precise=%u"
                 " tpc=0x%" PRIx64 " tpc_next=0x%" PRIx64
                 " src_bpc=0x%" PRIx64 " report_bpc=0x%" PRIx64
                 " envpc=0x%" PRIx64 " body_tpc=0x%" PRIx64
                 " in_body=%u brtype=%u tgt=0x%" PRIx64
                 " traparg0=0x%" PRIx64 " cause=0x%x cstate=0x%" PRIx64
                 " ra=0x%" PRIx64 " sp=0x%" PRIx64
+                " tp=0x%" PRIx64
                 " a0=0x%" PRIx64 " a1=0x%" PRIx64
-                " a2=0x%" PRIx64 "\n",
-                env->insn_count, trapnum, src_acr, dst_acr, bi ? 1u : 0u,
+                " a2=0x%" PRIx64 " a3=0x%" PRIx64
+                " a4=0x%" PRIx64 " a5=0x%" PRIx64
+                " a6=0x%" PRIx64 " a7=0x%" PRIx64
+                " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+                " tq2=0x%" PRIx64 " tq3=0x%" PRIx64
+                " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+                " uq2=0x%" PRIx64 " uq3=0x%" PRIx64
+                " bytes_rc=%d bytes=%02x%02x%02x%02x%02x%02x%02x%02x"
+                " fetch_ok=%u fetch_pa=0x%" HWADDR_PRIx
+                " fetch_prot=0x%x fetch_tlb=0x%" HWADDR_PRIx
+                " fetch_cause=0x%x"
+                " store_ok=%u store_pa=0x%" HWADDR_PRIx
+                " store_prot=0x%x store_tlb=0x%" HWADDR_PRIx
+                " store_cause=0x%x"
+                " legacy_fetch=%u:%u:%s:%u:0x%" HWADDR_PRIx
+                ":0x%" PRIx64 ":0x%x:0x%" HWADDR_PRIx
+                ":0x%" HWADDR_PRIx ":0x%x"
+                " legacy_store=%u:%u:%s:%u:0x%" HWADDR_PRIx
+                ":0x%" PRIx64 ":0x%x:0x%" HWADDR_PRIx
+                ":0x%" HWADDR_PRIx ":0x%x\n",
+                env->insn_count, trapnum, src_acr, dst_acr,
+                argv ? 1u : 0u, is_trap ? 1u : 0u, bi ? 1u : 0u,
                 precise_user_exception ? 1u : 0u, tpc, tpc_next,
                 src_bpc, report_bpc, env->pc, env->body_tpc,
                 env->in_body, env->brtype, env->tgt,
                 env->pending_trap_arg0, env->pending_trap_cause,
                 src_cstate, env->gpr[LINX_REG_RA], env->gpr[LINX_REG_SP],
-                env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
-                env->gpr[LINX_REG_A2]);
+                env->ssr[LINX_SSR_TP], env->gpr[LINX_REG_A0],
+                env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
+                env->gpr[LINX_REG_A3], env->gpr[LINX_REG_A4],
+                env->gpr[LINX_REG_A5], env->gpr[LINX_REG_A6],
+                env->gpr[LINX_REG_A7], env->tq[0], env->tq[1],
+                env->tq[2], env->tq[3], env->uq[0], env->uq[1],
+                env->uq[2], env->uq[3], trace_bytes_rc,
+                trace_bytes[0], trace_bytes[1], trace_bytes[2],
+                trace_bytes[3], trace_bytes[4], trace_bytes[5],
+                trace_bytes[6], trace_bytes[7],
+                trace_fetch_ok ? 1u : 0u, trace_fetch_pa, trace_fetch_prot,
+                trace_fetch_tlb_size, trace_fetch_cause,
+                trace_store_ok ? 1u : 0u, trace_store_pa, trace_store_prot,
+                trace_store_tlb_size, trace_store_cause,
+                trace_fetch_probe.legacy ? 1u : 0u,
+                trace_fetch_probe.ok ? 1u : 0u,
+                trace_fetch_probe.why ? trace_fetch_probe.why : "null",
+                trace_fetch_probe.level, trace_fetch_probe.desc_addr,
+                trace_fetch_probe.desc, trace_fetch_probe.prot,
+                trace_fetch_probe.pa, trace_fetch_probe.block_size,
+                trace_fetch_probe.cause,
+                trace_store_probe.legacy ? 1u : 0u,
+                trace_store_probe.ok ? 1u : 0u,
+                trace_store_probe.why ? trace_store_probe.why : "null",
+                trace_store_probe.level, trace_store_probe.desc_addr,
+                trace_store_probe.desc, trace_store_probe.prot,
+                trace_store_probe.pa, trace_store_probe.block_size,
+                trace_store_probe.cause);
         fflush(stderr);
     }
 
     linx_acr_save_block_state(env, src_acr);
+    if (src_acr == 2 && report_bpc == tpc &&
+        linx_cpu_is_bstart_at_addr(cs, report_bpc)) {
+        linx_acr_reset_block_state_for_header(env, src_acr, report_bpc);
+    }
     const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
     linx_acr_restore_block_state(env, dst_acr);
 
@@ -1093,16 +1336,27 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         const bool user_data_fault =
             (env->acr & 0xFu) == 2 &&
             exception != LINX_EXCP_INST_ACCESS_FAULT;
+        uint64_t user_fault_bpc = env->bpc;
+        uint64_t user_fault_reported_pc = last_pc;
+        if (user_data_fault && env->insn_pc_next > 0) {
+            /*
+             * Scalar block execution keeps env->pc at the block header while
+             * individual memory ops advance insn_pc_next.  Use the byte before
+             * insn_pc_next to recover the actual faulting payload instruction;
+             * last_pc may name an older header after a fixed-target branch.
+             */
+            user_fault_reported_pc = env->insn_pc_next - 1;
+        }
         const bool user_valid_block_fault =
             user_data_fault &&
-            env->bpc != 0 &&
-            linx_cpu_is_bstart_at_addr(cs, env->bpc) &&
-            env->bpc != last_pc;
+            linx_resolve_user_fault_block(cs, env->bpc, user_fault_reported_pc,
+                                          &user_fault_bpc, &fault_pc) &&
+            user_fault_bpc != fault_pc;
         if (user_valid_block_fault) {
-            fault_pc = linx_containing_insn_start(cs, env->bpc, last_pc);
+            env->bpc = user_fault_bpc;
         }
         const bool user_mid_block_data_fault =
-            user_valid_block_fault && env->bpc != fault_pc;
+            user_valid_block_fault && user_fault_bpc != fault_pc;
         const bool bi = in_body || user_mid_block_data_fault;
         const uint8_t trapnum =
             (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
@@ -1142,12 +1396,27 @@ static void linx_cpu_do_interrupt(CPUState *cs)
          * skip an instruction if the interrupt is recognized between TBs.
          */
         const uint64_t resume_pc = env->pc;
-        const uint64_t resume_bpc = env->bpc ? env->bpc : resume_pc;
+        uint64_t resume_bpc = env->bpc ? env->bpc : resume_pc;
+        /*
+         * A timer IRQ can be recognized after a scalar branch has staged the
+         * next BSTART PC while env->bpc still names the previous block.  Linux
+         * returns through EBARG_BPC_CUR, so preserve a self-consistent user
+         * BSTART boundary instead of resuming with pc and bpc in different
+         * scalar blocks.
+         */
+        const bool user_bstart_resume =
+            src_acr == 2 && linx_cpu_is_bstart_at_addr(cs, resume_pc);
+        if (user_bstart_resume) {
+            resume_bpc = resume_pc;
+        }
 
         uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], src_acr);
         src_cstate |= LINX_ECSTATE_BI_BIT;
 
         linx_acr_save_block_state(env, src_acr);
+        if (user_bstart_resume) {
+            linx_acr_reset_block_state_for_header(env, src_acr, resume_bpc);
+        }
         const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
         linx_acr_restore_block_state(env, dst_acr);
 
@@ -1294,6 +1563,128 @@ static inline uint8_t linx_fault_acc(MMUAccessType access_type)
     }
 }
 
+static LinxLegacyMmuProbe linx_probe_legacy_mmu(CPULinxState *env, vaddr va,
+                                                MMUAccessType access_type,
+                                                int mmu_idx)
+{
+    LinxLegacyMmuProbe probe = {
+        .level = 0,
+        .cause = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PF,
+                                     linx_fault_acc(access_type)),
+        .why = "not-legacy",
+    };
+    const uint64_t tcr = env->ssr_acr[1][LINX_SSR_TCR];
+    const uint64_t legacy_mmconfig = env->ssr_acr[1][LINX_SSR_TTBR1];
+    const bool legacy_mmu =
+        tcr == 0 && (legacy_mmconfig & LINX_LEGACY_MMCONFIG_ENABLE_BIT) != 0;
+    const uint8_t acc = linx_fault_acc(access_type);
+
+    if (!legacy_mmu) {
+        return probe;
+    }
+
+    probe.legacy = true;
+    const bool qpte = (legacy_mmconfig & LINX_LEGACY_MMCONFIG_Q_BIT) != 0;
+    const unsigned mode =
+        (unsigned)(legacy_mmconfig & LINX_LEGACY_MMCONFIG_MODE_MASK);
+    const unsigned levels = 3u + mode;
+    const unsigned va_bits = qpte ? (36u + mode * 8u) : (39u + mode * 9u);
+
+    if (qpte || levels < 3u || levels > 5u ||
+        !linx_va_is_canonical_width(va, va_bits)) {
+        probe.why = "bad-config-or-canonical";
+        return probe;
+    }
+
+    hwaddr table =
+        (hwaddr)LINX_LEGACY_MMTBASE_TO_PA(env->ssr_acr[1][LINX_SSR_TTBR0]);
+    for (unsigned level = 0; level < levels; level++) {
+        const unsigned shift = 12u + 9u * (levels - 1u - level);
+        const uint64_t idx = (((uint64_t)va) >> shift) & 0x1ffu;
+        const hwaddr desc_addr = table + (hwaddr)(idx * 8u);
+        MemTxResult result = MEMTX_OK;
+        const uint64_t desc =
+            address_space_ldq_le(&address_space_memory, desc_addr,
+                                 MEMTXATTRS_UNSPECIFIED, &result);
+
+        probe.level = level;
+        probe.desc_addr = desc_addr;
+        probe.desc = desc;
+        if (result != MEMTX_OK) {
+            probe.why = "desc-read";
+            return probe;
+        }
+
+        if ((desc & LINX_LEGACY_PTE_V) == 0) {
+            probe.why = "type0";
+            return probe;
+        }
+
+        const bool is_leaf = (desc & LINX_LEGACY_PTE_LEAF_MASK) != 0;
+        if (!is_leaf) {
+            if ((desc & 0xffeULL) != 0) {
+                probe.why = "bad-table-desc";
+                return probe;
+            }
+            table = (hwaddr)(((uint64_t)(desc >> 32)) << 12);
+            continue;
+        }
+
+        if (level == 0) {
+            probe.why = "leaf-at-l0";
+            return probe;
+        }
+
+        const hwaddr block_size = (hwaddr)1ull << shift;
+        const hwaddr out_base = (hwaddr)(((uint64_t)(desc >> 32)) << 12);
+        const bool u = (desc & LINX_LEGACY_PTE_U) != 0;
+        const bool x = (desc & LINX_LEGACY_PTE_X) != 0;
+        const bool w = (desc & LINX_LEGACY_PTE_W) != 0;
+        const bool r = (desc & LINX_LEGACY_PTE_R) != 0;
+
+        probe.block_size = block_size;
+        if (r) {
+            probe.prot |= PAGE_READ;
+        }
+        if (w) {
+            probe.prot |= PAGE_WRITE;
+        }
+        if (x) {
+            probe.prot |= PAGE_EXEC;
+        }
+
+        if ((out_base & (block_size - 1u)) != 0) {
+            probe.why = "bad-leaf-desc";
+            return probe;
+        }
+
+        if ((mmu_idx == 1 && !u) ||
+            (access_type == MMU_INST_FETCH && !x) ||
+            (access_type == MMU_DATA_LOAD && !r) ||
+            (access_type == MMU_DATA_STORE && !w)) {
+            probe.cause = linx_trapcause_make(LINX_TRAPCAUSE_CAT_MMU_PERM,
+                                              acc);
+            probe.why = "perm";
+            return probe;
+        }
+
+        probe.pa =
+            out_base | (hwaddr)((uint64_t)va & (uint64_t)(block_size - 1u));
+        if (((uint64_t)probe.pa >> 48) != 0) {
+            probe.why = "pa-range";
+            return probe;
+        }
+
+        probe.ok = true;
+        probe.cause = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
+        probe.why = "ok";
+        return probe;
+    }
+
+    probe.why = "walk-fell-through";
+    return probe;
+}
+
 static inline bool linx_debug_fetch_va(vaddr va)
 {
     const uint64_t low = ((uint64_t)va) & 0xfffffu;
@@ -1419,7 +1810,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
                 LEGACY_FETCH_FAULT("bad-leaf-desc", desc_addr, level, desc);
             }
             if ((mmu_idx == 1 && !u) ||
-                (access_type == MMU_INST_FETCH && !(x || r)) ||
+                (access_type == MMU_INST_FETCH && !x) ||
                 (access_type == MMU_DATA_LOAD && !r) ||
                 (access_type == MMU_DATA_STORE && !w)) {
                 if (access_type == MMU_INST_FETCH &&
@@ -1697,6 +2088,27 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 
     if (probe) {
         return false;
+    }
+
+    if (linx_fault_trace_tlb_matches(env, (uint64_t)addr)) {
+        fprintf(stderr,
+                "LINX_TLB_FAULT_TRACE count=%" PRIu64
+                " pc=0x%" PRIx64 " va=0x%" VADDR_PRIx
+                " access=%d cause=0x%x mmu=%d probe=%d"
+                " acr=%u bpc=0x%" PRIx64
+                " body_tpc=0x%" PRIx64 " insn_next=0x%" PRIx64
+                " in_body=%u brtype=%u tgt=0x%" PRIx64
+                " cstate=0x%" PRIx64
+                " tcr=0x%" PRIx64 " ttbr0=0x%" PRIx64
+                " ttbr1=0x%" PRIx64 "\n",
+                env->insn_count, env->pc, addr, access_type, cause, mmu_idx,
+                probe ? 1 : 0, (unsigned)(env->acr & 0xFu), env->bpc,
+                env->body_tpc, env->insn_pc_next, env->in_body,
+                env->brtype, env->tgt, env->ssr[LINX_SSR_CSTATE],
+                env->ssr_acr[1][LINX_SSR_TCR],
+                env->ssr_acr[1][LINX_SSR_TTBR0],
+                env->ssr_acr[1][LINX_SSR_TTBR1]);
+        fflush(stderr);
     }
 
     if (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) {

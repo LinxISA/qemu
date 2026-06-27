@@ -638,6 +638,22 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     }
 }
 
+static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
+                                                         uint32_t acr,
+                                                         uint64_t bpc)
+{
+    LinxAcrBlockState *s;
+
+    if (acr >= LINX_ACR_COUNT) {
+        return;
+    }
+
+    s = &env->acr_block_state[acr];
+    memset(s, 0, sizeof(*s));
+    s->bpc = bpc;
+    s->tile_dtype = 17; /* INT32 default in v0.3 DataType. */
+}
+
 static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
 {
     const LinxAcrBlockState *s;
