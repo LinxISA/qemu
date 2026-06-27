@@ -84,6 +84,8 @@ static uint64_t linx_call_trace_limit;
 static uint64_t linx_call_trace_emitted;
 static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
+static bool linx_bstart_cache_revalidate_inited;
+static bool linx_bstart_cache_revalidate_enabled;
 
 enum {
     LINX_CALL_TRACE_SETRET = 1,
@@ -710,6 +712,16 @@ static inline bool linx_cfi_trace_enabled_p(void)
         linx_cfi_trace_inited = true;
     }
     return linx_cfi_trace_enabled;
+}
+
+static inline bool linx_bstart_cache_revalidate_enabled_p(void)
+{
+    if (!linx_bstart_cache_revalidate_inited) {
+        linx_bstart_cache_revalidate_enabled =
+            linx_env_enabled("LINX_BSTART_CACHE_REVALIDATE");
+        linx_bstart_cache_revalidate_inited = true;
+    }
+    return linx_bstart_cache_revalidate_enabled;
 }
 
 static inline bool linx_ssr_idx_is_debug(uint32_t idx)
@@ -8571,30 +8583,27 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
         return;
     }
 
-    if (linx_is_call_fallthrough_target(env, env->pc, target)) {
-        return;
-    }
-
     /*
      * This helper is on the hot path for indirect control flow (RET/IND/ICALL
      * and template returns). Cache the most recently-validated targets to avoid
      * re-reading guest memory for tight call/return loops.
      *
-     * Note: This cache is conservative for typical bare-metal workloads (code
-     * is not self-modifying). If guest code changes, TB invalidation will
-     * naturally trigger re-translation, but this cache may still accept a
-     * previously-validated address until reset.
+     * MMU programming, TLB invalidation, CSTATE/ACR switches, and ACRE/trap
+     * transitions reset this cache. Self-modifying-code debug can opt back into
+     * old revalidate-on-hit behavior with LINX_BSTART_CACHE_REVALIDATE=1.
      */
     if (env->bstart_cache_valid[slot] && env->bstart_cache_tag[slot] == target) {
-        /*
-         * Re-validate on cache hit to avoid stale positives after guest text
-         * patching or mapping changes that are not synchronized with this
-         * target-level cache.
-         */
+        if (!linx_bstart_cache_revalidate_enabled_p()) {
+            return;
+        }
         if (linx_is_bstart_at_addr(env, target)) {
             return;
         }
         env->bstart_cache_valid[slot] = 0;
+    }
+
+    if (linx_is_call_fallthrough_target(env, env->pc, target)) {
+        return;
     }
 
     if (linx_is_bstart_at_addr(env, target)) {
