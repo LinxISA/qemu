@@ -45,6 +45,7 @@ static inline void linx_bstart_cache_reset(CPULinxState *env)
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
 static bool linx_parse_u64(const char *s, uint64_t *out);
 static inline bool linx_env_enabled(const char *name);
+static inline uint32_t linx_ssr_low12(uint32_t ssrid);
 static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
                                         unsigned count, const char *label);
 
@@ -82,6 +83,12 @@ static uint64_t linx_heartbeat_last_pc;
 static uint64_t linx_heartbeat_last_bpc;
 static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
+static bool linx_tp_trace_inited;
+static bool linx_tp_trace_enabled;
+static bool linx_tp_trace_ssr_enabled;
+static bool linx_tp_trace_reads_enabled;
+static uint64_t linx_tp_trace_limit;
+static uint64_t linx_tp_trace_emitted;
 static bool linx_call_trace_inited;
 static bool linx_call_trace_enabled;
 static bool linx_call_trace_filter_enabled;
@@ -282,10 +289,16 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
         return;
     }
 
-    if (have_previous &&
+    const bool same_site =
+        have_previous &&
         pc == linx_heartbeat_last_pc &&
         env->bpc == linx_heartbeat_last_bpc &&
-        env->body_tpc == linx_heartbeat_last_tpc) {
+        env->body_tpc == linx_heartbeat_last_tpc;
+    const char *progress =
+        !have_previous ? "first" :
+        same_site ? "same-site" : "site-change";
+
+    if (same_site) {
         linx_heartbeat_same_site_repeats++;
     } else {
         linx_heartbeat_same_site_repeats = 0;
@@ -309,9 +322,12 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " envpc=0x%" PRIx64
             " acr=%u cstate=0x%" PRIx64
             " brtype=%u tgt=0x%" PRIx64
-            " in_body=%u same_site=%" PRIu64
+            " in_body=%u progress=%s same_site=%" PRIu64
             " sp=0x%" PRIx64
             " ra=0x%" PRIx64
+            " tp=0x%" PRIx64
+            " etemp1=0x%" PRIx64
+            " etemp0_1=0x%" PRIx64
             " a0=0x%" PRIx64
             " a1=0x%" PRIx64
             "\n",
@@ -319,8 +335,10 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->insn_count, delta, pc, env->bpc, env->body_tpc,
             env->pc, env->acr & 0xFu, env->ssr[0x20],
             env->brtype, env->tgt, env->in_body,
-            linx_heartbeat_same_site_repeats,
+            progress, linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->ssr[0x0000], env->ssr_acr[1][0xF05],
+            env->ssr_acr[1][0xF06],
             env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
     fflush(stderr);
 }
@@ -1493,6 +1511,127 @@ enum {
 enum {
     LINX_IRQ_TIMER0 = 4,
 };
+
+static void linx_tp_trace_init(void)
+{
+    if (linx_tp_trace_inited) {
+        return;
+    }
+
+    linx_tp_trace_enabled = linx_env_enabled("LINX_TP_TRACE");
+    linx_tp_trace_ssr_enabled = linx_env_enabled("LINX_TP_TRACE_SSR");
+    linx_tp_trace_reads_enabled = linx_env_enabled("LINX_TP_TRACE_READS");
+
+    const char *limit_s = getenv("LINX_TP_TRACE_LIMIT");
+    if (limit_s) {
+        (void)linx_parse_u64(limit_s, &linx_tp_trace_limit);
+    }
+
+    linx_tp_trace_inited = true;
+}
+
+static bool linx_tp_trace_enabled_p(void)
+{
+    linx_tp_trace_init();
+    if (!linx_tp_trace_enabled) {
+        return false;
+    }
+    if (linx_tp_trace_limit != 0 &&
+        linx_tp_trace_emitted >= linx_tp_trace_limit) {
+        return false;
+    }
+    return true;
+}
+
+static bool linx_tp_trace_interesting_idx(uint32_t idx)
+{
+    return idx == LINX_SSR_TP ||
+           idx == LINX_SSR_ETEMP ||
+           idx == LINX_SSR_ETEMP0;
+}
+
+static const char *linx_tp_trace_ssr_name(uint32_t idx)
+{
+    switch (idx) {
+    case LINX_SSR_TP:
+        return "TP";
+    case LINX_SSR_ETEMP:
+        return "ETEMP";
+    case LINX_SSR_ETEMP0:
+        return "ETEMP0";
+    default:
+        return "unknown";
+    }
+}
+
+static void linx_tp_trace_emit(CPULinxState *env, const char *event,
+                               uint32_t ssrid, uint32_t bank,
+                               uint64_t old_value, uint64_t new_value)
+{
+    const uint32_t idx = linx_ssr_low12(ssrid);
+
+    if (!linx_tp_trace_interesting_idx(idx) || !linx_tp_trace_enabled_p()) {
+        return;
+    }
+    if (!linx_tp_trace_ssr_enabled && strcmp(event, "ssr_read") != 0) {
+        return;
+    }
+
+    linx_tp_trace_emitted++;
+    fprintf(stderr,
+            "LINX_TP_TRACE event=%s seq=%" PRIu64
+            " count=%" PRIu64
+            " pc=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64 " acr=%u cstate=0x%" PRIx64
+            " ssrid=0x%x idx=0x%x name=%s bank=%u"
+            " old=0x%" PRIx64 " new=0x%" PRIx64
+            " tp=0x%" PRIx64 " etemp1=0x%" PRIx64
+            " etemp0_1=0x%" PRIx64
+            " sp=0x%" PRIx64 " ra=0x%" PRIx64
+            " a0=0x%" PRIx64 " a1=0x%" PRIx64 "\n",
+            event, linx_tp_trace_emitted,
+            env->insn_count, env->pc, env->bpc, env->body_tpc,
+            env->pc, env->acr & 0xFu, env->ssr[LINX_SSR_CSTATE],
+            ssrid, idx, linx_tp_trace_ssr_name(idx), bank,
+            old_value, new_value, env->ssr[LINX_SSR_TP],
+            env->ssr_acr[1][LINX_SSR_ETEMP],
+            env->ssr_acr[1][LINX_SSR_ETEMP0],
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+    fflush(stderr);
+}
+
+static void linx_tp_trace_emit_handoff(CPULinxState *env, const char *event,
+                                       uint32_t src_acr, uint32_t dst_acr,
+                                       uint64_t user_tp,
+                                       uint64_t thread_info)
+{
+    if (!linx_tp_trace_enabled_p()) {
+        return;
+    }
+
+    linx_tp_trace_emitted++;
+    fprintf(stderr,
+            "LINX_TP_TRACE event=%s seq=%" PRIu64
+            " count=%" PRIu64
+            " pc=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64 " src_acr=%u dst_acr=%u"
+            " acr=%u cstate=0x%" PRIx64
+            " user_tp=0x%" PRIx64 " thread_info=0x%" PRIx64
+            " tp=0x%" PRIx64 " etemp1=0x%" PRIx64
+            " etemp0_1=0x%" PRIx64
+            " sp=0x%" PRIx64 " ra=0x%" PRIx64
+            " a0=0x%" PRIx64 " a1=0x%" PRIx64 "\n",
+            event, linx_tp_trace_emitted,
+            env->insn_count, env->pc, env->bpc, env->body_tpc,
+            env->pc, src_acr, dst_acr, env->acr & 0xFu,
+            env->ssr[LINX_SSR_CSTATE], user_tp, thread_info,
+            env->ssr[LINX_SSR_TP], env->ssr_acr[1][LINX_SSR_ETEMP],
+            env->ssr_acr[1][LINX_SSR_ETEMP0],
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+    fflush(stderr);
+}
 
 #define LINX_LEGACY_MMCONFIG_MODE_MASK  UINT64_C(0x3)
 #define LINX_LEGACY_MMCONFIG_Q_BIT      (UINT64_C(1) << 7)
@@ -3077,6 +3216,10 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
                       "Linx ssr read pc=0x%" PRIx64 " ssrid=0x%x bank=%u val=0x%" PRIx64 "\n",
                       env->pc, ssrid, bank, value);
     }
+    linx_tp_trace_init();
+    if (linx_tp_trace_reads_enabled) {
+        linx_tp_trace_emit(env, "ssr_read", ssrid, bank, 0, value);
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10c40) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -3413,12 +3556,16 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                 }
             }
 
+            linx_tp_trace_emit(env, "ssr_write", ssrid, bank,
+                               env->ssr_acr[bank][idx], value);
             env->ssr_acr[bank][idx] = value;
             if (linx_ssr_idx_is_debug(idx)) {
                 linx_refresh_tb_dbg_active(env);
             }
             return;
         }
+        linx_tp_trace_emit(env, "ssr_write", ssrid, bank,
+                           env->ssr[idx], value);
         env->ssr[idx] = value;
         return;
     }
@@ -3445,6 +3592,7 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
                       env->pc, ssrid, bank, old, value,
                       env->ssr[LINX_SSR_TP], env->acr & 0xFu);
     }
+    linx_tp_trace_emit(env, "ssr_swap", ssrid, bank, old, value);
     HELPER(linx_ssr_write)(env, ssrid, value);
     return old;
 }
@@ -3688,6 +3836,8 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
 
         env->ssr[LINX_SSR_TP] = thread_info;
         env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+        linx_tp_trace_emit_handoff(env, "service_user_to_kernel",
+                                   src_acr, dst_acr, user_tp, thread_info);
     }
 
     /* Disable interrupts and switch to managing ring, then vector to EVBASE. */
@@ -3847,6 +3997,9 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
                                              resume_bpc, resume_tpc,
                                              resume_pc);
     }
+    linx_tp_trace_emit_handoff(env, "acre_staged", mgr, target,
+                               env->ssr[LINX_SSR_TP],
+                               env->ssr_acr[target][LINX_SSR_ETEMP]);
     if (linx_debug_acre_stderr_enabled_p()) {
         fprintf(stderr,
                 "linx_acre_enter: staged target=%u cstate=0x%" PRIx64

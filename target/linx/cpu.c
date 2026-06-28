@@ -50,6 +50,10 @@ static bool linx_tlb_fault_trace_inited;
 static bool linx_tlb_fault_trace_enabled;
 static uint64_t linx_tlb_fault_trace_limit;
 static uint64_t linx_tlb_fault_trace_emitted;
+static bool linx_tp_trace_inited;
+static bool linx_tp_trace_enabled;
+static uint64_t linx_tp_trace_limit;
+static uint64_t linx_tp_trace_emitted;
 
 typedef struct LinxLegacyMmuProbe {
     bool legacy;
@@ -379,6 +383,69 @@ enum {
 
 /* ECSTATE bits (v0.2 bring-up profile; mirrors key CSTATE fields). */
 #define LINX_ECSTATE_BI_BIT        (1ULL << 62)
+
+static void linx_cpu_tp_trace_init(void)
+{
+    if (linx_tp_trace_inited) {
+        return;
+    }
+
+    linx_tp_trace_enabled = linx_cpu_env_enabled("LINX_TP_TRACE");
+
+    const char *limit_s = getenv("LINX_TP_TRACE_LIMIT");
+    if (limit_s) {
+        (void)linx_cpu_parse_u64(limit_s, &linx_tp_trace_limit);
+    }
+
+    linx_tp_trace_inited = true;
+}
+
+static bool linx_cpu_tp_trace_enabled_p(void)
+{
+    linx_cpu_tp_trace_init();
+    if (!linx_tp_trace_enabled) {
+        return false;
+    }
+    if (linx_tp_trace_limit != 0 &&
+        linx_tp_trace_emitted >= linx_tp_trace_limit) {
+        return false;
+    }
+    return true;
+}
+
+static void linx_cpu_tp_trace_emit_handoff(CPULinxState *env,
+                                           const char *event,
+                                           uint32_t src_acr,
+                                           uint32_t dst_acr,
+                                           uint64_t user_tp,
+                                           uint64_t thread_info)
+{
+    if (!linx_cpu_tp_trace_enabled_p()) {
+        return;
+    }
+
+    linx_tp_trace_emitted++;
+    fprintf(stderr,
+            "LINX_TP_TRACE event=%s seq=%" PRIu64
+            " count=%" PRIu64
+            " pc=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64 " src_acr=%u dst_acr=%u"
+            " acr=%u cstate=0x%" PRIx64
+            " user_tp=0x%" PRIx64 " thread_info=0x%" PRIx64
+            " tp=0x%" PRIx64 " etemp1=0x%" PRIx64
+            " etemp0_1=0x%" PRIx64
+            " sp=0x%" PRIx64 " ra=0x%" PRIx64
+            " a0=0x%" PRIx64 " a1=0x%" PRIx64 "\n",
+            event, linx_tp_trace_emitted,
+            env->insn_count, env->pc, env->bpc, env->body_tpc,
+            env->pc, src_acr, dst_acr, env->acr & 0xFu,
+            env->ssr[LINX_SSR_CSTATE], user_tp, thread_info,
+            env->ssr[LINX_SSR_TP], env->ssr_acr[1][LINX_SSR_ETEMP],
+            env->ssr_acr[1][LINX_SSR_ETEMP0],
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+    fflush(stderr);
+}
 
 /* TRAPNO encoding (v0.2 bring-up profile). */
 #define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=exception, 0=interrupt */
@@ -1254,6 +1321,9 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
          */
         env->ssr[LINX_SSR_TP] = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
         env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+        linx_cpu_tp_trace_emit_handoff(env, "sync_user_to_kernel",
+                                       src_acr, dst_acr, user_tp,
+                                       env->ssr_acr[dst_acr][LINX_SSR_ETEMP]);
     }
     env->ssr[LINX_SSR_CSTATE] =
         linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
@@ -1526,6 +1596,9 @@ static void linx_cpu_do_interrupt(CPUState *cs)
 
             env->ssr[LINX_SSR_TP] = thread_info;
             env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+            linx_cpu_tp_trace_emit_handoff(env, "irq_user_to_kernel",
+                                           src_acr, dst_acr, user_tp,
+                                           thread_info);
         }
 
         /* Switch to managing ring and vector. */
