@@ -639,6 +639,217 @@ static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
     return true;
 }
 
+static bool linx_setret_info_at_pc(CPULinxState *env, vaddr pc,
+                                   unsigned *len_out, vaddr *target_out)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+    uint16_t hw;
+    unsigned len;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+
+    if (len == 2) {
+        if ((hw & 0xf83f) != 0x5016) {
+            return false;
+        }
+        *len_out = len;
+        *target_out = pc + (((vaddr)((hw >> 6) & 0x1f)) << 1);
+        return true;
+    }
+
+    if (len == 4) {
+        uint32_t insn;
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        insn = ldl_le_p(buf);
+        if ((insn & 0xfffu) != 0x507u) {
+            return false;
+        }
+        *len_out = len;
+        *target_out = pc + (((vaddr)(insn >> 12)) << 1);
+        return true;
+    }
+
+    if (len == 6) {
+        uint64_t insn48;
+        uint64_t imm;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+        if ((lduw_le_p(buf) & 0xf) != 0xe) {
+            return false;
+        }
+        insn48 = (uint64_t)lduw_le_p(buf) |
+                 ((uint64_t)ldl_le_p(buf + 2) << 16);
+        if ((insn48 & UINT64_C(0x00000fff000f)) !=
+            UINT64_C(0x00000507000e)) {
+            return false;
+        }
+        *len_out = len;
+        imm = ((insn48 >> 4) & UINT64_C(0xfff)) |
+              (((insn48 >> 28) & UINT64_C(0xfffff)) << 12);
+        *target_out = pc + ((vaddr)imm << 1);
+        return true;
+    }
+
+    return false;
+}
+
+static bool linx_direct_bstart_target_at_pc(CPULinxState *env, vaddr pc,
+                                            vaddr *target_out)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[4];
+    uint16_t hw;
+    unsigned len;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+
+    if (len == 2) {
+        if ((hw & 0x000f) != 0x0002) {
+            return false;
+        }
+        *target_out = pc + (((vaddr)sextract32(hw, 4, 12)) << 1);
+        return true;
+    }
+
+    if (len == 4) {
+        uint32_t insn;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        insn = ldl_le_p(buf);
+        if ((insn & 0x7fu) != 0x11u) {
+            return false;
+        }
+        *target_out = pc + (((vaddr)sextract32(insn, 7, 25)) << 1);
+        return true;
+    }
+
+    return false;
+}
+
+static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
+                                           unsigned *len_out)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[8];
+    uint16_t hw;
+    unsigned len;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+
+    if (len == 2) {
+        if (hw == 0x2000 || hw == 0x3000) {
+            *len_out = len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 4) {
+        uint32_t insn;
+        uint32_t brtype;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        insn = ldl_le_p(buf);
+        brtype = (insn >> 12) & 0x7u;
+        if ((insn & 0xffu) == 0x01u &&
+            (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
+            *len_out = len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 6) {
+        uint32_t main32;
+        uint32_t brtype;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+            return false;
+        }
+        if ((lduw_le_p(buf) & 0xf) != 0xe) {
+            return false;
+        }
+        main32 = ldl_le_p(buf + 2);
+        brtype = (main32 >> 12) & 0x7u;
+        if ((main32 & 0xffu) == 0x01u &&
+            (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
+            *len_out = len;
+            return true;
+        }
+        return false;
+    }
+
+    if (len == 8) {
+        uint32_t main32;
+        uint32_t brtype;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
+            return false;
+        }
+        main32 = ldl_le_p(buf + 4);
+        brtype = (main32 >> 12) & 0x7u;
+        if ((main32 & 0x7fu) == 0x01u &&
+            (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
+            *len_out = len;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool linx_predicated_fall_accept_call_skip(CPULinxState *env, vaddr pc,
+                                                  unsigned len, vaddr *skip_pc)
+{
+    vaddr next_pc = pc + len;
+    unsigned setret_len = 0;
+    vaddr setret_target = 0;
+    vaddr direct_target = 0;
+
+    /*
+     * A skipped CALL/ICALL must not enter either the callee or the call-return
+     * body.  SETRET gives the return continuation; LLVM commonly places a
+     * direct block there to jump to the join block after a conditional call
+     * body.  In that shape, the direct target is the semantic skip target.
+     */
+    if (linx_setret_info_at_pc(env, next_pc, &setret_len, &setret_target)) {
+        if (linx_direct_bstart_target_at_pc(env, setret_target,
+                                           &direct_target)) {
+            *skip_pc = direct_target;
+            return true;
+        }
+        *skip_pc = setret_target;
+        return true;
+    }
+
+    *skip_pc = next_pc;
+    return true;
+}
+
 static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
                                              vaddr *skip_pc)
 {
@@ -653,6 +864,14 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
 
     hw = lduw_le_p(buf);
     len = linx_insn_len(hw);
+
+    {
+        unsigned call_len = 0;
+        if (linx_is_call_like_bstart_at_pc(env, pc, &call_len)) {
+            return linx_predicated_fall_accept_call_skip(env, pc, call_len,
+                                                        skip_pc);
+        }
+    }
 
     if (len == 2) {
         if ((hw & 0x000f) == 0x0002 ||
