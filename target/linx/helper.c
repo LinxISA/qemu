@@ -48,6 +48,9 @@ static inline bool linx_env_enabled(const char *name);
 static inline uint32_t linx_ssr_low12(uint32_t ssrid);
 static bool linx_debug_read_guest_u64(CPULinxState *env, uint64_t addr,
                                       uint64_t *value);
+static void linx_debug_dump_guest_units(CPULinxState *env, uint64_t addr,
+                                        unsigned count, const char *label,
+                                        unsigned width);
 static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
                                         unsigned count, const char *label);
 
@@ -83,6 +86,7 @@ static unsigned linx_debug_pc_watch_match_gpr;
 static uint64_t linx_debug_pc_watch_match_value;
 static uint64_t linx_debug_pc_watch_match_mask = UINT64_MAX;
 static unsigned linx_debug_pc_watch_dump_words;
+static unsigned linx_debug_pc_watch_dump_width = 8;
 static uint64_t linx_debug_pc_watch_dump_offset;
 static unsigned linx_debug_pc_watch_dump_offset_count;
 static uint64_t linx_debug_pc_watch_dump_offsets[LINX_DEBUG_PC_WATCH_DUMP_OFFSET_MAX];
@@ -521,9 +525,10 @@ static void linx_debug_pc_watch_dump_words_for_source(CPULinxState *env,
         g_snprintf(label, sizeof(label), "  %s%u+0x%" PRIx64,
                    name, index, offset);
     }
-    linx_debug_dump_guest_words(env, addr,
+    linx_debug_dump_guest_units(env, addr,
                                 linx_debug_pc_watch_dump_words,
-                                label);
+                                label,
+                                linx_debug_pc_watch_dump_width);
 }
 
 static void linx_debug_pc_watch_dump_words_for_source_offsets(
@@ -1838,6 +1843,15 @@ static void linx_debug_pc_watch_init(void)
         }
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_WIDTH");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t width;
+        if (linx_parse_u64(v, &width) &&
+            (width == 1 || width == 2 || width == 4 || width == 8)) {
+            linx_debug_pc_watch_dump_width = width;
+        }
+    }
+
     v = getenv("LINX_DEBUG_PC_WATCH_DUMP_OFFSET");
     if (v && v[0] && strcmp(v, "0") != 0) {
         uint64_t offset;
@@ -2191,32 +2205,76 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
     }
 }
 
-static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
-                                        unsigned count, const char *label)
+static void linx_debug_dump_guest_units(CPULinxState *env, uint64_t addr,
+                                        unsigned count, const char *label,
+                                        unsigned width)
 {
     CPUState *cs = env_cpu(env);
     unsigned i;
 
+    if (width != 1 && width != 2 && width != 4 && width != 8) {
+        width = 8;
+    }
+
     fprintf(stderr, "%s @0x%" PRIx64, label, addr);
+    if (width != 8) {
+        fprintf(stderr, " width=%u", width);
+    }
     for (i = 0; i < count; i++) {
-        uint64_t word = 0;
-        uint64_t cur = addr + (uint64_t)i * 8;
-        if (cpu_memory_rw_debug(cs, cur, (uint8_t *)&word, sizeof(word), 0) != 0) {
+        uint64_t value = 0;
+        uint64_t cur = addr + (uint64_t)i * width;
+        if (cpu_memory_rw_debug(cs, cur, (uint8_t *)&value, width, 0) != 0) {
             if ((cur >> 48) == 0xff60u || (cur >> 48) == 0xff80u ||
                 (cur >> 48) == 0xffffu) {
                 const uint64_t low_alias = cur & UINT64_C(0x7fffffff);
-                if (cpu_memory_rw_debug(cs, low_alias, (uint8_t *)&word,
-                                        sizeof(word), 0) == 0) {
-                    fprintf(stderr, " [%" PRIu32 "]=0x%016" PRIx64 "*", i, word);
+                if (cpu_memory_rw_debug(cs, low_alias, (uint8_t *)&value,
+                                        width, 0) == 0) {
+                    switch (width) {
+                    case 1:
+                        fprintf(stderr, " [%" PRIu32 "]=0x%02" PRIx64 "*",
+                                i, value);
+                        break;
+                    case 2:
+                        fprintf(stderr, " [%" PRIu32 "]=0x%04" PRIx64 "*",
+                                i, value);
+                        break;
+                    case 4:
+                        fprintf(stderr, " [%" PRIu32 "]=0x%08" PRIx64 "*",
+                                i, value);
+                        break;
+                    default:
+                        fprintf(stderr, " [%" PRIu32 "]=0x%016" PRIx64 "*",
+                                i, value);
+                        break;
+                    }
                     continue;
                 }
             }
             fprintf(stderr, " [%" PRIu32 "]=<fault>", i);
             break;
         }
-        fprintf(stderr, " [%" PRIu32 "]=0x%016" PRIx64, i, word);
+        switch (width) {
+        case 1:
+            fprintf(stderr, " [%" PRIu32 "]=0x%02" PRIx64, i, value);
+            break;
+        case 2:
+            fprintf(stderr, " [%" PRIu32 "]=0x%04" PRIx64, i, value);
+            break;
+        case 4:
+            fprintf(stderr, " [%" PRIu32 "]=0x%08" PRIx64, i, value);
+            break;
+        default:
+            fprintf(stderr, " [%" PRIu32 "]=0x%016" PRIx64, i, value);
+            break;
+        }
     }
     fprintf(stderr, "\n");
+}
+
+static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
+                                        unsigned count, const char *label)
+{
+    linx_debug_dump_guest_units(env, addr, count, label, 8);
 }
 
 static void linx_debug_work_grab_probe(CPULinxState *env, uint64_t pc)
