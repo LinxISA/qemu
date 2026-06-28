@@ -130,6 +130,9 @@ static uint64_t linx_syscall_trace_pc_hi;
 static bool linx_syscall_trace_strings_enabled;
 static bool linx_syscall_trace_regs_enabled;
 static uint64_t linx_syscall_trace_string_max = 96;
+static bool linx_syscall_trace_dump_arg_enabled;
+static unsigned linx_syscall_trace_dump_arg;
+static uint64_t linx_syscall_trace_dump_bytes;
 static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
 static bool linx_bstart_cache_revalidate_inited;
@@ -812,6 +815,28 @@ static void linx_syscall_trace_init(void)
         linx_syscall_trace_string_max = 255;
     }
 
+    const char *dump_arg_s = getenv("LINX_SYSCALL_TRACE_DUMP_ARG");
+    if (dump_arg_s && dump_arg_s[0]) {
+        uint64_t arg = 0;
+        if (linx_parse_u64(dump_arg_s, &arg) && arg < 6) {
+            linx_syscall_trace_dump_arg_enabled = true;
+            linx_syscall_trace_dump_arg = (unsigned)arg;
+        }
+    }
+
+    const char *dump_bytes_s = getenv("LINX_SYSCALL_TRACE_DUMP_BYTES");
+    if (dump_bytes_s && dump_bytes_s[0] &&
+        strcmp(dump_bytes_s, "0") != 0) {
+        uint64_t bytes = 0;
+        if (linx_parse_u64(dump_bytes_s, &bytes)) {
+            linx_syscall_trace_dump_bytes = MIN((uint64_t)256, bytes);
+        }
+    }
+    if (linx_syscall_trace_dump_arg_enabled &&
+        linx_syscall_trace_dump_bytes == 0) {
+        linx_syscall_trace_dump_bytes = 64;
+    }
+
     linx_syscall_trace_inited = true;
 }
 
@@ -991,6 +1016,48 @@ static void linx_syscall_trace_emit_strings(CPULinxState *env, uint64_t nr,
     }
 }
 
+static void linx_syscall_trace_emit_argdump(CPULinxState *env, uint64_t nr,
+                                            uint64_t bpc, uint64_t tpc,
+                                            uint64_t ret)
+{
+    uint8_t bytes[256] = { 0 };
+    CPUState *cs;
+    uint64_t addr;
+    int rc;
+
+    if (!linx_syscall_trace_dump_arg_enabled ||
+        linx_syscall_trace_dump_bytes == 0) {
+        return;
+    }
+
+    cs = env_cpu(env);
+    addr = env->syscall_trace_args[linx_syscall_trace_dump_arg];
+    rc = cpu_memory_rw_debug(cs, addr, bytes,
+                             linx_syscall_trace_dump_bytes, 0);
+
+    fprintf(stderr,
+            "LINX_SYSCALL_ARGDUMP phase=return nr=%" PRIu64
+            " count=%" PRIu64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " arg=%u"
+            " addr=0x%" PRIx64
+            " bytes=%" PRIu64
+            " rc=%d"
+            " ret=0x%" PRIx64
+            " data=",
+            nr, env->insn_count, bpc, tpc, linx_syscall_trace_dump_arg,
+            addr, linx_syscall_trace_dump_bytes, rc, ret);
+    if (rc == 0) {
+        for (uint64_t i = 0; i < linx_syscall_trace_dump_bytes; i++) {
+            fprintf(stderr, "%02x", bytes[i]);
+        }
+    } else {
+        fputs("<fault>", stderr);
+    }
+    fputc('\n', stderr);
+}
+
 static void linx_syscall_trace_unpaired_maybe_emit(CPULinxState *env,
                                                    uint64_t next_nr,
                                                    uint64_t next_bpc,
@@ -1154,6 +1221,8 @@ static void linx_syscall_trace_return_maybe_emit(CPULinxState *env,
             env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x20]);
+    linx_syscall_trace_emit_argdump(env, nr, bpc, tpc,
+                                    env->gpr[LINX_REG_A0]);
     linx_syscall_trace_emit_regs(env, "return", nr, bpc, tpc);
     env->syscall_trace_pending = 0;
     env->syscall_trace_entry_emitted = 0;
