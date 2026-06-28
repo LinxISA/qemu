@@ -103,6 +103,7 @@ static bool linx_opcode_meta_strict = true;
 static bool linx_pc_sample_enabled;
 static bool linx_heartbeat_enabled;
 static bool linx_call_trace_translate_enabled;
+static bool linx_mem_trace_translate_enabled;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_host_insn_hook_inited;
@@ -3477,6 +3478,19 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
     }
     tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
 
+    if (linx_mem_trace_translate_enabled) {
+        const unsigned size = memop_size(mop);
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_mem_trace_load(tcg_env, tcg_constant_i64(pc), addr64,
+                                       tcg_constant_i32((int32_t)size), out);
+    }
+
     if (linx_commit_trace_enabled) {
         TCGv_i64 addr64;
 #if TARGET_LONG_BITS == 32
@@ -4299,6 +4313,19 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
         tcg_gen_mov_i64(cpu_trace_mem_wdata, val);
         tcg_gen_movi_i64(cpu_trace_mem_rdata, 0);
         tcg_gen_movi_i32(cpu_trace_mem_size, (int32_t)memop_size(mop));
+    }
+
+    if (linx_mem_trace_translate_enabled) {
+        const unsigned size = memop_size(mop);
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_mem_trace_store(tcg_env, tcg_constant_i64(pc), addr64,
+                                        tcg_constant_i32((int32_t)size), val);
     }
 
     linx_lr_invalidate();
@@ -8384,6 +8411,8 @@ void linx_translate_init(void)
     const char *heartbeat_interval = getenv("LINX_HEARTBEAT_INTERVAL");
     const char *qemu_heartbeat_interval = getenv("LINX_QEMU_HEARTBEAT_INTERVAL");
     const char *call_trace = getenv("LINX_CALL_TRACE");
+    const char *call_trace_ring = getenv("LINX_CALL_TRACE_RING");
+    const char *mem_trace_addr = getenv("LINX_MEM_TRACE_ADDR");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -8407,7 +8436,10 @@ void linx_translate_init(void)
         (qemu_heartbeat_interval && qemu_heartbeat_interval[0] &&
          strcmp(qemu_heartbeat_interval, "0") != 0);
     linx_call_trace_translate_enabled =
-        call_trace && call_trace[0] && strcmp(call_trace, "0") != 0;
+        (call_trace && call_trace[0] && strcmp(call_trace, "0") != 0) ||
+        (call_trace_ring && call_trace_ring[0] &&
+         strcmp(call_trace_ring, "0") != 0);
+    linx_mem_trace_translate_enabled = mem_trace_addr && mem_trace_addr[0];
     
     for (i = 0; i < LINX_GPR_COUNT; i++) {
         cpu_gpr[i] = tcg_global_mem_new_i64(tcg_env,

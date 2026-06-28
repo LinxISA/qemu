@@ -408,6 +408,12 @@ typedef struct CPUArchState {
     uint64_t pending_trap_arg0;
     uint32_t pending_trap_cause;
 
+    /* Debug-only syscall trace pairing state. */
+    uint32_t syscall_trace_pending;
+    uint64_t syscall_trace_nr;
+    uint64_t syscall_trace_bpc;
+    uint64_t syscall_trace_tpc;
+
     /*
      * External interrupt line levels per managing ACR (bit-per-IRQ).
      *
@@ -771,6 +777,8 @@ struct LinxCPUClass {
 void linx_translate_init(void);
 void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
+void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
+                                 uint64_t fault_pc);
 
 static inline uint64_t linx_lookup_body_end(const CPULinxState *env,
                                             uint64_t body_tpc)

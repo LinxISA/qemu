@@ -91,10 +91,66 @@ static uint64_t linx_call_trace_count_lo;
 static uint64_t linx_call_trace_count_hi;
 static uint64_t linx_call_trace_limit;
 static uint64_t linx_call_trace_emitted;
+static bool linx_call_trace_ring_enabled;
+static uint64_t linx_call_trace_ring_size;
+static uint64_t linx_call_trace_ring_next;
+static uint64_t linx_call_trace_ring_count;
+static bool linx_mem_trace_inited;
+static bool linx_mem_trace_enabled;
+static uint64_t linx_mem_trace_addr;
+static uint64_t linx_mem_trace_size;
+static uint64_t linx_mem_trace_limit;
+static uint64_t linx_mem_trace_emitted;
+static bool linx_mem_trace_loads = true;
+static bool linx_mem_trace_stores = true;
+static bool linx_mem_trace_pc_filter_enabled;
+static uint64_t linx_mem_trace_pc_lo;
+static uint64_t linx_mem_trace_pc_hi;
+static bool linx_syscall_trace_inited;
+static bool linx_syscall_trace_enabled;
+static bool linx_syscall_trace_nr_filter_enabled;
+static uint64_t linx_syscall_trace_nr;
+static uint64_t linx_syscall_trace_limit;
+static uint64_t linx_syscall_trace_emitted;
+static bool linx_syscall_trace_pc_filter_enabled;
+static uint64_t linx_syscall_trace_pc_lo;
+static uint64_t linx_syscall_trace_pc_hi;
 static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
 static bool linx_bstart_cache_revalidate_inited;
 static bool linx_bstart_cache_revalidate_enabled;
+
+#define LINX_CALL_TRACE_RING_MAX 128
+
+typedef struct LinxCallTraceRingEntry {
+    uint32_t event;
+    uint32_t acr;
+    uint32_t brtype;
+    uint32_t call_ra_set;
+    uint32_t call_setret_pending;
+    uint32_t in_body;
+    uint32_t tmpl_kind;
+    uint32_t tmpl_step;
+    uint64_t pc;
+    uint64_t extra0;
+    uint64_t extra1;
+    uint64_t count;
+    uint64_t envpc;
+    uint64_t bpc;
+    uint64_t tpc;
+    uint64_t cstate;
+    uint64_t tgt;
+    uint64_t ra;
+    uint64_t sp;
+    uint64_t a0;
+    uint64_t a1;
+    uint64_t a2;
+    uint64_t body_tpc;
+    uint64_t return_pc;
+    uint64_t tmpl_pc;
+} LinxCallTraceRingEntry;
+
+static LinxCallTraceRingEntry linx_call_trace_ring[LINX_CALL_TRACE_RING_MAX];
 
 enum {
     LINX_CALL_TRACE_SETRET = 1,
@@ -311,6 +367,21 @@ static void linx_call_trace_init(void)
         (void)linx_parse_u64(limit_s, &linx_call_trace_limit);
     }
 
+    const char *ring_s = getenv("LINX_CALL_TRACE_RING");
+    linx_call_trace_ring_enabled =
+        ring_s && ring_s[0] && strcmp(ring_s, "0") != 0;
+    if (linx_call_trace_ring_enabled) {
+        uint64_t size = 0;
+        const char *size_s = getenv("LINX_CALL_TRACE_RING_SIZE");
+
+        linx_call_trace_ring_size = 64;
+        if (size_s && size_s[0] && strcmp(size_s, "0") != 0 &&
+            linx_parse_u64(size_s, &size)) {
+            linx_call_trace_ring_size = MIN(size, (uint64_t)LINX_CALL_TRACE_RING_MAX);
+            linx_call_trace_ring_size = MAX(linx_call_trace_ring_size, 1);
+        }
+    }
+
     linx_call_trace_inited = true;
 }
 
@@ -324,7 +395,6 @@ static bool linx_call_trace_addr_matches(uint64_t addr)
 static bool linx_call_trace_matches(CPULinxState *env, uint64_t pc,
                                     uint64_t extra0, uint64_t extra1)
 {
-    linx_call_trace_init();
     if (!linx_call_trace_enabled) {
         return false;
     }
@@ -347,10 +417,424 @@ static bool linx_call_trace_matches(CPULinxState *env, uint64_t pc,
     return true;
 }
 
+static void linx_call_trace_ring_record(CPULinxState *env, uint32_t event,
+                                        uint64_t pc, uint64_t extra0,
+                                        uint64_t extra1)
+{
+    LinxCallTraceRingEntry *entry;
+
+    if (!linx_call_trace_ring_enabled) {
+        return;
+    }
+
+    entry = &linx_call_trace_ring[linx_call_trace_ring_next];
+    *entry = (LinxCallTraceRingEntry) {
+        .event = event,
+        .acr = env->acr & 0xFu,
+        .brtype = env->brtype,
+        .call_ra_set = env->call_ra_set,
+        .call_setret_pending = env->call_setret_pending,
+        .in_body = env->in_body,
+        .tmpl_kind = env->tmpl_kind,
+        .tmpl_step = env->tmpl_step,
+        .pc = pc,
+        .extra0 = extra0,
+        .extra1 = extra1,
+        .count = env->insn_count,
+        .envpc = env->pc,
+        .bpc = env->bpc,
+        .tpc = env->body_tpc,
+        .cstate = env->ssr[0x20],
+        .tgt = env->tgt,
+        .ra = env->gpr[LINX_REG_RA],
+        .sp = env->gpr[LINX_REG_SP],
+        .a0 = env->gpr[LINX_REG_A0],
+        .a1 = env->gpr[LINX_REG_A1],
+        .a2 = env->gpr[LINX_REG_A2],
+        .body_tpc = env->body_tpc,
+        .return_pc = env->return_pc,
+        .tmpl_pc = env->tmpl_pc,
+    };
+
+    linx_call_trace_ring_next =
+        (linx_call_trace_ring_next + 1) % linx_call_trace_ring_size;
+    if (linx_call_trace_ring_count < linx_call_trace_ring_size) {
+        linx_call_trace_ring_count++;
+    }
+}
+
+void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
+                                 uint64_t fault_pc)
+{
+    uint64_t entries;
+    uint64_t start;
+
+    linx_call_trace_init();
+    if (!linx_call_trace_ring_enabled || linx_call_trace_ring_count == 0) {
+        return;
+    }
+
+    entries = linx_call_trace_ring_count;
+    start = (linx_call_trace_ring_next + linx_call_trace_ring_size - entries) %
+            linx_call_trace_ring_size;
+    fprintf(stderr,
+            "LINX_CALL_TRACE_RING reason=%s fault_pc=0x%" PRIx64
+            " fault_count=%" PRIu64 " entries=%" PRIu64 "\n",
+            reason ? reason : "unknown", fault_pc, env->insn_count, entries);
+
+    for (uint64_t i = 0; i < entries; i++) {
+        const LinxCallTraceRingEntry *entry =
+            &linx_call_trace_ring[(start + i) % linx_call_trace_ring_size];
+
+        fprintf(stderr,
+                "LINX_CALL_TRACE_RING_ENTRY idx=%" PRIu64
+                " age=%" PRIu64
+                " event=%s pc=0x%" PRIx64
+                " extra0=0x%" PRIx64 " extra1=0x%" PRIx64
+                " count=%" PRIu64
+                " envpc=0x%" PRIx64 " bpc=0x%" PRIx64
+                " tpc=0x%" PRIx64 " acr=%u cstate=0x%" PRIx64
+                " brtype=%u tgt=0x%" PRIx64
+                " ra=0x%" PRIx64 " sp=0x%" PRIx64
+                " a0=0x%" PRIx64 " a1=0x%" PRIx64
+                " a2=0x%" PRIx64
+                " call_ra_set=%u call_setret_pending=%u"
+                " in_body=%u body_tpc=0x%" PRIx64
+                " return_pc=0x%" PRIx64
+                " tmpl_kind=%u tmpl_pc=0x%" PRIx64
+                " tmpl_step=%u\n",
+                i, entries - i - 1, linx_call_trace_event_name(entry->event),
+                entry->pc, entry->extra0, entry->extra1, entry->count,
+                entry->envpc, entry->bpc, entry->tpc, entry->acr,
+                entry->cstate, entry->brtype, entry->tgt, entry->ra,
+                entry->sp, entry->a0, entry->a1, entry->a2,
+                entry->call_ra_set, entry->call_setret_pending,
+                entry->in_body, entry->body_tpc, entry->return_pc,
+                entry->tmpl_kind, entry->tmpl_pc, entry->tmpl_step);
+    }
+    fflush(stderr);
+}
+
+static void linx_mem_trace_init(void)
+{
+    uint64_t value = 0;
+    const char *addr_s;
+    const char *size_s;
+    const char *limit_s;
+    const char *access_s;
+    const char *lo_s;
+    const char *hi_s;
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+
+    if (linx_mem_trace_inited) {
+        return;
+    }
+
+    addr_s = getenv("LINX_MEM_TRACE_ADDR");
+    if (addr_s && addr_s[0] && linx_parse_u64(addr_s, &value)) {
+        linx_mem_trace_addr = value;
+        linx_mem_trace_size = 8;
+        linx_mem_trace_limit = 128;
+        linx_mem_trace_enabled = true;
+    }
+
+    size_s = getenv("LINX_MEM_TRACE_SIZE");
+    if (linx_mem_trace_enabled && size_s && size_s[0] &&
+        strcmp(size_s, "0") != 0 && linx_parse_u64(size_s, &value)) {
+        linx_mem_trace_size = value;
+    }
+    if (linx_mem_trace_size == 0) {
+        linx_mem_trace_size = 1;
+    }
+
+    limit_s = getenv("LINX_MEM_TRACE_LIMIT");
+    if (linx_mem_trace_enabled && limit_s && limit_s[0] &&
+        linx_parse_u64(limit_s, &value)) {
+        linx_mem_trace_limit = value;
+    }
+
+    access_s = getenv("LINX_MEM_TRACE_ACCESS");
+    if (linx_mem_trace_enabled && access_s && access_s[0]) {
+        if (strcmp(access_s, "load") == 0 ||
+            strcmp(access_s, "loads") == 0) {
+            linx_mem_trace_loads = true;
+            linx_mem_trace_stores = false;
+        } else if (strcmp(access_s, "store") == 0 ||
+                   strcmp(access_s, "stores") == 0) {
+            linx_mem_trace_loads = false;
+            linx_mem_trace_stores = true;
+        } else {
+            linx_mem_trace_loads = true;
+            linx_mem_trace_stores = true;
+        }
+    }
+
+    lo_s = getenv("LINX_MEM_TRACE_PC_LO");
+    hi_s = getenv("LINX_MEM_TRACE_PC_HI");
+    if (linx_mem_trace_enabled &&
+        lo_s && lo_s[0] && strcmp(lo_s, "0") != 0 &&
+        hi_s && hi_s[0] && strcmp(hi_s, "0") != 0 &&
+        linx_parse_u64(lo_s, &lo) && linx_parse_u64(hi_s, &hi)) {
+        linx_mem_trace_pc_lo = MIN(lo, hi);
+        linx_mem_trace_pc_hi = MAX(lo, hi);
+        linx_mem_trace_pc_filter_enabled = true;
+    }
+
+    linx_mem_trace_inited = true;
+}
+
+static bool linx_mem_trace_ranges_overlap(uint64_t a, uint64_t a_size,
+                                          uint64_t b, uint64_t b_size)
+{
+    uint64_t a_end;
+    uint64_t b_end;
+
+    if (a_size == 0) {
+        a_size = 1;
+    }
+    if (b_size == 0) {
+        b_size = 1;
+    }
+
+    a_end = a + a_size - 1;
+    b_end = b + b_size - 1;
+    if (a_end < a) {
+        a_end = UINT64_MAX;
+    }
+    if (b_end < b) {
+        b_end = UINT64_MAX;
+    }
+
+    return a <= b_end && b <= a_end;
+}
+
+static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
+                                 uint64_t pc, uint64_t addr, uint32_t size,
+                                 uint64_t value)
+{
+    linx_mem_trace_init();
+    if (!linx_mem_trace_enabled) {
+        return;
+    }
+    if (linx_mem_trace_limit &&
+        linx_mem_trace_emitted >= linx_mem_trace_limit) {
+        return;
+    }
+    if (is_store && !linx_mem_trace_stores) {
+        return;
+    }
+    if (!is_store && !linx_mem_trace_loads) {
+        return;
+    }
+    if (linx_mem_trace_pc_filter_enabled &&
+        (pc < linx_mem_trace_pc_lo || pc > linx_mem_trace_pc_hi)) {
+        return;
+    }
+    if (!linx_mem_trace_ranges_overlap(addr, size,
+                                       linx_mem_trace_addr,
+                                       linx_mem_trace_size)) {
+        return;
+    }
+
+    linx_mem_trace_emitted++;
+    fprintf(stderr,
+            "LINX_MEM_TRACE access=%s pc=0x%" PRIx64
+            " addr=0x%" PRIx64 " size=%u value=0x%" PRIx64
+            " count=%" PRIu64 " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64 " envpc=0x%" PRIx64
+            " acr=%u cstate=0x%" PRIx64
+            " ra=0x%" PRIx64 " sp=0x%" PRIx64
+            " a0=0x%" PRIx64 " a1=0x%" PRIx64
+            " a2=0x%" PRIx64 "\n",
+            is_store ? "store" : "load", pc, addr, size, value,
+            env->insn_count, env->bpc, env->body_tpc, env->pc,
+            (unsigned)(env->acr & 0xFu), env->ssr[0x20],
+            env->gpr[LINX_REG_RA], env->gpr[LINX_REG_SP],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
+            env->gpr[LINX_REG_A2]);
+    fflush(stderr);
+}
+
+void HELPER(linx_mem_trace_load)(CPULinxState *env, uint64_t pc, uint64_t addr,
+                                 uint32_t size, uint64_t value)
+{
+    linx_mem_trace_probe(env, false, pc, addr, size, value);
+}
+
+void HELPER(linx_mem_trace_store)(CPULinxState *env, uint64_t pc, uint64_t addr,
+                                  uint32_t size, uint64_t value)
+{
+    linx_mem_trace_probe(env, true, pc, addr, size, value);
+}
+
+static void linx_syscall_trace_init(void)
+{
+    if (linx_syscall_trace_inited) {
+        return;
+    }
+
+    const char *enabled_s = getenv("LINX_SYSCALL_TRACE");
+    linx_syscall_trace_enabled =
+        enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
+
+    const char *nr_s = getenv("LINX_SYSCALL_TRACE_NR");
+    if (nr_s && nr_s[0] && strcmp(nr_s, "0") != 0 &&
+        linx_parse_u64(nr_s, &linx_syscall_trace_nr)) {
+        linx_syscall_trace_nr_filter_enabled = true;
+    }
+
+    const char *limit_s = getenv("LINX_SYSCALL_TRACE_LIMIT");
+    if (limit_s && limit_s[0] && strcmp(limit_s, "0") != 0) {
+        (void)linx_parse_u64(limit_s, &linx_syscall_trace_limit);
+    }
+
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    const char *lo_s = getenv("LINX_SYSCALL_TRACE_PC_LO");
+    const char *hi_s = getenv("LINX_SYSCALL_TRACE_PC_HI");
+    if (lo_s && lo_s[0] && strcmp(lo_s, "0") != 0 &&
+        hi_s && hi_s[0] && strcmp(hi_s, "0") != 0 &&
+        linx_parse_u64(lo_s, &lo) && linx_parse_u64(hi_s, &hi)) {
+        linx_syscall_trace_pc_lo = MIN(lo, hi);
+        linx_syscall_trace_pc_hi = MAX(lo, hi);
+        linx_syscall_trace_pc_filter_enabled = true;
+    }
+
+    linx_syscall_trace_inited = true;
+}
+
+static void linx_syscall_trace_maybe_emit(CPULinxState *env, uint32_t src_acr,
+                                          uint32_t dst_acr, uint64_t bpc,
+                                          uint64_t tpc, uint64_t pc_next)
+{
+    const uint64_t nr = env->gpr[LINX_REG_A7];
+
+    env->syscall_trace_pending = 1;
+    env->syscall_trace_nr = nr;
+    env->syscall_trace_bpc = bpc;
+    env->syscall_trace_tpc = tpc;
+
+    linx_syscall_trace_init();
+    if (!linx_syscall_trace_enabled) {
+        return;
+    }
+
+    if (linx_syscall_trace_nr_filter_enabled &&
+        nr != linx_syscall_trace_nr) {
+        return;
+    }
+    if (linx_syscall_trace_pc_filter_enabled &&
+        (bpc < linx_syscall_trace_pc_lo || bpc > linx_syscall_trace_pc_hi)) {
+        return;
+    }
+    if (linx_syscall_trace_limit != 0 &&
+        linx_syscall_trace_emitted >= linx_syscall_trace_limit) {
+        return;
+    }
+
+    linx_syscall_trace_emitted++;
+    fprintf(stderr,
+            "LINX_SYSCALL_TRACE nr=%" PRIu64
+            " src_acr=%u dst_acr=%u count=%" PRIu64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " pc_next=0x%" PRIx64
+            " a0=0x%" PRIx64
+            " a1=0x%" PRIx64
+            " a2=0x%" PRIx64
+            " a3=0x%" PRIx64
+            " a4=0x%" PRIx64
+            " a5=0x%" PRIx64
+            " sp=0x%" PRIx64
+            " ra=0x%" PRIx64
+            " cstate=0x%" PRIx64
+            "\n",
+            nr, src_acr, dst_acr, env->insn_count, bpc, tpc, pc_next,
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
+            env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
+            env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->ssr[0x20]);
+    fflush(stderr);
+}
+
+static void linx_syscall_trace_return_maybe_emit(CPULinxState *env,
+                                                 uint32_t mgr,
+                                                 uint32_t target,
+                                                 uint64_t bpc,
+                                                 uint64_t tpc,
+                                                 uint64_t resume_pc)
+{
+    const uint64_t nr = env->syscall_trace_pending ?
+        env->syscall_trace_nr : env->gpr[LINX_REG_A7];
+    const uint64_t entry_bpc = env->syscall_trace_pending ?
+        env->syscall_trace_bpc : bpc;
+    const uint64_t entry_tpc = env->syscall_trace_pending ?
+        env->syscall_trace_tpc : tpc;
+
+    linx_syscall_trace_init();
+    if (!linx_syscall_trace_enabled) {
+        env->syscall_trace_pending = 0;
+        return;
+    }
+
+    if (linx_syscall_trace_nr_filter_enabled &&
+        nr != linx_syscall_trace_nr) {
+        env->syscall_trace_pending = 0;
+        return;
+    }
+    if (linx_syscall_trace_pc_filter_enabled &&
+        (entry_bpc < linx_syscall_trace_pc_lo ||
+         entry_bpc > linx_syscall_trace_pc_hi)) {
+        env->syscall_trace_pending = 0;
+        return;
+    }
+    if (linx_syscall_trace_limit != 0 &&
+        linx_syscall_trace_emitted >= linx_syscall_trace_limit) {
+        env->syscall_trace_pending = 0;
+        return;
+    }
+
+    linx_syscall_trace_emitted++;
+    fprintf(stderr,
+            "LINX_SYSCALL_RETURN nr=%" PRIu64
+            " mgr=%u target=%u count=%" PRIu64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " resume=0x%" PRIx64
+            " entry_bpc=0x%" PRIx64
+            " entry_tpc=0x%" PRIx64
+            " ret=%" PRId64
+            " ret_hex=0x%" PRIx64
+            " a1=0x%" PRIx64
+            " a2=0x%" PRIx64
+            " sp=0x%" PRIx64
+            " ra=0x%" PRIx64
+            " cstate=0x%" PRIx64
+            "\n",
+            nr, mgr, target, env->insn_count, bpc, tpc, resume_pc,
+            entry_bpc, entry_tpc,
+            (int64_t)env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A0],
+            env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->ssr[0x20]);
+    env->syscall_trace_pending = 0;
+    fflush(stderr);
+}
+
 static void linx_call_trace_emit(CPULinxState *env, uint32_t event,
                                  uint64_t pc, uint64_t extra0,
                                  uint64_t extra1)
 {
+    linx_call_trace_init();
+    if (!linx_call_trace_enabled && !linx_call_trace_ring_enabled) {
+        return;
+    }
+    if (linx_call_trace_ring_enabled) {
+        linx_call_trace_ring_record(env, event, pc, extra0, extra1);
+    }
+
     if (!linx_call_trace_matches(env, pc, extra0, extra1)) {
         return;
     }
@@ -1281,12 +1765,6 @@ static void linx_commit_trace_init(CPULinxState *env)
     }
 }
 
-static inline bool linx_commit_trace_active(CPULinxState *env)
-{
-    linx_commit_trace_init(env);
-    return env->commit_trace.enabled && env->commit_trace.fp;
-}
-
 static void linx_minst_trace_init(CPULinxState *env)
 {
     if (env->minst_trace.inited) {
@@ -1348,8 +1826,17 @@ static inline bool linx_minst_trace_active(CPULinxState *env)
 
 static inline bool linx_trace_capture_active(CPULinxState *env)
 {
-    linx_cosim_init(env);
-    return linx_commit_trace_active(env) || linx_minst_trace_active(env) ||
+    if (!env->cosim.inited) {
+        linx_cosim_init(env);
+    }
+    if (!env->commit_trace.inited) {
+        linx_commit_trace_init(env);
+    }
+    if (!env->minst_trace.inited) {
+        linx_minst_trace_init(env);
+    }
+    return (env->commit_trace.enabled && env->commit_trace.fp) ||
+           (env->minst_trace.enabled && env->minst_trace.fp) ||
            env->cosim.active || qemu_loglevel_mask(LOG_LINX_MEM);
 }
 
@@ -2882,6 +3369,10 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
         cpu_loop_exit(cs);
     }
 
+    if (request_type == LINX_SCT_SYS) {
+        linx_syscall_trace_maybe_emit(env, src_acr, dst_acr, bpc, tpc, pc_next);
+    }
+
     /*
      * Preserve block/queue state for the trapped ACR so we can resume the
      * interrupted block after returning via ACRE. Without this, the kernel's
@@ -3088,6 +3579,11 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     env->pc = resume_pc;
     linx_call_trace_emit(env, LINX_CALL_TRACE_ACRE_STAGED, env->pc,
                          resume_bpc, resume_tpc);
+    if (target == 2 && (trapno & 0x3fu) == 16) {
+        linx_syscall_trace_return_maybe_emit(env, mgr, target,
+                                             resume_bpc, resume_tpc,
+                                             resume_pc);
+    }
     if (linx_debug_acre_stderr_enabled_p()) {
         fprintf(stderr,
                 "linx_acre_enter: staged target=%u cstate=0x%" PRIx64

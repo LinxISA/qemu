@@ -1158,6 +1158,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 trace_store_probe.pa, trace_store_probe.block_size,
                 trace_store_probe.cause);
         fflush(stderr);
+        linx_call_trace_dump_recent(env, "fault", tpc);
     }
 
     linx_acr_save_block_state(env, src_acr);
