@@ -66,6 +66,10 @@ static bool linx_debug_pc_watch_inited;
 static unsigned linx_debug_pc_watch_count;
 static uint64_t linx_debug_pc_watch[16];
 static unsigned linx_debug_pc_watch_hits[16];
+static unsigned linx_debug_pc_watch_printed[16];
+static uint64_t linx_debug_pc_watch_count_lo;
+static uint64_t linx_debug_pc_watch_count_hi = UINT64_MAX;
+static uint64_t linx_debug_pc_watch_hit_limit;
 static unsigned linx_debug_pc_watch_dump_a0_words;
 static uint64_t linx_debug_pc_watch_dump_a0_offset;
 static unsigned linx_debug_pc_watch_dump_code_bytes;
@@ -1375,6 +1379,30 @@ static void linx_debug_pc_watch_init(void)
         return;
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_COUNT_LO");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t count;
+        if (linx_parse_u64(v, &count)) {
+            linx_debug_pc_watch_count_lo = count;
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_COUNT_HI");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t count;
+        if (linx_parse_u64(v, &count)) {
+            linx_debug_pc_watch_count_hi = count;
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_HIT_LIMIT");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t limit;
+        if (linx_parse_u64(v, &limit)) {
+            linx_debug_pc_watch_hit_limit = limit;
+        }
+    }
+
     v = getenv("LINX_DEBUG_PC_WATCH_DUMP_A0_WORDS");
     if (v && v[0] && strcmp(v, "0") != 0) {
         uint64_t words;
@@ -1429,8 +1457,18 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
             continue;
         }
         linx_debug_pc_watch_hits[i]++;
+        if (env->insn_count < linx_debug_pc_watch_count_lo ||
+            env->insn_count > linx_debug_pc_watch_count_hi) {
+            continue;
+        }
+        if (linx_debug_pc_watch_hit_limit &&
+            linx_debug_pc_watch_printed[i] >= linx_debug_pc_watch_hit_limit) {
+            continue;
+        }
+        linx_debug_pc_watch_printed[i]++;
         fprintf(stderr,
-                "linx_pc_watch: pc=0x%" PRIx64 " hit=%u sp=0x%" PRIx64
+                "linx_pc_watch: pc=0x%" PRIx64 " hit=%u printed=%u"
+                " count=%" PRIu64 " sp=0x%" PRIx64
                 " a0=0x%" PRIx64 " a1=0x%" PRIx64 " a2=0x%" PRIx64
                 " ra=0x%" PRIx64 " tp=0x%" PRIx64 " cstate=0x%" PRIx64
                 " cond=%u carg=%u brtype=%u tgt=0x%" PRIx64
@@ -1438,7 +1476,9 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
                 " in_body=%u blocktype=%u body_tpc=0x%" PRIx64
                 " return_pc=0x%" PRIx64 " call_ra_set=%u call_setret_pending=%u\n",
-                pc, linx_debug_pc_watch_hits[i], env->gpr[LINX_REG_SP],
+                pc, linx_debug_pc_watch_hits[i],
+                linx_debug_pc_watch_printed[i], env->insn_count,
+                env->gpr[LINX_REG_SP],
                 env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
                 env->gpr[LINX_REG_A2], env->gpr[LINX_REG_RA], tp, env->ssr[0x20],
                 env->cond, env->carg, env->brtype, env->tgt, env->bpc,
