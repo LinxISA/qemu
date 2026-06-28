@@ -68,6 +68,7 @@ static uint64_t linx_debug_pc_watch[16];
 static unsigned linx_debug_pc_watch_hits[16];
 static unsigned linx_debug_pc_watch_dump_a0_words;
 static uint64_t linx_debug_pc_watch_dump_a0_offset;
+static unsigned linx_debug_pc_watch_dump_code_bytes;
 static bool linx_debug_pc_watch_exit;
 static bool linx_debug_pc_watch_regs_enabled;
 static bool linx_pc_sample_inited;
@@ -85,6 +86,7 @@ static uint64_t linx_heartbeat_last_bpc;
 static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
 static bool linx_heartbeat_regs_enabled;
+static unsigned linx_heartbeat_dump_code_bytes;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static bool linx_tp_trace_ssr_enabled;
@@ -258,6 +260,24 @@ void HELPER(linx_pc_sample)(CPULinxState *env, uint64_t pc)
     fflush(stderr);
 }
 
+static void linx_fprint_guest_code_bytes(FILE *f, CPULinxState *env,
+                                         const char *label, uint64_t pc,
+                                         unsigned count)
+{
+    uint8_t bytes[32] = { 0 };
+    int rc = cpu_memory_rw_debug(env_cpu(env), pc, bytes, count, 0);
+
+    fprintf(f, " %s=0x%" PRIx64 " %s_rc=%d %s_bytes=",
+            label, pc, label, rc, label);
+    if (rc == 0) {
+        for (unsigned i = 0; i < count; i++) {
+            fprintf(f, "%02x", bytes[i]);
+        }
+    } else {
+        fputs("<fault>", f);
+    }
+}
+
 static void linx_heartbeat_init(void)
 {
     if (linx_heartbeat_inited) {
@@ -277,6 +297,17 @@ static void linx_heartbeat_init(void)
     linx_heartbeat_regs_enabled =
         linx_env_enabled("LINX_HEARTBEAT_REGS") ||
         linx_env_enabled("LINX_QEMU_HEARTBEAT_REGS");
+
+    const char *code_s = getenv("LINX_HEARTBEAT_CODE_BYTES");
+    if (!code_s || !code_s[0] || strcmp(code_s, "0") == 0) {
+        code_s = getenv("LINX_QEMU_HEARTBEAT_CODE_BYTES");
+    }
+    if (code_s && code_s[0] && strcmp(code_s, "0") != 0) {
+        uint64_t bytes = 0;
+        if (linx_parse_u64(code_s, &bytes) && bytes != 0) {
+            linx_heartbeat_dump_code_bytes = MIN((uint64_t)32, bytes);
+        }
+    }
 
     linx_heartbeat_inited = true;
 }
@@ -353,6 +384,16 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
                 " tpc=0x%" PRIx64,
                 env->insn_count, pc, env->bpc, env->body_tpc);
         linx_fprint_gprs(stderr, env);
+        fputc('\n', stderr);
+    }
+    if (linx_heartbeat_dump_code_bytes) {
+        fprintf(stderr,
+                "LINX_HEARTBEAT_CODE count=%" PRIu64,
+                env->insn_count);
+        linx_fprint_guest_code_bytes(stderr, env, "pc", pc,
+                                     linx_heartbeat_dump_code_bytes);
+        linx_fprint_guest_code_bytes(stderr, env, "bpc", env->bpc,
+                                     linx_heartbeat_dump_code_bytes);
         fputc('\n', stderr);
     }
     fflush(stderr);
@@ -1281,6 +1322,14 @@ static void linx_debug_pc_watch_init(void)
         }
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_CODE_BYTES");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t bytes;
+        if (linx_parse_u64(v, &bytes) && bytes != 0) {
+            linx_debug_pc_watch_dump_code_bytes = MIN((uint64_t)32, bytes);
+        }
+    }
+
     v = getenv("LINX_DEBUG_PC_WATCH_EXIT");
     linx_debug_pc_watch_exit = v && v[0] && strcmp(v, "0") != 0;
 
@@ -1335,6 +1384,14 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                     pc, linx_debug_pc_watch_hits[i], env->insn_count,
                     env->bpc, env->body_tpc);
             linx_fprint_gprs(stderr, env);
+            fputc('\n', stderr);
+        }
+        if (linx_debug_pc_watch_dump_code_bytes) {
+            fprintf(stderr,
+                    "LINX_PC_WATCH_CODE hit=%u",
+                    linx_debug_pc_watch_hits[i]);
+            linx_fprint_guest_code_bytes(stderr, env, "pc", pc,
+                                         linx_debug_pc_watch_dump_code_bytes);
             fputc('\n', stderr);
         }
         if (tp) {
