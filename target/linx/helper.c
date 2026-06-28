@@ -91,6 +91,11 @@ static const char *linx_debug_pc_watch_dump_source_names[LINX_DEBUG_PC_WATCH_DUM
 static unsigned linx_debug_pc_watch_dump_code_bytes;
 static bool linx_debug_pc_watch_exit;
 static bool linx_debug_pc_watch_regs_enabled;
+static bool linx_debug_pc_watch_print_enabled = true;
+static bool linx_debug_pc_watch_ring_enabled;
+static uint64_t linx_debug_pc_watch_ring_size;
+static uint64_t linx_debug_pc_watch_ring_next;
+static uint64_t linx_debug_pc_watch_ring_count;
 static bool linx_pc_sample_inited;
 static uint64_t linx_pc_sample_interval;
 static bool linx_pc_sample_filter_enabled;
@@ -162,6 +167,7 @@ static bool linx_bstart_cache_revalidate_inited;
 static bool linx_bstart_cache_revalidate_enabled;
 
 #define LINX_CALL_TRACE_RING_MAX 128
+#define LINX_DEBUG_PC_WATCH_RING_MAX 128
 
 typedef struct LinxCallTraceRingEntry {
     uint32_t event;
@@ -192,6 +198,36 @@ typedef struct LinxCallTraceRingEntry {
 } LinxCallTraceRingEntry;
 
 static LinxCallTraceRingEntry linx_call_trace_ring[LINX_CALL_TRACE_RING_MAX];
+
+typedef struct LinxDebugPcWatchRingEntry {
+    uint32_t watch_index;
+    uint32_t acr;
+    uint32_t cond;
+    uint32_t carg;
+    uint32_t brtype;
+    uint32_t in_body;
+    uint32_t blocktype;
+    uint32_t call_ra_set;
+    uint32_t call_setret_pending;
+    uint64_t pc;
+    uint64_t hit;
+    uint64_t printed;
+    uint64_t count;
+    uint64_t envpc;
+    uint64_t bpc;
+    uint64_t tpc;
+    uint64_t cstate;
+    uint64_t tgt;
+    uint64_t body_tpc;
+    uint64_t return_pc;
+    uint64_t tp;
+    uint64_t gpr[LINX_GPR_COUNT];
+    uint64_t tq[4];
+    uint64_t uq[4];
+} LinxDebugPcWatchRingEntry;
+
+static LinxDebugPcWatchRingEntry
+    linx_debug_pc_watch_ring[LINX_DEBUG_PC_WATCH_RING_MAX];
 
 enum {
     LINX_CALL_TRACE_SETRET = 1,
@@ -1730,6 +1766,28 @@ static void linx_debug_pc_watch_init(void)
     v = getenv("LINX_DEBUG_PC_WATCH_EXIT");
     linx_debug_pc_watch_exit = v && v[0] && strcmp(v, "0") != 0;
 
+    v = getenv("LINX_DEBUG_PC_WATCH_PRINT");
+    if (v && v[0] && strcmp(v, "0") == 0) {
+        linx_debug_pc_watch_print_enabled = false;
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_RING");
+    linx_debug_pc_watch_ring_enabled =
+        v && v[0] && strcmp(v, "0") != 0;
+    if (linx_debug_pc_watch_ring_enabled) {
+        uint64_t size = 0;
+        const char *size_s = getenv("LINX_DEBUG_PC_WATCH_RING_SIZE");
+
+        linx_debug_pc_watch_ring_size = 64;
+        if (size_s && size_s[0] && strcmp(size_s, "0") != 0 &&
+            linx_parse_u64(size_s, &size)) {
+            linx_debug_pc_watch_ring_size =
+                MIN(size, (uint64_t)LINX_DEBUG_PC_WATCH_RING_MAX);
+            linx_debug_pc_watch_ring_size =
+                MAX(linx_debug_pc_watch_ring_size, 1);
+        }
+    }
+
     linx_debug_pc_watch_regs_enabled =
         linx_env_enabled("LINX_DEBUG_PC_WATCH_REGS") ||
         linx_env_enabled("LINX_TRACE_REGS");
@@ -1744,6 +1802,129 @@ static void linx_debug_pc_watch_init(void)
         }
     }
     g_free(copy);
+}
+
+static void linx_debug_pc_watch_ring_record(CPULinxState *env,
+                                            unsigned watch_index,
+                                            uint64_t pc, uint64_t hit)
+{
+    LinxDebugPcWatchRingEntry *entry;
+
+    if (!linx_debug_pc_watch_ring_enabled) {
+        return;
+    }
+
+    entry = &linx_debug_pc_watch_ring[linx_debug_pc_watch_ring_next];
+    *entry = (LinxDebugPcWatchRingEntry) {
+        .watch_index = watch_index,
+        .acr = env->acr & 0xFu,
+        .cond = env->cond,
+        .carg = env->carg,
+        .brtype = env->brtype,
+        .in_body = env->in_body,
+        .blocktype = env->blocktype,
+        .call_ra_set = env->call_ra_set,
+        .call_setret_pending = env->call_setret_pending,
+        .pc = pc,
+        .hit = hit,
+        .printed = linx_debug_pc_watch_printed[watch_index],
+        .count = env->insn_count,
+        .envpc = env->pc,
+        .bpc = env->bpc,
+        .tpc = env->body_tpc,
+        .cstate = env->ssr[0x20],
+        .tgt = env->tgt,
+        .body_tpc = env->body_tpc,
+        .return_pc = env->return_pc,
+        .tp = env->ssr[0],
+    };
+    memcpy(entry->gpr, env->gpr, sizeof(entry->gpr));
+    memcpy(entry->tq, env->tq, sizeof(entry->tq));
+    memcpy(entry->uq, env->uq, sizeof(entry->uq));
+
+    linx_debug_pc_watch_ring_next =
+        (linx_debug_pc_watch_ring_next + 1) %
+        linx_debug_pc_watch_ring_size;
+    if (linx_debug_pc_watch_ring_count < linx_debug_pc_watch_ring_size) {
+        linx_debug_pc_watch_ring_count++;
+    }
+}
+
+void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
+                                     uint64_t fault_pc)
+{
+    uint64_t entries;
+    uint64_t start;
+
+    linx_debug_pc_watch_init();
+    if (!linx_debug_pc_watch_ring_enabled ||
+        linx_debug_pc_watch_ring_count == 0) {
+        return;
+    }
+
+    entries = linx_debug_pc_watch_ring_count;
+    start = (linx_debug_pc_watch_ring_next +
+             linx_debug_pc_watch_ring_size - entries) %
+            linx_debug_pc_watch_ring_size;
+    fprintf(stderr,
+            "LINX_PC_WATCH_RING reason=%s fault_pc=0x%" PRIx64
+            " fault_count=%" PRIu64 " entries=%" PRIu64 "\n",
+            reason ? reason : "unknown", fault_pc, env->insn_count,
+            entries);
+
+    for (uint64_t i = 0; i < entries; i++) {
+        const LinxDebugPcWatchRingEntry *entry =
+            &linx_debug_pc_watch_ring[(start + i) %
+                                      linx_debug_pc_watch_ring_size];
+
+        fprintf(stderr,
+                "LINX_PC_WATCH_RING_ENTRY idx=%" PRIu64
+                " age=%" PRIu64 " watch=%u pc=0x%" PRIx64
+                " hit=%" PRIu64 " printed=%" PRIu64
+                " count=%" PRIu64 " envpc=0x%" PRIx64
+                " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+                " acr=%u cstate=0x%" PRIx64
+                " cond=%u carg=%u brtype=%u tgt=0x%" PRIx64
+                " tp=0x%" PRIx64
+                " sp=0x%" PRIx64 " ra=0x%" PRIx64
+                " a0=0x%" PRIx64 " a1=0x%" PRIx64
+                " a2=0x%" PRIx64 " a3=0x%" PRIx64
+                " a4=0x%" PRIx64 " a5=0x%" PRIx64
+                " a6=0x%" PRIx64 " a7=0x%" PRIx64
+                " x0=0x%" PRIx64 " x1=0x%" PRIx64
+                " x2=0x%" PRIx64 " x3=0x%" PRIx64
+                " s0=0x%" PRIx64 " s1=0x%" PRIx64
+                " s2=0x%" PRIx64 " s3=0x%" PRIx64
+                " s4=0x%" PRIx64 " s5=0x%" PRIx64
+                " s6=0x%" PRIx64 " s7=0x%" PRIx64
+                " s8=0x%" PRIx64
+                " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+                " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+                " in_body=%u blocktype=%u body_tpc=0x%" PRIx64
+                " return_pc=0x%" PRIx64
+                " call_ra_set=%u call_setret_pending=%u\n",
+                i, entries - i - 1, entry->watch_index, entry->pc,
+                entry->hit, entry->printed, entry->count, entry->envpc,
+                entry->bpc, entry->tpc, entry->acr, entry->cstate,
+                entry->cond, entry->carg, entry->brtype, entry->tgt,
+                entry->tp, entry->gpr[LINX_REG_SP],
+                entry->gpr[LINX_REG_RA], entry->gpr[LINX_REG_A0],
+                entry->gpr[LINX_REG_A1], entry->gpr[LINX_REG_A2],
+                entry->gpr[LINX_REG_A3], entry->gpr[LINX_REG_A4],
+                entry->gpr[LINX_REG_A5], entry->gpr[LINX_REG_A6],
+                entry->gpr[LINX_REG_A7], entry->gpr[LINX_REG_X0],
+                entry->gpr[LINX_REG_X1], entry->gpr[LINX_REG_X2],
+                entry->gpr[LINX_REG_X3], entry->gpr[LINX_REG_S0],
+                entry->gpr[LINX_REG_S1], entry->gpr[LINX_REG_S2],
+                entry->gpr[LINX_REG_S3], entry->gpr[LINX_REG_S4],
+                entry->gpr[LINX_REG_S5], entry->gpr[LINX_REG_S6],
+                entry->gpr[LINX_REG_S7], entry->gpr[LINX_REG_S8],
+                entry->tq[0], entry->tq[1], entry->uq[0], entry->uq[1],
+                entry->in_body, entry->blocktype, entry->body_tpc,
+                entry->return_pc, entry->call_ra_set,
+                entry->call_setret_pending);
+    }
+    fflush(stderr);
 }
 
 static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
@@ -1774,8 +1955,12 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 continue;
             }
         }
+        linx_debug_pc_watch_ring_record(env, i, pc, hit);
         if (linx_debug_pc_watch_hit_limit &&
             linx_debug_pc_watch_printed[i] >= linx_debug_pc_watch_hit_limit) {
+            continue;
+        }
+        if (!linx_debug_pc_watch_print_enabled) {
             continue;
         }
         linx_debug_pc_watch_printed[i]++;

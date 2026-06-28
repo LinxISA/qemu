@@ -146,6 +146,19 @@ enum {
     LINX_REG_A6   = 8,
     LINX_REG_A7   = 9,
     LINX_REG_RA   = 10,
+    LINX_REG_S0   = 11,
+    LINX_REG_S1   = 12,
+    LINX_REG_S2   = 13,
+    LINX_REG_S3   = 14,
+    LINX_REG_S4   = 15,
+    LINX_REG_S5   = 16,
+    LINX_REG_S6   = 17,
+    LINX_REG_S7   = 18,
+    LINX_REG_S8   = 19,
+    LINX_REG_X0   = 20,
+    LINX_REG_X1   = 21,
+    LINX_REG_X2   = 22,
+    LINX_REG_X3   = 23,
 
     LINX_GPR_COUNT = 24,
 };
@@ -785,6 +798,8 @@ void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
 void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
                                  uint64_t fault_pc);
+void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
+                                     uint64_t fault_pc);
 
 static inline uint64_t linx_lookup_body_end(const CPULinxState *env,
                                             uint64_t body_tpc)

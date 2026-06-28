@@ -1269,6 +1269,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         linx_fault_trace_emit_regs(env, trapnum, tpc, report_bpc);
         fflush(stderr);
         linx_call_trace_dump_recent(env, "fault", tpc);
+        linx_debug_pc_watch_dump_recent(env, "fault", tpc);
     }
 
     linx_acr_save_block_state(env, src_acr);
