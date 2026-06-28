@@ -101,6 +101,7 @@ static TCGv_i64 cpu_trace_traparg0;
 static bool linx_commit_trace_enabled;
 static bool linx_opcode_meta_strict = true;
 static bool linx_pc_sample_enabled;
+static bool linx_heartbeat_enabled;
 static bool linx_call_trace_translate_enabled;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
@@ -8068,6 +8069,9 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 
 static void linx_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
+    if (linx_heartbeat_enabled) {
+        gen_helper_linx_heartbeat(tcg_env, tcg_constant_i64(db->pc_first));
+    }
     if (linx_pc_sample_enabled) {
         gen_helper_linx_pc_sample(tcg_env, tcg_constant_i64(db->pc_first));
     }
@@ -8377,6 +8381,8 @@ void linx_translate_init(void)
     const char *cosim_enable = getenv("LINX_COSIM_ENABLE");
     const char *opcode_meta_strict = getenv("LINX_OPCODE_META_STRICT");
     const char *pc_sample_interval = getenv("LINX_PC_SAMPLE_INTERVAL");
+    const char *heartbeat_interval = getenv("LINX_HEARTBEAT_INTERVAL");
+    const char *qemu_heartbeat_interval = getenv("LINX_QEMU_HEARTBEAT_INTERVAL");
     const char *call_trace = getenv("LINX_CALL_TRACE");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
@@ -8395,6 +8401,11 @@ void linx_translate_init(void)
     linx_pc_sample_enabled =
         pc_sample_interval && pc_sample_interval[0] &&
         strcmp(pc_sample_interval, "0") != 0;
+    linx_heartbeat_enabled =
+        (heartbeat_interval && heartbeat_interval[0] &&
+         strcmp(heartbeat_interval, "0") != 0) ||
+        (qemu_heartbeat_interval && qemu_heartbeat_interval[0] &&
+         strcmp(qemu_heartbeat_interval, "0") != 0);
     linx_call_trace_translate_enabled =
         call_trace && call_trace[0] && strcmp(call_trace, "0") != 0;
     

@@ -73,6 +73,14 @@ static bool linx_pc_sample_filter_enabled;
 static uint64_t linx_pc_sample_filter_lo;
 static uint64_t linx_pc_sample_filter_hi;
 static uint64_t linx_pc_sample_last_bucket = UINT64_MAX;
+static bool linx_heartbeat_inited;
+static uint64_t linx_heartbeat_interval;
+static uint64_t linx_heartbeat_last_bucket = UINT64_MAX;
+static uint64_t linx_heartbeat_last_count;
+static uint64_t linx_heartbeat_last_pc;
+static uint64_t linx_heartbeat_last_bpc;
+static uint64_t linx_heartbeat_last_tpc;
+static uint64_t linx_heartbeat_same_site_repeats;
 static bool linx_call_trace_inited;
 static bool linx_call_trace_enabled;
 static bool linx_call_trace_filter_enabled;
@@ -163,6 +171,82 @@ void HELPER(linx_pc_sample)(CPULinxState *env, uint64_t pc)
             " a1=0x%" PRIx64
             "\n",
             env->insn_count, pc, env->bpc, env->body_tpc, env->acr,
+            env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+    fflush(stderr);
+}
+
+static void linx_heartbeat_init(void)
+{
+    if (linx_heartbeat_inited) {
+        return;
+    }
+
+    const char *interval_s = getenv("LINX_HEARTBEAT_INTERVAL");
+    if (!interval_s || !interval_s[0] || strcmp(interval_s, "0") == 0) {
+        interval_s = getenv("LINX_QEMU_HEARTBEAT_INTERVAL");
+    }
+    if (interval_s && interval_s[0] && strcmp(interval_s, "0") != 0) {
+        uint64_t interval = 0;
+        if (linx_parse_u64(interval_s, &interval)) {
+            linx_heartbeat_interval = interval;
+        }
+    }
+
+    linx_heartbeat_inited = true;
+}
+
+void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
+{
+    linx_heartbeat_init();
+    if (linx_heartbeat_interval == 0) {
+        return;
+    }
+
+    uint64_t bucket = env->insn_count / linx_heartbeat_interval;
+    const bool have_previous = linx_heartbeat_last_bucket != UINT64_MAX;
+    if (bucket == linx_heartbeat_last_bucket) {
+        return;
+    }
+
+    if (have_previous &&
+        pc == linx_heartbeat_last_pc &&
+        env->bpc == linx_heartbeat_last_bpc &&
+        env->body_tpc == linx_heartbeat_last_tpc) {
+        linx_heartbeat_same_site_repeats++;
+    } else {
+        linx_heartbeat_same_site_repeats = 0;
+    }
+
+    const uint64_t last_count = linx_heartbeat_last_count;
+    const uint64_t delta = have_previous ? env->insn_count - last_count : 0;
+    linx_heartbeat_last_bucket = bucket;
+    linx_heartbeat_last_count = env->insn_count;
+    linx_heartbeat_last_pc = pc;
+    linx_heartbeat_last_bpc = env->bpc;
+    linx_heartbeat_last_tpc = env->body_tpc;
+
+    fprintf(stderr,
+            "LINX_HEARTBEAT host_ms=%" PRId64
+            " count=%" PRIu64
+            " delta=%" PRIu64
+            " pc=0x%" PRIx64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64
+            " acr=%u cstate=0x%" PRIx64
+            " brtype=%u tgt=0x%" PRIx64
+            " in_body=%u same_site=%" PRIu64
+            " sp=0x%" PRIx64
+            " ra=0x%" PRIx64
+            " a0=0x%" PRIx64
+            " a1=0x%" PRIx64
+            "\n",
+            qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
+            env->insn_count, delta, pc, env->bpc, env->body_tpc,
+            env->pc, env->acr & 0xFu, env->ssr[0x20],
+            env->brtype, env->tgt, env->in_body,
+            linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
     fflush(stderr);
