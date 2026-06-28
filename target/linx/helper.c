@@ -69,6 +69,7 @@ static unsigned linx_debug_pc_watch_hits[16];
 static unsigned linx_debug_pc_watch_dump_a0_words;
 static uint64_t linx_debug_pc_watch_dump_a0_offset;
 static bool linx_debug_pc_watch_exit;
+static bool linx_debug_pc_watch_regs_enabled;
 static bool linx_pc_sample_inited;
 static uint64_t linx_pc_sample_interval;
 static bool linx_pc_sample_filter_enabled;
@@ -1283,6 +1284,10 @@ static void linx_debug_pc_watch_init(void)
     v = getenv("LINX_DEBUG_PC_WATCH_EXIT");
     linx_debug_pc_watch_exit = v && v[0] && strcmp(v, "0") != 0;
 
+    linx_debug_pc_watch_regs_enabled =
+        linx_env_enabled("LINX_DEBUG_PC_WATCH_REGS") ||
+        linx_env_enabled("LINX_TRACE_REGS");
+
     copy = g_strdup(watch);
     for (tok = strtok_r(copy, ",", &saveptr);
          tok && linx_debug_pc_watch_count < ARRAY_SIZE(linx_debug_pc_watch);
@@ -1322,6 +1327,16 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 env->tq[0], env->tq[1], env->uq[0], env->uq[1],
                 env->in_body, env->blocktype, env->body_tpc,
                 env->return_pc, env->call_ra_set, env->call_setret_pending);
+        if (linx_debug_pc_watch_regs_enabled) {
+            fprintf(stderr,
+                    "LINX_PC_WATCH_REGS pc=0x%" PRIx64 " hit=%u"
+                    " count=%" PRIu64 " bpc=0x%" PRIx64
+                    " tpc=0x%" PRIx64,
+                    pc, linx_debug_pc_watch_hits[i], env->insn_count,
+                    env->bpc, env->body_tpc);
+            linx_fprint_gprs(stderr, env);
+            fputc('\n', stderr);
+        }
         if (tp) {
             linx_debug_dump_guest_words(env, tp, 4, "  tp");
         }

@@ -1321,9 +1321,12 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     }
     if (current_pc != ctx->base.pc_first &&
         (ctx->brtype == LINX_BR_CALL || ctx->brtype == LINX_BR_ICALL) &&
+        brtype != LINX_BR_CALL &&
+        brtype != LINX_BR_ICALL &&
         ctx->ra_set &&
         ctx->call_ra_target != 0 &&
         ctx->call_ra_target > ctx->base.pc_first &&
+        current_pc > ctx->base.pc_first &&
         current_pc < ctx->call_ra_target) {
         /*
          * Current Linx LLVM lowering can emit extra headers inside an open
