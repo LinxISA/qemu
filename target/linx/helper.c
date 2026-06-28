@@ -46,6 +46,8 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
 static bool linx_parse_u64(const char *s, uint64_t *out);
 static inline bool linx_env_enabled(const char *name);
 static inline uint32_t linx_ssr_low12(uint32_t ssrid);
+static bool linx_debug_read_guest_u64(CPULinxState *env, uint64_t addr,
+                                      uint64_t *value);
 static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
                                         unsigned count, const char *label);
 
@@ -96,6 +98,11 @@ static bool linx_debug_pc_watch_ring_enabled;
 static uint64_t linx_debug_pc_watch_ring_size;
 static uint64_t linx_debug_pc_watch_ring_next;
 static uint64_t linx_debug_pc_watch_ring_count;
+static bool linx_debug_pc_watch_ring_mem_enabled;
+static unsigned linx_debug_pc_watch_ring_mem_kind;
+static unsigned linx_debug_pc_watch_ring_mem_index;
+static const char *linx_debug_pc_watch_ring_mem_name;
+static uint64_t linx_debug_pc_watch_ring_mem_offset;
 static bool linx_pc_sample_inited;
 static uint64_t linx_pc_sample_interval;
 static bool linx_pc_sample_filter_enabled;
@@ -209,6 +216,9 @@ typedef struct LinxDebugPcWatchRingEntry {
     uint32_t blocktype;
     uint32_t call_ra_set;
     uint32_t call_setret_pending;
+    uint32_t mem_ok;
+    uint32_t mem_kind;
+    uint32_t mem_index;
     uint64_t pc;
     uint64_t hit;
     uint64_t printed;
@@ -221,6 +231,9 @@ typedef struct LinxDebugPcWatchRingEntry {
     uint64_t body_tpc;
     uint64_t return_pc;
     uint64_t tp;
+    uint64_t mem_base;
+    uint64_t mem_addr;
+    uint64_t mem_value;
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
     uint64_t uq[4];
@@ -361,6 +374,27 @@ static bool linx_debug_pc_watch_parse_dump_source(const char *s)
     return false;
 }
 
+static bool linx_debug_pc_watch_parse_source_copy(const char *s,
+                                                  unsigned *kind,
+                                                  unsigned *index,
+                                                  const char **name)
+{
+    const unsigned old_kind = linx_debug_pc_watch_dump_kind;
+    const unsigned old_index = linx_debug_pc_watch_dump_index;
+    const char *old_name = linx_debug_pc_watch_dump_name;
+    const bool ok = linx_debug_pc_watch_parse_dump_source(s);
+
+    if (ok) {
+        *kind = linx_debug_pc_watch_dump_kind;
+        *index = linx_debug_pc_watch_dump_index;
+        *name = linx_debug_pc_watch_dump_name;
+    }
+    linx_debug_pc_watch_dump_kind = old_kind;
+    linx_debug_pc_watch_dump_index = old_index;
+    linx_debug_pc_watch_dump_name = old_name;
+    return ok;
+}
+
 static void linx_debug_pc_watch_parse_dump_sources(const char *s)
 {
     char *copy;
@@ -409,6 +443,27 @@ static uint64_t linx_debug_pc_watch_dump_addr_for(CPULinxState *env,
     default:
         return env->gpr[index];
     }
+}
+
+static bool linx_debug_read_guest_u64(CPULinxState *env, uint64_t addr,
+                                      uint64_t *value)
+{
+    CPUState *cs = env_cpu(env);
+
+    *value = 0;
+    if (cpu_memory_rw_debug(cs, addr, (uint8_t *)value, sizeof(*value), 0) == 0) {
+        return true;
+    }
+    if ((addr >> 48) == 0xff60u || (addr >> 48) == 0xff80u ||
+        (addr >> 48) == 0xffffu) {
+        const uint64_t low_alias = addr & UINT64_C(0x7fffffff);
+
+        if (cpu_memory_rw_debug(cs, low_alias, (uint8_t *)value,
+                                sizeof(*value), 0) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void linx_debug_pc_watch_dump_words_for_source(CPULinxState *env,
@@ -1788,6 +1843,28 @@ static void linx_debug_pc_watch_init(void)
         }
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_RING_MEM_REG");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        unsigned kind;
+        unsigned index;
+        const char *name;
+
+        if (linx_debug_pc_watch_parse_source_copy(v, &kind, &index, &name)) {
+            linx_debug_pc_watch_ring_mem_enabled = true;
+            linx_debug_pc_watch_ring_mem_kind = kind;
+            linx_debug_pc_watch_ring_mem_index = index;
+            linx_debug_pc_watch_ring_mem_name = name;
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_RING_MEM_OFFSET");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t offset;
+        if (linx_parse_u64(v, &offset)) {
+            linx_debug_pc_watch_ring_mem_offset = offset;
+        }
+    }
+
     linx_debug_pc_watch_regs_enabled =
         linx_env_enabled("LINX_DEBUG_PC_WATCH_REGS") ||
         linx_env_enabled("LINX_TRACE_REGS");
@@ -1841,6 +1918,19 @@ static void linx_debug_pc_watch_ring_record(CPULinxState *env,
     memcpy(entry->gpr, env->gpr, sizeof(entry->gpr));
     memcpy(entry->tq, env->tq, sizeof(entry->tq));
     memcpy(entry->uq, env->uq, sizeof(entry->uq));
+    if (linx_debug_pc_watch_ring_mem_enabled) {
+        entry->mem_kind = linx_debug_pc_watch_ring_mem_kind;
+        entry->mem_index = linx_debug_pc_watch_ring_mem_index;
+        entry->mem_base = linx_debug_pc_watch_dump_addr_for(
+            env, linx_debug_pc_watch_ring_mem_kind,
+            linx_debug_pc_watch_ring_mem_index);
+        entry->mem_addr =
+            entry->mem_base + linx_debug_pc_watch_ring_mem_offset;
+        entry->mem_ok =
+            entry->mem_base &&
+            linx_debug_read_guest_u64(env, entry->mem_addr,
+                                      &entry->mem_value);
+    }
 
     linx_debug_pc_watch_ring_next =
         (linx_debug_pc_watch_ring_next + 1) %
@@ -1902,7 +1992,7 @@ void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
                 " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
                 " in_body=%u blocktype=%u body_tpc=0x%" PRIx64
                 " return_pc=0x%" PRIx64
-                " call_ra_set=%u call_setret_pending=%u\n",
+                " call_ra_set=%u call_setret_pending=%u",
                 i, entries - i - 1, entry->watch_index, entry->pc,
                 entry->hit, entry->printed, entry->count, entry->envpc,
                 entry->bpc, entry->tpc, entry->acr, entry->cstate,
@@ -1923,6 +2013,20 @@ void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
                 entry->in_body, entry->blocktype, entry->body_tpc,
                 entry->return_pc, entry->call_ra_set,
                 entry->call_setret_pending);
+        if (linx_debug_pc_watch_ring_mem_enabled) {
+            fprintf(stderr,
+                    " mem_src=%s mem_kind=%u mem_index=%u"
+                    " mem_offset=0x%" PRIx64
+                    " mem_base=0x%" PRIx64 " mem_addr=0x%" PRIx64
+                    " mem_ok=%u mem_value=0x%" PRIx64,
+                    linx_debug_pc_watch_ring_mem_name ?
+                        linx_debug_pc_watch_ring_mem_name : "unknown",
+                    entry->mem_kind, entry->mem_index,
+                    linx_debug_pc_watch_ring_mem_offset,
+                    entry->mem_base, entry->mem_addr, entry->mem_ok,
+                    entry->mem_value);
+        }
+        fputc('\n', stderr);
     }
     fflush(stderr);
 }

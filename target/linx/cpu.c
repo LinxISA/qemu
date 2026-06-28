@@ -447,6 +447,60 @@ static void linx_cpu_tp_trace_emit_handoff(CPULinxState *env,
     fflush(stderr);
 }
 
+static void linx_cpu_tp_trace_emit_same_acr_frame(CPULinxState *env,
+                                                  const char *event,
+                                                  uint32_t acr,
+                                                  uint64_t saved_x1)
+{
+    if (!linx_cpu_tp_trace_enabled_p()) {
+        return;
+    }
+
+    linx_tp_trace_emitted++;
+    fprintf(stderr,
+            "LINX_TP_TRACE event=%s seq=%" PRIu64
+            " count=%" PRIu64
+            " pc=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64 " src_acr=%u dst_acr=%u"
+            " acr=%u cstate=0x%" PRIx64
+            " tp=0x%" PRIx64 " etemp=0x%" PRIx64
+            " etemp0=0x%" PRIx64 " saved_x1=0x%" PRIx64
+            " live_x1=0x%" PRIx64
+            " sp=0x%" PRIx64 " ra=0x%" PRIx64
+            " a0=0x%" PRIx64 " a1=0x%" PRIx64 "\n",
+            event, linx_tp_trace_emitted,
+            env->insn_count, env->pc, env->bpc, env->body_tpc,
+            env->pc, acr, acr, env->acr & 0xFu,
+            env->ssr[LINX_SSR_CSTATE], env->ssr[LINX_SSR_TP],
+            env->ssr_acr[acr][LINX_SSR_ETEMP],
+            env->ssr_acr[acr][LINX_SSR_ETEMP0], saved_x1,
+            env->gpr[LINX_REG_X1], env->gpr[LINX_REG_SP],
+            env->gpr[LINX_REG_RA], env->gpr[LINX_REG_A0],
+            env->gpr[LINX_REG_A1]);
+    fflush(stderr);
+}
+
+static void linx_cpu_prepare_same_acr_exception_frame(CPULinxState *env,
+                                                      const char *event,
+                                                      uint32_t acr)
+{
+    const uint64_t saved_x1 = env->gpr[LINX_REG_X1];
+
+    if (acr >= LINX_ACR_COUNT) {
+        return;
+    }
+
+    /*
+     * Linux's kernel-origin exception prologue expects x1 to be zero and the
+     * interrupted x1 value to be recoverable from the current bank's ETEMP.
+     * User-origin handoff uses a different TP/ETEMP0 path and must not flow
+     * through this helper.
+     */
+    env->ssr_acr[acr][LINX_SSR_ETEMP] = saved_x1;
+    env->gpr[LINX_REG_X1] = 0;
+    linx_cpu_tp_trace_emit_same_acr_frame(env, event, acr, saved_x1);
+}
+
 /* TRAPNO encoding (v0.2 bring-up profile). */
 #define LINX_TRAPNO_E_BIT          (1ULL << 63) /* 1=exception, 0=interrupt */
 #define LINX_TRAPNO_ARGV_BIT       (1ULL << 62)
@@ -1325,6 +1379,9 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         linx_cpu_tp_trace_emit_handoff(env, "sync_user_to_kernel",
                                        src_acr, dst_acr, user_tp,
                                        env->ssr_acr[dst_acr][LINX_SSR_ETEMP]);
+    } else if (src_acr == dst_acr) {
+        linx_cpu_prepare_same_acr_exception_frame(env, "sync_same_acr_frame",
+                                                  dst_acr);
     }
     env->ssr[LINX_SSR_CSTATE] =
         linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
@@ -1600,6 +1657,10 @@ static void linx_cpu_do_interrupt(CPUState *cs)
             linx_cpu_tp_trace_emit_handoff(env, "irq_user_to_kernel",
                                            src_acr, dst_acr, user_tp,
                                            thread_info);
+        } else if (src_acr == dst_acr) {
+            linx_cpu_prepare_same_acr_exception_frame(env,
+                                                      "irq_same_acr_frame",
+                                                      dst_acr);
         }
 
         /* Switch to managing ring and vector. */
