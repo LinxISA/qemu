@@ -53,6 +53,9 @@ static bool linx_print_insn_count_inited;
 static bool linx_print_insn_count_enabled;
 static bool linx_semihost_inited;
 static bool linx_semihost_enabled;
+
+#define LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX 8
+
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_debug_body_replay_inited;
@@ -81,6 +84,10 @@ static uint64_t linx_debug_pc_watch_dump_offset;
 static unsigned linx_debug_pc_watch_dump_kind;
 static unsigned linx_debug_pc_watch_dump_index = LINX_REG_A0;
 static const char *linx_debug_pc_watch_dump_name = "a0";
+static unsigned linx_debug_pc_watch_dump_source_count;
+static unsigned linx_debug_pc_watch_dump_source_kinds[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
+static unsigned linx_debug_pc_watch_dump_source_indexes[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
+static const char *linx_debug_pc_watch_dump_source_names[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
 static unsigned linx_debug_pc_watch_dump_code_bytes;
 static bool linx_debug_pc_watch_exit;
 static bool linx_debug_pc_watch_regs_enabled;
@@ -318,19 +325,82 @@ static bool linx_debug_pc_watch_parse_dump_source(const char *s)
     return false;
 }
 
-static uint64_t linx_debug_pc_watch_dump_addr(CPULinxState *env)
+static void linx_debug_pc_watch_parse_dump_sources(const char *s)
 {
-    switch (linx_debug_pc_watch_dump_kind) {
+    char *copy;
+    char *saveptr = NULL;
+    char *tok;
+
+    if (!s || !s[0]) {
+        return;
+    }
+
+    copy = g_strdup(s);
+    for (tok = strtok_r(copy, ",", &saveptr);
+         tok &&
+         linx_debug_pc_watch_dump_source_count <
+             ARRAY_SIZE(linx_debug_pc_watch_dump_source_kinds);
+         tok = strtok_r(NULL, ",", &saveptr)) {
+        char *trimmed = g_strstrip(tok);
+        if (!trimmed[0]) {
+            continue;
+        }
+        if (linx_debug_pc_watch_parse_dump_source(trimmed)) {
+            const unsigned index = linx_debug_pc_watch_dump_source_count++;
+            linx_debug_pc_watch_dump_source_kinds[index] =
+                linx_debug_pc_watch_dump_kind;
+            linx_debug_pc_watch_dump_source_indexes[index] =
+                linx_debug_pc_watch_dump_index;
+            linx_debug_pc_watch_dump_source_names[index] =
+                linx_debug_pc_watch_dump_name;
+        }
+    }
+    g_free(copy);
+}
+
+static uint64_t linx_debug_pc_watch_dump_addr_for(CPULinxState *env,
+                                                  unsigned kind,
+                                                  unsigned index)
+{
+    switch (kind) {
     case LINX_DEBUG_PC_WATCH_DUMP_TQ:
-        return env->tq[linx_debug_pc_watch_dump_index];
+        return env->tq[index];
     case LINX_DEBUG_PC_WATCH_DUMP_UQ:
-        return env->uq[linx_debug_pc_watch_dump_index];
+        return env->uq[index];
     case LINX_DEBUG_PC_WATCH_DUMP_TP:
         return env->ssr[0];
     case LINX_DEBUG_PC_WATCH_DUMP_GPR:
     default:
-        return env->gpr[linx_debug_pc_watch_dump_index];
+        return env->gpr[index];
     }
+}
+
+static void linx_debug_pc_watch_dump_words_for_source(CPULinxState *env,
+                                                      unsigned kind,
+                                                      unsigned index,
+                                                      const char *name)
+{
+    char label[48];
+    uint64_t base = linx_debug_pc_watch_dump_addr_for(env, kind, index);
+    uint64_t addr = base + linx_debug_pc_watch_dump_offset;
+
+    if (!base) {
+        return;
+    }
+
+    if (kind == LINX_DEBUG_PC_WATCH_DUMP_GPR) {
+        g_snprintf(label, sizeof(label), "  %s+0x%" PRIx64,
+                   name, linx_debug_pc_watch_dump_offset);
+    } else if (kind == LINX_DEBUG_PC_WATCH_DUMP_TP) {
+        g_snprintf(label, sizeof(label), "  tp+0x%" PRIx64,
+                   linx_debug_pc_watch_dump_offset);
+    } else {
+        g_snprintf(label, sizeof(label), "  %s%u+0x%" PRIx64,
+                   name, index, linx_debug_pc_watch_dump_offset);
+    }
+    linx_debug_dump_guest_words(env, addr,
+                                linx_debug_pc_watch_dump_words,
+                                label);
 }
 
 static inline bool linx_print_insn_count(void)
@@ -1644,6 +1714,11 @@ static void linx_debug_pc_watch_init(void)
         linx_debug_pc_watch_parse_dump_source(v);
     }
 
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_REGS");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        linx_debug_pc_watch_parse_dump_sources(v);
+    }
+
     v = getenv("LINX_DEBUG_PC_WATCH_DUMP_CODE_BYTES");
     if (v && v[0] && strcmp(v, "0") != 0) {
         uint64_t bytes;
@@ -1747,28 +1822,21 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
             linx_debug_dump_guest_words(env, tp, 4, "  tp");
         }
         if (linx_debug_pc_watch_dump_words) {
-            char label[48];
-            uint64_t base = linx_debug_pc_watch_dump_addr(env);
-            uint64_t addr = base + linx_debug_pc_watch_dump_offset;
-            if (base) {
-                if (linx_debug_pc_watch_dump_kind ==
-                    LINX_DEBUG_PC_WATCH_DUMP_GPR) {
-                    g_snprintf(label, sizeof(label), "  %s+0x%" PRIx64,
-                               linx_debug_pc_watch_dump_name,
-                               linx_debug_pc_watch_dump_offset);
-                } else if (linx_debug_pc_watch_dump_kind ==
-                           LINX_DEBUG_PC_WATCH_DUMP_TP) {
-                    g_snprintf(label, sizeof(label), "  tp+0x%" PRIx64,
-                               linx_debug_pc_watch_dump_offset);
-                } else {
-                    g_snprintf(label, sizeof(label), "  %s%u+0x%" PRIx64,
-                               linx_debug_pc_watch_dump_name,
-                               linx_debug_pc_watch_dump_index,
-                               linx_debug_pc_watch_dump_offset);
+            if (linx_debug_pc_watch_dump_source_count) {
+                for (unsigned j = 0;
+                     j < linx_debug_pc_watch_dump_source_count;
+                     j++) {
+                    linx_debug_pc_watch_dump_words_for_source(
+                        env,
+                        linx_debug_pc_watch_dump_source_kinds[j],
+                        linx_debug_pc_watch_dump_source_indexes[j],
+                        linx_debug_pc_watch_dump_source_names[j]);
                 }
-                linx_debug_dump_guest_words(env, addr,
-                                            linx_debug_pc_watch_dump_words,
-                                            label);
+            } else {
+                linx_debug_pc_watch_dump_words_for_source(
+                    env, linx_debug_pc_watch_dump_kind,
+                    linx_debug_pc_watch_dump_index,
+                    linx_debug_pc_watch_dump_name);
             }
         }
         if (pc == UINT64_C(0xffffffff80007bf8) ||
