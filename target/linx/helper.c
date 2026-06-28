@@ -44,6 +44,7 @@ static inline void linx_bstart_cache_reset(CPULinxState *env)
 
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
 static bool linx_parse_u64(const char *s, uint64_t *out);
+static inline bool linx_env_enabled(const char *name);
 static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
                                         unsigned count, const char *label);
 
@@ -116,6 +117,7 @@ static bool linx_syscall_trace_pc_filter_enabled;
 static uint64_t linx_syscall_trace_pc_lo;
 static uint64_t linx_syscall_trace_pc_hi;
 static bool linx_syscall_trace_strings_enabled;
+static bool linx_syscall_trace_regs_enabled;
 static uint64_t linx_syscall_trace_string_max = 96;
 static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
@@ -162,6 +164,19 @@ enum {
     LINX_CALL_TRACE_ACRE_ENTER = 5,
     LINX_CALL_TRACE_ACRE_STAGED = 6,
 };
+
+static const char *const linx_gpr_names[LINX_GPR_COUNT] = {
+    "zero", "sp", "a0", "a1", "a2", "a3", "a4", "a5",
+    "a6", "a7", "ra", "s0", "s1", "s2", "s3", "s4",
+    "s5", "s6", "s7", "s8", "x0", "x1", "x2", "x3",
+};
+
+static void linx_fprint_gprs(FILE *f, CPULinxState *env)
+{
+    for (unsigned i = 0; i < LINX_GPR_COUNT; i++) {
+        fprintf(f, " %s=0x%" PRIx64, linx_gpr_names[i], env->gpr[i]);
+    }
+}
 
 static inline bool linx_print_insn_count(void)
 {
@@ -707,6 +722,10 @@ static void linx_syscall_trace_init(void)
     linx_syscall_trace_strings_enabled =
         strings_s && strings_s[0] && strcmp(strings_s, "0") != 0;
 
+    linx_syscall_trace_regs_enabled =
+        linx_env_enabled("LINX_SYSCALL_TRACE_REGS") ||
+        linx_env_enabled("LINX_TRACE_REGS");
+
     const char *string_max_s = getenv("LINX_SYSCALL_TRACE_STRING_MAX");
     if (string_max_s && string_max_s[0] &&
         strcmp(string_max_s, "0") != 0) {
@@ -720,6 +739,24 @@ static void linx_syscall_trace_init(void)
     }
 
     linx_syscall_trace_inited = true;
+}
+
+static void linx_syscall_trace_emit_regs(CPULinxState *env,
+                                         const char *phase, uint64_t nr,
+                                         uint64_t bpc, uint64_t tpc)
+{
+    if (!linx_syscall_trace_regs_enabled) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_SYSCALL_REGS phase=%s nr=%" PRIu64
+            " count=%" PRIu64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64,
+            phase, nr, env->insn_count, bpc, tpc);
+    linx_fprint_gprs(stderr, env);
+    fputc('\n', stderr);
 }
 
 static bool linx_syscall_trace_matches(uint64_t nr, uint64_t bpc)
@@ -977,6 +1014,7 @@ static void linx_syscall_trace_maybe_emit(CPULinxState *env, uint32_t src_acr,
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x20]);
+    linx_syscall_trace_emit_regs(env, "entry", nr, bpc, tpc);
     linx_syscall_trace_emit_strings(env, nr, bpc, tpc);
     fflush(stderr);
 }
@@ -1042,6 +1080,7 @@ static void linx_syscall_trace_return_maybe_emit(CPULinxState *env,
             env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x20]);
+    linx_syscall_trace_emit_regs(env, "return", nr, bpc, tpc);
     env->syscall_trace_pending = 0;
     env->syscall_trace_entry_emitted = 0;
     fflush(stderr);

@@ -45,6 +45,7 @@ static bool linx_fault_trace_trapnum_filter_enabled;
 static uint64_t linx_fault_trace_trapnum;
 static uint64_t linx_fault_trace_limit;
 static uint64_t linx_fault_trace_emitted;
+static bool linx_fault_trace_regs_enabled;
 static bool linx_tlb_fault_trace_inited;
 static bool linx_tlb_fault_trace_enabled;
 static uint64_t linx_tlb_fault_trace_limit;
@@ -80,6 +81,26 @@ static bool linx_cpu_parse_u64(const char *s, uint64_t *out)
 
     *out = (uint64_t)v;
     return true;
+}
+
+static bool linx_cpu_env_enabled(const char *name)
+{
+    const char *value = getenv(name);
+
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static const char *const linx_cpu_gpr_names[LINX_GPR_COUNT] = {
+    "zero", "sp", "a0", "a1", "a2", "a3", "a4", "a5",
+    "a6", "a7", "ra", "s0", "s1", "s2", "s3", "s4",
+    "s5", "s6", "s7", "s8", "x0", "x1", "x2", "x3",
+};
+
+static void linx_cpu_fprint_gprs(FILE *f, CPULinxState *env)
+{
+    for (unsigned i = 0; i < LINX_GPR_COUNT; i++) {
+        fprintf(f, " %s=0x%" PRIx64, linx_cpu_gpr_names[i], env->gpr[i]);
+    }
 }
 
 static inline bool linx_cpu_dump_debug(void)
@@ -150,7 +171,28 @@ static void linx_fault_trace_init(void)
         (void)linx_cpu_parse_u64(limit_s, &linx_fault_trace_limit);
     }
 
+    linx_fault_trace_regs_enabled =
+        linx_cpu_env_enabled("LINX_FAULT_TRACE_REGS") ||
+        linx_cpu_env_enabled("LINX_TRACE_REGS");
+
     linx_fault_trace_inited = true;
+}
+
+static void linx_fault_trace_emit_regs(CPULinxState *env, uint8_t trapnum,
+                                       uint64_t tpc, uint64_t report_bpc)
+{
+    if (!linx_fault_trace_regs_enabled) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_FAULT_REGS trapnum=%u"
+            " count=%" PRIu64
+            " tpc=0x%" PRIx64
+            " report_bpc=0x%" PRIx64,
+            trapnum, env->insn_count, tpc, report_bpc);
+    linx_cpu_fprint_gprs(stderr, env);
+    fputc('\n', stderr);
 }
 
 static bool linx_fault_trace_addr_matches(uint64_t addr)
@@ -1157,6 +1199,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 trace_store_probe.desc, trace_store_probe.prot,
                 trace_store_probe.pa, trace_store_probe.block_size,
                 trace_store_probe.cause);
+        linx_fault_trace_emit_regs(env, trapnum, tpc, report_bpc);
         fflush(stderr);
         linx_call_trace_dump_recent(env, "fault", tpc);
     }
