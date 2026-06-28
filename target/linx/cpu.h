@@ -410,9 +410,15 @@ typedef struct CPUArchState {
 
     /* Debug-only syscall trace pairing state. */
     uint32_t syscall_trace_pending;
+    uint32_t syscall_trace_entry_emitted;
     uint64_t syscall_trace_nr;
     uint64_t syscall_trace_bpc;
     uint64_t syscall_trace_tpc;
+    uint64_t syscall_trace_pc_next;
+    uint64_t syscall_trace_args[6];
+    uint64_t syscall_trace_sp;
+    uint64_t syscall_trace_ra;
+    uint64_t syscall_trace_cstate;
 
     /*
      * External interrupt line levels per managing ACR (bit-per-IRQ).
