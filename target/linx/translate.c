@@ -104,6 +104,8 @@ static bool linx_pc_sample_enabled;
 static bool linx_heartbeat_enabled;
 static bool linx_call_trace_translate_enabled;
 static bool linx_mem_trace_translate_enabled;
+static bool linx_mem_trace_translate_loads = true;
+static bool linx_mem_trace_translate_stores = true;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_host_insn_hook_inited;
@@ -3700,7 +3702,7 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
     }
     tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
 
-    if (linx_mem_trace_translate_enabled) {
+    if (linx_mem_trace_translate_enabled && linx_mem_trace_translate_loads) {
         const unsigned size = memop_size(mop);
         TCGv_i64 addr64;
 #if TARGET_LONG_BITS == 32
@@ -4537,7 +4539,7 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
         tcg_gen_movi_i32(cpu_trace_mem_size, (int32_t)memop_size(mop));
     }
 
-    if (linx_mem_trace_translate_enabled) {
+    if (linx_mem_trace_translate_enabled && linx_mem_trace_translate_stores) {
         const unsigned size = memop_size(mop);
         TCGv_i64 addr64;
 #if TARGET_LONG_BITS == 32
@@ -8635,6 +8637,7 @@ void linx_translate_init(void)
     const char *call_trace = getenv("LINX_CALL_TRACE");
     const char *call_trace_ring = getenv("LINX_CALL_TRACE_RING");
     const char *mem_trace_addr = getenv("LINX_MEM_TRACE_ADDR");
+    const char *mem_trace_access = getenv("LINX_MEM_TRACE_ACCESS");
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -8662,6 +8665,18 @@ void linx_translate_init(void)
         (call_trace_ring && call_trace_ring[0] &&
          strcmp(call_trace_ring, "0") != 0);
     linx_mem_trace_translate_enabled = mem_trace_addr && mem_trace_addr[0];
+    if (linx_mem_trace_translate_enabled && mem_trace_access &&
+        mem_trace_access[0]) {
+        if (strcmp(mem_trace_access, "load") == 0 ||
+            strcmp(mem_trace_access, "loads") == 0) {
+            linx_mem_trace_translate_loads = true;
+            linx_mem_trace_translate_stores = false;
+        } else if (strcmp(mem_trace_access, "store") == 0 ||
+                   strcmp(mem_trace_access, "stores") == 0) {
+            linx_mem_trace_translate_loads = false;
+            linx_mem_trace_translate_stores = true;
+        }
+    }
     
     for (i = 0; i < LINX_GPR_COUNT; i++) {
         cpu_gpr[i] = tcg_global_mem_new_i64(tcg_env,
