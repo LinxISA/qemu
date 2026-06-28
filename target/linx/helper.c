@@ -83,6 +83,7 @@ static uint64_t linx_heartbeat_last_pc;
 static uint64_t linx_heartbeat_last_bpc;
 static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
+static bool linx_heartbeat_regs_enabled;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static bool linx_tp_trace_ssr_enabled;
@@ -272,6 +273,9 @@ static void linx_heartbeat_init(void)
             linx_heartbeat_interval = interval;
         }
     }
+    linx_heartbeat_regs_enabled =
+        linx_env_enabled("LINX_HEARTBEAT_REGS") ||
+        linx_env_enabled("LINX_QEMU_HEARTBEAT_REGS");
 
     linx_heartbeat_inited = true;
 }
@@ -340,6 +344,16 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->ssr[0x0000], env->ssr_acr[1][0xF05],
             env->ssr_acr[1][0xF06],
             env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+    if (linx_heartbeat_regs_enabled) {
+        fprintf(stderr,
+                "LINX_HEARTBEAT_REGS count=%" PRIu64
+                " pc=0x%" PRIx64
+                " bpc=0x%" PRIx64
+                " tpc=0x%" PRIx64,
+                env->insn_count, pc, env->bpc, env->body_tpc);
+        linx_fprint_gprs(stderr, env);
+        fputc('\n', stderr);
+    }
     fflush(stderr);
 }
 
