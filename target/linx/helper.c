@@ -2388,9 +2388,15 @@ void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
 static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
 {
     unsigned i;
+    linx_debug_pc_watch_init();
+    if (!linx_debug_pc_watch_count ||
+        env->insn_count < linx_debug_pc_watch_count_lo ||
+        env->insn_count > linx_debug_pc_watch_count_hi) {
+        return;
+    }
+
     const uint64_t tp = env->ssr[0];
     const uint64_t sp = env->gpr[LINX_REG_SP];
-    linx_debug_pc_watch_init();
     for (i = 0; i < linx_debug_pc_watch_count; i++) {
         if (linx_debug_pc_watch[i] != pc) {
             continue;
@@ -2399,10 +2405,6 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
         const uint64_t hit = linx_debug_pc_watch_hits[i];
         if (hit < linx_debug_pc_watch_hit_lo ||
             hit > linx_debug_pc_watch_hit_hi) {
-            continue;
-        }
-        if (env->insn_count < linx_debug_pc_watch_count_lo ||
-            env->insn_count > linx_debug_pc_watch_count_hi) {
             continue;
         }
         if (linx_debug_pc_watch_match_gpr_enabled) {

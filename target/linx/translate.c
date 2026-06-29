@@ -112,7 +112,12 @@ static uint64_t linx_mem_trace_translate_end;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_host_insn_hook_inited;
-static bool linx_host_insn_hook_enabled;
+static bool linx_host_insn_hook_global_enabled;
+static bool linx_host_insn_hook_pc_watch_requested;
+#define LINX_TRANSLATE_PC_WATCH_MAX 16
+static bool linx_translate_pc_watch_inited;
+static unsigned linx_translate_pc_watch_count;
+static uint64_t linx_translate_pc_watch[LINX_TRANSLATE_PC_WATCH_MAX];
 
 enum {
     LINX_CALL_TRACE_SETRET = 1,
@@ -129,22 +134,6 @@ static inline bool linx_debug_local_enabled_p(void)
     return linx_debug_local_enabled;
 }
 
-static inline bool linx_host_insn_hook_enabled_p(void)
-{
-    if (!linx_host_insn_hook_inited) {
-        const char *cosim = getenv("LINX_COSIM_ENABLE");
-        const char *pc_watch = getenv("LINX_DEBUG_PC_WATCH");
-        const char *work_grab = getenv("LINX_DEBUG_WORK_GRAB");
-
-        linx_host_insn_hook_enabled =
-            (cosim && cosim[0] && strcmp(cosim, "0") != 0) ||
-            (pc_watch && pc_watch[0] && strcmp(pc_watch, "0") != 0) ||
-            (work_grab && work_grab[0] && strcmp(work_grab, "0") != 0);
-        linx_host_insn_hook_inited = true;
-    }
-    return linx_host_insn_hook_enabled;
-}
-
 static bool linx_translate_parse_u64(const char *s, uint64_t *out)
 {
     char *endp = NULL;
@@ -155,6 +144,66 @@ static bool linx_translate_parse_u64(const char *s, uint64_t *out)
     errno = 0;
     *out = strtoull(s, &endp, 0);
     return errno == 0 && endp && *endp == '\0';
+}
+
+static void linx_translate_pc_watch_init(void)
+{
+    char *copy;
+    char *saveptr = NULL;
+    char *tok;
+    const char *watch;
+
+    if (linx_translate_pc_watch_inited) {
+        return;
+    }
+    linx_translate_pc_watch_inited = true;
+
+    watch = getenv("LINX_DEBUG_PC_WATCH");
+    if (!watch || !watch[0] || strcmp(watch, "0") == 0) {
+        return;
+    }
+
+    copy = g_strdup(watch);
+    for (tok = strtok_r(copy, ",", &saveptr);
+         tok && linx_translate_pc_watch_count < LINX_TRANSLATE_PC_WATCH_MAX;
+         tok = strtok_r(NULL, ",", &saveptr)) {
+        uint64_t pc;
+        char *trimmed = g_strstrip(tok);
+        if (linx_translate_parse_u64(trimmed, &pc)) {
+            linx_translate_pc_watch[linx_translate_pc_watch_count++] = pc;
+        }
+    }
+    g_free(copy);
+}
+
+static bool linx_translate_pc_watch_matches(vaddr pc)
+{
+    linx_translate_pc_watch_init();
+    for (unsigned i = 0; i < linx_translate_pc_watch_count; i++) {
+        if (linx_translate_pc_watch[i] == pc) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool linx_host_insn_hook_enabled_p(vaddr pc)
+{
+    if (!linx_host_insn_hook_inited) {
+        const char *cosim = getenv("LINX_COSIM_ENABLE");
+        const char *pc_watch = getenv("LINX_DEBUG_PC_WATCH");
+        const char *work_grab = getenv("LINX_DEBUG_WORK_GRAB");
+
+        linx_host_insn_hook_global_enabled =
+            (cosim && cosim[0] && strcmp(cosim, "0") != 0) ||
+            (work_grab && work_grab[0] && strcmp(work_grab, "0") != 0);
+        linx_host_insn_hook_pc_watch_requested =
+            pc_watch && pc_watch[0] && strcmp(pc_watch, "0") != 0;
+        linx_host_insn_hook_inited = true;
+    }
+    return linx_host_insn_hook_global_enabled ||
+           (linx_host_insn_hook_pc_watch_requested &&
+            linx_translate_pc_watch_matches(pc));
 }
 
 static void linx_gen_mem_trace_probe(bool is_store, vaddr pc, TCGv_i64 addr,
@@ -8455,7 +8504,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
      * Arm co-sim exactly at instruction start so trigger snapshot captures
      * pre-execution architectural state for the trigger instruction.
      */
-    if (linx_host_insn_hook_enabled_p() ||
+    if (linx_host_insn_hook_enabled_p(pc) ||
         (ctx->base.tb->flags & LINX_TB_FLAG_COSIM_PRECHECK)) {
         gen_helper_linx_cosim_before_insn(tcg_env, tcg_constant_i64(pc));
     }
