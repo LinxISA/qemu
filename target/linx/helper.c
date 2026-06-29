@@ -129,6 +129,17 @@ static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
 static bool linx_heartbeat_regs_enabled;
 static unsigned linx_heartbeat_dump_code_bytes;
+static bool linx_fcmp_trace_inited;
+static bool linx_fcmp_trace_enabled;
+static bool linx_fcmp_trace_pc_filter_enabled;
+static uint64_t linx_fcmp_trace_pc_lo;
+static uint64_t linx_fcmp_trace_pc_hi = UINT64_MAX;
+static bool linx_fcmp_trace_count_filter_enabled;
+static uint64_t linx_fcmp_trace_count_lo;
+static uint64_t linx_fcmp_trace_count_hi = UINT64_MAX;
+static uint64_t linx_fcmp_trace_limit;
+static uint64_t linx_fcmp_trace_emitted;
+static uint32_t linx_fcmp_trace_op_mask;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static bool linx_tp_trace_ssr_enabled;
@@ -836,6 +847,195 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
                                      linx_heartbeat_dump_code_bytes);
         fputc('\n', stderr);
     }
+    fflush(stderr);
+}
+
+#define LINX_FCMP_TRACE_OP_FEQ (1u << 0)
+#define LINX_FCMP_TRACE_OP_FLT (1u << 1)
+#define LINX_FCMP_TRACE_OP_FGE (1u << 2)
+#define LINX_FCMP_TRACE_OP_ALL \
+    (LINX_FCMP_TRACE_OP_FEQ | \
+     LINX_FCMP_TRACE_OP_FLT | \
+     LINX_FCMP_TRACE_OP_FGE)
+
+static const char *linx_env_nonzero2(const char *name, const char *alias)
+{
+    const char *v = getenv(name);
+
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        return v;
+    }
+    v = getenv(alias);
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        return v;
+    }
+    return NULL;
+}
+
+static void linx_fcmp_trace_init(void)
+{
+    if (linx_fcmp_trace_inited) {
+        return;
+    }
+
+    linx_fcmp_trace_enabled =
+        linx_env_enabled("LINX_FCMP_TRACE") ||
+        linx_env_enabled("LINX_FP_TRACE");
+
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    const char *lo_s = linx_env_nonzero2("LINX_FCMP_TRACE_PC_LO",
+                                         "LINX_FP_TRACE_PC_LO");
+    const char *hi_s = linx_env_nonzero2("LINX_FCMP_TRACE_PC_HI",
+                                         "LINX_FP_TRACE_PC_HI");
+    if (lo_s && hi_s && linx_parse_u64(lo_s, &lo) &&
+        linx_parse_u64(hi_s, &hi)) {
+        linx_fcmp_trace_pc_lo = MIN(lo, hi);
+        linx_fcmp_trace_pc_hi = MAX(lo, hi);
+        linx_fcmp_trace_pc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = 0;
+    lo_s = getenv("LINX_FCMP_TRACE_COUNT_LO");
+    hi_s = getenv("LINX_FCMP_TRACE_COUNT_HI");
+    if ((!lo_s || !lo_s[0]) && (!hi_s || !hi_s[0])) {
+        lo_s = getenv("LINX_FP_TRACE_COUNT_LO");
+        hi_s = getenv("LINX_FP_TRACE_COUNT_HI");
+    }
+    if (lo_s && lo_s[0] && hi_s && hi_s[0] &&
+        linx_parse_u64(lo_s, &lo) && linx_parse_u64(hi_s, &hi)) {
+        linx_fcmp_trace_count_lo = MIN(lo, hi);
+        linx_fcmp_trace_count_hi = MAX(lo, hi);
+        linx_fcmp_trace_count_filter_enabled = true;
+    }
+
+    const char *limit_s = linx_env_nonzero2("LINX_FCMP_TRACE_LIMIT",
+                                            "LINX_FP_TRACE_LIMIT");
+    if (limit_s) {
+        (void)linx_parse_u64(limit_s, &linx_fcmp_trace_limit);
+    }
+
+    linx_fcmp_trace_op_mask = LINX_FCMP_TRACE_OP_ALL;
+    const char *op_s = linx_env_nonzero2("LINX_FCMP_TRACE_OP",
+                                         "LINX_FP_TRACE_OP");
+    if (op_s) {
+        uint32_t mask = 0;
+
+        if (strstr(op_s, "feq")) {
+            mask |= LINX_FCMP_TRACE_OP_FEQ;
+        }
+        if (strstr(op_s, "flt")) {
+            mask |= LINX_FCMP_TRACE_OP_FLT;
+        }
+        if (strstr(op_s, "fge")) {
+            mask |= LINX_FCMP_TRACE_OP_FGE;
+        }
+        if (mask != 0) {
+            linx_fcmp_trace_op_mask = mask;
+        }
+    }
+
+    linx_fcmp_trace_inited = true;
+}
+
+static bool linx_fcmp_trace_addr_matches(uint64_t addr)
+{
+    return addr >= linx_fcmp_trace_pc_lo &&
+           addr <= linx_fcmp_trace_pc_hi;
+}
+
+static bool linx_fcmp_trace_matches(CPULinxState *env, uint32_t op_mask)
+{
+    if (!linx_fcmp_trace_enabled) {
+        return false;
+    }
+    if ((linx_fcmp_trace_op_mask & op_mask) == 0) {
+        return false;
+    }
+    if (linx_fcmp_trace_limit != 0 &&
+        linx_fcmp_trace_emitted >= linx_fcmp_trace_limit) {
+        return false;
+    }
+    if (linx_fcmp_trace_count_filter_enabled &&
+        (env->insn_count < linx_fcmp_trace_count_lo ||
+         env->insn_count > linx_fcmp_trace_count_hi)) {
+        return false;
+    }
+    if (linx_fcmp_trace_pc_filter_enabled &&
+        !linx_fcmp_trace_addr_matches(env->pc) &&
+        !linx_fcmp_trace_addr_matches(env->bpc) &&
+        !linx_fcmp_trace_addr_matches(env->body_tpc)) {
+        return false;
+    }
+    return true;
+}
+
+static const char *linx_fcmp_trace_type_name(uint32_t srctype)
+{
+    switch (srctype & 0x3u) {
+    case 0:
+        return "fd";
+    case 1:
+        return "fs";
+    default:
+        return "illegal";
+    }
+}
+
+static void linx_fcmp_trace_emit(CPULinxState *env, const char *op,
+                                 uint32_t op_mask, uint64_t lhs,
+                                 uint64_t rhs, uint32_t srctype,
+                                 bool result)
+{
+    linx_fcmp_trace_init();
+    if (!linx_fcmp_trace_matches(env, op_mask)) {
+        return;
+    }
+
+    linx_fcmp_trace_emitted++;
+    fprintf(stderr,
+            "LINX_FCMP_TRACE op=%s count=%" PRIu64
+            " emitted=%" PRIu64
+            " pc=0x%" PRIx64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " srctype=%u type=%s"
+            " lhs=0x%" PRIx64
+            " rhs=0x%" PRIx64
+            " result=%u fcsr=0x%08x",
+            op, env->insn_count, linx_fcmp_trace_emitted,
+            env->pc, env->bpc, env->body_tpc,
+            srctype, linx_fcmp_trace_type_name(srctype),
+            lhs, rhs, result ? 1u : 0u, env->fcsr);
+
+    switch (srctype & 0x3u) {
+    case 0: {
+        union {
+            uint64_t u;
+            double d;
+        } lhs64 = { .u = float64_val((float64)lhs) },
+          rhs64 = { .u = float64_val((float64)rhs) };
+
+        fprintf(stderr, " lhs_f64=%.17g rhs_f64=%.17g",
+                lhs64.d, rhs64.d);
+        break;
+    }
+    case 1: {
+        union {
+            uint32_t u;
+            float f;
+        } lhs32 = { .u = float32_val((float32)(uint32_t)lhs) },
+          rhs32 = { .u = float32_val((float32)(uint32_t)rhs) };
+
+        fprintf(stderr, " lhs_f32=%.9g rhs_f32=%.9g",
+                (double)lhs32.f, (double)rhs32.f);
+        break;
+    }
+    default:
+        break;
+    }
+    fputc('\n', stderr);
     fflush(stderr);
 }
 
@@ -5548,6 +5748,8 @@ static uint64_t linx_fp_cmp_eq(CPULinxState *env, uint64_t a, uint64_t b, uint32
     }
 
     linx_fp_sync_to_fcsr(env);
+    linx_fcmp_trace_emit(env, "feq", LINX_FCMP_TRACE_OP_FEQ,
+                         a, b, srctype, ok);
     return ok ? 1 : 0;
 }
 
@@ -5569,6 +5771,8 @@ static uint64_t linx_fp_cmp_lt(CPULinxState *env, uint64_t a, uint64_t b, uint32
     }
 
     linx_fp_sync_to_fcsr(env);
+    linx_fcmp_trace_emit(env, "flt", LINX_FCMP_TRACE_OP_FLT,
+                         a, b, srctype, ok);
     return ok ? 1 : 0;
 }
 
@@ -5590,6 +5794,8 @@ static uint64_t linx_fp_cmp_ge(CPULinxState *env, uint64_t a, uint64_t b, uint32
     }
 
     linx_fp_sync_to_fcsr(env);
+    linx_fcmp_trace_emit(env, "fge", LINX_FCMP_TRACE_OP_FGE,
+                         a, b, srctype, ok);
     return ok ? 1 : 0;
 }
 
