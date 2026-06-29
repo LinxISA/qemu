@@ -171,6 +171,9 @@ static bool linx_mem_trace_stores = true;
 static bool linx_mem_trace_pc_filter_enabled;
 static uint64_t linx_mem_trace_pc_lo;
 static uint64_t linx_mem_trace_pc_hi;
+static bool linx_mem_trace_count_filter_enabled;
+static uint64_t linx_mem_trace_count_lo;
+static uint64_t linx_mem_trace_count_hi;
 static bool linx_mem_trace_context_enabled;
 static bool linx_mem_trace_acr_filter_enabled;
 static uint8_t linx_mem_trace_acr_filter;
@@ -1269,6 +1272,8 @@ static void linx_mem_trace_init(void)
     const char *acr_s;
     const char *lo_s;
     const char *hi_s;
+    const char *count_lo_s;
+    const char *count_hi_s;
     uint64_t lo = 0;
     uint64_t hi = 0;
 
@@ -1338,6 +1343,16 @@ static void linx_mem_trace_init(void)
         linx_mem_trace_pc_filter_enabled = true;
     }
 
+    count_lo_s = getenv("LINX_MEM_TRACE_COUNT_LO");
+    count_hi_s = getenv("LINX_MEM_TRACE_COUNT_HI");
+    if (linx_mem_trace_enabled &&
+        count_lo_s && count_hi_s &&
+        linx_parse_u64(count_lo_s, &lo) && linx_parse_u64(count_hi_s, &hi)) {
+        linx_mem_trace_count_lo = MIN(lo, hi);
+        linx_mem_trace_count_hi = MAX(lo, hi);
+        linx_mem_trace_count_filter_enabled = true;
+    }
+
     linx_mem_trace_inited = true;
 }
 
@@ -1390,6 +1405,11 @@ static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
     }
     if (linx_mem_trace_pc_filter_enabled &&
         (pc < linx_mem_trace_pc_lo || pc > linx_mem_trace_pc_hi)) {
+        return;
+    }
+    if (linx_mem_trace_count_filter_enabled &&
+        (env->insn_count < linx_mem_trace_count_lo ||
+         env->insn_count > linx_mem_trace_count_hi)) {
         return;
     }
     if (!linx_mem_trace_ranges_overlap(addr, size,
