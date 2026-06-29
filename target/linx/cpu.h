@@ -416,6 +416,7 @@ typedef struct CPUArchState {
 
     /* Dynamic instruction counter (for benchmarking/bring-up). */
     uint64_t insn_count;
+    uint64_t heartbeat_next_count;
 
     /* Pending trap reporting for synchronous faults (MMU/IOMMU). */
     uint64_t pending_trap_arg0;

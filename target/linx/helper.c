@@ -763,18 +763,31 @@ static void linx_heartbeat_init(void)
     linx_heartbeat_inited = true;
 }
 
+static uint64_t linx_heartbeat_next_count(uint64_t bucket)
+{
+    if (linx_heartbeat_interval == 0 ||
+        bucket >= UINT64_MAX / linx_heartbeat_interval) {
+        return UINT64_MAX;
+    }
+    return (bucket + 1) * linx_heartbeat_interval;
+}
+
 void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
 {
     linx_heartbeat_init();
     if (linx_heartbeat_interval == 0) {
+        env->heartbeat_next_count = UINT64_MAX;
         return;
     }
 
     uint64_t bucket = env->insn_count / linx_heartbeat_interval;
+    const uint64_t next_count = linx_heartbeat_next_count(bucket);
     const bool have_previous = linx_heartbeat_last_bucket != UINT64_MAX;
     if (bucket == linx_heartbeat_last_bucket) {
+        env->heartbeat_next_count = next_count;
         return;
     }
+    env->heartbeat_next_count = next_count;
 
     const bool same_site =
         have_previous &&

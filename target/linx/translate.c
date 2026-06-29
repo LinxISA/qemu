@@ -78,6 +78,7 @@ static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
 static TCGv_i64 cpu_insn_pc_next;
 static TCGv_i64 cpu_insn_count;
+static TCGv_i64 cpu_heartbeat_next_count;
 static TCGv_i64 cpu_pending_trap_arg0;
 static TCGv_i32 cpu_pending_trap_cause;
 
@@ -348,21 +349,48 @@ static TCGv_i64 linx_get_reg(unsigned code)
     if (code < LINX_GPR_COUNT) {
         return cpu_gpr[code];
     }
-    {
-        TCGv_i64 tmp = tcg_temp_new_i64();
-        gen_helper_linx_scalar_read_reg(tmp, tcg_env, tcg_constant_i32((int32_t)code));
-        return tmp;
+    if (!linx_debug_local_enabled_p()) {
+        if (code < 28u) {
+            return cpu_tq[code - 24u];
+        }
+        if (code < 32u) {
+            return cpu_uq[code - 28u];
+        }
     }
+
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    gen_helper_linx_scalar_read_reg(tmp, tcg_env, tcg_constant_i32((int32_t)code));
+    return tmp;
 }
 
 static void linx_push_t(TCGv_i64 v)
 {
-    gen_helper_linx_tq_push(tcg_env, v);
+    if (linx_debug_local_enabled_p()) {
+        gen_helper_linx_tq_push(tcg_env, v);
+        return;
+    }
+
+    TCGv_i64 value = tcg_temp_new_i64();
+    tcg_gen_mov_i64(value, v);
+    tcg_gen_mov_i64(cpu_tq[3], cpu_tq[2]);
+    tcg_gen_mov_i64(cpu_tq[2], cpu_tq[1]);
+    tcg_gen_mov_i64(cpu_tq[1], cpu_tq[0]);
+    tcg_gen_mov_i64(cpu_tq[0], value);
 }
 
 static void linx_push_u(TCGv_i64 v)
 {
-    gen_helper_linx_uq_push(tcg_env, v);
+    if (linx_debug_local_enabled_p()) {
+        gen_helper_linx_uq_push(tcg_env, v);
+        return;
+    }
+
+    TCGv_i64 value = tcg_temp_new_i64();
+    tcg_gen_mov_i64(value, v);
+    tcg_gen_mov_i64(cpu_uq[3], cpu_uq[2]);
+    tcg_gen_mov_i64(cpu_uq[2], cpu_uq[1]);
+    tcg_gen_mov_i64(cpu_uq[1], cpu_uq[0]);
+    tcg_gen_mov_i64(cpu_uq[0], value);
 }
 
 static void linx_set_dest(unsigned dst, TCGv_i64 v)
@@ -2831,15 +2859,9 @@ static bool trans_xor(DisasContext *ctx, arg_xor *a)
 
 static bool trans_addi(DisasContext *ctx, arg_addi *a)
 {
+    TCGv_i64 l = linx_get_reg(a->SrcL);
     TCGv_i64 out = tcg_temp_new_i64();
-    if (a->SrcL < LINX_GPR_COUNT) {
-        TCGv_i64 l = linx_get_reg(a->SrcL);
-        tcg_gen_addi_i64(out, l, (uint64_t)a->uimm12);
-    } else {
-        gen_helper_linx_scalar_addi(out, tcg_env,
-                                    tcg_constant_i32((int32_t)a->SrcL),
-                                    tcg_constant_i64((uint64_t)a->uimm12));
-    }
+    tcg_gen_addi_i64(out, l, (uint64_t)a->uimm12);
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
@@ -8423,7 +8445,11 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 static void linx_tr_tb_start(DisasContextBase *db, CPUState *cpu)
 {
     if (linx_heartbeat_enabled) {
+        TCGLabel *done = gen_new_label();
+        tcg_gen_brcond_i64(TCG_COND_LTU, cpu_insn_count,
+                           cpu_heartbeat_next_count, done);
         gen_helper_linx_heartbeat(tcg_env, tcg_constant_i64(db->pc_first));
+        gen_set_label(done);
     }
     if (linx_pc_sample_enabled) {
         gen_helper_linx_pc_sample(tcg_env, tcg_constant_i64(db->pc_first));
@@ -8849,6 +8875,9 @@ void linx_translate_init(void)
     cpu_insn_count = tcg_global_mem_new_i64(tcg_env,
                                             offsetof(CPULinxState, insn_count),
                                             "insn_count");
+    cpu_heartbeat_next_count =
+        tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, heartbeat_next_count),
+                               "heartbeat_next_count");
     cpu_pending_trap_arg0 =
         tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, pending_trap_arg0),
                                "pending_trap_arg0");
