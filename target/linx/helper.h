@@ -11,7 +11,7 @@ DEF_HELPER_4(linx_dbg_check_load, void, env, i64, i64, i32)
 DEF_HELPER_4(linx_dbg_check_store, void, env, i64, i64, i32)
 DEF_HELPER_5(linx_mem_trace_load, void, env, i64, i64, i32, i64)
 DEF_HELPER_5(linx_mem_trace_store, void, env, i64, i64, i32, i64)
-DEF_HELPER_1(linx_tlb_iall, void, env)
+DEF_HELPER_2(linx_tlb_iall, void, env, i64)
 DEF_HELPER_5(linx_service_request, noreturn, env, i32, i64, i64, i64)
 DEF_HELPER_2(linx_acr_enter, noreturn, env, i32)
 
