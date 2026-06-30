@@ -752,13 +752,60 @@ static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
  *   BSTART COND, hot_target
  *
  * When the FALL block commits with CARG set and COND true, the immediate
- * direct trampoline is not the semantic successor. Skip to the following block
- * header and let that header's normal branch semantics choose the target.
+ * direct trampoline is not the semantic successor.  When the following marker
+ * is a fixed-target COND header, skip directly to its target: entering the COND
+ * header as a fresh block would reset cond/carg and lose the predicate that
+ * selected this edge.
  */
+static bool linx_cond_bstart_target_at_pc(CPULinxState *env, vaddr pc,
+                                          vaddr *target_out)
+{
+    CPUState *cs = env_cpu(env);
+    uint8_t buf[4];
+    uint16_t hw;
+    unsigned len;
+
+    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+        return false;
+    }
+
+    hw = lduw_le_p(buf);
+    len = linx_insn_len(hw);
+
+    if (len == 2) {
+        if ((hw & 0x000f) != 0x0004) {
+            return false;
+        }
+        *target_out = pc + (((vaddr)sextract32(hw, 4, 12)) << 1);
+        return true;
+    }
+
+    if (len == 4) {
+        uint32_t insn;
+
+        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
+            return false;
+        }
+        insn = ldl_le_p(buf);
+        if ((insn & 0x7fu) == 0x21u) {
+            *target_out = pc + (((vaddr)sextract32(insn, 7, 25)) << 1);
+            return true;
+        }
+        if ((insn & 0x7fu) == 0x01u &&
+            ((insn >> 12) & 0x7u) == LINX_BR_COND) {
+            *target_out = pc + (((vaddr)sextract32(insn, 15, 17)) << 1);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
                                              unsigned len, vaddr *skip_pc)
 {
     vaddr next_pc = pc + len;
+    vaddr cond_target = 0;
 
     /*
      * Only skip marker-only direct trampolines.  A direct BSTART followed by a
@@ -767,6 +814,11 @@ static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
      */
     if (!linx_is_bstart_at_pc(env, next_pc)) {
         return false;
+    }
+
+    if (linx_cond_bstart_target_at_pc(env, next_pc, &cond_target)) {
+        *skip_pc = cond_target;
+        return true;
     }
 
     *skip_pc = next_pc;
