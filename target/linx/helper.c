@@ -102,6 +102,7 @@ static unsigned linx_debug_pc_watch_dump_source_indexes[LINX_DEBUG_PC_WATCH_DUMP
 static const char *linx_debug_pc_watch_dump_source_names[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
 static unsigned linx_debug_pc_watch_dump_code_bytes;
 static bool linx_debug_pc_watch_exit;
+static bool linx_debug_pc_watch_dump_call_ring;
 static bool linx_debug_pc_watch_regs_enabled;
 static bool linx_debug_pc_watch_print_enabled = true;
 static bool linx_debug_pc_watch_ring_enabled;
@@ -2208,6 +2209,10 @@ static void linx_debug_pc_watch_init(void)
     v = getenv("LINX_DEBUG_PC_WATCH_EXIT");
     linx_debug_pc_watch_exit = v && v[0] && strcmp(v, "0") != 0;
 
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_CALL_RING");
+    linx_debug_pc_watch_dump_call_ring =
+        v && v[0] && strcmp(v, "0") != 0;
+
     v = getenv("LINX_DEBUG_PC_WATCH_PRINT");
     if (v && v[0] && strcmp(v, "0") == 0) {
         linx_debug_pc_watch_print_enabled = false;
@@ -2516,6 +2521,9 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                     linx_debug_pc_watch_dump_index,
                     linx_debug_pc_watch_dump_name);
             }
+        }
+        if (linx_debug_pc_watch_dump_call_ring) {
+            linx_call_trace_dump_recent(env, "pc_watch", pc);
         }
         if (pc == UINT64_C(0xffffffff80007bf8) ||
             pc == UINT64_C(0xffffffff80007bac)) {
