@@ -1300,8 +1300,20 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         return;
     }
 
-    /* Coupled block: commit any tile-block side effects before control-flow commit. */
-    gen_helper_linx_tile_commit(tcg_env);
+    /*
+     * Coupled tile blocks commit side effects before control-flow commit.
+     * Scalar SPEC blocks reach this path very frequently with no tile
+     * descriptor pending; branch around the helper in that common case while
+     * preserving dynamic descriptor state that may have been decoded in an
+     * earlier TB.
+     */
+    {
+        TCGLabel *no_tile_commit = gen_new_label();
+        tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_tile_iot_valid, 0,
+                            no_tile_commit);
+        gen_helper_linx_tile_commit(tcg_env);
+        gen_set_label(no_tile_commit);
+    }
 
     switch (ctx->brtype & 0x7) {
     case LINX_BR_FALL: {
