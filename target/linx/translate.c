@@ -7668,9 +7668,10 @@ static bool trans_tlb_iall(DisasContext *ctx, arg_tlb_iall *a)
 
 static bool trans_tlb_ia(DisasContext *ctx, arg_tlb_ia *a)
 {
-    (void)a;
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    gen_helper_linx_tlb_iall(tcg_env, tcg_constant_i64(pc));
+    TCGv_i64 asid = linx_get_reg(a->SrcL);
+
+    gen_helper_linx_tlb_ia(tcg_env, asid, tcg_constant_i64(pc));
     tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -7679,9 +7680,10 @@ static bool trans_tlb_ia(DisasContext *ctx, arg_tlb_ia *a)
 
 static bool trans_tlb_iv(DisasContext *ctx, arg_tlb_iv *a)
 {
-    (void)a;
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    gen_helper_linx_tlb_iall(tcg_env, tcg_constant_i64(pc));
+    TCGv_i64 addr = linx_get_reg(a->SrcL);
+
+    gen_helper_linx_tlb_iv(tcg_env, addr, tcg_constant_i64(pc));
     tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -7690,9 +7692,10 @@ static bool trans_tlb_iv(DisasContext *ctx, arg_tlb_iv *a)
 
 static bool trans_tlb_iav(DisasContext *ctx, arg_tlb_iav *a)
 {
-    (void)a;
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    gen_helper_linx_tlb_iall(tcg_env, tcg_constant_i64(pc));
+    TCGv_i64 packed = linx_get_reg(a->SrcL);
+
+    gen_helper_linx_tlb_iav(tcg_env, packed, tcg_constant_i64(pc));
     tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;

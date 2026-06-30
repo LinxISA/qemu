@@ -42,6 +42,18 @@ static inline void linx_bstart_cache_reset(CPULinxState *env)
     memset(env->bstart_cache_valid, 0, sizeof(env->bstart_cache_valid));
 }
 
+static inline void linx_bstart_cache_reset_page(CPULinxState *env, uint64_t addr)
+{
+    const uint64_t page = addr & TARGET_PAGE_MASK;
+
+    for (size_t i = 0; i < LINX_BSTART_CACHE_SIZE; i++) {
+        if (env->bstart_cache_valid[i] &&
+            (env->bstart_cache_tag[i] & TARGET_PAGE_MASK) == page) {
+            env->bstart_cache_valid[i] = 0;
+        }
+    }
+}
+
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
 static bool linx_parse_u64(const char *s, uint64_t *out);
 static inline bool linx_env_enabled(const char *name);
@@ -1017,7 +1029,9 @@ static bool linx_tlb_trace_matches(CPULinxState *env, uint64_t pc)
     return true;
 }
 
-static void linx_tlb_trace_emit(CPULinxState *env, const char *op, uint64_t pc)
+static void linx_tlb_trace_emit(CPULinxState *env, const char *op,
+                                uint64_t pc, uint64_t operand,
+                                bool have_operand)
 {
     linx_tlb_trace_init();
     if (!linx_tlb_trace_matches(env, pc)) {
@@ -1046,6 +1060,9 @@ static void linx_tlb_trace_emit(CPULinxState *env, const char *op, uint64_t pc)
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x0000], env->gpr[LINX_REG_A0],
             env->gpr[LINX_REG_A1]);
+    if (have_operand) {
+        fprintf(stderr, " operand=0x%" PRIx64, operand);
+    }
     if (linx_tlb_trace_code_bytes) {
         linx_fprint_guest_code_bytes(stderr, env, "pc", pc,
                                      linx_tlb_trace_code_bytes);
@@ -5062,9 +5079,36 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
 
 void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)
 {
-    linx_tlb_trace_emit(env, "iall", pc);
+    linx_tlb_trace_emit(env, "iall", pc, 0, false);
     tlb_flush(env_cpu(env));
     linx_bstart_cache_reset(env);
+}
+
+void HELPER(linx_tlb_ia)(CPULinxState *env, uint64_t asid, uint64_t pc)
+{
+    linx_tlb_trace_emit(env, "ia", pc, asid, true);
+    /*
+     * QEMU's current Linx TLB model is not ASID-tagged independently from
+     * TTBR/MMU-index state, so keep TLB.IA as a conservative local full flush.
+     */
+    tlb_flush(env_cpu(env));
+    linx_bstart_cache_reset(env);
+}
+
+void HELPER(linx_tlb_iv)(CPULinxState *env, uint64_t addr, uint64_t pc)
+{
+    linx_tlb_trace_emit(env, "iv", pc, addr, true);
+    tlb_flush_page(env_cpu(env), (vaddr)addr);
+    linx_bstart_cache_reset_page(env, addr);
+}
+
+void HELPER(linx_tlb_iav)(CPULinxState *env, uint64_t packed, uint64_t pc)
+{
+    const uint64_t addr = packed & ((UINT64_C(1) << 44) - 1);
+
+    linx_tlb_trace_emit(env, "iav", pc, packed, true);
+    tlb_flush_page(env_cpu(env), (vaddr)addr);
+    linx_bstart_cache_reset_page(env, addr);
 }
 
 /* ------------------------------------------------------------------------- */
