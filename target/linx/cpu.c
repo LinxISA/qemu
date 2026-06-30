@@ -50,6 +50,19 @@ static bool linx_tlb_fault_trace_inited;
 static bool linx_tlb_fault_trace_enabled;
 static uint64_t linx_tlb_fault_trace_limit;
 static uint64_t linx_tlb_fault_trace_emitted;
+static bool linx_tlb_fill_trace_inited;
+static bool linx_tlb_fill_trace_enabled;
+static bool linx_tlb_fill_trace_va_filter_enabled;
+static uint64_t linx_tlb_fill_trace_va_lo;
+static uint64_t linx_tlb_fill_trace_va_hi = UINT64_MAX;
+static bool linx_tlb_fill_trace_pc_filter_enabled;
+static uint64_t linx_tlb_fill_trace_pc_lo;
+static uint64_t linx_tlb_fill_trace_pc_hi = UINT64_MAX;
+static bool linx_tlb_fill_trace_count_filter_enabled;
+static uint64_t linx_tlb_fill_trace_count_lo;
+static uint64_t linx_tlb_fill_trace_count_hi = UINT64_MAX;
+static uint64_t linx_tlb_fill_trace_limit = 64;
+static uint64_t linx_tlb_fill_trace_emitted;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static uint64_t linx_tp_trace_limit;
@@ -92,6 +105,20 @@ static bool linx_cpu_env_enabled(const char *name)
     const char *value = getenv(name);
 
     return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static const char *linx_cpu_env_nonzero2(const char *name, const char *alias)
+{
+    const char *value = getenv(name);
+
+    if (value && value[0] && strcmp(value, "0") != 0) {
+        return value;
+    }
+    value = getenv(alias);
+    if (value && value[0] && strcmp(value, "0") != 0) {
+        return value;
+    }
+    return NULL;
 }
 
 static const char *const linx_cpu_gpr_names[LINX_GPR_COUNT] = {
@@ -212,11 +239,13 @@ static void linx_tlb_fault_trace_init(void)
         return;
     }
 
-    const char *enabled_s = getenv("LINX_TLB_FAULT_TRACE");
     linx_tlb_fault_trace_enabled =
-        enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
+        linx_cpu_env_enabled("LINX_TLB_FAULT_TRACE") ||
+        linx_cpu_env_enabled("LINX_QEMU_TLB_FAULT_TRACE");
 
-    const char *limit_s = getenv("LINX_TLB_FAULT_TRACE_LIMIT");
+    const char *limit_s =
+        linx_cpu_env_nonzero2("LINX_TLB_FAULT_TRACE_LIMIT",
+                              "LINX_QEMU_TLB_FAULT_TRACE_LIMIT");
     if (limit_s) {
         (void)linx_cpu_parse_u64(limit_s, &linx_tlb_fault_trace_limit);
     }
@@ -1233,6 +1262,9 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         int trace_fetch_prot = 0;
         hwaddr trace_fetch_tlb_size = TARGET_PAGE_SIZE;
         uint8_t trace_fetch_cause = 0;
+        const vaddr trace_mem_va =
+            trapnum == LINX_TRAPNUM_DATA_EXP ?
+            (vaddr)env->pending_trap_arg0 : (vaddr)tpc;
         const bool trace_fetch_ok =
             linx_mmu_translate(cs, env, (vaddr)tpc, MMU_INST_FETCH,
                                trace_mmu_idx, &trace_fetch_pa,
@@ -1243,7 +1275,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
         hwaddr trace_store_tlb_size = TARGET_PAGE_SIZE;
         uint8_t trace_store_cause = 0;
         const bool trace_store_ok =
-            linx_mmu_translate(cs, env, (vaddr)tpc, MMU_DATA_STORE,
+            linx_mmu_translate(cs, env, trace_mem_va, MMU_DATA_STORE,
                                trace_mmu_idx, &trace_store_pa,
                                &trace_store_prot, &trace_store_tlb_size,
                                &trace_store_cause);
@@ -1251,7 +1283,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
             linx_probe_legacy_mmu(env, (vaddr)tpc, MMU_INST_FETCH,
                                   trace_mmu_idx);
         const LinxLegacyMmuProbe trace_store_probe =
-            linx_probe_legacy_mmu(env, (vaddr)tpc, MMU_DATA_STORE,
+            linx_probe_legacy_mmu(env, trace_mem_va, MMU_DATA_STORE,
                                   trace_mmu_idx);
         fprintf(stderr,
                 "LINX_FAULT_TRACE count=%" PRIu64
@@ -1261,7 +1293,8 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 " src_bpc=0x%" PRIx64 " report_bpc=0x%" PRIx64
                 " envpc=0x%" PRIx64 " body_tpc=0x%" PRIx64
                 " in_body=%u brtype=%u tgt=0x%" PRIx64
-                " traparg0=0x%" PRIx64 " cause=0x%x cstate=0x%" PRIx64
+                " traparg0=0x%" PRIx64 " mem_va=0x%" VADDR_PRIx
+                " cause=0x%x cstate=0x%" PRIx64
                 " ra=0x%" PRIx64 " sp=0x%" PRIx64
                 " tp=0x%" PRIx64
                 " a0=0x%" PRIx64 " a1=0x%" PRIx64
@@ -1290,7 +1323,7 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 precise_user_exception ? 1u : 0u, tpc, tpc_next,
                 src_bpc, report_bpc, env->pc, env->body_tpc,
                 env->in_body, env->brtype, env->tgt,
-                env->pending_trap_arg0, env->pending_trap_cause,
+                env->pending_trap_arg0, trace_mem_va, env->pending_trap_cause,
                 src_cstate, env->gpr[LINX_REG_RA], env->gpr[LINX_REG_SP],
                 env->ssr[LINX_SSR_TP], env->gpr[LINX_REG_A0],
                 env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
@@ -1742,6 +1775,20 @@ static inline uint8_t linx_fault_acc(MMUAccessType access_type)
     }
 }
 
+static const char *linx_mmu_access_name(MMUAccessType access_type)
+{
+    switch (access_type) {
+    case MMU_INST_FETCH:
+        return "fetch";
+    case MMU_DATA_STORE:
+        return "store";
+    case MMU_DATA_LOAD:
+        return "load";
+    default:
+        return "unknown";
+    }
+}
+
 static LinxLegacyMmuProbe linx_probe_legacy_mmu(CPULinxState *env, vaddr va,
                                                 MMUAccessType access_type,
                                                 int mmu_idx)
@@ -1862,6 +1909,168 @@ static LinxLegacyMmuProbe linx_probe_legacy_mmu(CPULinxState *env, vaddr va,
 
     probe.why = "walk-fell-through";
     return probe;
+}
+
+static void linx_tlb_fill_trace_init(void)
+{
+    if (linx_tlb_fill_trace_inited) {
+        return;
+    }
+
+    linx_tlb_fill_trace_enabled =
+        linx_cpu_env_enabled("LINX_TLB_FILL_TRACE") ||
+        linx_cpu_env_enabled("LINX_QEMU_TLB_FILL_TRACE");
+
+    uint64_t lo = 0;
+    uint64_t hi = UINT64_MAX;
+    const char *lo_s =
+        linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_VA_LO",
+                              "LINX_QEMU_TLB_FILL_TRACE_VA_LO");
+    const char *hi_s =
+        linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_VA_HI",
+                              "LINX_QEMU_TLB_FILL_TRACE_VA_HI");
+    const char *va_s =
+        linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_VA",
+                              "LINX_QEMU_TLB_FILL_TRACE_VA");
+    if (va_s && linx_cpu_parse_u64(va_s, &lo)) {
+        hi = lo;
+        linx_tlb_fill_trace_va_filter_enabled = true;
+    } else {
+        const bool have_lo = lo_s && linx_cpu_parse_u64(lo_s, &lo);
+        const bool have_hi = hi_s && linx_cpu_parse_u64(hi_s, &hi);
+        if (have_lo || have_hi) {
+            linx_tlb_fill_trace_va_filter_enabled = true;
+        }
+    }
+    if (linx_tlb_fill_trace_va_filter_enabled) {
+        linx_tlb_fill_trace_va_lo = MIN(lo, hi);
+        linx_tlb_fill_trace_va_hi = MAX(lo, hi);
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_PC_LO",
+                                 "LINX_QEMU_TLB_FILL_TRACE_PC_LO");
+    hi_s = linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_PC_HI",
+                                 "LINX_QEMU_TLB_FILL_TRACE_PC_HI");
+    const bool have_pc_lo = lo_s && linx_cpu_parse_u64(lo_s, &lo);
+    const bool have_pc_hi = hi_s && linx_cpu_parse_u64(hi_s, &hi);
+    if (have_pc_lo || have_pc_hi) {
+        linx_tlb_fill_trace_pc_lo = MIN(lo, hi);
+        linx_tlb_fill_trace_pc_hi = MAX(lo, hi);
+        linx_tlb_fill_trace_pc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_COUNT_LO",
+                                 "LINX_QEMU_TLB_FILL_TRACE_COUNT_LO");
+    hi_s = linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_COUNT_HI",
+                                 "LINX_QEMU_TLB_FILL_TRACE_COUNT_HI");
+    const bool have_count_lo = lo_s && linx_cpu_parse_u64(lo_s, &lo);
+    const bool have_count_hi = hi_s && linx_cpu_parse_u64(hi_s, &hi);
+    if (have_count_lo || have_count_hi) {
+        linx_tlb_fill_trace_count_lo = MIN(lo, hi);
+        linx_tlb_fill_trace_count_hi = MAX(lo, hi);
+        linx_tlb_fill_trace_count_filter_enabled = true;
+    }
+
+    const char *limit_s =
+        linx_cpu_env_nonzero2("LINX_TLB_FILL_TRACE_LIMIT",
+                              "LINX_QEMU_TLB_FILL_TRACE_LIMIT");
+    if (limit_s) {
+        (void)linx_cpu_parse_u64(limit_s, &linx_tlb_fill_trace_limit);
+    }
+
+    linx_tlb_fill_trace_inited = true;
+}
+
+static bool linx_tlb_fill_trace_addr_matches(uint64_t addr)
+{
+    return addr >= linx_tlb_fill_trace_va_lo &&
+           addr <= linx_tlb_fill_trace_va_hi;
+}
+
+static bool linx_tlb_fill_trace_pc_matches(CPULinxState *env)
+{
+    return !linx_tlb_fill_trace_pc_filter_enabled ||
+           (env->pc >= linx_tlb_fill_trace_pc_lo &&
+            env->pc <= linx_tlb_fill_trace_pc_hi) ||
+           (env->bpc >= linx_tlb_fill_trace_pc_lo &&
+            env->bpc <= linx_tlb_fill_trace_pc_hi) ||
+           (env->body_tpc >= linx_tlb_fill_trace_pc_lo &&
+            env->body_tpc <= linx_tlb_fill_trace_pc_hi);
+}
+
+static bool linx_tlb_fill_trace_matches(CPULinxState *env, vaddr addr)
+{
+    linx_tlb_fill_trace_init();
+    if (!linx_tlb_fill_trace_enabled) {
+        return false;
+    }
+    if (linx_tlb_fill_trace_limit != 0 &&
+        linx_tlb_fill_trace_emitted >= linx_tlb_fill_trace_limit) {
+        return false;
+    }
+    if (linx_tlb_fill_trace_count_filter_enabled &&
+        (env->insn_count < linx_tlb_fill_trace_count_lo ||
+         env->insn_count > linx_tlb_fill_trace_count_hi)) {
+        return false;
+    }
+    if (linx_tlb_fill_trace_va_filter_enabled &&
+        !linx_tlb_fill_trace_addr_matches((uint64_t)addr)) {
+        return false;
+    }
+    return linx_tlb_fill_trace_pc_matches(env);
+}
+
+static void linx_tlb_fill_trace_emit(CPULinxState *env, vaddr addr, int size,
+                                     MMUAccessType access_type, int mmu_idx,
+                                     bool probe, bool ok, hwaddr pa, int prot,
+                                     hwaddr tlb_size, uint8_t cause)
+{
+    if (!linx_tlb_fill_trace_matches(env, addr)) {
+        return;
+    }
+
+    linx_tlb_fill_trace_emitted++;
+    const LinxLegacyMmuProbe legacy =
+        linx_probe_legacy_mmu(env, addr, access_type, mmu_idx);
+    fprintf(stderr,
+            "LINX_TLB_FILL_TRACE count=%" PRIu64
+            " emitted=%" PRIu64
+            " ok=%u access=%s access_id=%d size=%d"
+            " va=0x%" VADDR_PRIx
+            " pa=0x%" HWADDR_PRIx
+            " prot=0x%x tlb_size=0x%" HWADDR_PRIx
+            " cause=0x%x mmu=%d probe=%d"
+            " pc=0x%" PRIx64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " envpc=0x%" PRIx64
+            " acr=%u cstate=0x%" PRIx64
+            " tcr=0x%" PRIx64
+            " ttbr0=0x%" PRIx64
+            " ttbr1=0x%" PRIx64
+            " legacy=%u legacy_ok=%u legacy_why=%s"
+            " legacy_level=%u legacy_desc_addr=0x%" HWADDR_PRIx
+            " legacy_desc=0x%" PRIx64
+            " legacy_prot=0x%x legacy_pa=0x%" HWADDR_PRIx
+            " legacy_block=0x%" HWADDR_PRIx
+            " legacy_cause=0x%x\n",
+            env->insn_count, linx_tlb_fill_trace_emitted,
+            ok ? 1u : 0u, linx_mmu_access_name(access_type), access_type,
+            size, addr, pa, prot, tlb_size, cause, mmu_idx, probe ? 1 : 0,
+            env->pc, env->bpc, env->body_tpc, env->pc,
+            env->acr & 0xFu, env->ssr[LINX_SSR_CSTATE],
+            env->ssr_acr[1][LINX_SSR_TCR],
+            env->ssr_acr[1][LINX_SSR_TTBR0],
+            env->ssr_acr[1][LINX_SSR_TTBR1],
+            legacy.legacy ? 1u : 0u, legacy.ok ? 1u : 0u,
+            legacy.why ? legacy.why : "null", legacy.level,
+            legacy.desc_addr, legacy.desc, legacy.prot, legacy.pa,
+            legacy.block_size, legacy.cause);
+    fflush(stderr);
 }
 
 static inline bool linx_debug_fetch_va(vaddr va)
@@ -2227,6 +2436,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 
     if (linx_mmu_translate(cs, env, addr, access_type, mmu_idx,
                            &pa, &prot, &tlb_size, &cause)) {
+        linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
+                                 probe, true, pa, prot, tlb_size, cause);
         if (access_type == MMU_INST_FETCH &&
             (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
             mmu_idx == 1 &&
@@ -2265,6 +2476,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         return true;
     }
 
+    linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
+                             probe, false, pa, prot, tlb_size, cause);
     if (probe) {
         return false;
     }
