@@ -192,6 +192,8 @@ static bool linx_syscall_trace_regs_enabled;
 static uint64_t linx_syscall_trace_string_max = 96;
 static bool linx_syscall_trace_dump_arg_enabled;
 static unsigned linx_syscall_trace_dump_arg;
+static unsigned linx_syscall_trace_dump_arg_count;
+static unsigned linx_syscall_trace_dump_args[6];
 static uint64_t linx_syscall_trace_dump_bytes;
 static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
@@ -1512,12 +1514,58 @@ static void linx_syscall_trace_init(void)
         linx_syscall_trace_string_max = 255;
     }
 
+    const char *dump_args_s = getenv("LINX_SYSCALL_TRACE_DUMP_ARGS");
+    if (dump_args_s && dump_args_s[0]) {
+        char *copy = g_strdup(dump_args_s);
+        char *saveptr = NULL;
+        char *tok;
+
+        for (tok = strtok_r(copy, ",", &saveptr);
+             tok && linx_syscall_trace_dump_arg_count < ARRAY_SIZE(linx_syscall_trace_dump_args);
+             tok = strtok_r(NULL, ",", &saveptr)) {
+            uint64_t arg = 0;
+            char *trimmed = g_strstrip(tok);
+
+            if (!trimmed[0]) {
+                continue;
+            }
+            if (linx_parse_u64(trimmed, &arg) && arg < 6) {
+                bool duplicate = false;
+
+                for (unsigned i = 0; i < linx_syscall_trace_dump_arg_count; i++) {
+                    if (linx_syscall_trace_dump_args[i] == (unsigned)arg) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    linx_syscall_trace_dump_args[
+                        linx_syscall_trace_dump_arg_count++] = (unsigned)arg;
+                }
+            }
+        }
+        g_free(copy);
+    }
+
     const char *dump_arg_s = getenv("LINX_SYSCALL_TRACE_DUMP_ARG");
     if (dump_arg_s && dump_arg_s[0]) {
         uint64_t arg = 0;
         if (linx_parse_u64(dump_arg_s, &arg) && arg < 6) {
             linx_syscall_trace_dump_arg_enabled = true;
             linx_syscall_trace_dump_arg = (unsigned)arg;
+            bool duplicate = false;
+
+            for (unsigned i = 0; i < linx_syscall_trace_dump_arg_count; i++) {
+                if (linx_syscall_trace_dump_args[i] == linx_syscall_trace_dump_arg) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate &&
+                linx_syscall_trace_dump_arg_count < ARRAY_SIZE(linx_syscall_trace_dump_args)) {
+                linx_syscall_trace_dump_args[
+                    linx_syscall_trace_dump_arg_count++] = linx_syscall_trace_dump_arg;
+            }
         }
     }
 
@@ -1529,7 +1577,8 @@ static void linx_syscall_trace_init(void)
             linx_syscall_trace_dump_bytes = MIN((uint64_t)256, bytes);
         }
     }
-    if (linx_syscall_trace_dump_arg_enabled &&
+    if ((linx_syscall_trace_dump_arg_enabled ||
+         linx_syscall_trace_dump_arg_count != 0) &&
         linx_syscall_trace_dump_bytes == 0) {
         linx_syscall_trace_dump_bytes = 64;
     }
@@ -1717,42 +1766,43 @@ static void linx_syscall_trace_emit_argdump(CPULinxState *env, uint64_t nr,
                                             uint64_t bpc, uint64_t tpc,
                                             uint64_t ret)
 {
-    uint8_t bytes[256] = { 0 };
     CPUState *cs;
-    uint64_t addr;
-    int rc;
 
-    if (!linx_syscall_trace_dump_arg_enabled ||
+    if (linx_syscall_trace_dump_arg_count == 0 ||
         linx_syscall_trace_dump_bytes == 0) {
         return;
     }
 
     cs = env_cpu(env);
-    addr = env->syscall_trace_args[linx_syscall_trace_dump_arg];
-    rc = cpu_memory_rw_debug(cs, addr, bytes,
-                             linx_syscall_trace_dump_bytes, 0);
+    for (unsigned arg_i = 0; arg_i < linx_syscall_trace_dump_arg_count; arg_i++) {
+        uint8_t bytes[256] = { 0 };
+        const unsigned arg = linx_syscall_trace_dump_args[arg_i];
+        const uint64_t addr = env->syscall_trace_args[arg];
+        const int rc = cpu_memory_rw_debug(cs, addr, bytes,
+                                           linx_syscall_trace_dump_bytes, 0);
 
-    fprintf(stderr,
-            "LINX_SYSCALL_ARGDUMP phase=return nr=%" PRIu64
-            " count=%" PRIu64
-            " bpc=0x%" PRIx64
-            " tpc=0x%" PRIx64
-            " arg=%u"
-            " addr=0x%" PRIx64
-            " bytes=%" PRIu64
-            " rc=%d"
-            " ret=0x%" PRIx64
-            " data=",
-            nr, env->insn_count, bpc, tpc, linx_syscall_trace_dump_arg,
-            addr, linx_syscall_trace_dump_bytes, rc, ret);
-    if (rc == 0) {
-        for (uint64_t i = 0; i < linx_syscall_trace_dump_bytes; i++) {
-            fprintf(stderr, "%02x", bytes[i]);
+        fprintf(stderr,
+                "LINX_SYSCALL_ARGDUMP phase=return nr=%" PRIu64
+                " count=%" PRIu64
+                " bpc=0x%" PRIx64
+                " tpc=0x%" PRIx64
+                " arg=%u"
+                " addr=0x%" PRIx64
+                " bytes=%" PRIu64
+                " rc=%d"
+                " ret=0x%" PRIx64
+                " data=",
+                nr, env->insn_count, bpc, tpc, arg,
+                addr, linx_syscall_trace_dump_bytes, rc, ret);
+        if (rc == 0) {
+            for (uint64_t i = 0; i < linx_syscall_trace_dump_bytes; i++) {
+                fprintf(stderr, "%02x", bytes[i]);
+            }
+        } else {
+            fputs("<fault>", stderr);
         }
-    } else {
-        fputs("<fault>", stderr);
+        fputc('\n', stderr);
     }
-    fputc('\n', stderr);
 }
 
 static void linx_syscall_trace_unpaired_maybe_emit(CPULinxState *env,

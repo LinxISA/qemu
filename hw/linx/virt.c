@@ -45,6 +45,16 @@ static bool linx_test_finisher_enabled(void)
     return v && v[0] && strcmp(v, "0") != 0;
 }
 
+static bool linx_virtio_mmio_debug_enabled(void)
+{
+    const char *v = getenv("LINX_VIRTIO_MMIO_DEBUG");
+
+    if (!v) {
+        v = getenv("LINX_QEMU_VIRTIO_MMIO_DEBUG");
+    }
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
 #if TARGET_LONG_BITS == 32
 static const char *linx_elf32_sym_name(const uint8_t *buf, size_t len,
                                        const Elf32_Shdr *strtab_sh,
@@ -3620,6 +3630,13 @@ static void linx_virt_init(MachineState *machine)
         sysbus_mmio_map(sbd, 0, base);
         s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu, irq);
         sysbus_connect_irq(sbd, 0, s->virtio_irq[i]);
+        if (linx_virtio_mmio_debug_enabled()) {
+            fprintf(stderr,
+                    "LINX_VIRTIO_MMIO_SLOT index=%d base=0x%" HWADDR_PRIx
+                    " size=0x%x irq=%d proxy=%p irq_handle=%p\n",
+                    i, base, LINX_VIRTIO_MMIO_SIZE, irq, vdev,
+                    s->virtio_irq[i]);
+        }
     }
 
     ram = s->dfx_ram_ptr;
