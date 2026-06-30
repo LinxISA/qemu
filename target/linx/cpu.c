@@ -38,6 +38,9 @@ static bool linx_fault_trace_enabled;
 static bool linx_fault_trace_filter_enabled;
 static uint64_t linx_fault_trace_filter_lo;
 static uint64_t linx_fault_trace_filter_hi;
+static bool linx_fault_trace_addr_filter_enabled;
+static uint64_t linx_fault_trace_addr_lo;
+static uint64_t linx_fault_trace_addr_hi = UINT64_MAX;
 static bool linx_fault_trace_count_filter_enabled;
 static uint64_t linx_fault_trace_count_lo;
 static uint64_t linx_fault_trace_count_hi;
@@ -121,6 +124,39 @@ static const char *linx_cpu_env_nonzero2(const char *name, const char *alias)
     return NULL;
 }
 
+static const char *linx_cpu_env_nonzero3(const char *name,
+                                         const char *alias1,
+                                         const char *alias2)
+{
+    const char *value = linx_cpu_env_nonzero2(name, alias1);
+
+    if (value) {
+        return value;
+    }
+    value = getenv(alias2);
+    if (value && value[0] && strcmp(value, "0") != 0) {
+        return value;
+    }
+    return NULL;
+}
+
+static const char *linx_cpu_env_nonzero4(const char *name,
+                                         const char *alias1,
+                                         const char *alias2,
+                                         const char *alias3)
+{
+    const char *value = linx_cpu_env_nonzero3(name, alias1, alias2);
+
+    if (value) {
+        return value;
+    }
+    value = getenv(alias3);
+    if (value && value[0] && strcmp(value, "0") != 0) {
+        return value;
+    }
+    return NULL;
+}
+
 static const char *const linx_cpu_gpr_names[LINX_GPR_COUNT] = {
     "zero", "sp", "a0", "a1", "a2", "a3", "a4", "a5",
     "a6", "a7", "ra", "s0", "s1", "s2", "s3", "s4",
@@ -165,25 +201,62 @@ static void linx_fault_trace_init(void)
         return;
     }
 
-    const char *enabled_s = getenv("LINX_FAULT_TRACE");
-    linx_fault_trace_enabled =
-        enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
+    const char *enabled_s =
+        linx_cpu_env_nonzero2("LINX_FAULT_TRACE", "LINX_QEMU_FAULT_TRACE");
+    linx_fault_trace_enabled = enabled_s != NULL;
 
     uint64_t lo = 0;
     uint64_t hi = 0;
-    const char *lo_s = getenv("LINX_FAULT_TRACE_PC_LO");
-    const char *hi_s = getenv("LINX_FAULT_TRACE_PC_HI");
+    const char *lo_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_PC_LO",
+                                             "LINX_QEMU_FAULT_TRACE_PC_LO");
+    const char *hi_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_PC_HI",
+                                             "LINX_QEMU_FAULT_TRACE_PC_HI");
     if (lo_s && hi_s &&
         linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
         linx_fault_trace_filter_lo = MIN(lo, hi);
         linx_fault_trace_filter_hi = MAX(lo, hi);
         linx_fault_trace_filter_enabled = true;
     }
+    const char *pc_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_PC",
+                                             "LINX_QEMU_FAULT_TRACE_PC");
+    if (pc_s && linx_cpu_parse_u64(pc_s, &lo)) {
+        linx_fault_trace_filter_lo = lo;
+        linx_fault_trace_filter_hi = lo;
+        linx_fault_trace_filter_enabled = true;
+    }
 
     lo = 0;
     hi = 0;
-    lo_s = getenv("LINX_FAULT_TRACE_COUNT_LO");
-    hi_s = getenv("LINX_FAULT_TRACE_COUNT_HI");
+    lo_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR_LO",
+                                 "LINX_QEMU_FAULT_TRACE_ADDR_LO",
+                                 "LINX_FAULT_TRACE_VA_LO",
+                                 "LINX_QEMU_FAULT_TRACE_VA_LO");
+    hi_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR_HI",
+                                 "LINX_QEMU_FAULT_TRACE_ADDR_HI",
+                                 "LINX_FAULT_TRACE_VA_HI",
+                                 "LINX_QEMU_FAULT_TRACE_VA_HI");
+    if (lo_s && hi_s &&
+        linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
+        linx_fault_trace_addr_lo = MIN(lo, hi);
+        linx_fault_trace_addr_hi = MAX(lo, hi);
+        linx_fault_trace_addr_filter_enabled = true;
+    }
+    const char *addr_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR",
+                                               "LINX_QEMU_FAULT_TRACE_ADDR",
+                                               "LINX_FAULT_TRACE_VA",
+                                               "LINX_QEMU_FAULT_TRACE_VA");
+    if (addr_s && linx_cpu_parse_u64(addr_s, &lo)) {
+        linx_fault_trace_addr_lo = lo;
+        linx_fault_trace_addr_hi = lo;
+        linx_fault_trace_addr_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = 0;
+    lo_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_COUNT_LO",
+                                 "LINX_QEMU_FAULT_TRACE_COUNT_LO");
+    hi_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_COUNT_HI",
+                                 "LINX_QEMU_FAULT_TRACE_COUNT_HI");
     if (lo_s && hi_s &&
         linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
         linx_fault_trace_count_lo = MIN(lo, hi);
@@ -191,19 +264,22 @@ static void linx_fault_trace_init(void)
         linx_fault_trace_count_filter_enabled = true;
     }
 
-    const char *trapnum_s = getenv("LINX_FAULT_TRACE_TRAPNUM");
+    const char *trapnum_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_TRAPNUM",
+                                                  "LINX_QEMU_FAULT_TRACE_TRAPNUM");
     if (trapnum_s &&
         linx_cpu_parse_u64(trapnum_s, &linx_fault_trace_trapnum)) {
         linx_fault_trace_trapnum_filter_enabled = true;
     }
 
-    const char *limit_s = getenv("LINX_FAULT_TRACE_LIMIT");
+    const char *limit_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_LIMIT",
+                                                "LINX_QEMU_FAULT_TRACE_LIMIT");
     if (limit_s) {
         (void)linx_cpu_parse_u64(limit_s, &linx_fault_trace_limit);
     }
 
     linx_fault_trace_regs_enabled =
         linx_cpu_env_enabled("LINX_FAULT_TRACE_REGS") ||
+        linx_cpu_env_enabled("LINX_QEMU_FAULT_TRACE_REGS") ||
         linx_cpu_env_enabled("LINX_TRACE_REGS");
 
     linx_fault_trace_inited = true;
@@ -231,6 +307,13 @@ static bool linx_fault_trace_addr_matches(uint64_t addr)
     return !linx_fault_trace_filter_enabled ||
            (addr >= linx_fault_trace_filter_lo &&
             addr <= linx_fault_trace_filter_hi);
+}
+
+static bool linx_fault_trace_fault_addr_matches(uint64_t addr)
+{
+    return !linx_fault_trace_addr_filter_enabled ||
+           (addr >= linx_fault_trace_addr_lo &&
+            addr <= linx_fault_trace_addr_hi);
 }
 
 static void linx_tlb_fault_trace_init(void)
@@ -280,6 +363,11 @@ static bool linx_fault_trace_matches(CPULinxState *env, uint8_t trapnum,
         !linx_fault_trace_addr_matches(report_bpc) &&
         !linx_fault_trace_addr_matches(env->pc) &&
         !linx_fault_trace_addr_matches(env->pending_trap_arg0)) {
+        return false;
+    }
+    /* TRAPNO.TRAPNUM data exception is 1; the named enum is declared later. */
+    if (!linx_fault_trace_fault_addr_matches(
+            trapnum == 1u ? env->pending_trap_arg0 : tpc)) {
         return false;
     }
     linx_fault_trace_emitted++;

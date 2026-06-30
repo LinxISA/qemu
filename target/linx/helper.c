@@ -128,6 +128,8 @@ static uint64_t linx_heartbeat_last_pc;
 static uint64_t linx_heartbeat_last_bpc;
 static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
+static uint64_t linx_heartbeat_same_site_warn;
+static bool linx_heartbeat_same_site_reported;
 static bool linx_heartbeat_regs_enabled;
 static unsigned linx_heartbeat_dump_code_bytes;
 static bool linx_tlb_trace_inited;
@@ -777,6 +779,14 @@ static void linx_heartbeat_init(void)
         }
     }
 
+    const char *warn_s = getenv("LINX_HEARTBEAT_SAME_SITE_WARN");
+    if (!warn_s || !warn_s[0] || strcmp(warn_s, "0") == 0) {
+        warn_s = getenv("LINX_QEMU_HEARTBEAT_SAME_SITE_WARN");
+    }
+    if (warn_s && warn_s[0] && strcmp(warn_s, "0") != 0) {
+        (void)linx_parse_u64(warn_s, &linx_heartbeat_same_site_warn);
+    }
+
     linx_heartbeat_inited = true;
 }
 
@@ -819,6 +829,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
         linx_heartbeat_same_site_repeats++;
     } else {
         linx_heartbeat_same_site_repeats = 0;
+        linx_heartbeat_same_site_reported = false;
     }
 
     const uint64_t last_count = linx_heartbeat_last_count;
@@ -876,6 +887,25 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
         linx_fprint_guest_code_bytes(stderr, env, "bpc", env->bpc,
                                      linx_heartbeat_dump_code_bytes);
         fputc('\n', stderr);
+    }
+    if (linx_heartbeat_same_site_warn &&
+        linx_heartbeat_same_site_repeats >= linx_heartbeat_same_site_warn &&
+        !linx_heartbeat_same_site_reported) {
+        fprintf(stderr,
+                "LINX_HEARTBEAT_STALL count=%" PRIu64
+                " repeats=%" PRIu64
+                " threshold=%" PRIu64
+                " delta=%" PRIu64
+                " pc=0x%" PRIx64
+                " bpc=0x%" PRIx64
+                " tpc=0x%" PRIx64
+                " envpc=0x%" PRIx64
+                " acr=%u cstate=0x%" PRIx64
+                " status=same-site-running\n",
+                env->insn_count, linx_heartbeat_same_site_repeats,
+                linx_heartbeat_same_site_warn, delta, pc, env->bpc,
+                env->body_tpc, env->pc, env->acr & 0xFu, env->ssr[0x20]);
+        linx_heartbeat_same_site_reported = true;
     }
     fflush(stderr);
 }
