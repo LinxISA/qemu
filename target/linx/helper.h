@@ -81,7 +81,9 @@ DEF_HELPER_1(linx_tile_reset_block, void, env)
 DEF_HELPER_2(linx_tile_set_arg, void, env, i32)
 DEF_HELPER_2(linx_tile_set_attr, void, env, i32)
 DEF_HELPER_2(linx_tile_append_ior, void, env, i64)
-DEF_HELPER_2(linx_tile_append_iot, void, env, i64)
+DEF_HELPER_2(linx_tile_append_itp, void, env, i64)
+DEF_HELPER_2(linx_tile_append_ota, void, env, i64)
+DEF_HELPER_3(linx_tile_set_meta, void, env, i64, i32)
 DEF_HELPER_1(linx_tile_commit, void, env)
 
 /* Canonical v0.4 VEC helpers used by SIMT/vector block bodies. */

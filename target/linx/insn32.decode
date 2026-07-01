@@ -73,6 +73,18 @@
 %TileSrc1 20:5
 %TileRegSrc 7:5
 %TileSize 7:5
+%TileReg0_8 16:8
+%TileReg1_8 24:8
+%TileDst8 24:8
+%CellCountM1 16:8
+%TileLast 15:1
+%TileSrcPair 10:2
+%TileDstSlot 10:2
+%TileReserve8_2 8:2
+%TileReuse0 8:1
+%TileReuse1 9:1
+%MetaGpr 15:5
+%MetaMode 11:1
 %TileFormat 7:5
 %TileGroup 12:1
 %S1R 31:1
@@ -118,9 +130,10 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
 bstart_tma     .... .00. .... 0001 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
 bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
 
-# Tile block I/O dependency descriptors (multiple descriptors per block are legal).
-b_iot          .... .... .... .... .10. .... .001 0011 grp=%TileGroup s1r=%S1R s0r=%S0R s1v=%S1V s0v=%S0V dst=%TileDst src1=%TileSrc1 src0=%TileSrc0 reg=%TileRegSrc
-b_ioti         .... .... .... .... .11. .... .001 0011 grp=%TileGroup s1r=%S1R s0r=%S0R s1v=%S1V s0v=%S0V dst=%TileDst src1=%TileSrc1 src0=%TileSrc0 size=%TileSize
+# Tile block operand descriptors (multiple descriptors per block are legal).
+b_itp          .... .... .... .... .010 .... 0001 0011 src1=%TileReg1_8 src0=%TileReg0_8 l=%TileLast src_pair=%TileSrcPair s1r=%TileReuse1 s0r=%TileReuse0
+b_ota          .... .... .... .... .011 .... 0001 0011 dst=%TileDst8 cell_count_m1=%CellCountM1 l=%TileLast dst_slot=%TileDstSlot reserved=%TileReserve8_2
+b_meta         0000 0000 0000 .... .100 .000 0100 0011 meta=%MetaGpr mode=%MetaMode
 
 # Decoupled-body pointer (decoupled block headers).
 b_text         .... .... .... .... .... .... .000 0011 %simm25

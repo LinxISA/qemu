@@ -71,7 +71,7 @@ enum {
     LINX_BLOCKFMT_FAMILY_TEXT = 0x02,
     LINX_BLOCKFMT_FAMILY_ARG  = 0x03,
     LINX_BLOCKFMT_FAMILY_IOR  = 0x04,
-    LINX_BLOCKFMT_FAMILY_IOT  = 0x05,
+    LINX_BLOCKFMT_FAMILY_TILE = 0x05,
 };
 
 enum {
@@ -183,7 +183,8 @@ typedef enum LinxTemplateKind {
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
-#define LINX_TILE_MAX_IOT 32u
+#define LINX_TILE_MAX_ITP 32u
+#define LINX_TILE_MAX_OTA 32u
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
 /*
  * v0.3 SIMT bring-up: LLVM autovec may reference VT indices up to VT#31 in
@@ -266,14 +267,7 @@ typedef struct LinxAcrBlockState {
     /* Tile block state (minimal bring-up subset). */
     uint32_t tile_func;
     uint32_t tile_dtype;
-    uint32_t tile_iot_valid;
-    uint32_t tile_iot_flags;
-    uint32_t tile_iot_dst;
-    uint32_t tile_iot_grp;
-    uint32_t tile_iot_src0;
-    uint32_t tile_iot_src1;
-    uint32_t tile_iot_reg;
-    uint32_t tile_iot_size;
+    uint32_t tile_desc_valid;
 
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;
@@ -283,8 +277,10 @@ typedef struct LinxAcrBlockState {
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
-    uint32_t tile_iot_count;
-    uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+    uint32_t tile_itp_count;
+    uint64_t tile_itp_desc[LINX_TILE_MAX_ITP];
+    uint32_t tile_ota_count;
+    uint64_t tile_ota_desc[LINX_TILE_MAX_OTA];
 } LinxAcrBlockState;
 
 typedef struct LinxCosimRange {
@@ -372,20 +368,12 @@ typedef struct CPUArchState {
     /*
      * Tile block state (TAU bring-up).
      *
-     * For now this models a minimal single-B.IOT descriptor per block. The
-     * implementation is intentionally small and is primarily used for PTO ISA
-     * bring-up (matmul demo).
+     * v0.57 block operand descriptors are split into B.ITP source-pair
+     * descriptors and B.OTA destination-allocation descriptors.
      */
     uint32_t tile_func;
     uint32_t tile_dtype;
-    uint32_t tile_iot_valid;
-    uint32_t tile_iot_flags;
-    uint32_t tile_iot_dst;
-    uint32_t tile_iot_grp;
-    uint32_t tile_iot_src0;
-    uint32_t tile_iot_src1;
-    uint32_t tile_iot_reg;
-    uint32_t tile_iot_size;
+    uint32_t tile_desc_valid;
 
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;
@@ -395,12 +383,19 @@ typedef struct CPUArchState {
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
-    uint32_t tile_iot_count;
-    uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+    uint32_t tile_itp_count;
+    uint64_t tile_itp_desc[LINX_TILE_MAX_ITP];
+    uint32_t tile_ota_count;
+    uint64_t tile_ota_desc[LINX_TILE_MAX_OTA];
+    uint32_t tile_meta_valid;
+    uint32_t tile_meta_mode;
+    uint64_t tile_meta_value;
 
     /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
     uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
     uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
+    uint32_t tile_reg_rows[32];  /* logical FIXP rows, when known */
+    uint32_t tile_reg_cols[32];  /* logical FIXP columns, when known */
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
@@ -638,14 +633,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
 
     s->tile_func = env->tile_func;
     s->tile_dtype = env->tile_dtype;
-    s->tile_iot_valid = env->tile_iot_valid;
-    s->tile_iot_flags = env->tile_iot_flags;
-    s->tile_iot_dst = env->tile_iot_dst;
-    s->tile_iot_grp = env->tile_iot_grp;
-    s->tile_iot_src0 = env->tile_iot_src0;
-    s->tile_iot_src1 = env->tile_iot_src1;
-    s->tile_iot_reg = env->tile_iot_reg;
-    s->tile_iot_size = env->tile_iot_size;
+    s->tile_desc_valid = env->tile_desc_valid;
     s->tile_arg_format = env->tile_arg_format;
     s->tile_attr_raw = env->tile_attr_raw;
     s->tile_attr_pad = env->tile_attr_pad;
@@ -658,9 +646,13 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < LINX_VEC_RI_MAX; i++) {
         s->vec_ri_value[i] = env->vec_ri_value[i];
     }
-    s->tile_iot_count = env->tile_iot_count;
-    for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
-        s->tile_iot_desc[i] = env->tile_iot_desc[i];
+    s->tile_itp_count = env->tile_itp_count;
+    for (i = 0; i < LINX_TILE_MAX_ITP; i++) {
+        s->tile_itp_desc[i] = env->tile_itp_desc[i];
+    }
+    s->tile_ota_count = env->tile_ota_count;
+    for (i = 0; i < LINX_TILE_MAX_OTA; i++) {
+        s->tile_ota_desc[i] = env->tile_ota_desc[i];
     }
 }
 
@@ -738,14 +730,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
 
     env->tile_func = s->tile_func;
     env->tile_dtype = s->tile_dtype;
-    env->tile_iot_valid = s->tile_iot_valid;
-    env->tile_iot_flags = s->tile_iot_flags;
-    env->tile_iot_dst = s->tile_iot_dst;
-    env->tile_iot_grp = s->tile_iot_grp;
-    env->tile_iot_src0 = s->tile_iot_src0;
-    env->tile_iot_src1 = s->tile_iot_src1;
-    env->tile_iot_reg = s->tile_iot_reg;
-    env->tile_iot_size = s->tile_iot_size;
+    env->tile_desc_valid = s->tile_desc_valid;
     env->tile_arg_format = s->tile_arg_format;
     env->tile_attr_raw = s->tile_attr_raw;
     env->tile_attr_pad = s->tile_attr_pad;
@@ -758,9 +743,13 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     for (i = 0; i < LINX_VEC_RI_MAX; i++) {
         env->vec_ri_value[i] = s->vec_ri_value[i];
     }
-    env->tile_iot_count = s->tile_iot_count;
-    for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
-        env->tile_iot_desc[i] = s->tile_iot_desc[i];
+    env->tile_itp_count = s->tile_itp_count;
+    for (i = 0; i < LINX_TILE_MAX_ITP; i++) {
+        env->tile_itp_desc[i] = s->tile_itp_desc[i];
+    }
+    env->tile_ota_count = s->tile_ota_count;
+    for (i = 0; i < LINX_TILE_MAX_OTA; i++) {
+        env->tile_ota_desc[i] = s->tile_ota_desc[i];
     }
 }
 
