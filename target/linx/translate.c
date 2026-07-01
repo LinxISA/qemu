@@ -2347,8 +2347,7 @@ static bool trans_b_ota(DisasContext *ctx, arg_b_ota *a)
                                 LINX_BLOCKFMT_FAMILY_TILE);
     }
     if (a->reserved != 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_TILE);
+        return linx_illegal(ctx);
     }
 
     linx_emit_tile_ota_desc(ctx, a->dst, a->cell_count_m1, a->l,
