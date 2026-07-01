@@ -116,6 +116,12 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_VIRTIO_MMIO_SIZE 0x200
 #define LINX_VIRTIO_MMIO_IRQ_BASE 8
 #define LINX_VIRTIO_MMIO_COUNT 4
+#define LINX_VIRTIO_MMIO_TOTAL_SIZE \
+    (LINX_VIRTIO_MMIO_STRIDE * (LINX_VIRTIO_MMIO_COUNT - 1) + \
+     LINX_VIRTIO_MMIO_SIZE)
+
+/* Linux allocates normal pages at 4 KiB granularity during bring-up. */
+#define LINX_MMIO_RESERVED_ALIGN 0x1000
 
 /* The Linx Linux timer driver reads SSR_TIMER_TIME as a free-running cycle
  * source. QEMU currently models that register with QEMU_CLOCK_VIRTUAL in ns,
@@ -526,6 +532,79 @@ static bool linx_body_end_name_to_start_name(const char *name,
     return true;
 }
 
+typedef struct LinxFdtReservedRange {
+    hwaddr base;
+    hwaddr size;
+} LinxFdtReservedRange;
+
+static void linx_fdt_add_memory_range(uint64_t *values, int *entries,
+                                      hwaddr base, hwaddr size)
+{
+    if (!size) {
+        return;
+    }
+
+    values[(*entries)++] = 2;
+    values[(*entries)++] = base;
+    values[(*entries)++] = 2;
+    values[(*entries)++] = size;
+}
+
+static void linx_fdt_set_memory_reg(void *fdt, hwaddr mem_size)
+{
+    static const LinxFdtReservedRange reserved[] = {
+        { LINX_UART_BASE, LINX_UART_SIZE },
+        { LINX_TEST_FINISHER_BASE, LINX_TEST_FINISHER_SIZE },
+        { LINX_VIRTIO_MMIO_BASE, LINX_VIRTIO_MMIO_TOTAL_SIZE },
+    };
+    uint64_t values[ARRAY_SIZE(reserved) * 4 + 4];
+    hwaddr cursor = 0;
+    int entries = 0;
+    int ret;
+
+    for (size_t i = 0; i < ARRAY_SIZE(reserved); i++) {
+        hwaddr hole_base;
+        hwaddr hole_end;
+
+        if (!reserved[i].size) {
+            continue;
+        }
+
+        hole_base = QEMU_ALIGN_DOWN(reserved[i].base,
+                                    LINX_MMIO_RESERVED_ALIGN);
+        hole_end = QEMU_ALIGN_UP(reserved[i].base + reserved[i].size,
+                                 LINX_MMIO_RESERVED_ALIGN);
+
+        if (hole_base >= mem_size) {
+            continue;
+        }
+        if (hole_end <= cursor) {
+            continue;
+        }
+        if (hole_base > cursor) {
+            linx_fdt_add_memory_range(values, &entries, cursor,
+                                      MIN(hole_base, mem_size) - cursor);
+        }
+
+        cursor = MIN(hole_end, mem_size);
+        if (cursor >= mem_size) {
+            break;
+        }
+    }
+
+    if (cursor < mem_size) {
+        linx_fdt_add_memory_range(values, &entries, cursor,
+                                  mem_size - cursor);
+    }
+
+    ret = qemu_fdt_setprop_sized_cells_from_array(fdt, "/memory@0", "reg",
+                                                  entries / 2, values);
+    if (ret < 0) {
+        error_report("linx virt: failed to set DT memory reg property");
+        exit(1);
+    }
+}
+
 static void *linx_virt_build_fdt(MachineState *machine,
                                  hwaddr mem_size,
                                  hwaddr initrd_base, hwaddr initrd_size,
@@ -567,33 +646,11 @@ static void *linx_virt_build_fdt(MachineState *machine,
      * Keep the DT memory description consistent with the Linx `virt` physical
      * memory map.
      *
-     * The `virt` machine places the UART/exit MMIO window at LINX_UART_BASE.
-     * When RAM is large enough to cover that address (e.g. -m 512M), the MMIO
-     * region overlaps the RAM window. Split the DT "reg" ranges to exclude the
-     * MMIO hole so Linux does not allocate normal pages from it.
+     * The `virt` machine maps RAM from address 0 and then places MMIO windows
+     * inside that low physical address space. Split the DT "reg" ranges around
+     * those windows so Linux does not allocate normal pages from device MMIO.
      */
-    if (mem_size <= (hwaddr)LINX_UART_BASE) {
-        qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
-                               0x0, 0x0,
-                               (uint32_t)(mem_size >> 32), (uint32_t)mem_size);
-    } else {
-        const hwaddr mem0_base = 0;
-        const hwaddr mem0_size = (hwaddr)LINX_UART_BASE;
-        const hwaddr mem1_base = (hwaddr)LINX_UART_BASE + (hwaddr)LINX_UART_SIZE;
-        const hwaddr mem1_size = (mem_size > mem1_base) ? (mem_size - mem1_base) : 0;
-
-        if (mem1_size) {
-            qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
-                                   (uint32_t)(mem0_base >> 32), (uint32_t)mem0_base,
-                                   (uint32_t)(mem0_size >> 32), (uint32_t)mem0_size,
-                                   (uint32_t)(mem1_base >> 32), (uint32_t)mem1_base,
-                                   (uint32_t)(mem1_size >> 32), (uint32_t)mem1_size);
-        } else {
-            qemu_fdt_setprop_cells(fdt, "/memory@0", "reg",
-                                   (uint32_t)(mem0_base >> 32), (uint32_t)mem0_base,
-                                   (uint32_t)(mem0_size >> 32), (uint32_t)mem0_size);
-        }
-    }
+    linx_fdt_set_memory_reg(fdt, mem_size);
 
     qemu_fdt_add_subnode(fdt, "/cpus");
     qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 0x1);

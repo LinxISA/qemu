@@ -186,6 +186,24 @@ static bool linx_call_trace_ring_enabled;
 static uint64_t linx_call_trace_ring_size;
 static uint64_t linx_call_trace_ring_next;
 static uint64_t linx_call_trace_ring_count;
+static bool linx_fentry_trace_inited;
+static bool linx_fentry_trace_enabled;
+static bool linx_fentry_trace_pc_filter_enabled;
+static uint64_t linx_fentry_trace_pc_lo;
+static uint64_t linx_fentry_trace_pc_hi;
+static bool linx_fentry_trace_count_filter_enabled;
+static uint64_t linx_fentry_trace_count_lo;
+static uint64_t linx_fentry_trace_count_hi;
+static bool linx_fentry_trace_ra_filter_enabled;
+static uint64_t linx_fentry_trace_ra;
+static bool linx_fentry_trace_sp_filter_enabled;
+static uint64_t linx_fentry_trace_sp;
+static bool linx_fentry_trace_new_sp_filter_enabled;
+static uint64_t linx_fentry_trace_new_sp;
+static uint64_t linx_fentry_trace_limit;
+static uint64_t linx_fentry_trace_emitted;
+static unsigned linx_fentry_trace_dump_words;
+static bool linx_fentry_trace_regs_enabled;
 static bool linx_fret_stk_trace_inited;
 static bool linx_fret_stk_trace_enabled;
 static bool linx_fret_stk_trace_pc_filter_enabled;
@@ -2438,6 +2456,206 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
         linx_debug_dump_guest_units(env, old_sp,
                                     linx_fret_stk_trace_dump_words,
                                     "  fret_sp", 8);
+    }
+    fflush(stderr);
+}
+
+static void linx_fentry_trace_init(void)
+{
+    uint64_t lo = 0;
+    uint64_t hi = UINT64_MAX;
+    const char *lo_s;
+    const char *hi_s;
+    const char *value_s;
+
+    if (linx_fentry_trace_inited) {
+        return;
+    }
+    linx_fentry_trace_inited = true;
+
+    linx_fentry_trace_enabled =
+        linx_env_enabled("LINX_FENTRY_TRACE") ||
+        linx_env_enabled("LINX_QEMU_FENTRY_TRACE");
+
+    lo_s = linx_env_value2("LINX_FENTRY_TRACE_PC_LO",
+                           "LINX_QEMU_FENTRY_TRACE_PC_LO");
+    hi_s = linx_env_value2("LINX_FENTRY_TRACE_PC_HI",
+                           "LINX_QEMU_FENTRY_TRACE_PC_HI");
+    const bool have_pc_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_pc_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_pc_lo || have_pc_hi) {
+        linx_fentry_trace_pc_lo = MIN(lo, hi);
+        linx_fentry_trace_pc_hi = MAX(lo, hi);
+        linx_fentry_trace_pc_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_FENTRY_TRACE_PC",
+                              "LINX_QEMU_FENTRY_TRACE_PC");
+    if (value_s && linx_parse_u64(value_s, &lo)) {
+        linx_fentry_trace_pc_lo = lo;
+        linx_fentry_trace_pc_hi = lo;
+        linx_fentry_trace_pc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_env_value2("LINX_FENTRY_TRACE_COUNT_LO",
+                           "LINX_QEMU_FENTRY_TRACE_COUNT_LO");
+    hi_s = linx_env_value2("LINX_FENTRY_TRACE_COUNT_HI",
+                           "LINX_QEMU_FENTRY_TRACE_COUNT_HI");
+    const bool have_count_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_count_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_count_lo || have_count_hi) {
+        linx_fentry_trace_count_lo = MIN(lo, hi);
+        linx_fentry_trace_count_hi = MAX(lo, hi);
+        linx_fentry_trace_count_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_FENTRY_TRACE_RA",
+                              "LINX_QEMU_FENTRY_TRACE_RA");
+    if (value_s && linx_parse_u64(value_s, &linx_fentry_trace_ra)) {
+        linx_fentry_trace_ra_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_FENTRY_TRACE_SP",
+                              "LINX_QEMU_FENTRY_TRACE_SP");
+    if (value_s && linx_parse_u64(value_s, &linx_fentry_trace_sp)) {
+        linx_fentry_trace_sp_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_FENTRY_TRACE_NEW_SP",
+                              "LINX_QEMU_FENTRY_TRACE_NEW_SP");
+    if (value_s && linx_parse_u64(value_s, &linx_fentry_trace_new_sp)) {
+        linx_fentry_trace_new_sp_filter_enabled = true;
+    }
+
+    value_s = linx_env_nonzero2("LINX_FENTRY_TRACE_LIMIT",
+                                "LINX_QEMU_FENTRY_TRACE_LIMIT");
+    if (value_s) {
+        (void)linx_parse_u64(value_s, &linx_fentry_trace_limit);
+    } else {
+        linx_fentry_trace_limit = 64;
+    }
+
+    value_s = linx_env_nonzero2("LINX_FENTRY_TRACE_DUMP_WORDS",
+                                "LINX_QEMU_FENTRY_TRACE_DUMP_WORDS");
+    if (value_s) {
+        uint64_t words = 0;
+        if (linx_parse_u64(value_s, &words) && words != 0) {
+            linx_fentry_trace_dump_words = MIN(words, (uint64_t)32);
+        }
+    }
+
+    linx_fentry_trace_regs_enabled =
+        linx_env_enabled("LINX_FENTRY_TRACE_REGS") ||
+        linx_env_enabled("LINX_QEMU_FENTRY_TRACE_REGS") ||
+        linx_env_enabled("LINX_TRACE_REGS");
+}
+
+static bool linx_fentry_trace_matches(CPULinxState *env, uint64_t pc,
+                                      uint64_t old_sp, uint64_t new_sp,
+                                      uint64_t save_ra)
+{
+    linx_fentry_trace_init();
+    if (!linx_fentry_trace_enabled) {
+        return false;
+    }
+    if (linx_fentry_trace_limit &&
+        linx_fentry_trace_emitted >= linx_fentry_trace_limit) {
+        return false;
+    }
+    if (linx_fentry_trace_pc_filter_enabled &&
+        (pc < linx_fentry_trace_pc_lo ||
+         pc > linx_fentry_trace_pc_hi)) {
+        return false;
+    }
+    if (linx_fentry_trace_count_filter_enabled &&
+        (env->insn_count < linx_fentry_trace_count_lo ||
+         env->insn_count > linx_fentry_trace_count_hi)) {
+        return false;
+    }
+    if (linx_fentry_trace_ra_filter_enabled &&
+        save_ra != linx_fentry_trace_ra) {
+        return false;
+    }
+    if (linx_fentry_trace_sp_filter_enabled &&
+        old_sp != linx_fentry_trace_sp) {
+        return false;
+    }
+    if (linx_fentry_trace_new_sp_filter_enabled &&
+        new_sp != linx_fentry_trace_new_sp) {
+        return false;
+    }
+    linx_fentry_trace_emitted++;
+    return true;
+}
+
+static void linx_fentry_trace_begin(CPULinxState *env, uint64_t cur_pc,
+                                    uint64_t next_pc, uint64_t old_sp,
+                                    uint64_t new_sp, uint64_t stacksize,
+                                    int begin, int end, int count,
+                                    int mmu_idx)
+{
+    fprintf(stderr,
+            "LINX_FENTRY_TRACE count=%" PRIu64
+            " pc=0x%" PRIx64 " next_pc=0x%" PRIx64
+            " old_sp=0x%" PRIx64 " new_sp=0x%" PRIx64
+            " stacksize=%" PRIu64 " callframe=%" PRIu64
+            " begin=%s end=%s save_count=%d"
+            " incoming_ra=0x%" PRIx64
+            " envpc=0x%" PRIx64 " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64 " cstate=0x%" PRIx64
+            " acr=%u mmu=%d brtype=%u tgt=0x%" PRIx64 "\n",
+            env->insn_count, cur_pc, next_pc, old_sp, new_sp, stacksize,
+            linx_callframe_size,
+            (begin >= 0 && begin < LINX_GPR_COUNT) ? linx_gpr_names[begin] : "?",
+            (end >= 0 && end < LINX_GPR_COUNT) ? linx_gpr_names[end] : "?",
+            count, env->gpr[LINX_REG_RA], env->pc, env->bpc,
+            env->body_tpc, env->ssr[0x20], (unsigned)(env->acr & 0xfu),
+            mmu_idx, env->brtype, env->tgt);
+}
+
+static void linx_fentry_trace_slot(CPULinxState *env, uint64_t cur_pc,
+                                   uint32_t reg, uint64_t addr,
+                                   uint64_t value, int mmu_idx, void *host)
+{
+    uint64_t debug_readback = 0;
+    uint64_t host_readback = 0;
+    const bool debug_read_ok =
+        linx_debug_read_guest_u64(env, addr, &debug_readback);
+    const uint64_t mmu_readback =
+        cpu_ldq_mmu((CPUArchState *)env, addr,
+                    make_memop_idx(MO_LEUQ, mmu_idx), GETPC());
+    if (host) {
+        host_readback = ldq_le_p(host);
+    }
+
+    fprintf(stderr,
+            "LINX_FENTRY_SLOT count=%" PRIu64
+            " pc=0x%" PRIx64 " reg=%s addr=0x%" PRIx64
+            " value=0x%" PRIx64 " mmu=%d mmu_readback=0x%" PRIx64
+            " host=%p host_readback=0x%" PRIx64
+            " debug_read_ok=%u debug_readback=0x%" PRIx64 "\n",
+            env->insn_count, cur_pc,
+            reg < LINX_GPR_COUNT ? linx_gpr_names[reg] : "?",
+            addr, value, mmu_idx, mmu_readback, host, host_readback,
+            debug_read_ok ? 1u : 0u, debug_readback);
+}
+
+static void linx_fentry_trace_end(CPULinxState *env, uint64_t cur_pc,
+                                  uint64_t new_sp)
+{
+    if (linx_fentry_trace_regs_enabled) {
+        fprintf(stderr,
+                "LINX_FENTRY_REGS count=%" PRIu64
+                " pc=0x%" PRIx64,
+                env->insn_count, cur_pc);
+        linx_fprint_gprs(stderr, env);
+        fputc('\n', stderr);
+    }
+    if (linx_fentry_trace_dump_words) {
+        linx_debug_dump_guest_units(env, new_sp,
+                                    linx_fentry_trace_dump_words,
+                                    "  fentry_sp", 8);
     }
     fflush(stderr);
 }
@@ -7477,6 +7695,8 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         const uint64_t old_sp = env->gpr[LINX_REG_SP];
         const uint64_t new_sp = old_sp - adj;
         const int mmu_idx = linx_env_mmu_index(env);
+        void *save_hosts[LINX_GPR_COUNT] = { NULL };
+        bool fentry_trace;
 
         linx_call_trace_emit(env, LINX_CALL_TRACE_FENTRY, cur_pc,
                              new_sp, stacksize);
@@ -7497,7 +7717,8 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                 }
                 if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                     const uint64_t addr = new_sp + (uint64_t)off;
-                    probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
+                    save_hosts[reg] =
+                        probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
                 }
                 if (reg == end) {
                     break;
@@ -7507,12 +7728,20 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             }
         }
 
+        fentry_trace = linx_fentry_trace_matches(env, cur_pc, old_sp, new_sp,
+                                                 env->gpr[LINX_REG_RA]);
+
         if (adj) {
             env->gpr[LINX_REG_SP] = new_sp;
             linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
             trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
                                 env->brtype & 0x7u, env->cond, env->carg, env->tgt,
                                 old_sp, env->gpr[LINX_REG_SP]);
+        }
+
+        if (fentry_trace) {
+            linx_fentry_trace_begin(env, cur_pc, next_pc, old_sp, new_sp,
+                                    stacksize, begin, end, count, mmu_idx);
         }
 
         if (count > 0) {
@@ -7539,6 +7768,10 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                     }
                     linx_trace_mem(env, true, addr, v, 0, 8);
                     cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, v, mmu_idx, GETPC());
+                    if (fentry_trace) {
+                        linx_fentry_trace_slot(env, cur_pc, reg, addr, v,
+                                               mmu_idx, save_hosts[reg]);
+                    }
                     if (reg == LINX_REG_RA) {
                         trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
                                             env->brtype & 0x7u, env->cond, env->carg, env->tgt,
@@ -7551,6 +7784,10 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                 reg = linx_next_fentry_reg(reg);
                 step++;
             }
+        }
+
+        if (fentry_trace) {
+            linx_fentry_trace_end(env, cur_pc, new_sp);
         }
 
         linx_template_clear(env);
