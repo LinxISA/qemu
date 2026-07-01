@@ -12,6 +12,7 @@
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
 #include "exec/translator.h"
+#include "exec/target_page.h"
 #include "exec/translation-block.h"
 #include "exec/log.h"
 #include "trace.h"
@@ -524,35 +525,98 @@ static void linx_block_begin_preserve_scalar_queues_at(DisasContext *ctx,
     linx_block_begin_common(ctx, brtype, block_pc, initial_target, true);
 }
 
-static uint16_t linx_fetch_code_u16(DisasContext *ctx, vaddr pc)
+static bool linx_can_translate_fetch_span(DisasContext *ctx, vaddr pc,
+                                          unsigned len)
 {
-    return translator_lduw_end(ctx->env, &ctx->base, pc, MO_LE);
+    vaddr first_page = ctx->base.pc_first & TARGET_PAGE_MASK;
+    vaddr second_page = first_page + TARGET_PAGE_SIZE;
+    vaddr last;
+
+    if (len == 0) {
+        return false;
+    }
+
+    last = pc + len - 1;
+    if (last < pc) {
+        return false;
+    }
+
+    if (((first_page ^ pc) & TARGET_PAGE_MASK) == 0 &&
+        ((first_page ^ last) & TARGET_PAGE_MASK) == 0) {
+        return true;
+    }
+
+    /*
+     * translator_ld* can also fetch from the immediately adjacent second page
+     * of the current TB. It must not be used for arbitrary far targets.
+     */
+    return ((second_page ^ pc) & TARGET_PAGE_MASK) == 0 &&
+           ((second_page ^ last) & TARGET_PAGE_MASK) == 0;
 }
 
-static uint32_t linx_fetch_code_u32(DisasContext *ctx, vaddr pc)
+static bool linx_try_fetch_code_u16(DisasContext *ctx, vaddr pc,
+                                    uint16_t *out)
 {
-    return (uint32_t)linx_fetch_code_u16(ctx, pc) |
-           ((uint32_t)linx_fetch_code_u16(ctx, pc + 2) << 16);
+    if (!linx_can_translate_fetch_span(ctx, pc, 2)) {
+        return false;
+    }
+    *out = translator_lduw_end(ctx->env, &ctx->base, pc, MO_LE);
+    return true;
 }
 
-static uint64_t linx_fetch_code_insn(DisasContext *ctx, vaddr pc,
-                                     unsigned *len_out)
+static bool linx_try_fetch_code_u32(DisasContext *ctx, vaddr pc,
+                                    uint32_t *out)
 {
-    uint16_t hw = linx_fetch_code_u16(ctx, pc);
-    unsigned len = linx_insn_len(hw);
-    uint64_t raw = hw;
+    uint16_t lo;
+    uint16_t hi;
+
+    if (!linx_try_fetch_code_u16(ctx, pc, &lo) ||
+        !linx_try_fetch_code_u16(ctx, pc + 2, &hi)) {
+        return false;
+    }
+    *out = (uint32_t)lo | ((uint32_t)hi << 16);
+    return true;
+}
+
+static bool linx_try_fetch_code_insn(DisasContext *ctx, vaddr pc,
+                                     uint64_t *raw_out, unsigned *len_out)
+{
+    uint16_t hw;
+    unsigned len;
+    uint64_t raw;
+
+    if (!linx_try_fetch_code_u16(ctx, pc, &hw)) {
+        return false;
+    }
+
+    len = linx_insn_len(hw);
+    raw = hw;
 
     if (len >= 4) {
-        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 2) << 16;
+        uint16_t hw2;
+        if (!linx_try_fetch_code_u16(ctx, pc + 2, &hw2)) {
+            return false;
+        }
+        raw |= (uint64_t)hw2 << 16;
     }
     if (len >= 6) {
-        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 4) << 32;
+        uint16_t hw3;
+        if (!linx_try_fetch_code_u16(ctx, pc + 4, &hw3)) {
+            return false;
+        }
+        raw |= (uint64_t)hw3 << 32;
     }
     if (len >= 8) {
-        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 6) << 48;
+        uint16_t hw4;
+        if (!linx_try_fetch_code_u16(ctx, pc + 6, &hw4)) {
+            return false;
+        }
+        raw |= (uint64_t)hw4 << 48;
     }
+
+    *raw_out = raw;
     *len_out = len;
-    return raw;
+    return true;
 }
 
 /* Helper to check if an address points to a block-start instruction.
@@ -564,8 +628,13 @@ static uint64_t linx_fetch_code_insn(DisasContext *ctx, vaddr pc,
 static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    const uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         /* C.BSTART.STD / C.BSTART.FP: mask=0xc7ff, BrType in bits [13:11]. */
@@ -652,7 +721,11 @@ static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
 static bool linx_is_b_attr_at_pc(DisasContext *ctx, vaddr pc)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint64_t raw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
 
     if (len != 4) {
         return false;
@@ -663,8 +736,12 @@ static bool linx_is_b_attr_at_pc(DisasContext *ctx, vaddr pc)
 static bool linx_is_scalar_mem_at_pc(DisasContext *ctx, vaddr pc)
 {
     unsigned len;
-    uint64_t insn_raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint64_t insn_raw;
     const LinxOpcodeMeta *meta;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &insn_raw, &len)) {
+        return false;
+    }
 
     meta = linx_opcode_meta_lookup(insn_raw, len);
     return meta && (meta->major_cat == LINX_CAT_LOAD ||
@@ -674,8 +751,13 @@ static bool linx_is_scalar_mem_at_pc(DisasContext *ctx, vaddr pc)
 static bool linx_is_setret_at_pc(DisasContext *ctx, vaddr pc)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    const uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         return (hw & 0xf83f) == 0x5016;
@@ -710,8 +792,13 @@ static bool linx_cond_bstart_target_at_pc(DisasContext *ctx, vaddr pc,
                                           vaddr *target_out)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0x000f) != 0x0004) {
@@ -765,8 +852,13 @@ static bool linx_setret_info_at_pc(DisasContext *ctx, vaddr pc,
                                    unsigned *len_out, vaddr *target_out)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0xf83f) != 0x5016) {
@@ -811,8 +903,13 @@ static bool linx_direct_bstart_target_at_pc(DisasContext *ctx, vaddr pc,
                                             vaddr *target_out)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0x000f) != 0x0002) {
@@ -838,8 +935,13 @@ static bool linx_is_call_like_bstart_at_pc(DisasContext *ctx, vaddr pc,
                                            unsigned *len_out)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     if (len == 2) {
         if (hw == 0x2000 || hw == 0x3000) {
@@ -908,7 +1010,8 @@ static bool linx_predicated_fall_accept_call_skip(DisasContext *ctx, vaddr pc,
      * body.  In that shape, the direct target is the semantic skip target.
      */
     if (linx_setret_info_at_pc(ctx, next_pc, &setret_len, &setret_target)) {
-        if (linx_direct_bstart_target_at_pc(ctx, setret_target,
+        if (linx_can_translate_fetch_span(ctx, setret_target, 8) &&
+            linx_direct_bstart_target_at_pc(ctx, setret_target,
                                            &direct_target)) {
             *skip_pc = direct_target;
             return true;
@@ -925,8 +1028,13 @@ static bool linx_predicated_fall_skip_target(DisasContext *ctx, vaddr pc,
                                              vaddr *skip_pc)
 {
     unsigned len;
-    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
-    uint16_t hw = raw & 0xffffu;
+    uint64_t raw;
+    uint16_t hw;
+
+    if (!linx_try_fetch_code_insn(ctx, pc, &raw, &len)) {
+        return false;
+    }
+    hw = raw & 0xffffu;
 
     {
         unsigned call_len = 0;
@@ -980,24 +1088,35 @@ static bool linx_predicated_fall_skip_target(DisasContext *ctx, vaddr pc,
 
 static bool linx_is_c_bstop_at_pc(DisasContext *ctx, vaddr pc)
 {
-    return linx_fetch_code_u16(ctx, pc) == 0x0000;
+    uint16_t hw;
+    return linx_try_fetch_code_u16(ctx, pc, &hw) && hw == 0x0000;
 }
 
 static bool linx_is_bstop32_at_pc(DisasContext *ctx, vaddr pc)
 {
-    return linx_fetch_code_u32(ctx, pc) == 0x00000001u;
+    uint32_t insn;
+    return linx_try_fetch_code_u32(ctx, pc, &insn) && insn == 0x00000001u;
 }
 
 static bool linx_is_j_bstop_trailer_at_pc(DisasContext *ctx, vaddr pc)
 {
-    uint32_t insn = linx_fetch_code_u32(ctx, pc);
+    uint32_t insn;
+    uint16_t trailer;
+
+    if (!linx_try_fetch_code_u32(ctx, pc, &insn) ||
+        !linx_try_fetch_code_u16(ctx, pc + 4, &trailer)) {
+        return false;
+    }
+
     return (insn & 0x0000707fu) == 0x00000037u &&
-           linx_fetch_code_u16(ctx, pc + 4) == 0x0000;
+           trailer == 0x0000;
 }
 
 static bool linx_is_ret_wrapper_j_trailer_at_pc(DisasContext *ctx, vaddr pc)
 {
-    return linx_fetch_code_u16(ctx, pc) == 0x3800 &&
+    uint16_t hw;
+    return linx_try_fetch_code_u16(ctx, pc, &hw) &&
+           hw == 0x3800 &&
            linx_is_j_bstop_trailer_at_pc(ctx, pc + 2);
 }
 
