@@ -124,34 +124,48 @@ static const char *linx_cpu_env_nonzero2(const char *name, const char *alias)
     return NULL;
 }
 
-static const char *linx_cpu_env_nonzero3(const char *name,
-                                         const char *alias1,
-                                         const char *alias2)
+static const char *linx_cpu_env_value2(const char *name, const char *alias)
 {
-    const char *value = linx_cpu_env_nonzero2(name, alias1);
+    const char *value = getenv(name);
 
-    if (value) {
+    if (value && value[0]) {
         return value;
     }
-    value = getenv(alias2);
-    if (value && value[0] && strcmp(value, "0") != 0) {
+    value = getenv(alias);
+    if (value && value[0]) {
         return value;
     }
     return NULL;
 }
 
-static const char *linx_cpu_env_nonzero4(const char *name,
-                                         const char *alias1,
-                                         const char *alias2,
-                                         const char *alias3)
+static const char *linx_cpu_env_value3(const char *name,
+                                       const char *alias1,
+                                       const char *alias2)
 {
-    const char *value = linx_cpu_env_nonzero3(name, alias1, alias2);
+    const char *value = linx_cpu_env_value2(name, alias1);
+
+    if (value) {
+        return value;
+    }
+    value = getenv(alias2);
+    if (value && value[0]) {
+        return value;
+    }
+    return NULL;
+}
+
+static const char *linx_cpu_env_value4(const char *name,
+                                       const char *alias1,
+                                       const char *alias2,
+                                       const char *alias3)
+{
+    const char *value = linx_cpu_env_value3(name, alias1, alias2);
 
     if (value) {
         return value;
     }
     value = getenv(alias3);
-    if (value && value[0] && strcmp(value, "0") != 0) {
+    if (value && value[0]) {
         return value;
     }
     return NULL;
@@ -217,8 +231,8 @@ static void linx_fault_trace_init(void)
         linx_fault_trace_filter_hi = MAX(lo, hi);
         linx_fault_trace_filter_enabled = true;
     }
-    const char *pc_s = linx_cpu_env_nonzero2("LINX_FAULT_TRACE_PC",
-                                             "LINX_QEMU_FAULT_TRACE_PC");
+    const char *pc_s = linx_cpu_env_value2("LINX_FAULT_TRACE_PC",
+                                           "LINX_QEMU_FAULT_TRACE_PC");
     if (pc_s && linx_cpu_parse_u64(pc_s, &lo)) {
         linx_fault_trace_filter_lo = lo;
         linx_fault_trace_filter_hi = lo;
@@ -227,24 +241,24 @@ static void linx_fault_trace_init(void)
 
     lo = 0;
     hi = 0;
-    lo_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR_LO",
-                                 "LINX_QEMU_FAULT_TRACE_ADDR_LO",
-                                 "LINX_FAULT_TRACE_VA_LO",
-                                 "LINX_QEMU_FAULT_TRACE_VA_LO");
-    hi_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR_HI",
-                                 "LINX_QEMU_FAULT_TRACE_ADDR_HI",
-                                 "LINX_FAULT_TRACE_VA_HI",
-                                 "LINX_QEMU_FAULT_TRACE_VA_HI");
+    lo_s = linx_cpu_env_value4("LINX_FAULT_TRACE_ADDR_LO",
+                               "LINX_QEMU_FAULT_TRACE_ADDR_LO",
+                               "LINX_FAULT_TRACE_VA_LO",
+                               "LINX_QEMU_FAULT_TRACE_VA_LO");
+    hi_s = linx_cpu_env_value4("LINX_FAULT_TRACE_ADDR_HI",
+                               "LINX_QEMU_FAULT_TRACE_ADDR_HI",
+                               "LINX_FAULT_TRACE_VA_HI",
+                               "LINX_QEMU_FAULT_TRACE_VA_HI");
     if (lo_s && hi_s &&
         linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
         linx_fault_trace_addr_lo = MIN(lo, hi);
         linx_fault_trace_addr_hi = MAX(lo, hi);
         linx_fault_trace_addr_filter_enabled = true;
     }
-    const char *addr_s = linx_cpu_env_nonzero4("LINX_FAULT_TRACE_ADDR",
-                                               "LINX_QEMU_FAULT_TRACE_ADDR",
-                                               "LINX_FAULT_TRACE_VA",
-                                               "LINX_QEMU_FAULT_TRACE_VA");
+    const char *addr_s = linx_cpu_env_value4("LINX_FAULT_TRACE_ADDR",
+                                             "LINX_QEMU_FAULT_TRACE_ADDR",
+                                             "LINX_FAULT_TRACE_VA",
+                                             "LINX_QEMU_FAULT_TRACE_VA");
     if (addr_s && linx_cpu_parse_u64(addr_s, &lo)) {
         linx_fault_trace_addr_lo = lo;
         linx_fault_trace_addr_hi = lo;
