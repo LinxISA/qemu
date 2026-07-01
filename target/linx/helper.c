@@ -206,7 +206,8 @@ static uint8_t linx_mem_trace_acr_filter;
 static bool linx_syscall_trace_inited;
 static bool linx_syscall_trace_enabled;
 static bool linx_syscall_trace_nr_filter_enabled;
-static uint64_t linx_syscall_trace_nr;
+static uint64_t linx_syscall_trace_nrs[16];
+static unsigned linx_syscall_trace_nr_count;
 static uint64_t linx_syscall_trace_limit;
 static uint64_t linx_syscall_trace_emitted;
 static bool linx_syscall_trace_pc_filter_enabled;
@@ -1654,9 +1655,38 @@ static void linx_syscall_trace_init(void)
         enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
 
     const char *nr_s = getenv("LINX_SYSCALL_TRACE_NR");
-    if (nr_s && nr_s[0] && strcmp(nr_s, "0") != 0 &&
-        linx_parse_u64(nr_s, &linx_syscall_trace_nr)) {
-        linx_syscall_trace_nr_filter_enabled = true;
+    if (nr_s && nr_s[0] && strcmp(nr_s, "0") != 0) {
+        char *copy = g_strdup(nr_s);
+        char *saveptr = NULL;
+        char *tok;
+
+        for (tok = strtok_r(copy, ",", &saveptr);
+             tok && linx_syscall_trace_nr_count < ARRAY_SIZE(linx_syscall_trace_nrs);
+             tok = strtok_r(NULL, ",", &saveptr)) {
+            uint64_t nr = 0;
+            char *trimmed = g_strstrip(tok);
+
+            if (!trimmed[0]) {
+                continue;
+            }
+            if (linx_parse_u64(trimmed, &nr)) {
+                bool duplicate = false;
+
+                for (unsigned i = 0; i < linx_syscall_trace_nr_count; i++) {
+                    if (linx_syscall_trace_nrs[i] == nr) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    linx_syscall_trace_nrs[
+                        linx_syscall_trace_nr_count++] = nr;
+                }
+            }
+        }
+        g_free(copy);
+        linx_syscall_trace_nr_filter_enabled =
+            linx_syscall_trace_nr_count != 0;
     }
 
     const char *limit_s = getenv("LINX_SYSCALL_TRACE_LIMIT");
@@ -1791,9 +1821,18 @@ static bool linx_syscall_trace_matches(uint64_t nr, uint64_t bpc)
     if (!linx_syscall_trace_enabled) {
         return false;
     }
-    if (linx_syscall_trace_nr_filter_enabled &&
-        nr != linx_syscall_trace_nr) {
-        return false;
+    if (linx_syscall_trace_nr_filter_enabled) {
+        bool matched = false;
+
+        for (unsigned i = 0; i < linx_syscall_trace_nr_count; i++) {
+            if (linx_syscall_trace_nrs[i] == nr) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            return false;
+        }
     }
     if (linx_syscall_trace_pc_filter_enabled &&
         (bpc < linx_syscall_trace_pc_lo || bpc > linx_syscall_trace_pc_hi)) {
