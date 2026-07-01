@@ -3583,18 +3583,18 @@ static bool trans_cmp_geu(DisasContext *ctx, arg_cmp_geu *a)
 static bool trans_csel(DisasContext *ctx, arg_csel *a)
 {
     /* LinxISA csel: csel SrcP, SrcL, SrcR<.modifier>, ->{t, u, Rd}
-     * Semantics: if SrcP != 0 (true), output = SrcR; else output = SrcL
-     * The SrcRType modifier applies to SrcR (e.g., .sw = sign-extend word)
+     * Semantics: if SrcP != 0 (true), output = SrcL; else output = SrcR
+     * The SrcRType modifier applies to SrcR before the false-case select.
      */
     TCGv_i64 pred = linx_get_reg(a->SrcP);
-    TCGv_i64 fval = linx_get_reg(a->SrcL);
-    TCGv_i64 tval = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 tval = linx_get_reg(a->SrcL);
+    TCGv_i64 fval = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
     TCGv_i64 out = tcg_temp_new_i64();
     TCGLabel *done = gen_new_label();
 
-    tcg_gen_mov_i64(out, fval);               /* default to false case (SrcL) */
+    tcg_gen_mov_i64(out, fval);               /* default to false case (SrcR) */
     tcg_gen_brcondi_i64(TCG_COND_EQ, pred, 0, done);  /* if pred == 0, done */
-    tcg_gen_mov_i64(out, tval);               /* else use true case (SrcR) */
+    tcg_gen_mov_i64(out, tval);               /* else use true case (SrcL) */
     gen_set_label(done);
 
     linx_set_dest(a->RegDst, out);
