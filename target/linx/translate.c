@@ -524,23 +524,48 @@ static void linx_block_begin_preserve_scalar_queues_at(DisasContext *ctx,
     linx_block_begin_common(ctx, brtype, block_pc, initial_target, true);
 }
 
+static uint16_t linx_fetch_code_u16(DisasContext *ctx, vaddr pc)
+{
+    return translator_lduw_end(ctx->env, &ctx->base, pc, MO_LE);
+}
+
+static uint32_t linx_fetch_code_u32(DisasContext *ctx, vaddr pc)
+{
+    return (uint32_t)linx_fetch_code_u16(ctx, pc) |
+           ((uint32_t)linx_fetch_code_u16(ctx, pc + 2) << 16);
+}
+
+static uint64_t linx_fetch_code_insn(DisasContext *ctx, vaddr pc,
+                                     unsigned *len_out)
+{
+    uint16_t hw = linx_fetch_code_u16(ctx, pc);
+    unsigned len = linx_insn_len(hw);
+    uint64_t raw = hw;
+
+    if (len >= 4) {
+        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 2) << 16;
+    }
+    if (len >= 6) {
+        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 4) << 32;
+    }
+    if (len >= 8) {
+        raw |= (uint64_t)linx_fetch_code_u16(ctx, pc + 6) << 48;
+    }
+    *len_out = len;
+    return raw;
+}
+
 /* Helper to check if an address points to a block-start instruction.
  *
  * In addition to explicit BSTART encodings, LinxISA uses certain macro
  * instructions (FENTRY/FEXIT/FRET.*) as standalone blocks in the bring-up
  * toolchain.
  */
-static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    const uint16_t hw = lduw_le_p(buf);
-    const unsigned len = linx_insn_len(hw);
+    unsigned len;
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    const uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         /* C.BSTART.STD / C.BSTART.FP: mask=0xc7ff, BrType in bits [13:11]. */
@@ -570,10 +595,7 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     }
 
     if (len == 4) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        const uint32_t insn = ldl_le_p(buf);
+        const uint32_t insn = raw & UINT32_MAX;
 
         /* Generic BSTART split forms: low opcode 0x11/0x21 with simm25 target. */
         if ((insn & 0x7f) == 0x11 || (insn & 0x7f) == 0x21) {
@@ -598,12 +620,8 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     }
 
     if (len == 6) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
-            return false;
-        }
-
-        const uint16_t prefix = lduw_le_p(buf);
-        const uint32_t main32 = ldl_le_p(buf + 2);
+        const uint16_t prefix = raw & 0xffffu;
+        const uint32_t main32 = (raw >> 16) & UINT32_MAX;
         if ((prefix & 0xf) != 0xe) {
             return false;
         }
@@ -616,15 +634,11 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     }
 
     if (len == 8) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
-            return false;
-        }
-
         /*
          * 64-bit L.BSTART.*: 16-bit trailer, 16 bits of padding, then the
          * 32-bit BSTART main word in bytes [4..7].
          */
-        const uint32_t main32 = ldl_le_p(buf + 4);
+        const uint32_t main32 = raw >> 32;
 
         if ((main32 & 0x7f) == 0x01 && ((main32 >> 12) & 0x7) != 0) {
             return true;
@@ -635,92 +649,44 @@ static bool linx_is_bstart_at_pc(CPULinxState *env, vaddr pc)
     return false;
 }
 
-static bool linx_is_b_attr_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_b_attr_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[4];
+    unsigned len;
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
 
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
+    if (len != 4) {
         return false;
     }
-    if (linx_insn_len(lduw_le_p(buf)) != 4) {
-        return false;
-    }
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
-        return false;
-    }
-
-    return (ldl_le_p(buf) & 0x707fu) == 0x23u;
+    return (((uint32_t)raw) & 0x707fu) == 0x23u;
 }
 
-static bool linx_is_scalar_mem_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_scalar_mem_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-    uint16_t hw;
     unsigned len;
-    uint64_t insn_raw;
+    uint64_t insn_raw = linx_fetch_code_insn(ctx, pc, &len);
     const LinxOpcodeMeta *meta;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
-    if (len > sizeof(buf)) {
-        return false;
-    }
-    if (len > 2 && cpu_memory_rw_debug(cs, pc, buf, len, 0) != 0) {
-        return false;
-    }
-
-    insn_raw = (uint64_t)lduw_le_p(buf);
-    if (len >= 4) {
-        insn_raw |= (uint64_t)lduw_le_p(buf + 2) << 16;
-    }
-    if (len >= 6) {
-        insn_raw |= (uint64_t)lduw_le_p(buf + 4) << 32;
-    }
-    if (len >= 8) {
-        insn_raw |= (uint64_t)lduw_le_p(buf + 6) << 48;
-    }
 
     meta = linx_opcode_meta_lookup(insn_raw, len);
     return meta && (meta->major_cat == LINX_CAT_LOAD ||
                     meta->major_cat == LINX_CAT_STORE);
 }
 
-static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_setret_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    const uint16_t hw = lduw_le_p(buf);
-    const unsigned len = linx_insn_len(hw);
+    unsigned len;
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    const uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         return (hw & 0xf83f) == 0x5016;
     }
 
     if (len == 4) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        return (ldl_le_p(buf) & 0xfffu) == 0x507u;
+        return (((uint32_t)raw) & 0xfffu) == 0x507u;
     }
 
     if (len == 6) {
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
-            return false;
-        }
-        const uint64_t insn48 = (uint64_t)lduw_le_p(buf) |
-                                ((uint64_t)ldl_le_p(buf + 2) << 16);
-        return (insn48 & UINT64_C(0x00000fff000f)) ==
+        return (raw & UINT64_C(0x00000fff000f)) ==
                UINT64_C(0x00000507000e);
     }
 
@@ -740,20 +706,12 @@ static bool linx_is_setret_at_pc(CPULinxState *env, vaddr pc)
  * header as a fresh block would reset cond/carg and lose the predicate that
  * selected this edge.
  */
-static bool linx_cond_bstart_target_at_pc(CPULinxState *env, vaddr pc,
+static bool linx_cond_bstart_target_at_pc(DisasContext *ctx, vaddr pc,
                                           vaddr *target_out)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[4];
-    uint16_t hw;
     unsigned len;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0x000f) != 0x0004) {
@@ -764,12 +722,7 @@ static bool linx_cond_bstart_target_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 4) {
-        uint32_t insn;
-
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        insn = ldl_le_p(buf);
+        uint32_t insn = raw & UINT32_MAX;
         if ((insn & 0x7fu) == 0x21u) {
             *target_out = pc + (((vaddr)sextract32(insn, 7, 25)) << 1);
             return true;
@@ -784,7 +737,7 @@ static bool linx_cond_bstart_target_at_pc(CPULinxState *env, vaddr pc,
     return false;
 }
 
-static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
+static bool linx_predicated_fall_accept_skip(DisasContext *ctx, vaddr pc,
                                              unsigned len, vaddr *skip_pc)
 {
     vaddr next_pc = pc + len;
@@ -795,11 +748,11 @@ static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
      * normal instruction owns a real body; skipping just the header would execute
      * that body with stale block metadata.
      */
-    if (!linx_is_bstart_at_pc(env, next_pc)) {
+    if (!linx_is_bstart_at_pc(ctx, next_pc)) {
         return false;
     }
 
-    if (linx_cond_bstart_target_at_pc(env, next_pc, &cond_target)) {
+    if (linx_cond_bstart_target_at_pc(ctx, next_pc, &cond_target)) {
         *skip_pc = cond_target;
         return true;
     }
@@ -808,20 +761,12 @@ static bool linx_predicated_fall_accept_skip(CPULinxState *env, vaddr pc,
     return true;
 }
 
-static bool linx_setret_info_at_pc(CPULinxState *env, vaddr pc,
+static bool linx_setret_info_at_pc(DisasContext *ctx, vaddr pc,
                                    unsigned *len_out, vaddr *target_out)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-    uint16_t hw;
     unsigned len;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0xf83f) != 0x5016) {
@@ -833,11 +778,7 @@ static bool linx_setret_info_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 4) {
-        uint32_t insn;
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        insn = ldl_le_p(buf);
+        uint32_t insn = raw & UINT32_MAX;
         if ((insn & 0xfffu) != 0x507u) {
             return false;
         }
@@ -847,24 +788,18 @@ static bool linx_setret_info_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 6) {
-        uint64_t insn48;
         uint64_t imm;
 
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+        if ((hw & 0xf) != 0xe) {
             return false;
         }
-        if ((lduw_le_p(buf) & 0xf) != 0xe) {
-            return false;
-        }
-        insn48 = (uint64_t)lduw_le_p(buf) |
-                 ((uint64_t)ldl_le_p(buf + 2) << 16);
-        if ((insn48 & UINT64_C(0x00000fff000f)) !=
+        if ((raw & UINT64_C(0x00000fff000f)) !=
             UINT64_C(0x00000507000e)) {
             return false;
         }
         *len_out = len;
-        imm = ((insn48 >> 4) & UINT64_C(0xfff)) |
-              (((insn48 >> 28) & UINT64_C(0xfffff)) << 12);
+        imm = ((raw >> 4) & UINT64_C(0xfff)) |
+              (((raw >> 28) & UINT64_C(0xfffff)) << 12);
         *target_out = pc + ((vaddr)imm << 1);
         return true;
     }
@@ -872,20 +807,12 @@ static bool linx_setret_info_at_pc(CPULinxState *env, vaddr pc,
     return false;
 }
 
-static bool linx_direct_bstart_target_at_pc(CPULinxState *env, vaddr pc,
+static bool linx_direct_bstart_target_at_pc(DisasContext *ctx, vaddr pc,
                                             vaddr *target_out)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[4];
-    uint16_t hw;
     unsigned len;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         if ((hw & 0x000f) != 0x0002) {
@@ -896,12 +823,7 @@ static bool linx_direct_bstart_target_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 4) {
-        uint32_t insn;
-
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        insn = ldl_le_p(buf);
+        uint32_t insn = raw & UINT32_MAX;
         if ((insn & 0x7fu) != 0x11u) {
             return false;
         }
@@ -912,20 +834,12 @@ static bool linx_direct_bstart_target_at_pc(CPULinxState *env, vaddr pc,
     return false;
 }
 
-static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
+static bool linx_is_call_like_bstart_at_pc(DisasContext *ctx, vaddr pc,
                                            unsigned *len_out)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-    uint16_t hw;
     unsigned len;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint16_t hw = raw & 0xffffu;
 
     if (len == 2) {
         if (hw == 0x2000 || hw == 0x3000) {
@@ -936,13 +850,9 @@ static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 4) {
-        uint32_t insn;
+        uint32_t insn = raw & UINT32_MAX;
         uint32_t brtype;
 
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        insn = ldl_le_p(buf);
         brtype = (insn >> 12) & 0x7u;
         if ((insn & 0xffu) == 0x01u &&
             (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
@@ -953,16 +863,12 @@ static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 6) {
-        uint32_t main32;
+        uint32_t main32 = (raw >> 16) & UINT32_MAX;
         uint32_t brtype;
 
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+        if ((hw & 0xf) != 0xe) {
             return false;
         }
-        if ((lduw_le_p(buf) & 0xf) != 0xe) {
-            return false;
-        }
-        main32 = ldl_le_p(buf + 2);
         brtype = (main32 >> 12) & 0x7u;
         if ((main32 & 0xffu) == 0x01u &&
             (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
@@ -973,13 +879,9 @@ static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
     }
 
     if (len == 8) {
-        uint32_t main32;
+        uint32_t main32 = raw >> 32;
         uint32_t brtype;
 
-        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
-            return false;
-        }
-        main32 = ldl_le_p(buf + 4);
         brtype = (main32 >> 12) & 0x7u;
         if ((main32 & 0x7fu) == 0x01u &&
             (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL)) {
@@ -991,7 +893,7 @@ static bool linx_is_call_like_bstart_at_pc(CPULinxState *env, vaddr pc,
     return false;
 }
 
-static bool linx_predicated_fall_accept_call_skip(CPULinxState *env, vaddr pc,
+static bool linx_predicated_fall_accept_call_skip(DisasContext *ctx, vaddr pc,
                                                   unsigned len, vaddr *skip_pc)
 {
     vaddr next_pc = pc + len;
@@ -1005,8 +907,8 @@ static bool linx_predicated_fall_accept_call_skip(CPULinxState *env, vaddr pc,
      * direct block there to jump to the join block after a conditional call
      * body.  In that shape, the direct target is the semantic skip target.
      */
-    if (linx_setret_info_at_pc(env, next_pc, &setret_len, &setret_target)) {
-        if (linx_direct_bstart_target_at_pc(env, setret_target,
+    if (linx_setret_info_at_pc(ctx, next_pc, &setret_len, &setret_target)) {
+        if (linx_direct_bstart_target_at_pc(ctx, setret_target,
                                            &direct_target)) {
             *skip_pc = direct_target;
             return true;
@@ -1019,25 +921,17 @@ static bool linx_predicated_fall_accept_call_skip(CPULinxState *env, vaddr pc,
     return true;
 }
 
-static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
+static bool linx_predicated_fall_skip_target(DisasContext *ctx, vaddr pc,
                                              vaddr *skip_pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[8];
-    uint16_t hw;
     unsigned len;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, 2, 0) != 0) {
-        return false;
-    }
-
-    hw = lduw_le_p(buf);
-    len = linx_insn_len(hw);
+    uint64_t raw = linx_fetch_code_insn(ctx, pc, &len);
+    uint16_t hw = raw & 0xffffu;
 
     {
         unsigned call_len = 0;
-        if (linx_is_call_like_bstart_at_pc(env, pc, &call_len)) {
-            return linx_predicated_fall_accept_call_skip(env, pc, call_len,
+        if (linx_is_call_like_bstart_at_pc(ctx, pc, &call_len)) {
+            return linx_predicated_fall_accept_call_skip(ctx, pc, call_len,
                                                         skip_pc);
         }
     }
@@ -1046,49 +940,37 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
         if ((hw & 0x000f) == 0x0002 ||
             ((hw & 0xc7ff) == 0x0000 &&
              ((hw >> 11) & 0x7) == LINX_BR_DIRECT)) {
-            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
+            return linx_predicated_fall_accept_skip(ctx, pc, len, skip_pc);
         }
         return false;
     }
 
     if (len == 4) {
-        uint32_t insn;
-        if (cpu_memory_rw_debug(cs, pc, buf, 4, 0) != 0) {
-            return false;
-        }
-        insn = ldl_le_p(buf);
+        uint32_t insn = raw & UINT32_MAX;
         if ((insn & 0x7f) == 0x11 ||
             ((insn & 0xff) == 0x01 && ((insn >> 12) & 0x7) == LINX_BR_DIRECT)) {
-            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
+            return linx_predicated_fall_accept_skip(ctx, pc, len, skip_pc);
         }
         return false;
     }
 
     if (len == 6) {
-        uint32_t main32;
-        if (cpu_memory_rw_debug(cs, pc, buf, 6, 0) != 0) {
+        uint32_t main32 = (raw >> 16) & UINT32_MAX;
+        if ((hw & 0xf) != 0xe) {
             return false;
         }
-        if ((lduw_le_p(buf) & 0xf) != 0xe) {
-            return false;
-        }
-        main32 = ldl_le_p(buf + 2);
         if ((main32 & 0xff) == 0x01 &&
             ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
-            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
+            return linx_predicated_fall_accept_skip(ctx, pc, len, skip_pc);
         }
         return false;
     }
 
     if (len == 8) {
-        uint32_t main32;
-        if (cpu_memory_rw_debug(cs, pc, buf, 8, 0) != 0) {
-            return false;
-        }
-        main32 = ldl_le_p(buf + 4);
+        uint32_t main32 = raw >> 32;
         if ((main32 & 0x7f) == 0x01 &&
             ((main32 >> 12) & 0x7) == LINX_BR_DIRECT) {
-            return linx_predicated_fall_accept_skip(env, pc, len, skip_pc);
+            return linx_predicated_fall_accept_skip(ctx, pc, len, skip_pc);
         }
         return false;
     }
@@ -1096,54 +978,27 @@ static bool linx_predicated_fall_skip_target(CPULinxState *env, vaddr pc,
     return false;
 }
 
-static bool linx_is_c_bstop_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_c_bstop_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[2];
-
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
-        return false;
-    }
-    return lduw_le_p(buf) == 0x0000;
+    return linx_fetch_code_u16(ctx, pc) == 0x0000;
 }
 
-static bool linx_is_bstop32_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_bstop32_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[4];
-
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
-        return false;
-    }
-    return ldl_le_p(buf) == 0x00000001u;
+    return linx_fetch_code_u32(ctx, pc) == 0x00000001u;
 }
 
-static bool linx_is_j_bstop_trailer_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_j_bstop_trailer_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[6];
-    uint32_t insn;
-
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
-        return false;
-    }
-
-    insn = ldl_le_p(buf);
+    uint32_t insn = linx_fetch_code_u32(ctx, pc);
     return (insn & 0x0000707fu) == 0x00000037u &&
-           lduw_le_p(buf + 4) == 0x0000;
+           linx_fetch_code_u16(ctx, pc + 4) == 0x0000;
 }
 
-static bool linx_is_ret_wrapper_j_trailer_at_pc(CPULinxState *env, vaddr pc)
+static bool linx_is_ret_wrapper_j_trailer_at_pc(DisasContext *ctx, vaddr pc)
 {
-    CPUState *cs = env_cpu(env);
-    uint8_t buf[2];
-
-    if (cpu_memory_rw_debug(cs, pc, buf, sizeof(buf), 0) != 0) {
-        return false;
-    }
-
-    return lduw_le_p(buf) == 0x3800 &&
-           linx_is_j_bstop_trailer_at_pc(env, pc + 2);
+    return linx_fetch_code_u16(ctx, pc) == 0x3800 &&
+           linx_is_j_bstop_trailer_at_pc(ctx, pc + 2);
 }
 
 static void linx_gen_ret_to_ra(DisasContext *ctx)
@@ -1301,7 +1156,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
     switch (ctx->brtype & 0x7) {
     case LINX_BR_FALL: {
         vaddr skip_pc = 0;
-        if (linx_predicated_fall_skip_target(ctx->env, fallthrough, &skip_pc)) {
+        if (linx_predicated_fall_skip_target(ctx, fallthrough, &skip_pc)) {
             TCGLabel *normal = gen_new_label();
             TCGLabel *skip = gen_new_label();
             tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_carg, 0, normal);
@@ -1403,8 +1258,8 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
          * must return to `ra`.
          */
         if (!ctx->tgt_modified && ctx->brtarget == 0 &&
-            (linx_is_c_bstop_at_pc(ctx->env, ctx->base.pc_first + 2) ||
-             linx_is_ret_wrapper_j_trailer_at_pc(ctx->env, ctx->base.pc_first))) {
+            (linx_is_c_bstop_at_pc(ctx, ctx->base.pc_first + 2) ||
+             linx_is_ret_wrapper_j_trailer_at_pc(ctx, ctx->base.pc_first))) {
             linx_gen_ret_to_ra(ctx);
             break;
         }
@@ -1708,7 +1563,7 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     if (current_pc != ctx->base.pc_first &&
         brtype == LINX_BR_FALL &&
         ctx->brtype != 0 &&
-        linx_is_b_attr_at_pc(ctx->env, ctx->base.pc_next)) {
+        linx_is_b_attr_at_pc(ctx, ctx->base.pc_next)) {
         return true;
     }
     /*
@@ -1720,7 +1575,7 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     if (current_pc != ctx->base.pc_first &&
         brtype == LINX_BR_FALL &&
         ctx->brtype != 0 &&
-        linx_is_scalar_mem_at_pc(ctx->env, ctx->base.pc_next)) {
+        linx_is_scalar_mem_at_pc(ctx, ctx->base.pc_next)) {
         linx_block_begin_preserve_scalar_queues_at(ctx, current_pc,
                                                    LINX_BR_FALL, target);
         return true;
@@ -1848,7 +1703,7 @@ static bool trans_bstart_split_direct(DisasContext *ctx,
                                       arg_bstart_split_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    uint8_t brtype = linx_is_setret_at_pc(ctx->env, ctx->base.pc_next)
+    uint8_t brtype = linx_is_setret_at_pc(ctx, ctx->base.pc_next)
                          ? LINX_BR_CALL
                          : LINX_BR_DIRECT;
 
@@ -6532,8 +6387,8 @@ static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
 
     gen_set_label(equal_end);
     if (ctx->env &&
-        (linx_is_c_bstop_at_pc(ctx->env, target) ||
-         linx_is_bstop32_at_pc(ctx->env, target))) {
+        (linx_is_c_bstop_at_pc(ctx, target) ||
+         linx_is_bstop32_at_pc(ctx, target))) {
         tcg_gen_br(in_range);
     }
     tcg_gen_br(fault);
@@ -7772,7 +7627,7 @@ static bool trans_j(DisasContext *ctx, arg_j *a)
     if ((ctx->brtype & 0x7) == LINX_BR_RET &&
         !ctx->tgt_modified && ctx->brtarget == 0 &&
         current_pc == ctx->base.pc_first + 2 &&
-        linx_is_ret_wrapper_j_trailer_at_pc(ctx->env, ctx->base.pc_first)) {
+        linx_is_ret_wrapper_j_trailer_at_pc(ctx, ctx->base.pc_first)) {
         linx_gen_ret_to_ra(ctx);
         return true;
     }
@@ -8288,7 +8143,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
      * previously executed block. The new header will re-establish its own
      * brtype/target/return contract during decode.
      */
-    if (!ctx->in_body && linx_is_bstart_at_pc(env, pc)) {
+    if (!ctx->in_body && linx_is_bstart_at_pc(ctx, pc)) {
         ctx->brtype = 0;
         ctx->brtarget = 0;
         ctx->ra_set = false;
@@ -8303,7 +8158,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
      * SETC, and those descriptors must retain the header context.
      */
     if (!ctx->in_body && ctx->brtype == LINX_BR_FALL &&
-        (env->bpc == pc || !linx_is_bstart_at_pc(env, env->bpc))) {
+        (env->bpc == pc || !linx_is_bstart_at_pc(ctx, env->bpc))) {
         ctx->brtype = 0;
         ctx->brtarget = 0;
         ctx->call_ra_target = 0;
@@ -8318,8 +8173,8 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
      * fallthrough until the next header.
      */
     if (!ctx->in_body && ctx->brtype != 0 &&
-        !linx_is_bstart_at_pc(env, pc) &&
-        (env->bpc == pc || !linx_is_bstart_at_pc(env, env->bpc))) {
+        !linx_is_bstart_at_pc(ctx, pc) &&
+        (env->bpc == pc || !linx_is_bstart_at_pc(ctx, env->bpc))) {
         ctx->brtype = LINX_BR_FALL;
         ctx->brtarget = 0;
         ctx->call_ra_target = 0;
@@ -8342,7 +8197,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
          ctx->brtype == LINX_BR_DIRECT ||
          ctx->brtype == LINX_BR_CALL) &&
         env->tgt == pc &&
-        !linx_is_bstart_at_pc(env, pc)) {
+        !linx_is_bstart_at_pc(ctx, pc)) {
         ctx->brtype = LINX_BR_FALL;
         ctx->brtarget = 0;
         ctx->call_ra_target = 0;
@@ -8629,7 +8484,7 @@ static void linx_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
         tcg_gen_exit_tb(NULL, 0);
         break;
     case DISAS_TOO_MANY:
-        if (linx_is_bstart_at_pc(ctx->env, ctx->base.pc_next)) {
+        if (linx_is_bstart_at_pc(ctx, ctx->base.pc_next)) {
             linx_gen_block_end(ctx, ctx->base.pc_next);
         } else {
             tcg_gen_movi_i64(cpu_pc, ctx->base.pc_next);
