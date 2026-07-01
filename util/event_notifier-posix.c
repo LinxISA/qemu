@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/event_notifier.h"
 #include "qemu/main-loop.h"
@@ -37,6 +37,7 @@ int event_notifier_init(EventNotifier *e, int active)
 {
     int fds[2];
     int ret;
+    Error *local_err = NULL;
 
 #ifdef CONFIG_EVENTFD
     ret = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -50,16 +51,14 @@ int event_notifier_init(EventNotifier *e, int active)
         if (errno != ENOSYS) {
             return -errno;
         }
-        if (qemu_pipe(fds) < 0) {
+        if (!g_unix_open_pipe(fds, FD_CLOEXEC, NULL)) {
             return -errno;
         }
-        ret = fcntl_setfl(fds[0], O_NONBLOCK);
-        if (ret < 0) {
+        if (!qemu_set_blocking(fds[0], false, &local_err)) {
             ret = -errno;
             goto fail;
         }
-        ret = fcntl_setfl(fds[1], O_NONBLOCK);
-        if (ret < 0) {
+        if (!qemu_set_blocking(fds[1], false, &local_err)) {
             ret = -errno;
             goto fail;
         }
@@ -73,6 +72,7 @@ int event_notifier_init(EventNotifier *e, int active)
     return 0;
 
 fail:
+    error_report_err(local_err);
     close(fds[0]);
     close(fds[1]);
     return ret;

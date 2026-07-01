@@ -12,7 +12,7 @@
 #define REMOTE_MACHINE_H
 
 #include "qom/object.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/pci-host/remote.h"
 #include "io/channel.h"
 #include "hw/remote/iohub.h"
@@ -22,6 +22,10 @@ struct RemoteMachineState {
 
     RemotePCIHost *host;
     RemoteIOHubState iohub;
+
+    bool vfio_user;
+
+    bool auto_shutdown;
 };
 
 /* Used to pass to co-routine device and ioc. */

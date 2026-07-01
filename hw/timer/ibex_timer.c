@@ -29,8 +29,8 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/timer/ibex_timer.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "target/riscv/cpu.h"
 #include "migration/vmstate.h"
 
@@ -60,8 +60,6 @@ static uint64_t cpu_riscv_read_rtc(uint32_t timebase_freq)
 
 static void ibex_timer_update_irqs(IbexTimerState *s)
 {
-    CPUState *cs = qemu_get_cpu(0);
-    RISCVCPU *cpu = RISCV_CPU(cs);
     uint64_t value = s->timer_compare_lower0 |
                          ((uint64_t)s->timer_compare_upper0 << 32);
     uint64_t next, diff;
@@ -73,9 +71,9 @@ static void ibex_timer_update_irqs(IbexTimerState *s)
     }
 
     /* Update the CPUs mtimecmp */
-    cpu->env.timecmp = value;
+    s->mtimecmp = value;
 
-    if (cpu->env.timecmp <= now) {
+    if (s->mtimecmp <= now) {
         /*
          * If the mtimecmp was in the past raise the interrupt now.
          */
@@ -91,7 +89,7 @@ static void ibex_timer_update_irqs(IbexTimerState *s)
     qemu_irq_lower(s->m_timer_irq);
     qemu_set_irq(s->irq, false);
 
-    diff = cpu->env.timecmp - now;
+    diff = s->mtimecmp - now;
     next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                  muldiv64(diff,
                                           NANOSECONDS_PER_SECOND,
@@ -99,9 +97,9 @@ static void ibex_timer_update_irqs(IbexTimerState *s)
 
     if (next < qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
         /* We overflowed the timer, just set it as large as we can */
-        timer_mod(cpu->env.timer, 0x7FFFFFFFFFFFFFFF);
+        timer_mod(s->mtimer, 0x7FFFFFFFFFFFFFFF);
     } else {
-        timer_mod(cpu->env.timer, next);
+        timer_mod(s->mtimer, next);
     }
 }
 
@@ -120,11 +118,9 @@ static void ibex_timer_reset(DeviceState *dev)
 {
     IbexTimerState *s = IBEX_TIMER(dev);
 
-    CPUState *cpu = qemu_get_cpu(0);
-    CPURISCVState *env = cpu->env_ptr;
-    env->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+    s->mtimer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                               &ibex_timer_cb, s);
-    env->timecmp = 0;
+    s->mtimecmp = 0;
 
     s->timer_ctrl = 0x00000000;
     s->timer_cfg0 = 0x00010000;
@@ -256,7 +252,7 @@ static const VMStateDescription vmstate_ibex_timer = {
     .version_id = 2,
     .minimum_version_id = 2,
     .post_load = ibex_timer_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(timer_ctrl, IbexTimerState),
         VMSTATE_UINT32(timer_cfg0, IbexTimerState),
         VMSTATE_UINT32(timer_compare_lower0, IbexTimerState),
@@ -267,9 +263,8 @@ static const VMStateDescription vmstate_ibex_timer = {
     }
 };
 
-static Property ibex_timer_properties[] = {
+static const Property ibex_timer_properties[] = {
     DEFINE_PROP_UINT32("timebase-freq", IbexTimerState, timebase_freq, 10000),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ibex_timer_init(Object *obj)
@@ -291,11 +286,11 @@ static void ibex_timer_realize(DeviceState *dev, Error **errp)
 }
 
 
-static void ibex_timer_class_init(ObjectClass *klass, void *data)
+static void ibex_timer_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = ibex_timer_reset;
+    device_class_set_legacy_reset(dc, ibex_timer_reset);
     dc->vmsd = &vmstate_ibex_timer;
     dc->realize = ibex_timer_realize;
     device_class_set_props(dc, ibex_timer_properties);

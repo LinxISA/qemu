@@ -7,10 +7,10 @@
  * See the COPYING file in the top-level directory.
  */
 
-#ifndef WHPX_CPUS_H
-#define WHPX_CPUS_H
+#ifndef TARGET_I386_WHPX_ACCEL_OPS_H
+#define TARGET_I386_WHPX_ACCEL_OPS_H
 
-#include "sysemu/cpus.h"
+#include "system/cpus.h"
 
 int whpx_init_vcpu(CPUState *cpu);
 int whpx_vcpu_exec(CPUState *cpu);
@@ -29,4 +29,4 @@ void whpx_cpu_synchronize_pre_loadvm(CPUState *cpu);
 /* full state set, modified during initialization or on vmload */
 #define WHPX_SET_FULL_STATE      3
 
-#endif /* WHPX_CPUS_H */
+#endif /* TARGET_I386_WHPX_ACCEL_OPS_H */

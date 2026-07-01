@@ -15,14 +15,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "qemu/cutils.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "trace.h"
@@ -111,7 +111,8 @@ typedef enum  {
     pl330_chan_fault = 15,
 } PL330ChanState;
 
-typedef struct PL330State PL330State;
+#define TYPE_PL330 "pl330"
+OBJECT_DECLARE_SIMPLE_TYPE(PL330State, PL330)
 
 typedef struct PL330Chan {
     uint32_t src;
@@ -140,7 +141,7 @@ static const VMStateDescription vmstate_pl330_chan = {
     .name = "pl330_chan",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(src, PL330Chan),
         VMSTATE_UINT32(dst, PL330Chan),
         VMSTATE_UINT32(pc, PL330Chan),
@@ -171,7 +172,7 @@ static const VMStateDescription vmstate_pl330_fifo = {
     .name = "pl330_chan",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_VBUFFER_UINT32(buf, PL330Fifo, 1, NULL, buf_size),
         VMSTATE_VBUFFER_UINT32(tag, PL330Fifo, 1, NULL, buf_size),
         VMSTATE_UINT32(head, PL330Fifo),
@@ -195,7 +196,7 @@ static const VMStateDescription vmstate_pl330_queue_entry = {
     .name = "pl330_queue_entry",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(addr, PL330QueueEntry),
         VMSTATE_UINT32(len, PL330QueueEntry),
         VMSTATE_UINT8(n, PL330QueueEntry),
@@ -217,7 +218,7 @@ static const VMStateDescription vmstate_pl330_queue = {
     .name = "pl330_queue",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_VARRAY_POINTER_UINT32(queue, PL330Queue, queue_size,
                                              vmstate_pl330_queue_entry,
                                              PL330QueueEntry),
@@ -274,14 +275,11 @@ struct PL330State {
     AddressSpace *mem_as;
 };
 
-#define TYPE_PL330 "pl330"
-OBJECT_DECLARE_SIMPLE_TYPE(PL330State, PL330)
-
 static const VMStateDescription vmstate_pl330 = {
     .name = "pl330",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(manager, PL330State, 0, vmstate_pl330_chan, PL330Chan),
         VMSTATE_STRUCT_VARRAY_POINTER_UINT32(chan, PL330State, num_chnls,
                                              vmstate_pl330_chan, PL330Chan),
@@ -318,22 +316,14 @@ typedef struct PL330InsnDesc {
 
 static void pl330_hexdump(uint8_t *buf, size_t size)
 {
-    unsigned int b, i, len;
-    char tmpbuf[80];
+    g_autoptr(GString) str = g_string_sized_new(64);
+    size_t b, len;
 
-    for (b = 0; b < size; b += 16) {
-        len = size - b;
-        if (len > 16) {
-            len = 16;
-        }
-        tmpbuf[0] = '\0';
-        for (i = 0; i < len; i++) {
-            if ((i % 4) == 0) {
-                strcat(tmpbuf, " ");
-            }
-            sprintf(tmpbuf + strlen(tmpbuf), " %02x", buf[b + i]);
-        }
-        trace_pl330_hexdump(b, tmpbuf);
+    for (b = 0; b < size; b += len) {
+        len = MIN(16, size - b);
+        g_string_truncate(str, 0);
+        qemu_hexdump_line(str, buf + b, len, 1, 4);
+        trace_pl330_hexdump(b, str->str);
     }
 }
 
@@ -1329,7 +1319,7 @@ static void pl330_debug_exec(PL330State *s)
     }
     if (!insn) {
         pl330_fault(ch, PL330_FAULT_UNDEF_INSTR | PL330_FAULT_DBG_INSTR);
-        return ;
+        return;
     }
     ch->stall = 0;
     insn->exec(ch, opcode, args, insn->size - 1);
@@ -1374,7 +1364,7 @@ static void pl330_iomem_write(void *opaque, hwaddr offset,
             pl330_exec(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR, "pl330: write of illegal value %u "
-                          "for offset " TARGET_FMT_plx "\n", (unsigned)value,
+                          "for offset " HWADDR_FMT_plx "\n", (unsigned)value,
                           offset);
         }
         break;
@@ -1385,7 +1375,7 @@ static void pl330_iomem_write(void *opaque, hwaddr offset,
         s->dbg[1] = value;
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad write offset " TARGET_FMT_plx
+        qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad write offset " HWADDR_FMT_plx
                       "\n", offset);
         break;
     }
@@ -1410,7 +1400,7 @@ static inline uint32_t pl330_iomem_read_imp(void *opaque,
         chan_id = offset >> 5;
         if (chan_id >= s->num_chnls) {
             qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad read offset "
-                          TARGET_FMT_plx "\n", offset);
+                          HWADDR_FMT_plx "\n", offset);
             return 0;
         }
         switch (offset & 0x1f) {
@@ -1426,7 +1416,7 @@ static inline uint32_t pl330_iomem_read_imp(void *opaque,
             return s->chan[chan_id].lc[1];
         default:
             qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad read offset "
-                          TARGET_FMT_plx "\n", offset);
+                          HWADDR_FMT_plx "\n", offset);
             return 0;
         }
     }
@@ -1435,7 +1425,7 @@ static inline uint32_t pl330_iomem_read_imp(void *opaque,
         chan_id = offset >> 3;
         if (chan_id >= s->num_chnls) {
             qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad read offset "
-                          TARGET_FMT_plx "\n", offset);
+                          HWADDR_FMT_plx "\n", offset);
             return 0;
         }
         switch ((offset >> 2) & 1) {
@@ -1457,7 +1447,7 @@ static inline uint32_t pl330_iomem_read_imp(void *opaque,
         chan_id = offset >> 2;
         if (chan_id >= s->num_chnls) {
             qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad read offset "
-                          TARGET_FMT_plx "\n", offset);
+                          HWADDR_FMT_plx "\n", offset);
             return 0;
         }
         return s->chan[chan_id].fault_type;
@@ -1496,7 +1486,7 @@ static inline uint32_t pl330_iomem_read_imp(void *opaque,
         return s->debug_status;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "pl330: bad read offset "
-                      TARGET_FMT_plx "\n", offset);
+                      HWADDR_FMT_plx "\n", offset);
     }
     return 0;
 }
@@ -1654,7 +1644,7 @@ static void pl330_realize(DeviceState *dev, Error **errp)
     pl330_fifo_init(&s->fifo, s->data_width / 4 * s->data_buffer_dep);
 }
 
-static Property pl330_properties[] = {
+static const Property pl330_properties[] = {
     /* CR0 */
     DEFINE_PROP_UINT32("num_chnls", PL330State, num_chnls, 8),
     DEFINE_PROP_UINT8("num_periph_req", PL330State, num_periph_req, 4),
@@ -1677,16 +1667,14 @@ static Property pl330_properties[] = {
 
     DEFINE_PROP_LINK("memory", PL330State, mem_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void pl330_class_init(ObjectClass *klass, void *data)
+static void pl330_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pl330_realize;
-    dc->reset = pl330_reset;
+    device_class_set_legacy_reset(dc, pl330_reset);
     device_class_set_props(dc, pl330_properties);
     dc->vmsd = &vmstate_pl330;
 }

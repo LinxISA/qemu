@@ -11,8 +11,8 @@
  * top-level directory.
  */
 
-#ifndef _QEMU_VHOST_USER_FS_H
-#define _QEMU_VHOST_USER_FS_H
+#ifndef QEMU_VHOST_USER_FS_H
+#define QEMU_VHOST_USER_FS_H
 
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/vhost.h"
@@ -24,7 +24,7 @@
 OBJECT_DECLARE_SIMPLE_TYPE(VHostUserFS, VHOST_USER_FS)
 
 typedef struct {
-    CharBackend chardev;
+    CharFrontend chardev;
     char *tag;
     uint16_t num_request_queues;
     uint16_t queue_size;
@@ -44,4 +44,4 @@ struct VHostUserFS {
     /*< public >*/
 };
 
-#endif /* _QEMU_VHOST_USER_FS_H */
+#endif /* QEMU_VHOST_USER_FS_H */

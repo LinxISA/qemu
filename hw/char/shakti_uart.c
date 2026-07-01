@@ -24,8 +24,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/char/shakti_uart.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qemu/log.h"
 
 static uint64_t shakti_uart_read(void *opaque, hwaddr addr, unsigned size)
@@ -157,15 +157,14 @@ static void shakti_uart_instance_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &sus->mmio);
 }
 
-static Property shakti_uart_properties[] = {
+static const Property shakti_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", ShaktiUartState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void shakti_uart_class_init(ObjectClass *klass, void *data)
+static void shakti_uart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    dc->reset = shakti_uart_reset;
+    device_class_set_legacy_reset(dc, shakti_uart_reset);
     dc->realize = shakti_uart_realize;
     device_class_set_props(dc, shakti_uart_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);

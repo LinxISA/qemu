@@ -1,5 +1,0 @@
-NEW_EVENT(blk_cmp_geui_t)
-NEW_EVENT(blk_cmp_geui_r)
-
-
-#define TEST_DRIVER testDriver_1_64

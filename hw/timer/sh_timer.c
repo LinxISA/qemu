@@ -9,12 +9,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/sh4/sh.h"
 #include "hw/timer/tmu012.h"
-#include "hw/ptimer.h"
+#include "hw/core/ptimer.h"
 #include "trace.h"
 
 #define TIMER_TCR_TPSC          (7 << 0)
@@ -239,7 +239,7 @@ static void *sh_timer_init(uint32_t freq, int feat, qemu_irq irq)
     s->enabled = 0;
     s->irq = irq;
 
-    s->timer = ptimer_init(sh_timer_tick, s, PTIMER_POLICY_DEFAULT);
+    s->timer = ptimer_init(sh_timer_tick, s, PTIMER_POLICY_LEGACY);
 
     sh_timer_write(s, OFFSET_TCOR >> 2, s->tcor);
     sh_timer_write(s, OFFSET_TCNT >> 2, s->tcnt);

@@ -14,14 +14,13 @@
 #include "qemu/osdep.h"
 
 #include "qapi/error.h"
-#include "qapi/qmp/qbool.h"
-#include "qapi/qmp/qjson.h"
-#include "qapi/qmp/qlit.h"
-#include "qapi/qmp/qnull.h"
-#include "qapi/qmp/qnum.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qbool.h"
+#include "qobject/qjson.h"
+#include "qobject/qlit.h"
+#include "qobject/qnull.h"
+#include "qobject/qnum.h"
+#include "qobject/qstring.h"
 #include "qemu/unicode.h"
-#include "qemu-common.h"
 
 static QString *from_json_str(const char *jstr, bool single, Error **errp)
 {
@@ -1487,7 +1486,7 @@ int main(int argc, char **argv)
     g_test_add_func("/literals/keyword", keyword_literal);
 
     g_test_add_func("/literals/interpolation/valid", interpolation_valid);
-    g_test_add_func("/literals/interpolation/unkown", interpolation_unknown);
+    g_test_add_func("/literals/interpolation/unknown", interpolation_unknown);
     g_test_add_func("/literals/interpolation/string", interpolation_string);
 
     g_test_add_func("/dicts/simple_dict", simple_dict);

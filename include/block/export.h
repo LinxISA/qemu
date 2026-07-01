@@ -29,6 +29,9 @@ typedef struct BlockExportDriver {
      */
     size_t instance_size;
 
+    /* True if the export type supports running on an inactive node */
+    bool supports_inactive;
+
     /* Creates and starts a new block export */
     int (*create)(BlockExport *, BlockExportOptions *, Error **);
 
@@ -57,6 +60,8 @@ struct BlockExport {
      * Reference count for this block export. This includes strong references
      * both from the owner (qemu-nbd or the monitor) and clients connected to
      * the export.
+     *
+     * Use atomics to access this field.
      */
     int refcount;
 

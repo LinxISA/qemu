@@ -21,9 +21,10 @@
 #include "user-internals.h"
 #include "signal-common.h"
 #include "linux-user/trace.h"
+#include "target_ptrace.h"
 
 typedef struct target_sigcontext {
-    struct target_pt_regs regs;
+    struct target_user_regs_struct regs;
     abi_ulong oldmask;
 } target_sigcontext;
 
@@ -103,7 +104,7 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
     }
 
     if (ka->sa_flags & SA_SIGINFO) {
-        tswap_siginfo(&frame->info, info);
+        frame->info = *info;
     }
 
     __put_user(0, &frame->uc.tuc_flags);

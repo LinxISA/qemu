@@ -28,7 +28,7 @@
 
 #include "qemu/osdep.h"
 #include "ui/console.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "hw/usb/hid.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
@@ -36,8 +36,8 @@
 #include "qom/object.h"
 
 /* Interface requests */
-#define WACOM_GET_REPORT	0x2101
-#define WACOM_SET_REPORT	0x2109
+#define WACOM_GET_REPORT    0x2101
+#define WACOM_SET_REPORT    0x2109
 
 struct USBWacomState {
     USBDevice dev;
@@ -420,7 +420,7 @@ static const VMStateDescription vmstate_usb_wacom = {
     .unmigratable = 1,
 };
 
-static void usb_wacom_class_init(ObjectClass *klass, void *data)
+static void usb_wacom_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);

@@ -18,11 +18,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "qemu.h"
 #include "user-internals.h"
-#include "cpu_loop-common.h"
+#include "user/cpu_loop.h"
 #include "signal-common.h"
 #include "elf.h"
 #include "semihosting/common-semi.h"
@@ -37,7 +36,7 @@ void cpu_loop(CPURISCVState *env)
         cpu_exec_start(cs);
         trapnr = cpu_exec(cs);
         cpu_exec_end(cs);
-        process_queued_cpu_work(cs);
+        qemu_process_cpu_events(cs);
 
         switch (trapnr) {
         case EXCP_INTERRUPT:
@@ -48,13 +47,14 @@ void cpu_loop(CPURISCVState *env)
             break;
         case RISCV_EXCP_U_ECALL:
             env->pc += 4;
-            if (env->gpr[xA7] == TARGET_NR_arch_specific_syscall + 15) {
+            if (env->gpr[xA7] == TARGET_NR_riscv_flush_icache) {
                 /* riscv_flush_icache_syscall is a no-op in QEMU as
                    self-modifying code is automatically detected */
                 ret = 0;
             } else {
                 ret = do_syscall(env,
-                                 env->gpr[(env->elf_flags & EF_RISCV_RVE) ? xT0 : xA7],
+                                 env->gpr[(env->elf_flags & EF_RISCV_RVE)
+                                    ? xT0 : xA7],
                                  env->gpr[xA0],
                                  env->gpr[xA1],
                                  env->gpr[xA2],
@@ -81,7 +81,7 @@ void cpu_loop(CPURISCVState *env)
             force_sig_fault(TARGET_SIGTRAP, TARGET_TRAP_BRKPT, env->pc);
             break;
         case RISCV_EXCP_SEMIHOST:
-            env->gpr[xA0] = do_common_semihosting(cs);
+            do_common_semihosting(cs);
             env->pc += 4;
             break;
         default:
@@ -94,23 +94,16 @@ void cpu_loop(CPURISCVState *env)
     }
 }
 
-void target_cpu_copy_regs(CPUArchState *env, struct target_pt_regs *regs)
+void init_main_thread(CPUState *cs, struct image_info *info)
 {
-    CPUState *cpu = env_cpu(env);
-    TaskState *ts = cpu->opaque;
-    struct image_info *info = ts->info;
+    CPUArchState *env = cpu_env(cs);
 
-    env->pc = regs->sepc;
-    env->gpr[xSP] = regs->sp;
+    env->pc = info->entry;
+    env->gpr[xSP] = info->start_stack;
     env->elf_flags = info->elf_flags;
 
     if ((env->misa_ext & RVE) && !(env->elf_flags & EF_RISCV_RVE)) {
         error_report("Incompatible ELF: RVE cpu requires RVE ABI binary");
         exit(EXIT_FAILURE);
     }
-
-    ts->stack_base = info->start_stack;
-    ts->heap_base = info->brk;
-    /* This will be filled in on the first SYS_HEAPINFO call.  */
-    ts->heap_limit = 0;
 }

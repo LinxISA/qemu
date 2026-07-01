@@ -24,16 +24,15 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "ui/console.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
-#include "hw/loader.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "trace.h"
@@ -266,7 +265,7 @@ static void cg3_reg_write(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps cg3_reg_ops = {
     .read = cg3_reg_read,
     .write = cg3_reg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,
@@ -335,7 +334,7 @@ static const VMStateDescription vmstate_cg3 = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = vmstate_cg3_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16(height, CG3State),
         VMSTATE_UINT16(width, CG3State),
         VMSTATE_UINT16(depth, CG3State),
@@ -362,20 +361,19 @@ static void cg3_reset(DeviceState *d)
     qemu_irq_lower(s->irq);
 }
 
-static Property cg3_properties[] = {
+static const Property cg3_properties[] = {
     DEFINE_PROP_UINT32("vram-size",    CG3State, vram_size, -1),
     DEFINE_PROP_UINT16("width",        CG3State, width,     -1),
     DEFINE_PROP_UINT16("height",       CG3State, height,    -1),
     DEFINE_PROP_UINT16("depth",        CG3State, depth,     -1),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void cg3_class_init(ObjectClass *klass, void *data)
+static void cg3_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = cg3_realizefn;
-    dc->reset = cg3_reset;
+    device_class_set_legacy_reset(dc, cg3_reset);
     dc->vmsd = &vmstate_cg3;
     device_class_set_props(dc, cg3_properties);
 }

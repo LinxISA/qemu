@@ -35,18 +35,40 @@
 #define PSKFILE WORKDIR "keys.psk"
 #define KEYFILE WORKDIR "key-ctx.pem"
 
-static ssize_t testWrite(const char *buf, size_t len, void *opaque)
+static ssize_t
+testWrite(const void *buf, size_t len, void *opaque, Error **errp)
 {
     int *fd = opaque;
+    int ret;
 
-    return write(*fd, buf, len);
+    ret = write(*fd, buf, len);
+    if (ret < 0) {
+        if (errno == EAGAIN) {
+            return QCRYPTO_TLS_SESSION_ERR_BLOCK;
+        } else {
+            error_setg_errno(errp, errno, "unable to write");
+            return -1;
+        }
+    }
+    return ret;
 }
 
-static ssize_t testRead(char *buf, size_t len, void *opaque)
+static ssize_t
+testRead(void *buf, size_t len, void *opaque, Error **errp)
 {
     int *fd = opaque;
+    int ret;
 
-    return read(*fd, buf, len);
+    ret = read(*fd, buf, len);
+    if (ret < 0) {
+        if (errno == EAGAIN) {
+            return QCRYPTO_TLS_SESSION_ERR_BLOCK;
+        } else {
+            error_setg_errno(errp, errno, "unable to read");
+            return -1;
+        }
+    }
+    return ret;
 }
 
 static QCryptoTLSCreds *test_tls_creds_psk_create(
@@ -82,7 +104,7 @@ static void test_crypto_tls_session_psk(void)
     int ret;
 
     /* We'll use this for our fake client-server connection */
-    ret = socketpair(AF_UNIX, SOCK_STREAM, 0, channel);
+    ret = qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, channel);
     g_assert(ret == 0);
 
     /*
@@ -90,8 +112,8 @@ static void test_crypto_tls_session_psk(void)
      * thread, so we need these non-blocking to avoid deadlock
      * of ourselves
      */
-    qemu_set_nonblock(channel[0]);
-    qemu_set_nonblock(channel[1]);
+    qemu_set_blocking(channel[0], false, &error_abort);
+    qemu_set_blocking(channel[1], false, &error_abort);
 
     clientCreds = test_tls_creds_psk_create(
         QCRYPTO_TLS_CREDS_ENDPOINT_CLIENT,
@@ -136,8 +158,7 @@ static void test_crypto_tls_session_psk(void)
             rv = qcrypto_tls_session_handshake(serverSess,
                                                &error_abort);
             g_assert(rv >= 0);
-            if (qcrypto_tls_session_get_handshake_status(serverSess) ==
-                QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
+            if (rv == QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
                 serverShake = true;
             }
         }
@@ -145,8 +166,7 @@ static void test_crypto_tls_session_psk(void)
             rv = qcrypto_tls_session_handshake(clientSess,
                                                &error_abort);
             g_assert(rv >= 0);
-            if (qcrypto_tls_session_get_handshake_status(clientSess) ==
-                QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
+            if (rv == QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
                 clientShake = true;
             }
         }
@@ -236,7 +256,7 @@ static void test_crypto_tls_session_x509(const void *opaque)
     int ret;
 
     /* We'll use this for our fake client-server connection */
-    ret = socketpair(AF_UNIX, SOCK_STREAM, 0, channel);
+    ret = qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, channel);
     g_assert(ret == 0);
 
     /*
@@ -244,13 +264,13 @@ static void test_crypto_tls_session_x509(const void *opaque)
      * thread, so we need these non-blocking to avoid deadlock
      * of ourselves
      */
-    qemu_set_nonblock(channel[0]);
-    qemu_set_nonblock(channel[1]);
+    qemu_set_blocking(channel[0], false, &error_abort);
+    qemu_set_blocking(channel[1], false, &error_abort);
 
 #define CLIENT_CERT_DIR "tests/test-crypto-tlssession-client/"
 #define SERVER_CERT_DIR "tests/test-crypto-tlssession-server/"
-    mkdir(CLIENT_CERT_DIR, 0700);
-    mkdir(SERVER_CERT_DIR, 0700);
+    g_mkdir_with_parents(CLIENT_CERT_DIR, 0700);
+    g_mkdir_with_parents(SERVER_CERT_DIR, 0700);
 
     unlink(SERVER_CERT_DIR QCRYPTO_TLS_CREDS_X509_CA_CERT);
     unlink(SERVER_CERT_DIR QCRYPTO_TLS_CREDS_X509_SERVER_CERT);
@@ -330,8 +350,7 @@ static void test_crypto_tls_session_x509(const void *opaque)
             rv = qcrypto_tls_session_handshake(serverSess,
                                                &error_abort);
             g_assert(rv >= 0);
-            if (qcrypto_tls_session_get_handshake_status(serverSess) ==
-                QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
+            if (rv == QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
                 serverShake = true;
             }
         }
@@ -339,8 +358,7 @@ static void test_crypto_tls_session_x509(const void *opaque)
             rv = qcrypto_tls_session_handshake(clientSess,
                                                &error_abort);
             g_assert(rv >= 0);
-            if (qcrypto_tls_session_get_handshake_status(clientSess) ==
-                QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
+            if (rv == QCRYPTO_TLS_HANDSHAKE_COMPLETE) {
                 clientShake = true;
             }
         }
@@ -398,7 +416,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_setenv("GNUTLS_FORCE_FIPS_MODE", "2", 1);
 
-    mkdir(WORKDIR, 0700);
+    g_mkdir_with_parents(WORKDIR, 0700);
 
     test_tls_init(KEYFILE);
     test_tls_psk_init(PSKFILE);
@@ -454,14 +472,14 @@ int main(int argc, char **argv)
                  "UK", "qemu.org", NULL, NULL, NULL, NULL,
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_SERVER, NULL,
                  0, 0);
     TLS_CERT_REQ(clientcertreq, cacertreq,
                  "UK", "qemu", NULL, NULL, NULL, NULL,
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_CLIENT, NULL,
                  0, 0);
 
@@ -469,7 +487,7 @@ int main(int argc, char **argv)
                  "UK", "qemu", NULL, NULL, NULL, NULL,
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_CLIENT, NULL,
                  0, 0);
 
@@ -488,7 +506,7 @@ int main(int argc, char **argv)
                  "192.168.122.1", "fec0::dead:beaf",
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_SERVER, NULL,
                  0, 0);
     /* This intentionally doesn't replicate */
@@ -497,7 +515,7 @@ int main(int argc, char **argv)
                  "192.168.122.1", "fec0::dead:beaf",
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_SERVER, NULL,
                  0, 0);
 
@@ -512,12 +530,19 @@ int main(int argc, char **argv)
                   false, true, "wiki.qemu.org", NULL);
 
     TEST_SESS_REG(altname4, cacertreq.filename,
+                  servercertalt1req.filename, clientcertreq.filename,
+                  false, false, "192.168.122.1", NULL);
+    TEST_SESS_REG(altname5, cacertreq.filename,
+                  servercertalt1req.filename, clientcertreq.filename,
+                  false, false, "fec0::dead:beaf", NULL);
+
+    TEST_SESS_REG(altname6, cacertreq.filename,
                   servercertalt2req.filename, clientcertreq.filename,
                   false, true, "qemu.org", NULL);
-    TEST_SESS_REG(altname5, cacertreq.filename,
+    TEST_SESS_REG(altname7, cacertreq.filename,
                   servercertalt2req.filename, clientcertreq.filename,
                   false, false, "www.qemu.org", NULL);
-    TEST_SESS_REG(altname6, cacertreq.filename,
+    TEST_SESS_REG(altname8, cacertreq.filename,
                   servercertalt2req.filename, clientcertreq.filename,
                   false, false, "wiki.qemu.org", NULL);
 
@@ -594,14 +619,14 @@ int main(int argc, char **argv)
                  "UK", "qemu.org", NULL, NULL, NULL, NULL,
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_SERVER, NULL,
                  0, 0);
     TLS_CERT_REQ(clientcertlevel2breq, cacertlevel1breq,
                  "UK", "qemu client level 2b", NULL, NULL, NULL, NULL,
                  true, true, false,
                  true, true,
-                 GNUTLS_KEY_DIGITAL_SIGNATURE | GNUTLS_KEY_KEY_ENCIPHERMENT,
+                 GNUTLS_KEY_DIGITAL_SIGNATURE,
                  true, true, GNUTLS_KP_TLS_WWW_CLIENT, NULL,
                  0, 0);
 

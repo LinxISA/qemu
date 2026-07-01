@@ -1,2 +1,10 @@
 config LINX
     bool
+
+config LINX32
+    bool
+    select LINX
+
+config LINX64
+    bool
+    select LINX

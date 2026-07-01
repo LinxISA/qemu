@@ -29,13 +29,14 @@
 #include "ui/console.h"
 #include "ui/spice-display.h"
 #include "qemu/config-file.h"
+#include "qemu/error-report.h"
 #include "qemu/option.h"
 #include "qemu/cutils.h"
 #include "qemu/module.h"
 #include "qapi/error.h"
 #include "io/channel-command.h"
 #include "chardev/spice.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "qom/object.h"
 
 static const char *tmp_dir;
@@ -95,14 +96,19 @@ static void vc_chr_set_echo(Chardev *chr, bool echo)
     /* TODO: set echo for frontends QMP and qtest */
 }
 
-static void char_vc_class_init(ObjectClass *oc, void *data)
+static void vc_chr_parse(QemuOpts *opts, ChardevBackend *backend, Error **errp)
+{
+    /* fqdn is dealt with in vc_chr_open() */
+}
+
+static void char_vc_class_init(ObjectClass *oc, const void *data)
 {
     VCChardevClass *vc = CHARDEV_VC_CLASS(oc);
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
     vc->parent_open = cc->open;
 
-    cc->parse = qemu_chr_parse_vc;
+    cc->parse = vc_chr_parse;
     cc->open = vc_chr_open;
     cc->chr_set_echo = vc_chr_set_echo;
 }
@@ -167,7 +173,7 @@ static void spice_app_display_early_init(DisplayOptions *opts)
         exit(1);
     }
 
-    type_register(&char_vc_type_info);
+    type_register_static(&char_vc_type_info);
 
     sock_path = g_strjoin("", app_dir, "/", "spice.sock", NULL);
     qopts = qemu_opts_create(list, NULL, 0, &error_abort);
@@ -214,6 +220,7 @@ static QemuDisplay qemu_display_spice_app = {
     .type       = DISPLAY_TYPE_SPICE_APP,
     .early_init = spice_app_display_early_init,
     .init       = spice_app_display_init,
+    .vc         = "vc",
 };
 
 static void register_spice_app(void)

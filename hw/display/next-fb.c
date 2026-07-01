@@ -24,7 +24,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "ui/console.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "framebuffer.h"
 #include "ui/pixel_ops.h"
 #include "hw/m68k/next-cube.h"
@@ -119,14 +119,14 @@ static void nextfb_realize(DeviceState *dev, Error **errp)
     qemu_console_resize(s->con, s->cols, s->rows);
 }
 
-static void nextfb_class_init(ObjectClass *oc, void *data)
+static void nextfb_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->realize = nextfb_realize;
 
-    /* Note: This device does not any state that we have to reset or migrate */
+    /* Note: This device does not have any state that we have to reset or migrate */
 }
 
 static const TypeInfo nextfb_info = {

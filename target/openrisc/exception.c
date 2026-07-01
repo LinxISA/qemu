@@ -19,10 +19,9 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "exception.h"
 
-void QEMU_NORETURN raise_exception(OpenRISCCPU *cpu, uint32_t excp)
+G_NORETURN void raise_exception(OpenRISCCPU *cpu, uint32_t excp)
 {
     CPUState *cs = CPU(cpu);
 

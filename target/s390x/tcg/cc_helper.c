@@ -22,7 +22,6 @@
 #include "cpu.h"
 #include "s390x-internal.h"
 #include "tcg_s390x.h"
-#include "exec/exec-all.h"
 #include "exec/helper-proto.h"
 #include "qemu/host-utils.h"
 
@@ -487,6 +486,10 @@ void HELPER(sacf)(CPUS390XState *env, uint64_t a1)
 {
     HELPER_LOG("%s: %16" PRIx64 "\n", __func__, a1);
 
+    if (!(env->psw.mask & PSW_MASK_DAT)) {
+        tcg_s390_program_interrupt(env, PGM_SPECIAL_OP, GETPC());
+    }
+
     switch (a1 & 0xf00) {
     case 0x000:
         env->psw.mask &= ~PSW_MASK_ASC;
@@ -497,6 +500,9 @@ void HELPER(sacf)(CPUS390XState *env, uint64_t a1)
         env->psw.mask |= PSW_ASC_SECONDARY;
         break;
     case 0x300:
+        if ((env->psw.mask & PSW_MASK_PSTATE) != 0) {
+            tcg_s390_program_interrupt(env, PGM_PRIVILEGED, GETPC());
+        }
         env->psw.mask &= ~PSW_MASK_ASC;
         env->psw.mask |= PSW_ASC_HOME;
         break;

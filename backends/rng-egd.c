@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/rng.h"
+#include "system/rng.h"
 #include "chardev/char-fe.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qerror.h"
@@ -24,7 +24,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RngEgd, RNG_EGD)
 struct RngEgd {
     RngBackend parent;
 
-    CharBackend chr;
+    CharFrontend chr;
     char *chr_name;
 };
 
@@ -116,7 +116,7 @@ static void rng_egd_set_chardev(Object *obj, const char *value, Error **errp)
     RngEgd *s = RNG_EGD(b);
 
     if (b->opened) {
-        error_setg(errp, QERR_PERMISSION_DENIED);
+        error_setg(errp, "Property 'chardev' can no longer be set");
     } else {
         g_free(s->chr_name);
         s->chr_name = g_strdup(value);
@@ -143,7 +143,7 @@ static void rng_egd_finalize(Object *obj)
     g_free(s->chr_name);
 }
 
-static void rng_egd_class_init(ObjectClass *klass, void *data)
+static void rng_egd_class_init(ObjectClass *klass, const void *data)
 {
     RngBackendClass *rbc = RNG_BACKEND_CLASS(klass);
 

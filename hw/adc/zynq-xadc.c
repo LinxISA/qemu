@@ -14,7 +14,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/adc/zynq-xadc.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
@@ -86,7 +86,7 @@ static void zynq_xadc_update_ints(ZynqXADCState *s)
         s->regs[INT_STS] |= INT_DFIFO_GTH;
     }
 
-    qemu_set_irq(s->qemu_irq, !!(s->regs[INT_STS] & ~s->regs[INT_MASK]));
+    qemu_set_irq(s->irq, !!(s->regs[INT_STS] & ~s->regs[INT_MASK]));
 }
 
 static void zynq_xadc_reset(DeviceState *d)
@@ -262,14 +262,14 @@ static void zynq_xadc_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &xadc_ops, s, "zynq-xadc",
                           ZYNQ_XADC_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
-    sysbus_init_irq(sbd, &s->qemu_irq);
+    sysbus_init_irq(sbd, &s->irq);
 }
 
 static const VMStateDescription vmstate_zynq_xadc = {
     .name = "zynq-xadc",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, ZynqXADCState, ZYNQ_XADC_NUM_IO_REGS),
         VMSTATE_UINT16_ARRAY(xadc_regs, ZynqXADCState,
                              ZYNQ_XADC_NUM_ADC_REGS),
@@ -281,12 +281,12 @@ static const VMStateDescription vmstate_zynq_xadc = {
     }
 };
 
-static void zynq_xadc_class_init(ObjectClass *klass, void *data)
+static void zynq_xadc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_zynq_xadc;
-    dc->reset = zynq_xadc_reset;
+    device_class_set_legacy_reset(dc, zynq_xadc_reset);
 }
 
 static const TypeInfo zynq_xadc_info = {

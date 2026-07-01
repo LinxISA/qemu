@@ -15,7 +15,8 @@
 #include <termios.h>
 #endif
 
-#include "qemu-common.h"
+#include "qemu/help-texts.h"
+#include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qemu-io.h"
 #include "qemu/error-report.h"
@@ -26,10 +27,10 @@
 #include "qemu/readline.h"
 #include "qemu/log.h"
 #include "qemu/sockets.h"
-#include "qapi/qmp/qstring.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qstring.h"
+#include "qobject/qdict.h"
 #include "qom/object_interfaces.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "block/block_int.h"
 #include "trace/control.h"
 #include "crypto/init.h"
@@ -413,15 +414,7 @@ static void prep_fetchline(void *opaque)
 
 static int do_qemuio_command(const char *cmd)
 {
-    int ret;
-    AioContext *ctx =
-        qemuio_blk ? blk_get_aio_context(qemuio_blk) : qemu_get_aio_context();
-
-    aio_context_acquire(ctx);
-    ret = qemuio_command(qemuio_blk, cmd);
-    aio_context_release(ctx);
-
-    return ret;
+    return qemuio_command(qemuio_blk, cmd);
 }
 
 static int command_loop(void)
@@ -474,10 +467,10 @@ static int command_loop(void)
     return last_error;
 }
 
-static void add_user_command(char *optarg)
+static void add_user_command(char *user_cmd)
 {
     cmdline = g_renew(char *, cmdline, ++ncmdline);
-    cmdline[ncmdline-1] = optarg;
+    cmdline[ncmdline - 1] = user_cmd;
 }
 
 static void reenable_tty_echo(void)
@@ -634,7 +627,7 @@ int main(int argc, char **argv)
         exit(1);
     }
     trace_init_file();
-    qemu_set_log(LOG_TRACE);
+    qemu_set_log(LOG_TRACE, &error_fatal);
 
     /* initialize commands */
     qemuio_add_command(&quit_cmd);

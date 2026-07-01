@@ -24,20 +24,18 @@
 
 #include "qemu/osdep.h"
 #include <dirent.h>
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "monitor-internal.h"
 #include "monitor/hmp.h"
-#include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qnum.h"
+#include "qobject/qdict.h"
+#include "qobject/qnum.h"
 #include "qemu/config-file.h"
 #include "qemu/ctype.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/option.h"
 #include "qemu/units.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/runstate.h"
+#include "system/block-backend.h"
 #include "trace.h"
 
 static void monitor_command_cb(void *opaque, const char *cmdline,
@@ -274,7 +272,7 @@ static void help_cmd_dump(Monitor *mon, const HMPCommand *cmds,
     }
 }
 
-void help_cmd(Monitor *mon, const char *name)
+void hmp_help_cmd(Monitor *mon, const char *name)
 {
     char *args[MAX_ARGS];
     int nb_args = 0;
@@ -285,10 +283,15 @@ void help_cmd(Monitor *mon, const char *name)
         if (!strcmp(name, "log")) {
             const QEMULogItem *item;
             monitor_printf(mon, "Log items (comma separated):\n");
-            monitor_printf(mon, "%-10s %s\n", "none", "remove all logs");
+            monitor_printf(mon, "%-15s %s\n", "none", "remove all logs");
             for (item = qemu_log_items; item->mask != 0; item++) {
-                monitor_printf(mon, "%-10s %s\n", item->name, item->help);
+                monitor_printf(mon, "%-15s %s\n", item->name, item->help);
             }
+#ifdef CONFIG_TRACE_LOG
+            monitor_printf(mon, "trace:PATTERN   enable trace events\n");
+            monitor_printf(mon, "\nUse \"log trace:help\" to get a list of "
+                           "trace events.\n\n");
+#endif
             return;
         }
 
@@ -308,8 +311,8 @@ void help_cmd(Monitor *mon, const char *name)
 static const char *pch;
 static sigjmp_buf expr_env;
 
-static void G_GNUC_PRINTF(2, 3) QEMU_NORETURN
-expr_error(Monitor *mon, const char *fmt, ...)
+static G_NORETURN G_GNUC_PRINTF(2, 3)
+void expr_error(Monitor *mon, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -574,10 +577,11 @@ static const char *get_command_name(const char *cmdline,
  * Read key of 'type' into 'key' and return the current
  * 'type' pointer.
  */
-static char *key_get_info(const char *type, char **key)
+static const char *key_get_info(const char *type, char **key)
 {
     size_t len;
-    char *p, *str;
+    const char *p;
+    char *str;
 
     if (*type == ',') {
         type++;
@@ -1089,7 +1093,7 @@ static void hmp_info_human_readable_text(Monitor *mon,
         return;
     }
 
-    monitor_printf(mon, "%s", info->human_readable_text);
+    monitor_puts(mon, info->human_readable_text);
 }
 
 static void handle_hmp_command_exec(Monitor *mon,
@@ -1164,7 +1168,7 @@ void handle_hmp_command(MonitorHMP *mon, const char *cmdline)
         Coroutine *co = qemu_coroutine_create(handle_hmp_command_co, &data);
         monitor_set_cur(co, &mon->common);
         aio_co_enter(qemu_get_aio_context(), co);
-        AIO_WAIT_WHILE(qemu_get_aio_context(), !data.done);
+        AIO_WAIT_WHILE_UNLOCKED(NULL, !data.done);
     }
 
     qobject_unref(qdict);
@@ -1186,9 +1190,7 @@ static void cmd_completion(MonitorHMP *mon, const char *name, const char *list)
         }
         memcpy(cmd, pstart, len);
         cmd[len] = '\0';
-        if (name[0] == '\0' || !strncmp(name, cmd, strlen(name))) {
-            readline_add_completion(mon->rs, cmd);
-        }
+        readline_add_completion_of(mon->rs, name, cmd);
         if (*p == '\0') {
             break;
         }
@@ -1267,7 +1269,7 @@ static void monitor_find_completion_by_table(MonitorHMP *mon,
 {
     const char *cmdname;
     int i;
-    const char *ptype, *old_ptype, *str, *name;
+    const char *ptype, *old_ptype, *str;
     const HMPCommand *cmd;
     BlockBackend *blk = NULL;
 
@@ -1332,11 +1334,7 @@ static void monitor_find_completion_by_table(MonitorHMP *mon,
             /* block device name completion */
             readline_set_completion_index(mon->rs, strlen(str));
             while ((blk = blk_next(blk)) != NULL) {
-                name = blk_name(blk);
-                if (str[0] == '\0' ||
-                    !strncmp(name, str, strlen(str))) {
-                    readline_add_completion(mon->rs, name);
-                }
+                readline_add_completion_of(mon->rs, str, blk_name(blk));
             }
             break;
         case 's':
@@ -1404,50 +1402,45 @@ static void monitor_read(void *opaque, const uint8_t *buf, int size)
 static void monitor_event(void *opaque, QEMUChrEvent event)
 {
     Monitor *mon = opaque;
-    MonitorHMP *hmp_mon = container_of(mon, MonitorHMP, common);
 
     switch (event) {
     case CHR_EVENT_MUX_IN:
         qemu_mutex_lock(&mon->mon_lock);
-        mon->mux_out = 0;
-        qemu_mutex_unlock(&mon->mon_lock);
-        if (mon->reset_seen) {
-            readline_restart(hmp_mon->rs);
+        if (mon->mux_out) {
+            mon->mux_out = 0;
             monitor_resume(mon);
-            monitor_flush(mon);
-        } else {
-            qatomic_mb_set(&mon->suspend_cnt, 0);
         }
+        qemu_mutex_unlock(&mon->mon_lock);
         break;
 
     case CHR_EVENT_MUX_OUT:
-        if (mon->reset_seen) {
-            if (qatomic_mb_read(&mon->suspend_cnt) == 0) {
-                monitor_printf(mon, "\n");
-            }
-            monitor_flush(mon);
-            monitor_suspend(mon);
-        } else {
-            qatomic_inc(&mon->suspend_cnt);
-        }
         qemu_mutex_lock(&mon->mon_lock);
-        mon->mux_out = 1;
+        if (!mon->mux_out) {
+            if (mon->reset_seen && !mon->suspend_cnt) {
+                monitor_puts_locked(mon, "\n");
+            } else {
+                monitor_flush_locked(mon);
+            }
+            monitor_suspend(mon);
+            mon->mux_out = 1;
+        }
         qemu_mutex_unlock(&mon->mon_lock);
         break;
 
     case CHR_EVENT_OPENED:
         monitor_printf(mon, "QEMU %s monitor - type 'help' for more "
                        "information\n", QEMU_VERSION);
-        if (!mon->mux_out) {
-            readline_restart(hmp_mon->rs);
-            readline_show_prompt(hmp_mon->rs);
-        }
+        qemu_mutex_lock(&mon->mon_lock);
         mon->reset_seen = 1;
-        mon_refcount++;
+        if (!mon->mux_out) {
+            /* Suspend-resume forces the prompt to be printed.  */
+            monitor_suspend(mon);
+            monitor_resume(mon);
+        }
+        qemu_mutex_unlock(&mon->mon_lock);
         break;
 
     case CHR_EVENT_CLOSED:
-        mon_refcount--;
         monitor_fdsets_cleanup();
         break;
 

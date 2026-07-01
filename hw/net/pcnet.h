@@ -4,11 +4,11 @@
 #define PCNET_IOPORT_SIZE       0x20
 #define PCNET_PNPMMIO_SIZE      0x20
 
-#define PCNET_LOOPTEST_CRC	1
-#define PCNET_LOOPTEST_NOCRC	2
+#define PCNET_LOOPTEST_CRC      1
+#define PCNET_LOOPTEST_NOCRC    2
 
-#include "exec/memory.h"
-#include "hw/irq.h"
+#include "system/memory.h"
+#include "hw/core/irq.h"
 
 /* BUS CONFIGURATION REGISTERS */
 #define BCR_MSRDA    0

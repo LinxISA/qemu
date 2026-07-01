@@ -1,0 +1,208 @@
+#
+# LinxISA 64-bit (V.*) instruction decoding
+#
+# This file contains the current 64-bit VEC instruction subset used by
+# canonical v0.4 MSEQ/MPAR body decoding in QEMU.
+#
+
+# 10-bit vector register codes are split across the two 32-bit halves:
+#   hi bits in the low 32-bit word, lo bits in the high 32-bit word.
+#
+# Full 10-bit code = (class << 5) | index
+#
+
+# Fields
+%RegDst 7:5 39:5
+%SrcL 15:5 47:5
+%SrcR 20:5 52:5
+%SrcD 27:5 59:5
+%SrcP 27:5 59:5
+%SrcA 27:5 59:5
+%SrcRType 57:2
+%DstType 59:5
+%SrcType 52:5
+%uimm12 52:12
+%simm12 52:s12
+%simm42_7_s25_47_17 7:s25 47:17
+%imml 52:6
+%imms 58:6
+%shamt6 52:6
+%shamt_hi 59:5
+%shamt_lo 7:5
+%C 12:1
+%L 14:1
+
+# ---------------------------------------------------------------------------
+# Arithmetic
+# ---------------------------------------------------------------------------
+
+# 64-bit scalar block headers (L.BSTART.* with 42-bit halfword-scaled target)
+l_bstart_std_fall   .... .... .... .... .001 0000 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_std_direct .... .... .... .... .010 0000 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_std_cond   .... .... .... .... .011 0000 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_std_call   .... .... .... .... .100 0000 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_fp_fall    .... .... .... .... .001 0001 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_fp_direct  .... .... .... .... .010 0001 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_fp_cond    .... .... .... .... .011 0001 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_fp_call    .... .... .... .... .100 0001 0000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+l_bstart_sys        .... .... .... .... .001 0000 1000 0001 .... .... .... .... .... .... .000 1111 simm=%simm42_7_s25_47_17
+
+# V.ADD
+v_add .... .... .... .... .000 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+
+# V.ADDI
+v_addi .... .... .... .... .000 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL uimm=%uimm12
+
+# V.SUB
+v_sub .... .... .... .... .001 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+
+# V.SUBI
+v_subi .... .... .... .... .001 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL uimm=%uimm12
+
+# V.AND / V.OR / V.XOR
+v_and .... .... .... .... .010 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+v_or  .... .... .... .... .011 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+v_xor .... .... .... .... .100 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi
+
+# V.ANDI / V.ORI / V.XORI
+v_andi .... .... .... .... .010 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_ori  .... .... .... .... .011 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_xori .... .... .... .... .100 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+
+# V.MUL
+v_mul .... .... .... .... .000 .... .100 0111 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi c=%C l=%L
+
+# V.SLL / V.SRL / V.SRA
+v_sll 0000 000. .... .... .111 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_srl 0000 000. .... .... .101 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_sra 0000 000. .... .... .110 .... .000 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.SLLI / V.SRLI / V.SRAI
+v_slli 0000 00.. .... .... .111 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL shamt=%shamt6
+v_srli 0000 00.. .... .... .101 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL shamt=%shamt6
+v_srai 0000 00.. .... .... .110 .... .001 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL shamt=%shamt6
+
+# V.MAX / V.MIN
+v_max 0000 000. .... .... .000 .... .101 1011 0000 000. .... .... .001 .... .111 1111 %RegDst %SrcL %SrcR
+v_min 0000 000. .... .... .001 .... .101 1011 0000 000. .... .... .001 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.MADD / V.DIV / V.REM
+v_madd .... .00. .... .... .110 .... .100 0111 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR %SrcD
+v_div  0000 000. .... .... .000 .... .101 0111 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_rem  0000 000. .... .... .100 .... .101 0111 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_rev  .... .... .... .... .111 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL %imml %imms
+
+# V.CMP.{EQ,NE,LT,LTU,GE,GEU}
+v_cmp_eq  0000 000. .... .... .000 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_ne  0000 000. .... .... .001 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_lt  0000 000. .... .... .100 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_ltu 0000 000. .... .... .110 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_ge  0000 000. .... .... .101 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_geu 0000 000. .... .... .111 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_and 0000 000. .... .... .010 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_cmp_or  0000 000. .... .... .011 .... .100 0101 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.CMP.{ANDI,EQI,GEI,GEUI,LTI,LTUI,NEI,ORI}
+v_cmp_andi .... .... .... .... .010 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_cmp_eqi  .... .... .... .... .000 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_cmp_gei  .... .... .... .... .101 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_cmp_geui .... .... .... .... .111 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL uimm=%uimm12
+v_cmp_lti  .... .... .... .... .100 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_cmp_ltui .... .... .... .... .110 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL uimm=%uimm12
+v_cmp_nei  .... .... .... .... .001 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+v_cmp_ori  .... .... .... .... .011 .... .101 0101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL simm=%simm12
+
+# V.{BCNT,BIC,BIS,BXS,BXU,CLZ,CTZ} packed-immediate field ops.
+v_bxs  .... .... .... .... .000 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_bxu  .... .... .... .... .001 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_bic  .... .... .... .... .010 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_bis  .... .... .... .... .011 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_ctz  .... .... .... .... .100 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_clz  .... .... .... .... .101 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+v_bcnt .... .... .... .... .110 .... .110 0111 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL imml=%imml imms=%imms
+
+# V.F{EQ,NE,LT,GE}
+v_feq 0000 000. .... .... .000 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fne 0000 000. .... .... .001 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_flt 0000 000. .... .... .010 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fge 0000 000. .... .... .011 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.F{EQ,NE,LT,GE}S aliases
+v_feqs 0000 000. .... .... .100 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fnes 0000 000. .... .... .101 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_flts 0000 000. .... .... .110 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fges 0000 000. .... .... .111 .... .101 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.CSEL (SrcD field carries predicate source register code).
+v_csel .... .... .... .... .000 .... .111 0111 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcD %SrcR srctype=%SrcRType
+
+# V.PSEL (predicate source is encoded in the high SrcP field).
+v_psel .... .... .... .... .001 .... .111 0111 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcP %SrcL %SrcR srctype=%SrcRType
+
+# V.FADD / V.FSUB / V.FMUL / V.FDIV (float32 bring-up subset)
+v_fadd 0000 000. .... .... .000 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fsub 0000 000. .... .... .001 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fmul 0000 000. .... .... .010 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+v_fdiv 0000 000. .... .... .011 .... .100 1011 0000 000. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.FMADD / V.FMSUB / V.FNMADD / V.FNMSUB
+v_fmadd .... .00. .... .... .100 .... .100 1011 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR %SrcA
+v_fmsub .... .00. .... .... .101 .... .100 1011 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR %SrcA
+v_fnmadd .... .00. .... .... .110 .... .100 1011 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR %SrcA
+v_fnmsub .... .00. .... .... .111 .... .100 1011 .... .00. .... .... .000 .... .111 1111 %RegDst %SrcL %SrcR %SrcA
+
+# V.FABS (float32 abs, unary)
+v_fabs .... .... .... .... .000 .... .111 1011 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR srctype=%SrcRType shamt=%shamt_hi c=%C l=%L
+
+# V.FSQRT / V.FRECIP / V.FEXP / V.FCLASS
+v_fsqrt  0000 0000 0000 .... .001 .... .111 1011 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_frecip 0000 0000 0000 .... .010 .... .111 1011 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_fexp   0000 0000 0000 .... .011 .... .111 1011 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_fclass 0000 0000 0000 .... .111 .... .111 1011 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+
+# V.FCVT / V.FCVTI
+v_fcvt  .... .00. .... .... .000 .... .110 1011 0000 0000 0000 .... .000 .... .111 1111 %DstType %RegDst %SrcL %SrcType
+v_fcvti .... .00. .... .... .001 .... .110 1011 0000 0000 0000 .... .000 .... .111 1111 %DstType %RegDst %SrcL %SrcType
+
+# V.FMAX / V.FMIN
+v_fmax 0000 000. .... .... .010 .... .101 1011 0000 000. .... .... .001 .... .111 1111 %RegDst %SrcL %SrcR
+v_fmin 0000 000. .... .... .011 .... .101 1011 0000 000. .... .... .001 .... .111 1111 %RegDst %SrcL %SrcR
+
+# V.ICVT / V.ICVTF
+v_icvt  .... .00. .... .... .110 .... .110 1011 0000 0000 0000 .... .000 .... .111 1111 %DstType %RegDst %SrcL %SrcType
+v_icvtf .... .00. .... .... .111 .... .110 1011 0000 0000 0000 .... .000 .... .111 1111 %DstType %RegDst %SrcL %SrcType
+
+# V.RD* reductions (vector source -> scalar destination register)
+v_rdadd  0000 0000 0000 .... .000 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_rdand  0000 0000 0000 .... .001 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_rdfadd 0000 0000 0000 .... .100 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_rdor   0000 0000 0000 .... .010 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_rdxor  0000 0000 0000 .... .011 .... .000 1101 0000 0000 0000 .... .000 .... .111 1111 %RegDst %SrcL
+v_rdmax  0000 0000 0000 .... .000 .... .000 1101 0000 0000 0000 .... .001 .... .111 1111 %RegDst %SrcL
+v_rdmin  0000 0000 0000 .... .001 .... .000 1101 0000 0000 0000 .... .001 .... .111 1111 %RegDst %SrcL
+v_rdfmax 0000 0000 0000 .... .010 .... .000 1101 0000 0000 0000 .... .001 .... .111 1111 %RegDst %SrcL
+v_rdfmin 0000 0000 0000 .... .011 .... .000 1101 0000 0000 0000 .... .001 .... .111 1111 %RegDst %SrcL
+
+# ---------------------------------------------------------------------------
+# Stores (bridged)
+# ---------------------------------------------------------------------------
+
+# V.LW / V.LW.BRG (word loads; `.local` uses tile bases, `.brg` uses RI bases)
+v_lw     .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lw_brg .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lb_brg .... .00. .... .... .000 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lh_brg .... .00. .... .... .001 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lbu_brg .... .00. .... .... .100 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lhu_brg .... .00. .... .... .101 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+
+# V.SB.BRG
+v_sb_brg .... .00. .... .... .000 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
+
+# V.SH.BRG
+v_sh_brg .... .00. .... .... .001 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
+
+# V.SW.BRG
+v_sw_brg .... .00. .... .... .010 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
+
+# V.SW (local/tile direction; `.local` uses tile bases)
+v_sw     .... .00. .... .... .010 0000 0100 1001 .... .00. .... .... ..0. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L

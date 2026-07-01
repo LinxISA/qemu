@@ -9,12 +9,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/cutils.h"
 #include "qemu/units.h"
 #include <libcacard.h>
 #include "chardev/char-fe.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -56,7 +56,7 @@ typedef struct PassthruState PassthruState;
 
 struct PassthruState {
     CCIDCardState base;
-    CharBackend cs;
+    CharFrontend cs;
     uint8_t  vscard_in_data[VSCARD_IN_SIZE];
     uint32_t vscard_in_pos;
     uint32_t vscard_in_hdr;
@@ -378,7 +378,7 @@ static const VMStateDescription passthru_vmstate = {
     .name = "ccid-card-passthru",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER(vscard_in_data, PassthruState),
         VMSTATE_UINT32(vscard_in_pos, PassthruState),
         VMSTATE_UINT32(vscard_in_hdr, PassthruState),
@@ -388,13 +388,12 @@ static const VMStateDescription passthru_vmstate = {
     }
 };
 
-static Property passthru_card_properties[] = {
+static const Property passthru_card_properties[] = {
     DEFINE_PROP_CHR("chardev", PassthruState, cs),
     DEFINE_PROP_UINT8("debug", PassthruState, debug, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void passthru_class_initfn(ObjectClass *klass, void *data)
+static void passthru_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     CCIDCardClass *cc = CCID_CARD_CLASS(klass);
@@ -415,6 +414,7 @@ static const TypeInfo passthru_card_info = {
     .class_init    = passthru_class_initfn,
 };
 module_obj(TYPE_CCID_PASSTHRU);
+module_kconfig(USB);
 
 static void ccid_card_passthru_register_types(void)
 {

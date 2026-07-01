@@ -6,11 +6,11 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef BCM2835_SYSTIMER_H
-#define BCM2835_SYSTIMER_H
+#ifndef BCM2835_SYSTMR_H
+#define BCM2835_SYSTMR_H
 
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 

@@ -19,29 +19,28 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "cpu.h"
-#include "hw/clock.h"
+#include "hw/core/clock.h"
 #include "net/net.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/i2c/smbus_eeprom.h"
 #include "hw/block/flash.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/bootloader.h"
-#include "hw/mips/cpudevs.h"
 #include "hw/pci/pci.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/ide/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "elf.h"
 #include "hw/isa/vt82c686.h"
-#include "sysemu/qtest.h"
-#include "sysemu/reset.h"
-#include "sysemu/sysemu.h"
+#include "system/qtest.h"
+#include "system/reset.h"
+#include "system/system.h"
 #include "qemu/error-report.h"
+#include "exec/tswap.h"
 
 #define ENVP_PADDR              0x2000
 #define ENVP_VADDR              cpu_mips_phys_to_kseg0(NULL, ENVP_PADDR)
@@ -50,7 +49,6 @@
 
 /* Fuloong 2e has a 512k flash: Winbond W39L040AP70Z */
 #define BIOS_SIZE               (512 * KiB)
-#define MAX_IDE_BUS             2
 
 /*
  * PMON is not part of qemu and released with BSD license, anyone
@@ -108,7 +106,7 @@ static uint64_t load_kernel(MIPSCPU *cpu)
                            cpu_mips_kseg0_to_phys, NULL,
                            &kernel_entry, NULL,
                            &kernel_high, NULL,
-                           0, EM_MIPS, 1, 0);
+                           ELFDATA2LSB, EM_MIPS, 1, 0);
     if (kernel_size < 0) {
         error_report("could not load kernel '%s': %s",
                      loaderparams.kernel_filename,
@@ -120,7 +118,7 @@ static uint64_t load_kernel(MIPSCPU *cpu)
     initrd_size = 0;
     initrd_offset = 0;
     if (loaderparams.initrd_filename) {
-        initrd_size = get_image_size(loaderparams.initrd_filename);
+        initrd_size = get_image_size(loaderparams.initrd_filename, NULL);
         if (initrd_size > 0) {
             initrd_offset = ROUND_UP(kernel_high, INITRD_PAGE_SIZE);
             if (initrd_offset + initrd_size > loaderparams.ram_size) {
@@ -129,8 +127,9 @@ static uint64_t load_kernel(MIPSCPU *cpu)
                 exit(1);
             }
             initrd_size = load_image_targphys(loaderparams.initrd_filename,
-                                              initrd_offset,
-                                              loaderparams.ram_size - initrd_offset);
+                                         initrd_offset,
+                                         loaderparams.ram_size - initrd_offset,
+                                         NULL);
         }
         if (initrd_size == (target_ulong) -1) {
             error_report("could not load initial ram disk '%s'",
@@ -181,8 +180,12 @@ static void write_bootloader(CPUMIPSState *env, uint8_t *base,
     /* Second part of the bootloader */
     p = (uint32_t *)(base + 0x040);
 
-    bl_gen_jump_kernel(&p, ENVP_VADDR - 64, 2, ENVP_VADDR, ENVP_VADDR + 8,
-                       loaderparams.ram_size, kernel_addr);
+    bl_gen_jump_kernel((void **)&p,
+                       true, ENVP_VADDR - 64,
+                       true, 2, true, ENVP_VADDR,
+                       true, ENVP_VADDR + 8,
+                       true, loaderparams.ram_size,
+                       kernel_addr);
 }
 
 static void main_cpu_reset(void *opaque)
@@ -197,45 +200,12 @@ static void main_cpu_reset(void *opaque)
     }
 }
 
-static void vt82c686b_southbridge_init(PCIBus *pci_bus, int slot, qemu_irq intc,
-                                       I2CBus **i2c_bus)
-{
-    PCIDevice *dev;
-
-    dev = pci_create_simple_multifunction(pci_bus, PCI_DEVFN(slot, 0), true,
-                                          TYPE_VT82C686B_ISA);
-    qdev_connect_gpio_out(DEVICE(dev), 0, intc);
-
-    dev = pci_create_simple(pci_bus, PCI_DEVFN(slot, 1), "via-ide");
-    pci_ide_create_devs(dev);
-
-    pci_create_simple(pci_bus, PCI_DEVFN(slot, 2), "vt82c686b-usb-uhci");
-    pci_create_simple(pci_bus, PCI_DEVFN(slot, 3), "vt82c686b-usb-uhci");
-
-    dev = pci_create_simple(pci_bus, PCI_DEVFN(slot, 4), TYPE_VT82C686B_PM);
-    *i2c_bus = I2C_BUS(qdev_get_child_bus(DEVICE(dev), "i2c"));
-
-    /* Audio support */
-    pci_create_simple(pci_bus, PCI_DEVFN(slot, 5), TYPE_VIA_AC97);
-    pci_create_simple(pci_bus, PCI_DEVFN(slot, 6), TYPE_VIA_MC97);
-}
-
 /* Network support */
 static void network_init(PCIBus *pci_bus)
 {
-    int i;
-
-    for (i = 0; i < nb_nics; i++) {
-        NICInfo *nd = &nd_table[i];
-        const char *default_devaddr = NULL;
-
-        if (i == 0 && (!nd->model || strcmp(nd->model, "rtl8139") == 0)) {
-            /* The Fuloong board has a RTL8139 card using PCI SLOT 7 */
-            default_devaddr = "07";
-        }
-
-        pci_nic_init_nofail(nd, pci_bus, "rtl8139", default_devaddr);
-    }
+    /* The Fuloong board has a RTL8139 card using PCI SLOT 7 */
+    pci_init_nic_in_slot(pci_bus, "rtl8139", NULL, "07");
+    pci_init_nic_devices(pci_bus, "rtl8139");
 }
 
 static void mips_fuloong2e_init(MachineState *machine)
@@ -261,7 +231,7 @@ static void mips_fuloong2e_init(MachineState *machine)
     clock_set_hz(cpuclk, 533080000); /* ~533 MHz */
 
     /* init CPUs */
-    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk);
+    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk, false);
     env = &cpu->env;
 
     qemu_register_reset(main_cpu_reset, cpu);
@@ -295,7 +265,7 @@ static void mips_fuloong2e_init(MachineState *machine)
                                   machine->firmware ?: FULOONG_BIOSNAME);
         if (filename) {
             bios_size = load_image_targphys(filename, 0x1fc00000LL,
-                                            BIOS_SIZE);
+                                            BIOS_SIZE, NULL);
             g_free(filename);
         } else {
             bios_size = -1;
@@ -316,11 +286,32 @@ static void mips_fuloong2e_init(MachineState *machine)
     pci_bus = bonito_init((qemu_irq *)&(env->irq[2]));
 
     /* South bridge -> IP5 */
-    vt82c686b_southbridge_init(pci_bus, FULOONG2E_VIA_SLOT, env->irq[5],
-                               &smbus);
+    pci_dev = pci_new_multifunction(PCI_DEVFN(FULOONG2E_VIA_SLOT, 0),
+                                    TYPE_VT82C686B_ISA);
+
+    /* Set properties on individual devices before realizing the south bridge */
+    if (machine->audiodev) {
+        dev = DEVICE(object_resolve_path_component(OBJECT(pci_dev), "ac97"));
+        qdev_prop_set_string(dev, "audiodev", machine->audiodev);
+    }
+
+    pci_realize_and_unref(pci_dev, pci_bus, &error_abort);
+
+    object_property_add_alias(OBJECT(machine), "rtc-time",
+                              object_resolve_path_component(OBJECT(pci_dev),
+                                                            "rtc"),
+                              "date");
+    qdev_connect_gpio_out_named(DEVICE(pci_dev), "intr", 0, env->irq[5]);
+
+    dev = DEVICE(object_resolve_path_component(OBJECT(pci_dev), "ide"));
+    pci_ide_create_devs(PCI_DEVICE(dev));
+
+    dev = DEVICE(object_resolve_path_component(OBJECT(pci_dev), "pm"));
+    smbus = I2C_BUS(qdev_get_child_bus(dev, "i2c"));
 
     /* GPU */
     if (vga_interface_type != VGA_NONE) {
+        vga_interface_created = true;
         pci_dev = pci_new(-1, "ati-vga");
         dev = DEVICE(pci_dev);
         qdev_prop_set_uint32(dev, "vgamem_mb", 16);
@@ -344,7 +335,7 @@ static void mips_fuloong2e_machine_init(MachineClass *mc)
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("Loongson-2E");
     mc->default_ram_size = 256 * MiB;
     mc->default_ram_id = "fuloong2e.ram";
-    mc->minimum_page_bits = 14;
+    machine_add_audiodev_property(mc);
 }
 
 DEFINE_MACHINE("fuloong2e", mips_fuloong2e_machine_init)

@@ -95,6 +95,7 @@ typedef enum {
 
 #include "fpu/softfloat-types.h"
 #include "fpu/softfloat-helpers.h"
+#include "qemu/int128.h"
 
 /*----------------------------------------------------------------------------
 | Routine to raise any or all of the software IEC/IEEE floating-point
@@ -119,43 +120,21 @@ bfloat16 bfloat16_squash_input_denormal(bfloat16 a, float_status *status);
 | Using these differs from negating an input or output before calling
 | the muladd function in that this means that a NaN doesn't have its
 | sign bit inverted before it is propagated.
-| We also support halving the result before rounding, as a special
-| case to support the ARM fused-sqrt-step instruction FRSQRTS.
+|
+| With float_muladd_suppress_add_product_zero, if A or B is zero
+| such that the product is a true zero, then return C without addition.
+| This preserves the sign of C when C is +/- 0.  Used for Hexagon.
 *----------------------------------------------------------------------------*/
 enum {
     float_muladd_negate_c = 1,
     float_muladd_negate_product = 2,
     float_muladd_negate_result = 4,
-    float_muladd_halve_result = 8,
+    float_muladd_suppress_add_product_zero = 8,
 };
 
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE integer-to-floating-point conversion routines.
 *----------------------------------------------------------------------------*/
-
-float8 int64_to_float8_scalbn(int64_t a, int, float_status *status);
-float8 uint64_to_float8_scalbn(uint64_t a, int, float_status *status);
-
-float8_1 int64_to_float8_1_scalbn(int64_t a, int, float_status *status);
-float8_1 uint64_to_float8_1_scalbn(uint64_t a, int, float_status *status);
-
-float8 int8_to_float8(int8_t a, float_status *status);
-float8 int16_to_float8(int16_t a, float_status *status);
-float8 int32_to_float8(int32_t a, float_status *status);
-float8 int64_to_float8(int64_t a, float_status *status);
-float8 uint8_to_float8(uint8_t a, float_status *status);
-float8 uint16_to_float8(uint16_t a, float_status *status);
-float8 uint32_to_float8(uint32_t a, float_status *status);
-float8 uint64_to_float8(uint64_t a, float_status *status);
-
-float8_1 int8_to_float8_1(int8_t a, float_status *status);
-float8_1 int16_to_float8_1(int16_t a, float_status *status);
-float8_1 int32_to_float8_1(int32_t a, float_status *status);
-float8_1 int64_to_float8_1(int64_t a, float_status *status);
-float8_1 uint8_to_float8_1(uint8_t a, float_status *status);
-float8_1 uint16_to_float8_1(uint16_t a, float_status *status);
-float8_1 uint32_to_float8_1(uint32_t a, float_status *status);
-float8_1 uint64_to_float8_1(uint64_t a, float_status *status);
 
 float16 int16_to_float16_scalbn(int16_t a, int, float_status *status);
 float16 int32_to_float16_scalbn(int32_t a, int, float_status *status);
@@ -180,11 +159,9 @@ float32 uint16_to_float32_scalbn(uint16_t, int, float_status *status);
 float32 uint32_to_float32_scalbn(uint32_t, int, float_status *status);
 float32 uint64_to_float32_scalbn(uint64_t, int, float_status *status);
 
-float32 int8_to_float32(int8_t, float_status *status);
 float32 int16_to_float32(int16_t, float_status *status);
 float32 int32_to_float32(int32_t, float_status *status);
 float32 int64_to_float32(int64_t, float_status *status);
-float32 uint8_to_float32(uint8_t, float_status *status);
 float32 uint16_to_float32(uint16_t, float_status *status);
 float32 uint32_to_float32(uint32_t, float_status *status);
 float32 uint64_to_float32(uint64_t, float_status *status);
@@ -196,11 +173,9 @@ float64 uint16_to_float64_scalbn(uint16_t, int, float_status *status);
 float64 uint32_to_float64_scalbn(uint32_t, int, float_status *status);
 float64 uint64_to_float64_scalbn(uint64_t, int, float_status *status);
 
-float64 int8_to_float64(int8_t, float_status *status);
 float64 int16_to_float64(int16_t, float_status *status);
 float64 int32_to_float64(int32_t, float_status *status);
 float64 int64_to_float64(int64_t, float_status *status);
-float64 uint8_to_float64(uint8_t, float_status *status);
 float64 uint16_to_float64(uint16_t, float_status *status);
 float64 uint32_to_float64(uint32_t, float_status *status);
 float64 uint64_to_float64(uint64_t, float_status *status);
@@ -210,326 +185,9 @@ floatx80 int64_to_floatx80(int64_t, float_status *status);
 
 float128 int32_to_float128(int32_t, float_status *status);
 float128 int64_to_float128(int64_t, float_status *status);
+float128 int128_to_float128(Int128, float_status *status);
 float128 uint64_to_float128(uint64_t, float_status *status);
-
-/*----------------------------------------------------------------------------
-| Software low-precision conversion routines. FP8
-*----------------------------------------------------------------------------*/
-
-float8 float8_1_to_float8(float8_1, float_status *status);
-float8 float16_to_float8(float16, float_status *status);
-float8 float32_to_float8(float32, float_status *status);
-float8 float64_to_float8(float64, float_status *status);
-float8 bfloat16_to_float8(bfloat16, float_status *status);
-float8_1 float8_to_float8_1(float8, float_status *status);
-float16 float8_to_float16(float8, float_status *status);
-float32 float8_to_float32(float8, float_status *status);
-float64 float8_to_float64(float8, float_status *status);
-bfloat16 float8_to_bfloat16(float8, float_status *status);
-
-int8_t  float8_to_int8_scalbn(float8, FloatRoundMode, int,
-                               float_status *status);
-int16_t float8_to_int16_scalbn(float8, FloatRoundMode, int, float_status *);
-int32_t float8_to_int32_scalbn(float8, FloatRoundMode, int, float_status *);
-int64_t float8_to_int64_scalbn(float8, FloatRoundMode, int, float_status *);
-
-int8_t  float8_to_int8(float8, float_status *status);
-int16_t float8_to_int16(float8, float_status *status);
-int32_t float8_to_int32(float8, float_status *status);
-int64_t float8_to_int64(float8, float_status *status);
-
-
-uint8_t float8_to_uint8_scalbn(float8 a, FloatRoundMode,
-                                int, float_status *status);
-uint16_t float8_to_uint16_scalbn(float8 a, FloatRoundMode,
-                                  int, float_status *status);
-uint32_t float8_to_uint32_scalbn(float8 a, FloatRoundMode,
-                                  int, float_status *status);
-uint64_t float8_to_uint64_scalbn(float8 a, FloatRoundMode,
-                                  int, float_status *status);
-
-uint8_t  float8_to_uint8(float8 a, float_status *status);
-uint16_t float8_to_uint16(float8 a, float_status *status);
-uint32_t float8_to_uint32(float8 a, float_status *status);
-uint64_t float8_to_uint64(float8 a, float_status *status);
-
-
-/*----------------------------------------------------------------------------
-| Software float8 operations.
-*----------------------------------------------------------------------------*/
-
-float8 float8_round_to_int(float8, float_status *status);
-float8 float8_add(float8, float8, float_status *status);
-float8 float8_sub(float8, float8, float_status *status);
-float8 float8_mul(float8, float8, float_status *status);
-float8 float8_muladd(float8, float8, float8, int, float_status *status);
-float8 float8_div(float8, float8, float_status *status);
-float8 float8_scalbn(float8, int, float_status *status);
-float8 float8_min(float8, float8, float_status *status);
-float8 float8_max(float8, float8, float_status *status);
-float8 float8_minnum(float8, float8, float_status *status);
-float8 float8_maxnum(float8, float8, float_status *status);
-float8 float8_minnummag(float8, float8, float_status *status);
-float8 float8_maxnummag(float8, float8, float_status *status);
-float8 float8_minimum_number(float8, float8, float_status *status);
-float8 float8_maximum_number(float8, float8, float_status *status);
-float8 float8_sqrt(float8, float_status *status);
-FloatRelation float8_compare(float8, float8, float_status *status);
-FloatRelation float8_compare_quiet(float8, float8, float_status *status);
-
-bool float8_is_quiet_nan(float8, float_status *status);
-
-static inline bool float8_is_any_nan(float8 a)
-{
-    return ((float8_val(a) & ~0x80) > 0x78);
-}
-
-static inline bool float8_is_neg(float8 a)
-{
-    return float8_val(a) >> 7;
-}
-
-static inline bool float8_is_infinity(float8 a)
-{
-    return (float8_val(a) & 0x7f) == 0x78;
-}
-
-static inline bool float8_is_zero(float16 a)
-{
-    return (float8_val(a) & 0x7f) == 0;
-}
-
-static inline bool float8_is_zero_or_denormal(float8 a)
-{
-    return (float8_val(a) & 0x78) == 0;
-}
-
-static inline float8 float8_abs(float8 a)
-{
-    /* Note that abs does *not* handle NaN specially, nor does
-     * it flush denormal inputs to zero.
-     */
-    return make_float8(float8_val(a) & 0x7f);
-}
-
-static inline float8 float8_chs(float8 a)
-{
-    /* Note that chs does *not* handle NaN specially, nor does
-     * it flush denormal inputs to zero.
-     */
-    return make_float8(float8_val(a) ^ 0x80);
-}
-
-static inline float8 float8_set_sign(float8 a, int sign)
-{
-    return make_float8((float8_val(a) & 0x7f) | (sign << 7));
-}
-
-static inline bool float8_eq(float8 a, float8 b, float_status *s)
-{
-    return float8_compare(a, b, s) == float_relation_equal;
-}
-
-static inline bool float8_le(float8 a, float8 b, float_status *s)
-{
-    return float8_compare(a, b, s) <= float_relation_equal;
-}
-
-static inline bool float8_lt(float8 a, float8 b, float_status *s)
-{
-    return float8_compare(a, b, s) < float_relation_equal;
-}
-
-static inline bool float8_ge(float8 a, float8 b, float_status *s)
-{
-    FloatRelation tmp = float8_compare(a, b, s);
-    return  (tmp == float_relation_equal) || (tmp == float_relation_greater);
-}
-
-static inline bool float8_unordered(float8 a, float8 b, float_status *s)
-{
-    return float8_compare(a, b, s) == float_relation_unordered;
-}
-
-static inline bool float8_eq_quiet(float8 a, float8 b, float_status *s)
-{
-    return float8_compare_quiet(a, b, s) == float_relation_equal;
-}
-
-static inline bool float8_le_quiet(float8 a, float8 b, float_status *s)
-{
-    return float8_compare_quiet(a, b, s) <= float_relation_equal;
-}
-
-static inline bool float8_lt_quiet(float8 a, float8 b, float_status *s)
-{
-    return float8_compare_quiet(a, b, s) < float_relation_equal;
-}
-
-static inline bool float8_unordered_quiet(float8 a, float8 b,
-                                           float_status *s)
-{
-    return float8_compare_quiet(a, b, s) == float_relation_unordered;
-}
-
-/*----------------------------------------------------------------------------
-| Software low-precision conversion routines. FP8_1
-*----------------------------------------------------------------------------*/
-
-float8_1 float16_to_float8_1(float16, float_status *status);
-float8_1 float32_to_float8_1(float32, float_status *status);
-float8_1 float64_to_float8_1(float64, float_status *status);
-float8_1 bfloat16_to_float8_1(bfloat16, float_status *status);
-float16 float8_1_to_float16(float8_1, float_status *status);
-float32 float8_1_to_float32(float8_1, float_status *status);
-float64 float8_1_to_float64(float8_1, float_status *status);
-bfloat16 float8_1_to_bfloat16(float8_1, float_status *status);
-
-int8_t  float8_1_to_int8_scalbn(float8_1, FloatRoundMode, int,
-                                float_status *status);
-int16_t float8_1_to_int16_scalbn(float8_1, FloatRoundMode, int, float_status *);
-int32_t float8_1_to_int32_scalbn(float8_1, FloatRoundMode, int, float_status *);
-int64_t float8_1_to_int64_scalbn(float8_1, FloatRoundMode, int, float_status *);
-
-int8_t  float8_1_to_int8(float8_1, float_status *status);
-int16_t float8_1_to_int16(float8_1, float_status *status);
-int32_t float8_1_to_int32(float8_1, float_status *status);
-int64_t float8_1_to_int64(float8_1, float_status *status);
-
-
-uint8_t float8_1_to_uint8_scalbn(float8_1 a, FloatRoundMode,
-                                int, float_status *status);
-uint16_t float8_1_to_uint16_scalbn(float8_1 a, FloatRoundMode,
-                                  int, float_status *status);
-uint32_t float8_1_to_uint32_scalbn(float8_1 a, FloatRoundMode,
-                                  int, float_status *status);
-uint64_t float8_1_to_uint64_scalbn(float8_1 a, FloatRoundMode,
-                                  int, float_status *status);
-
-uint8_t  float8_1_to_uint8(float8_1 a, float_status *status);
-uint16_t float8_1_to_uint16(float8_1 a, float_status *status);
-uint32_t float8_1_to_uint32(float8_1 a, float_status *status);
-uint64_t float8_1_to_uint64(float8_1 a, float_status *status);
-
-
-/*----------------------------------------------------------------------------
-| Software float8_1 operations.
-*----------------------------------------------------------------------------*/
-
-float8_1 float8_1_round_to_int(float8_1, float_status *status);
-float8_1 float8_1_add(float8_1, float8_1, float_status *status);
-float8_1 float8_1_sub(float8_1, float8_1, float_status *status);
-float8_1 float8_1_mul(float8_1, float8_1, float_status *status);
-float8_1 float8_1_muladd(float8_1, float8_1, float8_1, int, float_status *status);
-float8_1 float8_1_div(float8_1, float8_1, float_status *status);
-float8_1 float8_1_scalbn(float8_1, int, float_status *status);
-float8_1 float8_1_min(float8_1, float8_1, float_status *status);
-float8_1 float8_1_max(float8_1, float8_1, float_status *status);
-float8_1 float8_1_minnum(float8_1, float8_1, float_status *status);
-float8_1 float8_1_maxnum(float8_1, float8_1, float_status *status);
-float8_1 float8_1_minnummag(float8_1, float8_1, float_status *status);
-float8_1 float8_1_maxnummag(float8_1, float8_1, float_status *status);
-float8_1 float8_1_minimum_number(float8_1, float8_1, float_status *status);
-float8_1 float8_1_maximum_number(float8_1, float8_1, float_status *status);
-float8_1 float8_1_sqrt(float8_1, float_status *status);
-FloatRelation float8_1_compare(float8_1, float8_1, float_status *status);
-FloatRelation float8_1_compare_quiet(float8_1, float8_1, float_status *status);
-
-bool float8_1_is_quiet_nan(float8_1, float_status *status);
-
-static inline bool float8_1_is_any_nan(float8 a)
-{
-    return ((float8_1_val(a) & ~0x80) > 0x7c);
-}
-
-static inline bool float8_1_is_neg(float8 a)
-{
-    return float8_1_val(a) >> 7;
-}
-
-static inline bool float8_1_is_infinity(float8 a)
-{
-    return (float8_1_val(a) & 0x7f) == 0x7c;
-}
-
-static inline bool float8_1_is_zero(float16 a)
-{
-    return (float8_1_val(a) & 0x7f) == 0;
-}
-
-static inline bool float8_1_is_zero_or_denormal(float8 a)
-{
-    return (float8_1_val(a) & 0x7c) == 0;
-}
-
-static inline float8_1 float8_1_abs(float8_1 a)
-{
-    /* Note that abs does *not* handle NaN specially, nor does
-     * it flush denormal inputs to zero.
-     */
-    return make_float8_1(float8_1_val(a) & 0x7f);
-}
-
-static inline float8_1 float8_1_chs(float8_1 a)
-{
-    /* Note that chs does *not* handle NaN specially, nor does
-     * it flush denormal inputs to zero.
-     */
-    return make_float8_1(float8_1_val(a) ^ 0x80);
-}
-
-static inline float8_1 float8_1_set_sign(float8_1 a, int sign)
-{
-    return make_float8_1((float8_1_val(a) & 0x7f) | (sign << 7));
-}
-
-static inline bool float8_1_eq(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare(a, b, s) == float_relation_equal;
-}
-
-static inline bool float8_1_le(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare(a, b, s) <= float_relation_equal;
-}
-
-static inline bool float8_1_lt(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare(a, b, s) < float_relation_equal;
-}
-
-static inline bool float8_1_ge(float8_1 a, float8_1 b, float_status *s)
-{
-    FloatRelation tmp = float8_1_compare(a, b, s);
-    return  (tmp == float_relation_equal) || (tmp == float_relation_greater);
-}
-
-static inline bool float8_1_unordered(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare(a, b, s) == float_relation_unordered;
-}
-
-static inline bool float8_1_eq_quiet(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare_quiet(a, b, s) == float_relation_equal;
-}
-
-static inline bool float8_1_le_quiet(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare_quiet(a, b, s) <= float_relation_equal;
-}
-
-static inline bool float8_1_lt_quiet(float8_1 a, float8_1 b, float_status *s)
-{
-    return float8_1_compare_quiet(a, b, s) < float_relation_equal;
-}
-
-static inline bool float8_1_unordered_quiet(float8_1 a, float8_1 b,
-                                           float_status *s)
-{
-    return float8_1_compare_quiet(a, b, s) == float_relation_unordered;
-}
-
+float128 uint128_to_float128(Int128, float_status *status);
 
 /*----------------------------------------------------------------------------
 | Software half-precision conversion routines.
@@ -539,8 +197,6 @@ float16 float32_to_float16(float32, bool ieee, float_status *status);
 float32 float16_to_float32(float16, bool ieee, float_status *status);
 float16 float64_to_float16(float64 a, bool ieee, float_status *status);
 float64 float16_to_float64(float16 a, bool ieee, float_status *status);
-float16 bfloat16_to_float16(bfloat16 a, float_status *status);
-bfloat16 float16_to_bfloat16(float16 a, float_status *status);
 
 int8_t  float16_to_int8_scalbn(float16, FloatRoundMode, int,
                                float_status *status);
@@ -584,6 +240,8 @@ float16 float16_add(float16, float16, float_status *status);
 float16 float16_sub(float16, float16, float_status *status);
 float16 float16_mul(float16, float16, float_status *status);
 float16 float16_muladd(float16, float16, float16, int, float_status *status);
+float16 float16_muladd_scalbn(float16, float16, float16,
+                              int, int, float_status *status);
 float16 float16_div(float16, float16, float_status *status);
 float16 float16_scalbn(float16, int, float_status *status);
 float16 float16_min(float16, float16, float_status *status);
@@ -668,12 +326,6 @@ static inline bool float16_lt(float16 a, float16 b, float_status *s)
     return float16_compare(a, b, s) < float_relation_equal;
 }
 
-static inline bool float16_ge(float16 a, float16 b, float_status *s)
-{
-    FloatRelation tmp = float16_compare(a, b, s);
-    return  (tmp == float_relation_equal) || (tmp == float_relation_greater);
-}
-
 static inline bool float16_unordered(float16 a, float16 b, float_status *s)
 {
     return float16_compare(a, b, s) == float_relation_unordered;
@@ -719,7 +371,7 @@ bfloat16 float64_to_bfloat16(float64 a, float_status *status);
 float64 bfloat16_to_float64(bfloat16 a, float_status *status);
 
 int8_t bfloat16_to_int8_scalbn(bfloat16, FloatRoundMode,
-                                 int, float_status *status);
+                               int, float_status *status);
 int16_t bfloat16_to_int16_scalbn(bfloat16, FloatRoundMode,
                                  int, float_status *status);
 int32_t bfloat16_to_int32_scalbn(bfloat16, FloatRoundMode,
@@ -732,12 +384,13 @@ int16_t bfloat16_to_int16(bfloat16, float_status *status);
 int32_t bfloat16_to_int32(bfloat16, float_status *status);
 int64_t bfloat16_to_int64(bfloat16, float_status *status);
 
+int8_t bfloat16_to_int8_round_to_zero(bfloat16, float_status *status);
 int16_t bfloat16_to_int16_round_to_zero(bfloat16, float_status *status);
 int32_t bfloat16_to_int32_round_to_zero(bfloat16, float_status *status);
 int64_t bfloat16_to_int64_round_to_zero(bfloat16, float_status *status);
 
 uint8_t bfloat16_to_uint8_scalbn(bfloat16 a, FloatRoundMode,
-                                   int, float_status *status);
+                                 int, float_status *status);
 uint16_t bfloat16_to_uint16_scalbn(bfloat16 a, FloatRoundMode,
                                    int, float_status *status);
 uint32_t bfloat16_to_uint32_scalbn(bfloat16 a, FloatRoundMode,
@@ -750,13 +403,16 @@ uint16_t bfloat16_to_uint16(bfloat16 a, float_status *status);
 uint32_t bfloat16_to_uint32(bfloat16 a, float_status *status);
 uint64_t bfloat16_to_uint64(bfloat16 a, float_status *status);
 
+uint8_t bfloat16_to_uint8_round_to_zero(bfloat16 a, float_status *status);
 uint16_t bfloat16_to_uint16_round_to_zero(bfloat16 a, float_status *status);
 uint32_t bfloat16_to_uint32_round_to_zero(bfloat16 a, float_status *status);
 uint64_t bfloat16_to_uint64_round_to_zero(bfloat16 a, float_status *status);
 
+bfloat16 int8_to_bfloat16_scalbn(int8_t a, int, float_status *status);
 bfloat16 int16_to_bfloat16_scalbn(int16_t a, int, float_status *status);
 bfloat16 int32_to_bfloat16_scalbn(int32_t a, int, float_status *status);
 bfloat16 int64_to_bfloat16_scalbn(int64_t a, int, float_status *status);
+bfloat16 uint8_to_bfloat16_scalbn(uint8_t a, int, float_status *status);
 bfloat16 uint16_to_bfloat16_scalbn(uint16_t a, int, float_status *status);
 bfloat16 uint32_to_bfloat16_scalbn(uint32_t a, int, float_status *status);
 bfloat16 uint64_to_bfloat16_scalbn(uint64_t a, int, float_status *status);
@@ -907,12 +563,10 @@ float16 float16_default_nan(float_status *status);
 | Software IEC/IEEE single-precision conversion routines.
 *----------------------------------------------------------------------------*/
 
-int8_t float32_to_int8_scalbn(float32, FloatRoundMode, int, float_status *);
 int16_t float32_to_int16_scalbn(float32, FloatRoundMode, int, float_status *);
 int32_t float32_to_int32_scalbn(float32, FloatRoundMode, int, float_status *);
 int64_t float32_to_int64_scalbn(float32, FloatRoundMode, int, float_status *);
 
-int8_t float32_to_int8(float32, float_status *status);
 int16_t float32_to_int16(float32, float_status *status);
 int32_t float32_to_int32(float32, float_status *status);
 int64_t float32_to_int64(float32, float_status *status);
@@ -921,12 +575,10 @@ int16_t float32_to_int16_round_to_zero(float32, float_status *status);
 int32_t float32_to_int32_round_to_zero(float32, float_status *status);
 int64_t float32_to_int64_round_to_zero(float32, float_status *status);
 
-uint8_t float32_to_uint8_scalbn(float32, FloatRoundMode, int, float_status *);
 uint16_t float32_to_uint16_scalbn(float32, FloatRoundMode, int, float_status *);
 uint32_t float32_to_uint32_scalbn(float32, FloatRoundMode, int, float_status *);
 uint64_t float32_to_uint64_scalbn(float32, FloatRoundMode, int, float_status *);
 
-uint8_t float32_to_uint8(float32, float_status *status);
 uint16_t float32_to_uint16(float32, float_status *status);
 uint32_t float32_to_uint32(float32, float_status *status);
 uint64_t float32_to_uint64(float32, float_status *status);
@@ -949,6 +601,8 @@ float32 float32_mul(float32, float32, float_status *status);
 float32 float32_div(float32, float32, float_status *status);
 float32 float32_rem(float32, float32, float_status *status);
 float32 float32_muladd(float32, float32, float32, int, float_status *status);
+float32 float32_muladd_scalbn(float32, float32, float32,
+                              int, int, float_status *status);
 float32 float32_sqrt(float32, float_status *status);
 float32 float32_exp2(float32, float_status *status);
 float32 float32_log2(float32, float_status *status);
@@ -1103,12 +757,10 @@ float32 float32_default_nan(float_status *status);
 | Software IEC/IEEE double-precision conversion routines.
 *----------------------------------------------------------------------------*/
 
-int8_t float64_to_int8_scalbn(float64, FloatRoundMode, int, float_status *);
 int16_t float64_to_int16_scalbn(float64, FloatRoundMode, int, float_status *);
 int32_t float64_to_int32_scalbn(float64, FloatRoundMode, int, float_status *);
 int64_t float64_to_int64_scalbn(float64, FloatRoundMode, int, float_status *);
 
-int8_t float64_to_int8(float64, float_status *status);
 int16_t float64_to_int16(float64, float_status *status);
 int32_t float64_to_int32(float64, float_status *status);
 int64_t float64_to_int64(float64, float_status *status);
@@ -1117,12 +769,13 @@ int16_t float64_to_int16_round_to_zero(float64, float_status *status);
 int32_t float64_to_int32_round_to_zero(float64, float_status *status);
 int64_t float64_to_int64_round_to_zero(float64, float_status *status);
 
-uint8_t float64_to_uint8_scalbn(float64, FloatRoundMode, int, float_status *);
+int32_t float64_to_int32_modulo(float64, FloatRoundMode, float_status *status);
+int64_t float64_to_int64_modulo(float64, FloatRoundMode, float_status *status);
+
 uint16_t float64_to_uint16_scalbn(float64, FloatRoundMode, int, float_status *);
 uint32_t float64_to_uint32_scalbn(float64, FloatRoundMode, int, float_status *);
 uint64_t float64_to_uint64_scalbn(float64, FloatRoundMode, int, float_status *);
 
-uint8_t float64_to_uint8(float64, float_status *status);
 uint16_t float64_to_uint16(float64, float_status *status);
 uint32_t float64_to_uint32(float64, float_status *status);
 uint64_t float64_to_uint64(float64, float_status *status);
@@ -1145,6 +798,8 @@ float64 float64_mul(float64, float64, float_status *status);
 float64 float64_div(float64, float64, float_status *status);
 float64 float64_rem(float64, float64, float_status *status);
 float64 float64_muladd(float64, float64, float64, int, float_status *status);
+float64 float64_muladd_scalbn(float64, float64, float64,
+                              int, int, float_status *status);
 float64 float64_sqrt(float64, float_status *status);
 float64 float64_log2(float64, float_status *status);
 FloatRelation float64_compare(float64, float64, float_status *status);
@@ -1305,7 +960,7 @@ float128 floatx80_to_float128(floatx80, float_status *status);
 /*----------------------------------------------------------------------------
 | The pattern for an extended double-precision inf.
 *----------------------------------------------------------------------------*/
-extern const floatx80 floatx80_infinity;
+floatx80 floatx80_default_inf(bool zSign, float_status *status);
 
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE extended double-precision operations.
@@ -1340,14 +995,19 @@ static inline floatx80 floatx80_chs(floatx80 a)
     return a;
 }
 
-static inline bool floatx80_is_infinity(floatx80 a)
+static inline bool floatx80_is_infinity(floatx80 a, float_status *status)
 {
-#if defined(TARGET_M68K)
-    return (a.high & 0x7fff) == floatx80_infinity.high && !(a.low << 1);
-#else
-    return (a.high & 0x7fff) == floatx80_infinity.high &&
-                       a.low == floatx80_infinity.low;
-#endif
+    /*
+     * It's target-specific whether the Integer bit is permitted
+     * to be 0 in a valid Infinity value. (x86 says no, m68k says yes).
+     */
+    bool intbit = a.low >> 63;
+
+    if (!intbit &&
+        !(status->floatx80_behaviour & floatx80_pseudo_inf_valid)) {
+        return false;
+    }
+    return (a.high & 0x7fff) == 0x7fff && !(a.low << 1);
 }
 
 static inline bool floatx80_is_neg(floatx80 a)
@@ -1413,41 +1073,45 @@ static inline bool floatx80_unordered_quiet(floatx80 a, floatx80 b,
 
 /*----------------------------------------------------------------------------
 | Return whether the given value is an invalid floatx80 encoding.
-| Invalid floatx80 encodings arise when the integer bit is not set, but
-| the exponent is not zero. The only times the integer bit is permitted to
-| be zero is in subnormal numbers and the value zero.
-| This includes what the Intel software developer's manual calls pseudo-NaNs,
-| pseudo-infinities and un-normal numbers. It does not include
-| pseudo-denormals, which must still be correctly handled as inputs even
-| if they are never generated as outputs.
+| Invalid floatx80 encodings may arise when the integer bit is not set
+| correctly; this is target-specific. In Intel terminology the
+| categories are:
+|  exp == 0, int = 0, mantissa == 0 : zeroes
+|  exp == 0, int = 0, mantissa != 0 : denormals
+|  exp == 0, int = 1 : pseudo-denormals
+|  0 < exp < 0x7fff, int = 0 : unnormals
+|  0 < exp < 0x7fff, int = 1 : normals
+|  exp == 0x7fff, int = 0, mantissa == 0 : pseudo-infinities
+|  exp == 0x7fff, int = 1, mantissa == 0 : infinities
+|  exp == 0x7fff, int = 0, mantissa != 0 : pseudo-NaNs
+|  exp == 0x7fff, int = 1, mantissa == 0 : NaNs
+|
+| The usual IEEE cases of zero, denormal, normal, inf and NaN are always valid.
+| x87 permits as input also pseudo-denormals.
+| m68k permits all those and also pseudo-infinities, pseudo-NaNs and unnormals.
+|
+| Since we don't have a target that handles floatx80 but prohibits
+| pseudo-denormals in input, we don't currently have a floatx80_behaviour
+| flag for that case, but instead always accept it. Conveniently this
+| means that all cases with either exponent 0 or the integer bit set are
+| valid for all targets.
 *----------------------------------------------------------------------------*/
-static inline bool floatx80_invalid_encoding(floatx80 a)
+static inline bool floatx80_invalid_encoding(floatx80 a, float_status *s)
 {
-#if defined(TARGET_M68K)
-    /*-------------------------------------------------------------------------
-    | With m68k, the explicit integer bit can be zero in the case of:
-    | - zeros                (exp == 0, mantissa == 0)
-    | - denormalized numbers (exp == 0, mantissa != 0)
-    | - unnormalized numbers (exp != 0, exp < 0x7FFF)
-    | - infinities           (exp == 0x7FFF, mantissa == 0)
-    | - not-a-numbers        (exp == 0x7FFF, mantissa != 0)
-    |
-    | For infinities and NaNs, the explicit integer bit can be either one or
-    | zero.
-    |
-    | The IEEE 754 standard does not define a zero integer bit. Such a number
-    | is an unnormalized number. Hardware does not directly support
-    | denormalized and unnormalized numbers, but implicitly supports them by
-    | trapping them as unimplemented data types, allowing efficient conversion
-    | in software.
-    |
-    | See "M68000 FAMILY PROGRAMMER’S REFERENCE MANUAL",
-    |     "1.6 FLOATING-POINT DATA TYPES"
-    *------------------------------------------------------------------------*/
-    return false;
-#else
-    return (a.low & (1ULL << 63)) == 0 && (a.high & 0x7FFF) != 0;
-#endif
+    if ((a.low >> 63) || (a.high & 0x7fff) == 0) {
+        /* Anything with the Integer bit set or the exponent 0 is valid */
+        return false;
+    }
+
+    if ((a.high & 0x7fff) == 0x7fff) {
+        if (a.low) {
+            return !(s->floatx80_behaviour & floatx80_pseudo_nan_valid);
+        } else {
+            return !(s->floatx80_behaviour & floatx80_pseudo_inf_valid);
+        }
+    } else {
+        return !(s->floatx80_behaviour & floatx80_unnormal_valid);
+    }
 }
 
 #define floatx80_zero make_floatx80(0x0000, 0x0000000000000000LL)
@@ -1572,9 +1236,13 @@ floatx80 floatx80_default_nan(float_status *status);
 int32_t float128_to_int32(float128, float_status *status);
 int32_t float128_to_int32_round_to_zero(float128, float_status *status);
 int64_t float128_to_int64(float128, float_status *status);
+Int128 float128_to_int128(float128, float_status *status);
 int64_t float128_to_int64_round_to_zero(float128, float_status *status);
+Int128 float128_to_int128_round_to_zero(float128, float_status *status);
 uint64_t float128_to_uint64(float128, float_status *status);
+Int128 float128_to_uint128(float128, float_status *status);
 uint64_t float128_to_uint64_round_to_zero(float128, float_status *status);
+Int128 float128_to_uint128_round_to_zero(float128, float_status *status);
 uint32_t float128_to_uint32(float128, float_status *status);
 uint32_t float128_to_uint32_round_to_zero(float128, float_status *status);
 float32 float128_to_float32(float128, float_status *status);

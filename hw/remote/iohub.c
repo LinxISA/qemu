@@ -9,7 +9,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_ids.h"
@@ -31,19 +30,6 @@ void remote_iohub_init(RemoteIOHubState *iohub)
         iohub->irq_level[pirq] = 0;
         event_notifier_init_fd(&iohub->irqfds[pirq], -1);
         event_notifier_init_fd(&iohub->resamplefds[pirq], -1);
-    }
-}
-
-void remote_iohub_finalize(RemoteIOHubState *iohub)
-{
-    int pirq;
-
-    for (pirq = 0; pirq < REMOTE_IOHUB_NB_PIRQS; pirq++) {
-        qemu_set_fd_handler(event_notifier_get_fd(&iohub->resamplefds[pirq]),
-                            NULL, NULL, NULL);
-        event_notifier_cleanup(&iohub->irqfds[pirq]);
-        event_notifier_cleanup(&iohub->resamplefds[pirq]);
-        qemu_mutex_destroy(&iohub->irq_level_lock[pirq]);
     }
 }
 

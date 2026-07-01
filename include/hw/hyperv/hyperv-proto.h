@@ -24,12 +24,17 @@
 #define HV_STATUS_INVALID_PORT_ID             17
 #define HV_STATUS_INVALID_CONNECTION_ID       18
 #define HV_STATUS_INSUFFICIENT_BUFFERS        19
+#define HV_STATUS_NOT_ACKNOWLEDGED            20
+#define HV_STATUS_NO_DATA                     27
 
 /*
  * Hypercall numbers
  */
 #define HV_POST_MESSAGE                       0x005c
 #define HV_SIGNAL_EVENT                       0x005d
+#define HV_POST_DEBUG_DATA                    0x0069
+#define HV_RETRIEVE_DEBUG_DATA                0x006a
+#define HV_RESET_DEBUG_SESSION                0x006b
 #define HV_HYPERCALL_FAST                     (1u << 16)
 
 /*
@@ -55,6 +60,18 @@
 #define HV_MESSAGE_X64_EXCEPTION_INTERCEPT    0x80010003
 #define HV_MESSAGE_X64_APIC_EOI               0x80010004
 #define HV_MESSAGE_X64_LEGACY_FP_ERROR        0x80010005
+
+/*
+ * Hyper-V Synthetic debug options MSR
+ */
+#define HV_X64_MSR_SYNDBG_CONTROL               0x400000F1
+#define HV_X64_MSR_SYNDBG_STATUS                0x400000F2
+#define HV_X64_MSR_SYNDBG_SEND_BUFFER           0x400000F3
+#define HV_X64_MSR_SYNDBG_RECV_BUFFER           0x400000F4
+#define HV_X64_MSR_SYNDBG_PENDING_BUFFER        0x400000F5
+#define HV_X64_MSR_SYNDBG_OPTIONS               0x400000FF
+
+#define HV_X64_SYNDBG_OPTION_USE_HCALLS         BIT(2)
 
 /*
  * Message flags
@@ -127,4 +144,51 @@ struct hyperv_event_flags_page {
     struct hyperv_event_flags slot[HV_SINT_COUNT];
 };
 
+/*
+ * Kernel debugger structures
+ */
+
+/* Options flags for hyperv_reset_debug_session */
+#define HV_DEBUG_PURGE_INCOMING_DATA        0x00000001
+#define HV_DEBUG_PURGE_OUTGOING_DATA        0x00000002
+struct hyperv_reset_debug_session_input {
+    uint32_t options;
+} __attribute__ ((__packed__));
+
+struct hyperv_reset_debug_session_output {
+    uint32_t host_ip;
+    uint32_t target_ip;
+    uint16_t host_port;
+    uint16_t target_port;
+    uint8_t host_mac[6];
+    uint8_t target_mac[6];
+} __attribute__ ((__packed__));
+
+/* Options for hyperv_post_debug_data */
+#define HV_DEBUG_POST_LOOP                  0x00000001
+
+struct hyperv_post_debug_data_input {
+    uint32_t count;
+    uint32_t options;
+    /*uint8_t data[HV_HYP_PAGE_SIZE - 2 * sizeof(uint32_t)];*/
+} __attribute__ ((__packed__));
+
+struct hyperv_post_debug_data_output {
+    uint32_t pending_count;
+} __attribute__ ((__packed__));
+
+/* Options for hyperv_retrieve_debug_data */
+#define HV_DEBUG_RETRIEVE_LOOP              0x00000001
+#define HV_DEBUG_RETRIEVE_TEST_ACTIVITY     0x00000002
+
+struct hyperv_retrieve_debug_data_input {
+    uint32_t count;
+    uint32_t options;
+    uint64_t timeout;
+} __attribute__ ((__packed__));
+
+struct hyperv_retrieve_debug_data_output {
+    uint32_t retrieved_count;
+    uint32_t remaining_count;
+} __attribute__ ((__packed__));
 #endif

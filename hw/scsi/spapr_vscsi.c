@@ -40,7 +40,7 @@
 #include "srp.h"
 #include "hw/ppc/spapr.h"
 #include "hw/ppc/spapr_vio.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "viosrp.h"
 #include "trace.h"
 
@@ -605,7 +605,7 @@ static const VMStateDescription vmstate_spapr_vscsi_req = {
     .name = "spapr_vscsi_req",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER(crq.raw, vscsi_req),
         VMSTATE_BUFFER(viosrp_iu_buf, vscsi_req),
         VMSTATE_UINT32(qtag, vscsi_req),
@@ -628,10 +628,16 @@ static const VMStateDescription vmstate_spapr_vscsi_req = {
 static void vscsi_save_request(QEMUFile *f, SCSIRequest *sreq)
 {
     vscsi_req *req = sreq->hba_private;
+    Error *local_err = NULL;
+    int rc;
+
     assert(req->active);
 
-    vmstate_save_state(f, &vmstate_spapr_vscsi_req, req, NULL);
-
+    rc = vmstate_save_state(f, &vmstate_spapr_vscsi_req, req, NULL, &local_err);
+    if (rc < 0) {
+        error_report_err(local_err);
+        return;
+    }
     trace_spapr_vscsi_save_request(req->qtag, req->cur_desc_num,
                                    req->cur_desc_offset);
 }
@@ -642,15 +648,17 @@ static void *vscsi_load_request(QEMUFile *f, SCSIRequest *sreq)
     VSCSIState *s = VIO_SPAPR_VSCSI_DEVICE(bus->qbus.parent);
     vscsi_req *req;
     int rc;
+    Error *local_err = NULL;
 
     assert(sreq->tag < VSCSI_REQ_LIMIT);
     req = &s->reqs[sreq->tag];
     assert(!req->active);
 
     memset(req, 0, sizeof(*req));
-    rc = vmstate_load_state(f, &vmstate_spapr_vscsi_req, req, 1);
+    rc = vmstate_load_state(f, &vmstate_spapr_vscsi_req, req, 1, &local_err);
     if (rc) {
         fprintf(stderr, "VSCSI: failed loading request tag#%u\n", sreq->tag);
+        error_report_err(local_err);
         return NULL;
     }
     assert(req->active);
@@ -783,6 +791,7 @@ static int vscsi_queue_cmd(VSCSIState *s, vscsi_req *req)
     union srp_iu *srp = &req_iu(req)->srp;
     SCSIDevice *sdev;
     int n, lun;
+    size_t cdb_len = sizeof (srp->cmd.cdb) + (srp->cmd.add_cdb_len & ~3);
 
     if ((srp->cmd.lun == 0 || be64_to_cpu(srp->cmd.lun) == SRP_REPORT_LUNS_WLUN)
       && srp->cmd.cdb[0] == REPORT_LUNS) {
@@ -801,7 +810,7 @@ static int vscsi_queue_cmd(VSCSIState *s, vscsi_req *req)
         } return 1;
     }
 
-    req->sreq = scsi_req_new(sdev, req->qtag, lun, srp->cmd.cdb, req);
+    req->sreq = scsi_req_new(sdev, req->qtag, lun, srp->cmd.cdb, cdb_len, req);
     n = scsi_req_enqueue(req->sreq);
 
     trace_spapr_vscsi_queue_cmd(req->qtag, srp->cmd.cdb[0],
@@ -864,7 +873,7 @@ static int vscsi_process_tsk_mgmt(VSCSIState *s, vscsi_req *req)
                 break;
             }
 
-            qdev_reset_all(&d->qdev);
+            device_cold_reset(&d->qdev);
             break;
 
         case SRP_TSK_ABORT_TASK_SET:
@@ -1013,7 +1022,7 @@ static int vscsi_send_capabilities(VSCSIState *s, vscsi_req *req)
     }
 
     /*
-     * Current implementation does not suppport any migration or
+     * Current implementation does not support any migration or
      * reservation capabilities. Construct the response telling the
      * guest not to use them.
      */
@@ -1249,16 +1258,15 @@ static int spapr_vscsi_devnode(SpaprVioDevice *dev, void *fdt, int node_off)
     return 0;
 }
 
-static Property spapr_vscsi_properties[] = {
+static const Property spapr_vscsi_properties[] = {
     DEFINE_SPAPR_PROPERTIES(VSCSIState, vdev),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription vmstate_spapr_vscsi = {
     .name = "spapr_vscsi",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_SPAPR_VIO(vdev, VSCSIState),
         /* VSCSI state */
         /* ???? */
@@ -1267,7 +1275,7 @@ static const VMStateDescription vmstate_spapr_vscsi = {
     },
 };
 
-static void spapr_vscsi_class_init(ObjectClass *klass, void *data)
+static void spapr_vscsi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SpaprVioDeviceClass *k = VIO_SPAPR_DEVICE_CLASS(klass);

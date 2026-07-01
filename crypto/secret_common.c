@@ -71,7 +71,7 @@ static void qcrypto_secret_decrypt(QCryptoSecretCommon *secret,
         return;
     }
 
-    aes = qcrypto_cipher_new(QCRYPTO_CIPHER_ALG_AES_256,
+    aes = qcrypto_cipher_new(QCRYPTO_CIPHER_ALGO_AES_256,
                              QCRYPTO_CIPHER_MODE_CBC,
                              key, keylen,
                              errp);
@@ -138,36 +138,44 @@ static void qcrypto_secret_decode(const uint8_t *input,
 
 
 static void
-qcrypto_secret_prop_set_loaded(Object *obj,
-                               bool value,
-                               Error **errp)
+qcrypto_secret_complete(UserCreatable *uc, Error **errp)
 {
-    QCryptoSecretCommon *secret = QCRYPTO_SECRET_COMMON(obj);
+    QCryptoSecretCommon *secret = QCRYPTO_SECRET_COMMON(uc);
     QCryptoSecretCommonClass *sec_class
-                                = QCRYPTO_SECRET_COMMON_GET_CLASS(obj);
+                                = QCRYPTO_SECRET_COMMON_GET_CLASS(uc);
 
-    if (value) {
-        Error *local_err = NULL;
-        uint8_t *input = NULL;
-        size_t inputlen = 0;
-        uint8_t *output = NULL;
-        size_t outputlen = 0;
+    Error *local_err = NULL;
+    uint8_t *input = NULL;
+    size_t inputlen = 0;
+    uint8_t *output = NULL;
+    size_t outputlen = 0;
 
-        if (sec_class->load_data) {
-            sec_class->load_data(secret, &input, &inputlen, &local_err);
-            if (local_err) {
-                error_propagate(errp, local_err);
-                return;
-            }
-        } else {
-            error_setg(errp, "%s provides no 'load_data' method'",
-                             object_get_typename(obj));
+    if (sec_class->load_data) {
+        sec_class->load_data(secret, &input, &inputlen, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
             return;
         }
+    } else {
+        error_setg(errp, "%s provides no 'load_data' method'",
+                         object_get_typename(OBJECT(uc)));
+        return;
+    }
 
-        if (secret->keyid) {
-            qcrypto_secret_decrypt(secret, input, inputlen,
-                                   &output, &outputlen, &local_err);
+    if (secret->keyid) {
+        qcrypto_secret_decrypt(secret, input, inputlen,
+                               &output, &outputlen, &local_err);
+        g_free(input);
+        if (local_err) {
+            error_propagate(errp, local_err);
+            return;
+        }
+        input = output;
+        inputlen = outputlen;
+    } else {
+        if (secret->format == QCRYPTO_SECRET_FORMAT_BASE64) {
+            qcrypto_secret_decode(input, inputlen,
+                                  &output, &outputlen, &local_err);
             g_free(input);
             if (local_err) {
                 error_propagate(errp, local_err);
@@ -175,35 +183,11 @@ qcrypto_secret_prop_set_loaded(Object *obj,
             }
             input = output;
             inputlen = outputlen;
-        } else {
-            if (secret->format == QCRYPTO_SECRET_FORMAT_BASE64) {
-                qcrypto_secret_decode(input, inputlen,
-                                      &output, &outputlen, &local_err);
-                g_free(input);
-                if (local_err) {
-                    error_propagate(errp, local_err);
-                    return;
-                }
-                input = output;
-                inputlen = outputlen;
-            }
         }
-
-        secret->rawdata = input;
-        secret->rawlen = inputlen;
-    } else if (secret->rawdata) {
-        error_setg(errp, "Cannot unload secret");
-        return;
     }
-}
 
-
-static bool
-qcrypto_secret_prop_get_loaded(Object *obj,
-                               Error **errp G_GNUC_UNUSED)
-{
-    QCryptoSecretCommon *secret = QCRYPTO_SECRET_COMMON(obj);
-    return secret->rawdata != NULL;
+    secret->rawdata = input;
+    secret->rawlen = inputlen;
 }
 
 
@@ -269,13 +253,6 @@ qcrypto_secret_prop_get_keyid(Object *obj,
 
 
 static void
-qcrypto_secret_complete(UserCreatable *uc, Error **errp)
-{
-    object_property_set_bool(OBJECT(uc), "loaded", true, errp);
-}
-
-
-static void
 qcrypto_secret_finalize(Object *obj)
 {
     QCryptoSecretCommon *secret = QCRYPTO_SECRET_COMMON(obj);
@@ -286,15 +263,12 @@ qcrypto_secret_finalize(Object *obj)
 }
 
 static void
-qcrypto_secret_class_init(ObjectClass *oc, void *data)
+qcrypto_secret_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
 
     ucc->complete = qcrypto_secret_complete;
 
-    object_class_property_add_bool(oc, "loaded",
-                                   qcrypto_secret_prop_get_loaded,
-                                   qcrypto_secret_prop_set_loaded);
     object_class_property_add_enum(oc, "format",
                                    "QCryptoSecretFormat",
                                    &QCryptoSecretFormat_lookup,
@@ -401,7 +375,7 @@ static const TypeInfo qcrypto_secret_info = {
     .class_size = sizeof(QCryptoSecretCommonClass),
     .class_init = qcrypto_secret_class_init,
     .abstract = true,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

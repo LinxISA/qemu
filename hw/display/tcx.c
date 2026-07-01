@@ -23,14 +23,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "ui/console.h"
 #include "ui/pixel_ops.h"
-#include "hw/loader.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
@@ -345,7 +344,7 @@ static const VMStateDescription vmstate_tcx = {
     .version_id = 4,
     .minimum_version_id = 4,
     .post_load = vmstate_tcx_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT16(height, TCXState),
         VMSTATE_UINT16(width, TCXState),
         VMSTATE_UINT16(depth, TCXState),
@@ -453,7 +452,7 @@ static void tcx_dac_writel(void *opaque, hwaddr addr, uint64_t val,
 static const MemoryRegionOps tcx_dac_ops = {
     .read = tcx_dac_readl,
     .write = tcx_dac_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -534,7 +533,7 @@ static void tcx_rstip_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_stip_ops = {
     .read = tcx_stip_readl,
     .write = tcx_stip_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -548,7 +547,7 @@ static const MemoryRegionOps tcx_stip_ops = {
 static const MemoryRegionOps tcx_rstip_ops = {
     .read = tcx_stip_readl,
     .write = tcx_rstip_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -634,7 +633,7 @@ static void tcx_rblit_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_blit_ops = {
     .read = tcx_blit_readl,
     .write = tcx_blit_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -648,7 +647,7 @@ static const MemoryRegionOps tcx_blit_ops = {
 static const MemoryRegionOps tcx_rblit_ops = {
     .read = tcx_blit_readl,
     .write = tcx_rblit_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -714,7 +713,7 @@ static void tcx_thc_writel(void *opaque, hwaddr addr,
 static const MemoryRegionOps tcx_thc_ops = {
     .read = tcx_thc_readl,
     .write = tcx_thc_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -730,13 +729,12 @@ static uint64_t tcx_dummy_readl(void *opaque, hwaddr addr,
 static void tcx_dummy_writel(void *opaque, hwaddr addr,
                          uint64_t val, unsigned size)
 {
-    return;
 }
 
 static const MemoryRegionOps tcx_dummy_ops = {
     .read = tcx_dummy_readl,
     .write = tcx_dummy_writel,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -880,20 +878,19 @@ static void tcx_realizefn(DeviceState *dev, Error **errp)
     qemu_console_resize(s->con, s->width, s->height);
 }
 
-static Property tcx_properties[] = {
+static const Property tcx_properties[] = {
     DEFINE_PROP_UINT32("vram_size", TCXState, vram_size, -1),
     DEFINE_PROP_UINT16("width",    TCXState, width,     -1),
     DEFINE_PROP_UINT16("height",   TCXState, height,    -1),
     DEFINE_PROP_UINT16("depth",    TCXState, depth,     -1),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void tcx_class_init(ObjectClass *klass, void *data)
+static void tcx_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = tcx_realizefn;
-    dc->reset = tcx_reset;
+    device_class_set_legacy_reset(dc, tcx_reset);
     dc->vmsd = &vmstate_tcx;
     device_class_set_props(dc, tcx_properties);
 }

@@ -24,25 +24,29 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include "qemu/host-utils.h"
 #include "qemu/module.h"
-#include "qemu/timer.h"
 #include "qemu/dbus.h"
 
+#ifdef G_OS_UNIX
 #include <gio/gunixfdlist.h>
+#endif
+
+#include "ui/dbus.h"
 #include "ui/dbus-display1.h"
 
 #define AUDIO_CAP "dbus"
-#include "audio.h"
+#include "qemu/audio.h"
 #include "audio_int.h"
 #include "trace.h"
 
 #define DBUS_DISPLAY1_AUDIO_PATH DBUS_DISPLAY1_ROOT "/Audio"
 
-#define DBUS_AUDIO_NSAMPLES 1024 /* could be configured? */
+#define DBUS_DEFAULT_AUDIO_NSAMPLES 480
 
 typedef struct DBusAudio {
+    Audiodev *dev;
     GDBusObjectManagerServer *server;
+    bool p2p;
     GDBusObjectSkeleton *audio;
     QemuDBusDisplay1Audio *iface;
     GHashTable *out_listeners;
@@ -82,7 +86,7 @@ static void *dbus_get_buffer_out(HWVoiceOut *hw, size_t *size)
     }
 
     *size = MIN(vo->buf_size - vo->buf_pos, *size);
-    *size = audio_rate_get_bytes(&hw->info, &vo->rate, *size);
+    *size = audio_rate_get_bytes(&vo->rate, &hw->info, *size);
 
     return vo->buf + vo->buf_pos;
 
@@ -100,7 +104,7 @@ static size_t dbus_put_buffer_out(HWVoiceOut *hw, void *buf, size_t size)
     assert(buf == vo->buf + vo->buf_pos && vo->buf_pos + size <= vo->buf_size);
     vo->buf_pos += size;
 
-    trace_dbus_audio_put_buffer_out(size);
+    trace_dbus_audio_put_buffer_out(vo->buf_pos, vo->buf_size);
 
     if (vo->buf_pos < vo->buf_size) {
         return size;
@@ -122,7 +126,7 @@ static size_t dbus_put_buffer_out(HWVoiceOut *hw, void *buf, size_t size)
     return size;
 }
 
-#ifdef HOST_WORDS_BIGENDIAN
+#if HOST_BIG_ENDIAN
 #define AUDIO_HOST_BE TRUE
 #else
 #define AUDIO_HOST_BE FALSE
@@ -146,6 +150,18 @@ dbus_init_out_listener(QemuDBusDisplay1AudioOutListener *listener,
         G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL, NULL);
 }
 
+static guint
+dbus_audio_get_nsamples(DBusAudio *da)
+{
+    AudiodevDBusOptions *opts = &da->dev->u.dbus;
+
+    if (opts->has_nsamples && opts->nsamples) {
+        return opts->nsamples;
+    } else {
+        return DBUS_DEFAULT_AUDIO_NSAMPLES;
+    }
+}
+
 static int
 dbus_init_out(HWVoiceOut *hw, struct audsettings *as, void *drv_opaque)
 {
@@ -155,7 +171,7 @@ dbus_init_out(HWVoiceOut *hw, struct audsettings *as, void *drv_opaque)
     QemuDBusDisplay1AudioOutListener *listener = NULL;
 
     audio_pcm_init_info(&hw->info, as);
-    hw->samples = DBUS_AUDIO_NSAMPLES;
+    hw->samples = dbus_audio_get_nsamples(da);
     audio_rate_start(&vo->rate);
 
     g_hash_table_iter_init(&iter, da->out_listeners);
@@ -269,7 +285,7 @@ dbus_init_in(HWVoiceIn *hw, struct audsettings *as, void *drv_opaque)
     QemuDBusDisplay1AudioInListener *listener = NULL;
 
     audio_pcm_init_info(&hw->info, as);
-    hw->samples = DBUS_AUDIO_NSAMPLES;
+    hw->samples = dbus_audio_get_nsamples(da);
     audio_rate_start(&vo->rate);
 
     g_hash_table_iter_init(&iter, da->in_listeners);
@@ -343,7 +359,7 @@ dbus_read(HWVoiceIn *hw, void *buf, size_t size)
 
     trace_dbus_audio_read(size);
 
-    /* size = audio_rate_get_bytes(&hw->info, &vo->rate, size); */
+    /* size = audio_rate_get_bytes(&vo->rate, &hw->info, size); */
 
     g_hash_table_iter_init(&iter, da->in_listeners);
     while (g_hash_table_iter_next(&iter, NULL, (void **)&listener)) {
@@ -390,10 +406,11 @@ dbus_enable_in(HWVoiceIn *hw, bool enable)
 }
 
 static void *
-dbus_audio_init(Audiodev *dev)
+dbus_audio_init(Audiodev *dev, Error **errp)
 {
     DBusAudio *da = g_new0(DBusAudio, 1);
 
+    da->dev = dev;
     da->out_listeners = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                 g_free, g_object_unref);
     da->in_listeners = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -441,14 +458,17 @@ listener_in_vanished_cb(GDBusConnection *connection,
 }
 
 static gboolean
-dbus_audio_register_listener(AudioState *s,
+dbus_audio_register_listener(AudioBackend *s,
                              GDBusMethodInvocation *invocation,
+#ifdef G_OS_UNIX
                              GUnixFDList *fd_list,
+#endif
                              GVariant *arg_listener,
                              bool out)
 {
     DBusAudio *da = s->drv_opaque;
-    const char *sender = g_dbus_method_invocation_get_sender(invocation);
+    const char *sender =
+        da->p2p ? "p2p" : g_dbus_method_invocation_get_sender(invocation);
     g_autoptr(GDBusConnection) listener_conn = NULL;
     g_autoptr(GError) err = NULL;
     g_autoptr(GSocket) socket = NULL;
@@ -469,6 +489,11 @@ dbus_audio_register_listener(AudioState *s,
         return DBUS_METHOD_INVOCATION_HANDLED;
     }
 
+#ifdef G_OS_WIN32
+    if (!dbus_win32_import_socket(invocation, arg_listener, &fd)) {
+        return DBUS_METHOD_INVOCATION_HANDLED;
+    }
+#else
     fd = g_unix_fd_list_get(fd_list, g_variant_get_handle(arg_listener), &err);
     if (err) {
         g_dbus_method_invocation_return_error(invocation,
@@ -478,6 +503,7 @@ dbus_audio_register_listener(AudioState *s,
                                               err->message);
         return DBUS_METHOD_INVOCATION_HANDLED;
     }
+#endif
 
     socket = g_socket_new_from_fd(fd, &err);
     if (err) {
@@ -486,22 +512,41 @@ dbus_audio_register_listener(AudioState *s,
                                               DBUS_DISPLAY_ERROR_FAILED,
                                               "Couldn't make a socket: %s",
                                               err->message);
+#ifdef G_OS_WIN32
+        closesocket(fd);
+#else
+        close(fd);
+#endif
         return DBUS_METHOD_INVOCATION_HANDLED;
     }
     socket_conn = g_socket_connection_factory_create_connection(socket);
     if (out) {
         qemu_dbus_display1_audio_complete_register_out_listener(
-            da->iface, invocation, NULL);
+            da->iface, invocation
+#ifdef G_OS_UNIX
+            , NULL
+#endif
+            );
     } else {
         qemu_dbus_display1_audio_complete_register_in_listener(
-            da->iface, invocation, NULL);
+            da->iface, invocation
+#ifdef G_OS_UNIX
+            , NULL
+#endif
+            );
     }
+
+    GDBusConnectionFlags flags =
+        G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_SERVER;
+#ifdef WIN32
+    flags |= G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_ALLOW_ANONYMOUS;
+#endif
 
     listener_conn =
         g_dbus_connection_new_sync(
             G_IO_STREAM(socket_conn),
             guid,
-            G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_SERVER,
+            flags,
             NULL, NULL, &err);
     if (err) {
         error_report("Failed to setup peer connection: %s", err->message);
@@ -570,28 +615,41 @@ dbus_audio_register_listener(AudioState *s,
 }
 
 static gboolean
-dbus_audio_register_out_listener(AudioState *s,
+dbus_audio_register_out_listener(AudioBackend *s,
                                  GDBusMethodInvocation *invocation,
+#ifdef G_OS_UNIX
                                  GUnixFDList *fd_list,
+#endif
                                  GVariant *arg_listener)
 {
     return dbus_audio_register_listener(s, invocation,
-                                        fd_list, arg_listener, true);
+#ifdef G_OS_UNIX
+                                        fd_list,
+#endif
+                                        arg_listener, true);
 
 }
 
 static gboolean
-dbus_audio_register_in_listener(AudioState *s,
+dbus_audio_register_in_listener(AudioBackend *s,
                                 GDBusMethodInvocation *invocation,
+#ifdef G_OS_UNIX
                                 GUnixFDList *fd_list,
+#endif
                                 GVariant *arg_listener)
 {
     return dbus_audio_register_listener(s, invocation,
-                                        fd_list, arg_listener, false);
+#ifdef G_OS_UNIX
+                                        fd_list,
+#endif
+                                        arg_listener, false);
 }
 
-static void
-dbus_audio_set_server(AudioState *s, GDBusObjectManagerServer *server)
+static bool
+dbus_audio_set_server(AudioBackend *s,
+                      GDBusObjectManagerServer *server,
+                      bool p2p,
+                      Error **errp)
 {
     DBusAudio *da = s->drv_opaque;
 
@@ -599,6 +657,7 @@ dbus_audio_set_server(AudioState *s, GDBusObjectManagerServer *server)
     g_assert(!da->server);
 
     da->server = g_object_ref(server);
+    da->p2p = p2p;
 
     da->audio = g_dbus_object_skeleton_new(DBUS_DISPLAY1_AUDIO_PATH);
     da->iface = qemu_dbus_display1_audio_skeleton_new();
@@ -608,10 +667,13 @@ dbus_audio_set_server(AudioState *s, GDBusObjectManagerServer *server)
                      "swapped-signal::handle-register-out-listener",
                      dbus_audio_register_out_listener, s,
                      NULL);
+    qemu_dbus_display1_audio_set_nsamples(da->iface, dbus_audio_get_nsamples(da));
 
     g_dbus_object_skeleton_add_interface(G_DBUS_OBJECT_SKELETON(da->audio),
                                          G_DBUS_INTERFACE_SKELETON(da->iface));
     g_dbus_object_manager_server_export(da->server, da->audio);
+
+    return true;
 }
 
 static struct audio_pcm_ops dbus_pcm_ops = {
@@ -633,12 +695,10 @@ static struct audio_pcm_ops dbus_pcm_ops = {
 
 static struct audio_driver dbus_audio_driver = {
     .name            = "dbus",
-    .descr           = "Timer based audio exposed with DBus interface",
     .init            = dbus_audio_init,
     .fini            = dbus_audio_fini,
     .set_dbus_server = dbus_audio_set_server,
     .pcm_ops         = &dbus_pcm_ops,
-    .can_be_default  = 1,
     .max_voices_out  = INT_MAX,
     .max_voices_in   = INT_MAX,
     .voice_size_out  = sizeof(DBusVoiceOut),

@@ -23,13 +23,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/sparc/sun4m_iommu.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "trace.h"
 
 /*
@@ -96,10 +96,10 @@
 #define IOMMU_AER_SBW       0x80000000    /* S-to-M asynchronous writes */
 #define IOMMU_AER_MASK      0x801f000f
 
-#define IOMMU_SBCFG0        (0x1010 >> 2) /* SBUS configration per-slot */
-#define IOMMU_SBCFG1        (0x1014 >> 2) /* SBUS configration per-slot */
-#define IOMMU_SBCFG2        (0x1018 >> 2) /* SBUS configration per-slot */
-#define IOMMU_SBCFG3        (0x101c >> 2) /* SBUS configration per-slot */
+#define IOMMU_SBCFG0        (0x1010 >> 2) /* SBUS configuration per-slot */
+#define IOMMU_SBCFG1        (0x1014 >> 2) /* SBUS configuration per-slot */
+#define IOMMU_SBCFG2        (0x1018 >> 2) /* SBUS configuration per-slot */
+#define IOMMU_SBCFG3        (0x101c >> 2) /* SBUS configuration per-slot */
 #define IOMMU_SBCFG_SAB30   0x00010000 /* Phys-address bit 30 when
                                           bypass enabled */
 #define IOMMU_SBCFG_BA16    0x00000004 /* Slave supports 16 byte bursts */
@@ -238,7 +238,7 @@ static void iommu_mem_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps iommu_mem_ops = {
     .read = iommu_mem_read,
     .write = iommu_mem_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -331,7 +331,7 @@ static const VMStateDescription vmstate_iommu = {
     .name = "iommu",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, IOMMUState, IOMMU_NREGS),
         VMSTATE_UINT64(iostart, IOMMUState),
         VMSTATE_END_OF_LIST()
@@ -368,16 +368,15 @@ static void iommu_init(Object *obj)
     sysbus_init_mmio(dev, &s->iomem);
 }
 
-static Property iommu_properties[] = {
+static const Property iommu_properties[] = {
     DEFINE_PROP_UINT32("version", IOMMUState, version, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void iommu_class_init(ObjectClass *klass, void *data)
+static void iommu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = iommu_reset;
+    device_class_set_legacy_reset(dc, iommu_reset);
     dc->vmsd = &vmstate_iommu;
     device_class_set_props(dc, iommu_properties);
 }
@@ -390,7 +389,8 @@ static const TypeInfo iommu_info = {
     .class_init    = iommu_class_init,
 };
 
-static void sun4m_iommu_memory_region_class_init(ObjectClass *klass, void *data)
+static void sun4m_iommu_memory_region_class_init(ObjectClass *klass,
+                                                 const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

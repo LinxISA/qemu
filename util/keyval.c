@@ -91,12 +91,12 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qlist.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
+#include "qobject/qstring.h"
 #include "qemu/cutils.h"
+#include "qemu/keyval.h"
 #include "qemu/help_option.h"
-#include "qemu/option.h"
 
 /*
  * Convert @key to a list index.

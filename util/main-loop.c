@@ -26,13 +26,15 @@
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/timer.h"
-#include "sysemu/cpu-timers.h"
-#include "sysemu/replay.h"
+#include "system/cpu-timers.h"
+#include "exec/icount.h"
+#include "system/replay.h"
 #include "qemu/main-loop.h"
-#include "block/aio.h"
+#include "qemu/aio.h"
+#include "block/thread-pool.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
-#include "qemu/compiler.h"
+#include "qom/object.h"
 
 #ifndef _WIN32
 #include <sys/wait.h>
@@ -46,7 +48,7 @@
  */
 /*
  * Disable CFI checks.
- * We are going to call a signal hander directly. Such handler may or may not
+ * We are going to call a signal handler directly. Such handler may or may not
  * have been defined in our binary, so there's no guarantee that the pointer
  * used to set the handler is a cfi-valid pointer. Since the handlers are
  * stored in kernel memory, changing the handler to an attacker-defined
@@ -62,9 +64,7 @@ static void sigfd_handler(void *opaque)
     ssize_t len;
 
     while (1) {
-        do {
-            len = read(fd, &info, sizeof(info));
-        } while (len == -1 && errno == EINTR);
+        len = RETRY_ON_EINTR(read(fd, &info, sizeof(info)));
 
         if (len == -1 && errno == EAGAIN) {
             break;
@@ -114,7 +114,10 @@ static int qemu_signal_init(Error **errp)
         return -errno;
     }
 
-    fcntl_setfl(sigfd, O_NONBLOCK);
+    if (!qemu_set_blocking(sigfd, false, errp)) {
+        close(sigfd);
+        return -EINVAL;
+    }
 
     qemu_set_fd_handler(sigfd, sigfd_handler, NULL, (void *)(intptr_t)sigfd);
 
@@ -159,7 +162,7 @@ int qemu_init_main_loop(Error **errp)
     int ret;
     GSource *src;
 
-    init_clocks(qemu_timer_notify_cb);
+    qemu_init_clocks(qemu_timer_notify_cb);
 
     ret = qemu_signal_init(errp);
     if (ret) {
@@ -184,15 +187,70 @@ int qemu_init_main_loop(Error **errp)
     return 0;
 }
 
+static void main_loop_update_params(EventLoopBase *base, Error **errp)
+{
+    ERRP_GUARD();
+
+    if (!qemu_aio_context) {
+        error_setg(errp, "qemu aio context not ready");
+        return;
+    }
+
+    aio_context_set_aio_params(qemu_aio_context, base->aio_max_batch);
+
+    aio_context_set_thread_pool_params(qemu_aio_context, base->thread_pool_min,
+                                       base->thread_pool_max, errp);
+}
+
+MainLoop *mloop;
+
+static void main_loop_init(EventLoopBase *base, Error **errp)
+{
+    MainLoop *m = MAIN_LOOP(base);
+
+    if (mloop) {
+        error_setg(errp, "only one main-loop instance allowed");
+        return;
+    }
+
+    main_loop_update_params(base, errp);
+
+    mloop = m;
+}
+
+static bool main_loop_can_be_deleted(EventLoopBase *base)
+{
+    return false;
+}
+
+static void main_loop_class_init(ObjectClass *oc, const void *class_data)
+{
+    EventLoopBaseClass *bc = EVENT_LOOP_BASE_CLASS(oc);
+
+    bc->init = main_loop_init;
+    bc->update_params = main_loop_update_params;
+    bc->can_be_deleted = main_loop_can_be_deleted;
+}
+
+static const TypeInfo main_loop_info = {
+    .name = TYPE_MAIN_LOOP,
+    .parent = TYPE_EVENT_LOOP_BASE,
+    .class_init = main_loop_class_init,
+    .instance_size = sizeof(MainLoop),
+};
+
+static void main_loop_register_types(void)
+{
+    type_register_static(&main_loop_info);
+}
+
+type_init(main_loop_register_types)
+
 static int max_priority;
 
 #ifndef _WIN32
 static int glib_pollfds_idx;
 static int glib_n_poll_fds;
-
-void qemu_fd_register(int fd)
-{
-}
 
 static void glib_pollfds_fill(int64_t *cur_timeout)
 {
@@ -244,13 +302,13 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     glib_pollfds_fill(&timeout);
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
     replay_mutex_unlock();
 
     ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
 
     replay_mutex_lock();
-    qemu_mutex_lock_iothread();
+    bql_lock();
 
     glib_pollfds_poll();
 
@@ -298,20 +356,30 @@ void qemu_del_polling_cb(PollingFunc *func, void *opaque)
 /* Wait objects support */
 typedef struct WaitObjects {
     int num;
-    int revents[MAXIMUM_WAIT_OBJECTS + 1];
-    HANDLE events[MAXIMUM_WAIT_OBJECTS + 1];
-    WaitObjectFunc *func[MAXIMUM_WAIT_OBJECTS + 1];
-    void *opaque[MAXIMUM_WAIT_OBJECTS + 1];
+    int revents[MAXIMUM_WAIT_OBJECTS];
+    HANDLE events[MAXIMUM_WAIT_OBJECTS];
+    WaitObjectFunc *func[MAXIMUM_WAIT_OBJECTS];
+    void *opaque[MAXIMUM_WAIT_OBJECTS];
 } WaitObjects;
 
 static WaitObjects wait_objects = {0};
 
 int qemu_add_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque)
 {
+    int i;
     WaitObjects *w = &wait_objects;
+
     if (w->num >= MAXIMUM_WAIT_OBJECTS) {
         return -1;
     }
+
+    for (i = 0; i < w->num; i++) {
+        /* check if the same handle is added twice */
+        if (w->events[i] == handle) {
+            return -1;
+        }
+    }
+
     w->events[w->num] = handle;
     w->func[w->num] = func;
     w->opaque[w->num] = opaque;
@@ -330,7 +398,7 @@ void qemu_del_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque)
         if (w->events[i] == handle) {
             found = 1;
         }
-        if (found) {
+        if (found && i < (MAXIMUM_WAIT_OBJECTS - 1)) {
             w->events[i] = w->events[i + 1];
             w->func[i] = w->func[i + 1];
             w->opaque[i] = w->opaque[i + 1];
@@ -340,13 +408,6 @@ void qemu_del_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque)
     if (found) {
         w->num--;
     }
-}
-
-void qemu_fd_register(int fd)
-{
-    WSAEventSelect(fd, event_notifier_get_handle(&qemu_aio_context->notifier),
-                   FD_READ | FD_ACCEPT | FD_CLOSE |
-                   FD_CONNECT | FD_WRITE | FD_OOB);
 }
 
 static int pollfds_fill(GArray *pollfds, fd_set *rfds, fd_set *wfds,
@@ -456,7 +517,7 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     poll_timeout_ns = qemu_soonest_timeout(poll_timeout_ns, timeout);
 
-    qemu_mutex_unlock_iothread();
+    bql_unlock();
 
     replay_mutex_unlock();
 
@@ -464,7 +525,7 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     replay_mutex_lock();
 
-    qemu_mutex_lock_iothread();
+    bql_lock();
     if (g_poll_ret > 0) {
         for (i = 0; i < w->num; i++) {
             w->revents[i] = poll_fds[n_poll_fds + i].revents;
@@ -544,9 +605,11 @@ void main_loop_wait(int nonblocking)
 
 /* Functions to operate on the main QEMU AioContext.  */
 
-QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name)
+QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name,
+                         MemReentrancyGuard *reentrancy_guard)
 {
-    return aio_bh_new_full(qemu_aio_context, cb, opaque, name);
+    return aio_bh_new_full(qemu_aio_context, cb, opaque, name,
+                           reentrancy_guard);
 }
 
 /*
@@ -581,14 +644,13 @@ void qemu_set_fd_handler(int fd,
                          void *opaque)
 {
     iohandler_init();
-    aio_set_fd_handler(iohandler_ctx, fd, false,
-                       fd_read, fd_write, NULL, NULL, opaque);
+    aio_set_fd_handler(iohandler_ctx, fd, fd_read, fd_write, NULL, NULL,
+                       opaque);
 }
 
 void event_notifier_set_handler(EventNotifier *e,
                                 EventNotifierHandler *handler)
 {
     iohandler_init();
-    aio_set_event_notifier(iohandler_ctx, e, false,
-                           handler, NULL, NULL);
+    aio_set_event_notifier(iohandler_ctx, e, handler, NULL, NULL);
 }

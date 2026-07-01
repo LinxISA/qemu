@@ -28,7 +28,7 @@
 #include "qapi/error.h"
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 
 /* #define DEBUG_VIRTIO_BUS */
 
@@ -62,9 +62,14 @@ void virtio_bus_device_plugged(VirtIODevice *vdev, Error **errp)
     }
 
     /* Get the features of the plugged device. */
-    assert(vdc->get_features != NULL);
-    vdev->host_features = vdc->get_features(vdev, vdev->host_features,
-                                            &local_err);
+    if (vdc->get_features_ex) {
+        vdc->get_features_ex(vdev, vdev->host_features_ex, &local_err);
+    } else {
+        assert(vdc->get_features != NULL);
+        virtio_features_from_u64(vdev->host_features_ex,
+                                 vdc->get_features(vdev, vdev->host_features,
+                                                   &local_err));
+    }
     if (local_err) {
         error_propagate(errp, local_err);
         return;
@@ -78,17 +83,23 @@ void virtio_bus_device_plugged(VirtIODevice *vdev, Error **errp)
         return;
     }
 
-    vdev_has_iommu = virtio_host_has_feature(vdev, VIRTIO_F_IOMMU_PLATFORM);
-    if (klass->get_dma_as != NULL && has_iommu) {
+    vdev->dma_as = &address_space_memory;
+    if (has_iommu) {
+        vdev_has_iommu = virtio_host_has_feature(vdev, VIRTIO_F_IOMMU_PLATFORM);
+        /*
+         * Present IOMMU_PLATFORM to the driver iff iommu_plattform=on and
+         * device operational. If the driver does not accept IOMMU_PLATFORM
+         * we fail the device.
+         */
         virtio_add_feature(&vdev->host_features, VIRTIO_F_IOMMU_PLATFORM);
-        vdev->dma_as = klass->get_dma_as(qbus->parent);
-        if (!vdev_has_iommu && vdev->dma_as != &address_space_memory) {
-            error_setg(errp,
+        if (klass->get_dma_as) {
+            vdev->dma_as = klass->get_dma_as(qbus->parent);
+            if (!vdev_has_iommu && vdev->dma_as != &address_space_memory) {
+                error_setg(errp,
                        "iommu_platform=true is not supported by the device");
-            return;
+                return;
+            }
         }
-    } else {
-        vdev->dma_as = &address_space_memory;
     }
 }
 
@@ -98,6 +109,7 @@ void virtio_bus_reset(VirtioBusState *bus)
     VirtIODevice *vdev = virtio_bus_get_device(bus);
 
     DPRINTF("%s: reset device.\n", BUS(bus)->name);
+    virtio_bus_stop_ioeventfd(bus);
     if (vdev != NULL) {
         virtio_reset(vdev);
     }
@@ -341,7 +353,7 @@ bool virtio_bus_device_iommu_enabled(VirtIODevice *vdev)
     return klass->iommu_enabled(qbus->parent);
 }
 
-static void virtio_bus_class_init(ObjectClass *klass, void *data)
+static void virtio_bus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *bus_class = BUS_CLASS(klass);
     bus_class->get_dev_path = virtio_bus_get_dev_path;

@@ -18,14 +18,15 @@
 
 #include "qemu/module.h"
 #include "qapi/error.h"
-#include "exec/address-spaces.h"
-#include "hw/qdev-properties.h"
+#include "system/address-spaces.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci_ids.h"
 #include "hw/acpi/tpm.h"
 #include "migration/vmstate.h"
-#include "sysemu/tpm_backend.h"
-#include "sysemu/tpm_util.h"
-#include "sysemu/reset.h"
+#include "system/tpm_backend.h"
+#include "system/tpm_util.h"
+#include "system/reset.h"
+#include "system/xen.h"
 #include "tpm_prop.h"
 #include "tpm_ppi.h"
 #include "trace.h"
@@ -197,6 +198,7 @@ static void tpm_crb_request_completed(TPMIf *ti, int ret)
         ARRAY_FIELD_DP32(s->regs, CRB_CTRL_STS,
                          tpmSts, 1); /* fatal error */
     }
+    memory_region_set_dirty(&s->cmdmem, 0, CRB_CTRL_CMD_SIZE);
 }
 
 static enum TPMVersion tpm_crb_get_version(TPMIf *ti)
@@ -218,16 +220,15 @@ static int tpm_crb_pre_save(void *opaque)
 static const VMStateDescription vmstate_tpm_crb = {
     .name = "tpm-crb",
     .pre_save = tpm_crb_pre_save,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, CRBState, TPM_CRB_R_MAX),
         VMSTATE_END_OF_LIST(),
     }
 };
 
-static Property tpm_crb_properties[] = {
+static const Property tpm_crb_properties[] = {
     DEFINE_PROP_TPMBE("tpmdev", CRBState, tpmbe),
     DEFINE_PROP_BOOL("ppi", CRBState, ppi_enabled, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void tpm_crb_reset(void *dev)
@@ -307,10 +308,14 @@ static void tpm_crb_realize(DeviceState *dev, Error **errp)
                      TPM_PPI_ADDR_BASE, OBJECT(s));
     }
 
-    qemu_register_reset(tpm_crb_reset, dev);
+    if (xen_enabled()) {
+        tpm_crb_reset(dev);
+    } else {
+        qemu_register_reset(tpm_crb_reset, dev);
+    }
 }
 
-static void tpm_crb_class_init(ObjectClass *klass, void *data)
+static void tpm_crb_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     TPMIfClass *tc = TPM_IF_CLASS(klass);
@@ -332,7 +337,7 @@ static const TypeInfo tpm_crb_info = {
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(CRBState),
     .class_init  = tpm_crb_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_TPM_IF },
         { }
     }

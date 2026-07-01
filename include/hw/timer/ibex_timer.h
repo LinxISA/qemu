@@ -25,7 +25,7 @@
 #ifndef HW_IBEX_TIMER_H
 #define HW_IBEX_TIMER_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 #define TYPE_IBEX_TIMER "ibex-timer"
 OBJECT_DECLARE_SIMPLE_TYPE(IbexTimerState, IBEX_TIMER)
@@ -33,6 +33,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(IbexTimerState, IBEX_TIMER)
 struct IbexTimerState {
     /* <private> */
     SysBusDevice parent_obj;
+    uint64_t mtimecmp;
+    QEMUTimer *mtimer; /* Internal timer for M-mode interrupt */
 
     /* <public> */
     MemoryRegion mmio;

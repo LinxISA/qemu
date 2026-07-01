@@ -19,7 +19,6 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "tcg/helper-tcg.h"
 
 void x86_cpu_record_sigsegv(CPUState *cs, vaddr addr,
@@ -47,4 +46,11 @@ void x86_cpu_record_sigsegv(CPUState *cs, vaddr addr,
     env->exception_next_eip = -1;
 
     cpu_loop_exit_restore(cs, ra);
+}
+
+void x86_cpu_record_sigbus(CPUState *cs, vaddr addr,
+                           MMUAccessType access_type, uintptr_t ra)
+{
+    X86CPU *cpu = X86_CPU(cs);
+    handle_unaligned_access(&cpu->env, addr, access_type, ra);
 }

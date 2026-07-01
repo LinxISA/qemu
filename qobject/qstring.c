@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qstring.h"
 #include "qobject-internal.h"
 
 /**
@@ -99,4 +99,9 @@ void qstring_destroy_obj(QObject *obj)
     qs = qobject_to(QString, obj);
     g_free((char *)qs->string);
     g_free(qs);
+}
+
+void qstring_unref(QString *q)
+{
+    qobject_unref(q);
 }

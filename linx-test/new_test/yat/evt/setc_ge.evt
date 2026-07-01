@@ -1,7 +1,0 @@
-NEW_EVENT(blk_setc_ge_tt)
-NEW_EVENT(blk_setc_ge_tr)
-NEW_EVENT(blk_setc_ge_rr)
-NEW_EVENT(blk_setc_ge_rtl)
-NEW_EVENT(blk_setc_ge_rth)
-
-#define TEST_DRIVER testDriver_2_64

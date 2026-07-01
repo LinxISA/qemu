@@ -24,8 +24,8 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
-#include "sysemu/dma.h"
+#include "hw/core/qdev-properties.h"
+#include "system/dma.h"
 #include "hw/pci/msi.h"
 #include "qemu/iov.h"
 #include "qemu/main-loop.h"
@@ -192,7 +192,7 @@ static dma_addr_t mptsas_ld_sg_base(MPTSASState *s, uint32_t flags_and_length,
     return addr;
 }
 
-static int mptsas_build_sgl(MPTSASState *s, MPTSASRequest *req, hwaddr addr)
+static int mptsas_build_sgl(MPTSASState *s, MPTSASRequest *req, hwaddr req_addr)
 {
     PCIDevice *pci = (PCIDevice *) s;
     hwaddr next_chain_addr;
@@ -201,8 +201,8 @@ static int mptsas_build_sgl(MPTSASState *s, MPTSASRequest *req, hwaddr addr)
     uint32_t chain_offset;
 
     chain_offset = req->scsi_io.ChainOffset;
-    next_chain_addr = addr + chain_offset * sizeof(uint32_t);
-    sgaddr = addr + sizeof(MPIMsgSCSIIORequest);
+    next_chain_addr = req_addr + chain_offset * sizeof(uint32_t);
+    sgaddr = req_addr + sizeof(MPIMsgSCSIIORequest);
     pci_dma_sglist_init(&req->qsg, pci, 4);
     left = req->scsi_io.DataLength;
 
@@ -324,7 +324,8 @@ static int mptsas_process_scsi_io_request(MPTSASState *s,
     }
 
     req->sreq = scsi_req_new(sdev, scsi_io->MsgContext,
-                            scsi_io->LUN[1], scsi_io->CDB, req);
+                             scsi_io->LUN[1], scsi_io->CDB,
+                             scsi_io->CDBLength, req);
 
     if (req->sreq->cmd.xfer > scsi_io->DataLength) {
         goto overrun;
@@ -521,7 +522,7 @@ reply_maybe_async:
             reply.ResponseCode = MPI_SCSITASKMGMT_RSP_TM_INVALID_LUN;
             goto out;
         }
-        qdev_reset_all(&sdev->qdev);
+        device_cold_reset(&sdev->qdev);
         break;
 
     case MPI_SCSITASKMGMT_TASKTYPE_TARGET_RESET:
@@ -537,13 +538,13 @@ reply_maybe_async:
         QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
             sdev = SCSI_DEVICE(kid->child);
             if (sdev->channel == 0 && sdev->id == req->TargetID) {
-                qdev_reset_all(kid->child);
+                device_cold_reset(kid->child);
             }
         }
         break;
 
     case MPI_SCSITASKMGMT_TASKTYPE_RESET_BUS:
-        qbus_reset_all(BUS(&s->bus));
+        bus_cold_reset(BUS(&s->bus));
         break;
 
     default:
@@ -578,11 +579,11 @@ static void mptsas_process_ioc_init(MPTSASState *s, MPIMsgIOCInit *req)
     }
 
     memset(&reply, 0, sizeof(reply));
-    reply.WhoInit    = s->who_init;
+    reply.WhoInit    = req->WhoInit;
     reply.MsgLength  = sizeof(reply) / 4;
     reply.Function   = req->Function;
-    reply.MaxDevices = s->max_devices;
-    reply.MaxBuses   = s->max_buses;
+    reply.MaxDevices = req->MaxDevices;
+    reply.MaxBuses   = req->MaxBuses;
     reply.MsgContext = req->MsgContext;
 
     mptsas_fix_ioc_init_reply_endianness(&reply);
@@ -806,7 +807,7 @@ static void mptsas_soft_reset(MPTSASState *s)
     s->intr_mask = MPI_HIM_DIM | MPI_HIM_RIM;
     mptsas_update_interrupt(s);
 
-    qbus_reset_all(BUS(&s->bus));
+    bus_cold_reset(BUS(&s->bus));
     s->intr_status = 0;
     s->intr_mask = save_mask;
 
@@ -1321,7 +1322,8 @@ static void mptsas_scsi_realize(PCIDevice *dev, Error **errp)
     }
     s->max_devices = MPTSAS_NUM_PORTS;
 
-    s->request_bh = qemu_bh_new(mptsas_fetch_requests, s);
+    s->request_bh = qemu_bh_new_guarded(mptsas_fetch_requests, s,
+                                        &DEVICE(dev)->mem_reentrancy_guard);
 
     scsi_bus_init(&s->bus, sizeof(s->bus), &dev->qdev, &mptsas_scsi_info);
 }
@@ -1364,7 +1366,7 @@ static const VMStateDescription vmstate_mptsas = {
     .version_id = 0,
     .minimum_version_id = 0,
     .post_load = mptsas_post_load,
-    .fields      = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, MPTSASState),
         VMSTATE_BOOL(msi_in_use, MPTSASState),
         VMSTATE_UINT32(state, MPTSASState),
@@ -1408,14 +1410,13 @@ static const VMStateDescription vmstate_mptsas = {
     }
 };
 
-static Property mptsas_properties[] = {
+static const Property mptsas_properties[] = {
     DEFINE_PROP_UINT64("sas_address", MPTSASState, sas_addr, 0),
     /* TODO: test MSI support under Windows */
     DEFINE_PROP_ON_OFF_AUTO("msi", MPTSASState, msi, ON_OFF_AUTO_AUTO),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void mptsas1068_class_init(ObjectClass *oc, void *data)
+static void mptsas1068_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
@@ -1429,7 +1430,7 @@ static void mptsas1068_class_init(ObjectClass *oc, void *data)
     pc->subsystem_id = 0x8000;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
     device_class_set_props(dc, mptsas_properties);
-    dc->reset = mptsas_reset;
+    device_class_set_legacy_reset(dc, mptsas_reset);
     dc->vmsd = &vmstate_mptsas;
     dc->desc = "LSI SAS 1068";
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
@@ -1440,7 +1441,7 @@ static const TypeInfo mptsas_info = {
     .parent = TYPE_PCI_DEVICE,
     .instance_size = sizeof(MPTSASState),
     .class_init = mptsas1068_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -1448,7 +1449,7 @@ static const TypeInfo mptsas_info = {
 
 static void mptsas_register_types(void)
 {
-    type_register(&mptsas_info);
+    type_register_static(&mptsas_info);
 }
 
 type_init(mptsas_register_types)

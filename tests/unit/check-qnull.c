@@ -8,8 +8,7 @@
  */
 #include "qemu/osdep.h"
 
-#include "qapi/qmp/qnull.h"
-#include "qemu-common.h"
+#include "qobject/qnull.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qobject-output-visitor.h"
 #include "qapi/error.h"

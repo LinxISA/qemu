@@ -23,38 +23,36 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/datadir.h"
-#include "hw/clock.h"
+#include "hw/core/clock.h"
 #include "hw/mips/mips.h"
-#include "hw/mips/cpudevs.h"
 #include "hw/intc/i8259.h"
 #include "hw/dma/i8257.h"
-#include "hw/char/serial.h"
+#include "hw/char/serial-mm.h"
 #include "hw/char/parallel.h"
 #include "hw/isa/isa.h"
 #include "hw/block/fdc.h"
-#include "sysemu/sysemu.h"
-#include "hw/boards.h"
+#include "system/system.h"
+#include "hw/core/boards.h"
 #include "net/net.h"
 #include "hw/scsi/esp.h"
-#include "hw/mips/bios.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/rtc/mc146818rtc.h"
 #include "hw/timer/i8254.h"
 #include "hw/display/vga.h"
 #include "hw/display/bochs-vbe.h"
 #include "hw/audio/pcspk.h"
 #include "hw/input/i8042.h"
-#include "hw/sysbus.h"
-#include "sysemu/qtest.h"
-#include "sysemu/reset.h"
+#include "hw/core/sysbus.h"
+#include "system/qtest.h"
+#include "system/reset.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/help_option.h"
 #ifdef CONFIG_TCG
-#include "hw/core/tcg-cpu-ops.h"
+#include "accel/tcg/cpu-ops.h"
 #endif /* CONFIG_TCG */
+#include "cpu.h"
 
 enum jazz_model_e {
     JAZZ_MAGNUM,
@@ -115,6 +113,46 @@ static const MemoryRegionOps dma_dummy_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+static void mips_jazz_init_net(IOMMUMemoryRegion *rc4030_dma_mr,
+                               DeviceState *rc4030, MemoryRegion *dp8393x_prom)
+{
+    DeviceState *dev;
+    SysBusDevice *sysbus;
+    int checksum, i;
+    uint8_t *prom;
+    NICInfo *nd;
+
+    nd = qemu_find_nic_info("dp8393x", true, "dp83932");
+    if (!nd) {
+        return;
+    }
+
+    dev = qdev_new("dp8393x");
+    qdev_set_nic_properties(dev, nd);
+    qdev_prop_set_uint8(dev, "it_shift", 2);
+    qdev_prop_set_bit(dev, "big_endian", TARGET_BIG_ENDIAN);
+    object_property_set_link(OBJECT(dev), "dma_mr",
+                             OBJECT(rc4030_dma_mr), &error_abort);
+    sysbus = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(sysbus, &error_fatal);
+    sysbus_mmio_map(sysbus, 0, 0x80001000);
+    sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(rc4030, 4));
+
+    /* Add MAC address with valid checksum to PROM */
+    prom = memory_region_get_ram_ptr(dp8393x_prom);
+    checksum = 0;
+    for (i = 0; i < 6; i++) {
+        prom[i] = nd->macaddr.a[i];
+        checksum += prom[i];
+        if (checksum > 0xff) {
+            checksum = (checksum + 1) & 0xff;
+        }
+    }
+    prom[7] = 0xff - checksum;
+}
+
+#define BIOS_SIZE (4 * MiB)
+
 #define MAGNUM_BIOS_SIZE_MAX 0x7e000
 #define MAGNUM_BIOS_SIZE                                                       \
         (BIOS_SIZE < MAGNUM_BIOS_SIZE_MAX ? BIOS_SIZE : MAGNUM_BIOS_SIZE_MAX)
@@ -124,9 +162,11 @@ static const MemoryRegionOps dma_dummy_ops = {
 static void mips_jazz_init(MachineState *machine,
                            enum jazz_model_e jazz_model)
 {
+    const char *bios_name = TARGET_BIG_ENDIAN ? "mips_bios.bin"
+                                              : "mipsel_bios.bin";
     MemoryRegion *address_space = get_system_memory();
     char *filename;
-    int bios_size, n, big_endian;
+    int bios_size, n;
     Clock *cpuclk;
     MIPSCPU *cpu;
     MIPSCPUClass *mcc;
@@ -137,14 +177,14 @@ static void mips_jazz_init(MachineState *machine,
     MemoryRegion *isa_mem = g_new(MemoryRegion, 1);
     MemoryRegion *isa_io = g_new(MemoryRegion, 1);
     MemoryRegion *rtc = g_new(MemoryRegion, 1);
-    MemoryRegion *i8042 = g_new(MemoryRegion, 1);
     MemoryRegion *dma_dummy = g_new(MemoryRegion, 1);
     MemoryRegion *dp8393x_prom = g_new(MemoryRegion, 1);
-    NICInfo *nd;
     DeviceState *dev, *rc4030;
+    MMIOKBDState *i8042;
     SysBusDevice *sysbus;
     ISABus *isa_bus;
     ISADevice *pit;
+    ISADevice *pcspk;
     DriveInfo *fds[MAX_FD];
     MemoryRegion *bios = g_new(MemoryRegion, 1);
     MemoryRegion *bios2 = g_new(MemoryRegion, 1);
@@ -158,12 +198,6 @@ static void mips_jazz_init(MachineState *machine,
         [JAZZ_PICA61] = {33333333, 4},
     };
 
-#ifdef TARGET_WORDS_BIGENDIAN
-    big_endian = 1;
-#else
-    big_endian = 0;
-#endif
-
     if (machine->ram_size > 256 * MiB) {
         error_report("RAM size more than 256Mb is not supported");
         exit(EXIT_FAILURE);
@@ -174,7 +208,8 @@ static void mips_jazz_init(MachineState *machine,
                          * ext_clk[jazz_model].pll_mult);
 
     /* init CPUs */
-    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk);
+    cpu = mips_cpu_create_with_clock(machine->cpu_type, cpuclk,
+                                     TARGET_BIG_ENDIAN);
     env = &cpu->env;
     qemu_register_reset(main_cpu_reset, cpu);
 
@@ -206,10 +241,11 @@ static void mips_jazz_init(MachineState *machine,
     memory_region_add_subregion(address_space, 0xfff00000LL, bios2);
 
     /* load the BIOS image. */
-    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware ?: BIOS_FILENAME);
+    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
+                              machine->firmware ?: bios_name);
     if (filename) {
         bios_size = load_image_targphys(filename, 0xfff00000LL,
-                                        MAGNUM_BIOS_SIZE);
+                                        MAGNUM_BIOS_SIZE, NULL);
         g_free(filename);
     } else {
         bios_size = -1;
@@ -250,10 +286,12 @@ static void mips_jazz_init(MachineState *machine,
 
     /* ISA devices */
     i8259 = i8259_init(isa_bus, env->irq[4]);
-    isa_bus_irqs(isa_bus, i8259);
-    i8257_dma_init(isa_bus, 0);
+    isa_bus_register_input_irqs(isa_bus, i8259);
+    i8257_dma_init(OBJECT(rc4030), isa_bus, 0);
     pit = i8254_pit_init(isa_bus, 0x40, 0, NULL);
-    pcspk_init(isa_new(TYPE_PC_SPEAKER), isa_bus, pit);
+    pcspk = isa_new(TYPE_PC_SPEAKER);
+    object_property_set_link(OBJECT(pcspk), "pit", OBJECT(pit), &error_fatal);
+    isa_realize_and_unref(pcspk, isa_bus, &error_fatal);
 
     /* Video card */
     switch (jazz_model) {
@@ -288,48 +326,7 @@ static void mips_jazz_init(MachineState *machine,
     }
 
     /* Network controller */
-    for (n = 0; n < nb_nics; n++) {
-        nd = &nd_table[n];
-        if (!nd->model) {
-            nd->model = g_strdup("dp83932");
-        }
-        if (strcmp(nd->model, "dp83932") == 0) {
-            int checksum, i;
-            uint8_t *prom;
-
-            qemu_check_nic_model(nd, "dp83932");
-
-            dev = qdev_new("dp8393x");
-            qdev_set_nic_properties(dev, nd);
-            qdev_prop_set_uint8(dev, "it_shift", 2);
-            qdev_prop_set_bit(dev, "big_endian", big_endian > 0);
-            object_property_set_link(OBJECT(dev), "dma_mr",
-                                     OBJECT(rc4030_dma_mr), &error_abort);
-            sysbus = SYS_BUS_DEVICE(dev);
-            sysbus_realize_and_unref(sysbus, &error_fatal);
-            sysbus_mmio_map(sysbus, 0, 0x80001000);
-            sysbus_connect_irq(sysbus, 0, qdev_get_gpio_in(rc4030, 4));
-
-            /* Add MAC address with valid checksum to PROM */
-            prom = memory_region_get_ram_ptr(dp8393x_prom);
-            checksum = 0;
-            for (i = 0; i < 6; i++) {
-                prom[i] = nd->macaddr.a[i];
-                checksum += prom[i];
-                if (checksum > 0xff) {
-                    checksum = (checksum + 1) & 0xff;
-                }
-            }
-            prom[7] = 0xff - checksum;
-            break;
-        } else if (is_help_option(nd->model)) {
-            error_report("Supported NICs: dp83932");
-            exit(1);
-        } else {
-            error_report("Unsupported NIC: %s", nd->model);
-            exit(1);
-        }
-    }
+    mips_jazz_init_net(rc4030_dma_mr, rc4030, dp8393x_prom);
 
     /* SCSI adapter */
     dev = qdev_new(TYPE_SYSBUS_ESP);
@@ -354,7 +351,7 @@ static void mips_jazz_init(MachineState *machine,
         fds[n] = drive_get(IF_FLOPPY, 0, n);
     }
     /* FIXME: we should enable DMA with a custom IsaDma device */
-    fdctrl_init_sysbus(qdev_get_gpio_in(rc4030, 1), -1, 0x80003000, fds);
+    fdctrl_init_sysbus(qdev_get_gpio_in(rc4030, 1), 0x80003000, fds);
 
     /* Real time clock */
     mc146818_rtc_init(isa_bus, 1980, NULL);
@@ -362,9 +359,19 @@ static void mips_jazz_init(MachineState *machine,
     memory_region_add_subregion(address_space, 0x80004000, rtc);
 
     /* Keyboard (i8042) */
-    i8042_mm_init(qdev_get_gpio_in(rc4030, 6), qdev_get_gpio_in(rc4030, 7),
-                  i8042, 0x1000, 0x1);
-    memory_region_add_subregion(address_space, 0x80005000, i8042);
+    i8042 = I8042_MMIO(qdev_new(TYPE_I8042_MMIO));
+    qdev_prop_set_uint64(DEVICE(i8042), "mask", 1);
+    qdev_prop_set_uint32(DEVICE(i8042), "size", 0x1000);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(i8042), &error_fatal);
+
+    qdev_connect_gpio_out(DEVICE(i8042), I8042_KBD_IRQ,
+                          qdev_get_gpio_in(rc4030, 6));
+    qdev_connect_gpio_out(DEVICE(i8042), I8042_MOUSE_IRQ,
+                          qdev_get_gpio_in(rc4030, 7));
+
+    memory_region_add_subregion(address_space, 0x80005000,
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(i8042),
+                                                       0));
 
     /* Serial ports */
     serial_mm_init(address_space, 0x80006000, 0,
@@ -405,7 +412,7 @@ void mips_pica61_init(MachineState *machine)
     mips_jazz_init(machine, JAZZ_PICA61);
 }
 
-static void mips_magnum_class_init(ObjectClass *oc, void *data)
+static void mips_magnum_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -422,7 +429,7 @@ static const TypeInfo mips_magnum_type = {
     .class_init = mips_magnum_class_init,
 };
 
-static void mips_pica61_class_init(ObjectClass *oc, void *data)
+static void mips_pica61_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 

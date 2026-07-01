@@ -19,9 +19,9 @@
 #define QEMU_LOG_FOR_TRACE_H
 
 /* Private global variable, don't use */
-extern int qemu_loglevel;
+extern unsigned qemu_loglevel;
 
-#define LOG_TRACE          (1 << 15)
+#define LOG_TRACE          (1u << 15)
 
 /* Returns true if a bit is set in the current loglevel mask */
 static inline bool qemu_loglevel_mask(int mask)
@@ -30,6 +30,6 @@ static inline bool qemu_loglevel_mask(int mask)
 }
 
 /* main logging function */
-int G_GNUC_PRINTF(1, 2) qemu_log(const char *fmt, ...);
+void G_GNUC_PRINTF(1, 2) qemu_log(const char *fmt, ...);
 
 #endif

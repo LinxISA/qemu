@@ -1,5 +1,0 @@
-NEW_EVENT(blk_xor_rr)
-NEW_EVENT(blk_xor_tr)
-NEW_EVENT(blk_xor_tt)
-
-#define TEST_DRIVER testDriver_2_64

@@ -19,7 +19,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/misc/sifive_u_prci.h"
@@ -146,12 +146,12 @@ static void sifive_u_prci_reset(DeviceState *dev)
     s->coreclksel = SIFIVE_U_PRCI_CORECLKSEL_HFCLK;
 }
 
-static void sifive_u_prci_class_init(ObjectClass *klass, void *data)
+static void sifive_u_prci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = sifive_u_prci_realize;
-    dc->reset = sifive_u_prci_reset;
+    device_class_set_legacy_reset(dc, sifive_u_prci_reset);
 }
 
 static const TypeInfo sifive_u_prci_info = {

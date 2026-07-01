@@ -1,9 +1,16 @@
 /GNUmakefile
 /build/
+/build-*/
+/build-tci/
+/build-linx/
+/.cache/
+/.vscode/
 *.pyc
 .sdk
 .stgit-*
 .git-submodule-status
+.clang-format
+.gdb_history
 cscope.*
 tags
 TAGS
@@ -15,6 +22,4 @@ GTAGS
 *.depend_raw
 *.swp
 *.patch
-.cache
-.vscode
 *.gcov

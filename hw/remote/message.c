@@ -8,18 +8,17 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 
 #include "hw/remote/machine.h"
 #include "io/channel.h"
 #include "hw/remote/mpqemu-link.h"
 #include "qapi/error.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "hw/pci/pci.h"
 #include "exec/memattrs.h"
 #include "hw/remote/memory.h"
 #include "hw/remote/iohub.h"
-#include "sysemu/reset.h"
+#include "system/reset.h"
 
 static void process_config_write(QIOChannel *ioc, PCIDevice *dev,
                                  MPQemuMsg *msg, Error **errp);
@@ -216,13 +215,10 @@ fail:
 static void process_device_reset_msg(QIOChannel *ioc, PCIDevice *dev,
                                      Error **errp)
 {
-    DeviceClass *dc = DEVICE_GET_CLASS(dev);
     DeviceState *s = DEVICE(dev);
     MPQemuMsg ret = { 0 };
 
-    if (dc->reset) {
-        dc->reset(s);
-    }
+    device_cold_reset(s);
 
     ret.cmd = MPQEMU_CMD_RET;
 

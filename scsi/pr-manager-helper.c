@@ -19,6 +19,7 @@
 #include "pr-helper.h"
 #include "qapi/qapi-events-block.h"
 #include "qemu/module.h"
+#include "qemu/bswap.h"
 
 #include <scsi/sg.h>
 #include "qom/object.h"
@@ -77,7 +78,7 @@ static int pr_manager_helper_write(PRManagerHelper *pr_mgr,
         iov.iov_base = (void *)buf;
         iov.iov_len = sz;
         n_written = qio_channel_writev_full(QIO_CHANNEL(pr_mgr->ioc), &iov, 1,
-                                            nfds ? &fd : NULL, nfds, errp);
+                                            nfds ? &fd : NULL, nfds, 0, errp);
 
         if (n_written <= 0) {
             assert(n_written != QIO_CHANNEL_ERR_BLOCK);
@@ -105,20 +106,15 @@ static int pr_manager_helper_initialize(PRManagerHelper *pr_mgr,
         .u.q_unix.path = path
     };
     QIOChannelSocket *sioc = qio_channel_socket_new();
-    Error *local_err = NULL;
-
     uint32_t flags;
     int r;
 
     assert(!pr_mgr->ioc);
     qio_channel_set_name(QIO_CHANNEL(sioc), "pr-manager-helper");
-    qio_channel_socket_connect_sync(sioc,
-                                    &saddr,
-                                    &local_err);
+    r = qio_channel_socket_connect_sync(sioc, &saddr, errp);
     g_free(path);
-    if (local_err) {
+    if (r < 0) {
         object_unref(OBJECT(sioc));
-        error_propagate(errp, local_err);
         return -ENOTCONN;
     }
 
@@ -300,7 +296,7 @@ static void pr_manager_helper_instance_init(Object *obj)
 }
 
 static void pr_manager_helper_class_init(ObjectClass *klass,
-                                         void *class_data G_GNUC_UNUSED)
+                                         const void *class_data G_GNUC_UNUSED)
 {
     PRManagerClass *prmgr_klass = PR_MANAGER_CLASS(klass);
     UserCreatableClass *uc_klass = USER_CREATABLE_CLASS(klass);

@@ -1,2 +1,0 @@
-NEW_EVENT(blk_rev8)
-#define TEST_DRIVER testDriver_1_64

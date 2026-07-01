@@ -10,11 +10,20 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "virtio-ccw.h"
+#include "hw/virtio/virtio-balloon.h"
+
+#define TYPE_VIRTIO_BALLOON_CCW "virtio-balloon-ccw"
+OBJECT_DECLARE_SIMPLE_TYPE(VirtIOBalloonCcw, VIRTIO_BALLOON_CCW)
+
+struct VirtIOBalloonCcw {
+    VirtioCcwDevice parent_obj;
+    VirtIOBalloon vdev;
+};
 
 static void virtio_ccw_balloon_realize(VirtioCcwDevice *ccw_dev, Error **errp)
 {
@@ -37,15 +46,14 @@ static void virtio_ccw_balloon_instance_init(Object *obj)
                               "guest-stats-polling-interval");
 }
 
-static Property virtio_ccw_balloon_properties[] = {
+static const Property virtio_ccw_balloon_properties[] = {
     DEFINE_PROP_BIT("ioeventfd", VirtioCcwDevice, flags,
                     VIRTIO_CCW_FLAG_USE_IOEVENTFD_BIT, true),
     DEFINE_PROP_UINT32("max_revision", VirtioCcwDevice, max_rev,
                        VIRTIO_CCW_MAX_REV),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void virtio_ccw_balloon_class_init(ObjectClass *klass, void *data)
+static void virtio_ccw_balloon_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtIOCCWDeviceClass *k = VIRTIO_CCW_DEVICE_CLASS(klass);

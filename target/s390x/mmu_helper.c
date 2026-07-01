@@ -17,17 +17,18 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "cpu.h"
 #include "s390x-internal.h"
 #include "kvm/kvm_s390x.h"
-#include "sysemu/kvm.h"
-#include "sysemu/tcg.h"
-#include "exec/exec-all.h"
-#include "trace.h"
-#include "hw/hw.h"
+#include "system/kvm.h"
+#include "system/tcg.h"
+#include "system/memory.h"
+#include "exec/page-protection.h"
+#include "exec/target_page.h"
+#include "hw/core/hw-error.h"
 #include "hw/s390x/storage-keys.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 
 /* Fetch/store bits in the translation exception code: */
 #define FS_READ  0x800
@@ -43,7 +44,8 @@ static void trigger_access_exception(CPUS390XState *env, uint32_t type,
     } else {
         CPUState *cs = env_cpu(env);
         if (type != PGM_ADDRESSING) {
-            stq_phys(cs->as, env->psa + offsetof(LowCore, trans_exc_code), tec);
+            stq_be_phys(cs->as, env->psa + offsetof(LowCore, trans_exc_code),
+                        tec);
         }
         trigger_pgm_exception(env, type);
     }
@@ -302,7 +304,6 @@ static void mmu_handle_skey(target_ulong addr, int rw, int *flags)
     static S390SKeysClass *skeyclass;
     static S390SKeysState *ss;
     uint8_t key, old_key;
-    int rc;
 
     /*
      * We expect to be called with an absolute address that has already been
@@ -340,9 +341,7 @@ static void mmu_handle_skey(target_ulong addr, int rw, int *flags)
      *
      * TODO: we have races between getting and setting the key.
      */
-    rc = skeyclass->get_skeys(ss, addr / TARGET_PAGE_SIZE, 1, &key);
-    if (rc) {
-        trace_get_skeys_nonzero(rc);
+    if (s390_skeys_get(ss, addr / TARGET_PAGE_SIZE, 1, &key)) {
         return;
     }
     old_key = key;
@@ -370,10 +369,7 @@ static void mmu_handle_skey(target_ulong addr, int rw, int *flags)
     key |= SK_R;
 
     if (key != old_key) {
-        rc = skeyclass->set_skeys(ss, addr / TARGET_PAGE_SIZE, 1, &key);
-        if (rc) {
-            trace_set_skeys_nonzero(rc);
-        }
+        s390_skeys_set(ss, addr / TARGET_PAGE_SIZE, 1, &key);
     }
 }
 
@@ -417,7 +413,7 @@ int mmu_translate(CPUS390XState *env, target_ulong vaddr, int rw, uint64_t asc,
 
     vaddr &= TARGET_PAGE_MASK;
 
-    if (!(env->psw.mask & PSW_MASK_DAT)) {
+    if (rw != MMU_S390_LRA && !(env->psw.mask & PSW_MASK_DAT)) {
         *raddr = vaddr;
         goto nodat;
     }
@@ -528,6 +524,7 @@ int s390_cpu_pv_mem_rw(S390CPU *cpu, unsigned int offset, void *hostbuf,
 int s390_cpu_virt_mem_rw(S390CPU *cpu, vaddr laddr, uint8_t ar, void *hostbuf,
                          int len, bool is_write)
 {
+    const MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
     int currlen, nr_pages, i;
     target_ulong *pages;
     uint64_t tec;
@@ -545,18 +542,27 @@ int s390_cpu_virt_mem_rw(S390CPU *cpu, vaddr laddr, uint8_t ar, void *hostbuf,
     pages = g_malloc(nr_pages * sizeof(*pages));
 
     ret = translate_pages(cpu, laddr, nr_pages, pages, is_write, &tec);
-    if (ret) {
-        trigger_access_exception(&cpu->env, ret, tec);
-    } else if (hostbuf != NULL) {
+    if (ret == 0 && hostbuf != NULL) {
+        AddressSpace *as = CPU(cpu)->as;
+
         /* Copy data by stepping through the area page by page */
         for (i = 0; i < nr_pages; i++) {
+            MemTxResult res;
+
             currlen = MIN(len, TARGET_PAGE_SIZE - (laddr % TARGET_PAGE_SIZE));
-            cpu_physical_memory_rw(pages[i] | (laddr & ~TARGET_PAGE_MASK),
-                                   hostbuf, currlen, is_write);
+            res = address_space_rw(as, pages[i] | (laddr & ~TARGET_PAGE_MASK),
+                                   attrs, hostbuf, currlen, is_write);
+            if (res != MEMTX_OK) {
+                ret = PGM_ADDRESSING;
+                break;
+            }
             laddr += currlen;
             hostbuf += currlen;
             len -= currlen;
         }
+    }
+    if (ret) {
+        trigger_access_exception(&cpu->env, ret, tec);
     }
 
     g_free(pages);

@@ -19,16 +19,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "gic_internal.h"
 #include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "trace.h"
-#include "sysemu/kvm.h"
-#include "sysemu/qtest.h"
+#include "system/kvm.h"
+#include "system/qtest.h"
 
 /* #define DEBUG_GIC */
 
@@ -59,7 +59,7 @@ static const uint8_t gic_id_gicv2[] = {
 static inline int gic_get_current_cpu(GICState *s)
 {
     if (!qtest_enabled() && s->num_cpu > 1) {
-        return current_cpu->cpu_index;
+        return current_cpu->cpu_index - s->first_cpu_index;
     }
     return 0;
 }
@@ -239,7 +239,7 @@ static inline bool gic_lr_entry_is_free(uint32_t entry)
 }
 
 /* Return true if this LR should trigger an EOI maintenance interrupt, i.e. the
- * corrsponding bit in EISR is set.
+ * corresponding bit in EISR is set.
  */
 static inline bool gic_lr_entry_is_eoi(uint32_t entry)
 {
@@ -941,7 +941,7 @@ static void gic_complete_irq(GICState *s, int cpu, int irq, MemTxAttrs attrs)
     gic_update(s);
 }
 
-static uint32_t gic_dist_readb(void *opaque, hwaddr offset, MemTxAttrs attrs)
+static uint8_t gic_dist_readb(void *opaque, hwaddr offset, MemTxAttrs attrs)
 {
     GICState *s = (GICState *)opaque;
     uint32_t res;
@@ -955,6 +955,7 @@ static uint32_t gic_dist_readb(void *opaque, hwaddr offset, MemTxAttrs attrs)
     cm = 1 << cpu;
     if (offset < 0x100) {
         if (offset == 0) {      /* GICD_CTLR */
+            /* We rely here on the only non-zero bits being in byte 0 */
             if (s->security_extn && !attrs.secure) {
                 /* The NS bank of this register is just an alias of the
                  * EnableGrp1 bit in the S bank version.
@@ -964,13 +965,26 @@ static uint32_t gic_dist_readb(void *opaque, hwaddr offset, MemTxAttrs attrs)
                 return s->ctlr;
             }
         }
-        if (offset == 4)
-            /* Interrupt Controller Type Register */
-            return ((s->num_irq / 32) - 1)
-                    | ((s->num_cpu - 1) << 5)
-                    | (s->security_extn << 10);
-        if (offset < 0x08)
+        if (offset == 4) {
+            /* GICD_TYPER byte 0 */
+            return ((s->num_irq / 32) - 1) | ((s->num_cpu - 1) << 5);
+        }
+        if (offset == 5) {
+            /* GICD_TYPER byte 1 */
+            return (s->security_extn << 2);
+        }
+        if (offset == 8) {
+            /* GICD_IIDR byte 0 */
+            return 0x3b; /* Arm JEP106 identity */
+        }
+        if (offset == 9) {
+            /* GICD_IIDR byte 1 */
+            return 0x04; /* Arm JEP106 identity */
+        }
+        if (offset < 0x0c) {
+            /* All other bytes in this range are RAZ */
             return 0;
+        }
         if (offset >= 0x80) {
             /* Interrupt Group Registers: these RAZ/WI if this is an NS
              * access to a GIC with the security extensions, or if the GIC
@@ -1249,9 +1263,14 @@ static void gic_dist_writeb(void *opaque, hwaddr offset,
                     trace_gic_enable_irq(irq + i);
                 }
                 GIC_DIST_SET_ENABLED(irq + i, cm);
-                /* If a raised level triggered IRQ enabled then mark
-                   is as pending.  */
-                if (GIC_DIST_TEST_LEVEL(irq + i, mask)
+                /*
+                 * If a raised level triggered IRQ enabled then mark
+                 * it as pending on 11MPCore. For other GIC revisions we
+                 * handle the "level triggered and line asserted" check
+                 * at the other end in gic_test_pending().
+                 */
+                if (s->revision == REV_11MPCORE
+                        && GIC_DIST_TEST_LEVEL(irq + i, mask)
                         && !GIC_DIST_TEST_EDGE_TRIGGER(irq + i)) {
                     DPRINTF("Set %d pending mask %x\n", irq + i, mask);
                     GIC_DIST_SET_PENDING(irq + i, mask);
@@ -1294,12 +1313,15 @@ static void gic_dist_writeb(void *opaque, hwaddr offset,
 
         for (i = 0; i < 8; i++) {
             if (value & (1 << i)) {
+                int mask = (irq < GIC_INTERNAL) ? (1 << cpu)
+                                                : GIC_DIST_TARGET(irq + i);
+
                 if (s->security_extn && !attrs.secure &&
                     !GIC_DIST_TEST_GROUP(irq + i, 1 << cpu)) {
                     continue; /* Ignore Non-secure access of Group0 IRQ */
                 }
 
-                GIC_DIST_SET_PENDING(irq + i, GIC_DIST_TARGET(irq + i));
+                GIC_DIST_SET_PENDING(irq + i, mask);
             }
         }
     } else if (offset < 0x300) {
@@ -1319,7 +1341,7 @@ static void gic_dist_writeb(void *opaque, hwaddr offset,
 
             /* ??? This currently clears the pending bit for all CPUs, even
                for per-CPU interrupts.  It's unclear whether this is the
-               corect behavior.  */
+               correct behavior.  */
             if (value & (1 << i)) {
                 GIC_DIST_CLEAR_PENDING(irq + i, ALL_CPU_MASK);
             }
@@ -1393,6 +1415,13 @@ static void gic_dist_writeb(void *opaque, hwaddr offset,
                 value = ALL_CPU_MASK;
             }
             s->irq_target[irq] = value & ALL_CPU_MASK;
+            if (irq >= GIC_INTERNAL && s->irq_state[irq].pending) {
+                /*
+                 * Changing the target of an interrupt that is currently
+                 * pending updates the set of CPUs it is pending on.
+                 */
+                s->irq_state[irq].pending = value & ALL_CPU_MASK;
+            }
         }
     } else if (offset < 0xf00) {
         /* Interrupt Configuration.  */
@@ -1644,7 +1673,7 @@ static MemTxResult gic_cpu_read(GICState *s, int cpu, int offset,
             *data = s->h_apr[gic_get_vcpu_real_id(cpu)];
         } else if (gic_cpu_ns_access(s, cpu, attrs)) {
             /* NS view of GICC_APR<n> is the top half of GIC_NSAPR<n> */
-            *data = gic_apr_ns_view(s, regno, cpu);
+            *data = gic_apr_ns_view(s, cpu, regno);
         } else {
             *data = s->apr[regno][cpu];
         }
@@ -1732,7 +1761,7 @@ static MemTxResult gic_cpu_write(GICState *s, int cpu, int offset,
             s->h_apr[gic_get_vcpu_real_id(cpu)] = value;
         } else if (gic_cpu_ns_access(s, cpu, attrs)) {
             /* NS view of GICC_APR<n> is the top half of GIC_NSAPR<n> */
-            gic_apr_write_ns_view(s, regno, cpu, value);
+            gic_apr_write_ns_view(s, cpu, regno, value);
         } else {
             s->apr[regno][cpu] = value;
         }
@@ -2033,38 +2062,38 @@ static const MemoryRegionOps gic_ops[2] = {
     {
         .read_with_attrs = gic_dist_read,
         .write_with_attrs = gic_dist_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
     },
     {
         .read_with_attrs = gic_thiscpu_read,
         .write_with_attrs = gic_thiscpu_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
     }
 };
 
 static const MemoryRegionOps gic_cpu_ops = {
     .read_with_attrs = gic_do_cpu_read,
     .write_with_attrs = gic_do_cpu_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static const MemoryRegionOps gic_virt_ops[2] = {
     {
         .read_with_attrs = gic_thiscpu_hyp_read,
         .write_with_attrs = gic_thiscpu_hyp_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
     },
     {
         .read_with_attrs = gic_thisvcpu_read,
         .write_with_attrs = gic_thisvcpu_write,
-        .endianness = DEVICE_NATIVE_ENDIAN,
+        .endianness = DEVICE_LITTLE_ENDIAN,
     }
 };
 
 static const MemoryRegionOps gic_viface_ops = {
     .read_with_attrs = gic_do_hyp_read,
     .write_with_attrs = gic_do_hyp_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static void arm_gic_realize(DeviceState *dev, Error **errp)
@@ -2133,7 +2162,7 @@ static void arm_gic_realize(DeviceState *dev, Error **errp)
 
 }
 
-static void arm_gic_class_init(ObjectClass *klass, void *data)
+static void arm_gic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ARMGICClass *agc = ARM_GIC_CLASS(klass);

@@ -20,14 +20,31 @@
 #include "qemu/osdep.h"
 #include "qapi/qapi-events-run-state.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
-#include "sysemu/runstate.h"
-#include "kvm/kvm_i386.h"
+#include "exec/cputlb.h"
+#include "exec/translation-block.h"
+#include "exec/target_page.h"
+#include "system/runstate.h"
 #ifndef CONFIG_USER_ONLY
-#include "sysemu/hw_accel.h"
+#include "system/hw_accel.h"
+#include "system/memory.h"
 #include "monitor/monitor.h"
+#include "kvm/kvm_i386.h"
 #endif
 #include "qemu/log.h"
+#ifdef CONFIG_TCG
+#include "tcg/insn-start-words.h"
+#endif
+
+void cpu_sync_avx_hflag(CPUX86State *env)
+{
+    if ((env->cr[4] & CR4_OSXSAVE_MASK)
+        && (env->xcr0 & (XSTATE_SSE_MASK | XSTATE_YMM_MASK))
+            == (XSTATE_SSE_MASK | XSTATE_YMM_MASK)) {
+        env->hflags |= HF_AVX_EN_MASK;
+    } else{
+        env->hflags &= ~HF_AVX_EN_MASK;
+    }
+}
 
 void cpu_sync_bndcs_hflags(CPUX86State *env)
 {
@@ -77,6 +94,10 @@ int cpu_x86_support_mca_broadcast(CPUX86State *env)
     int family = 0;
     int model = 0;
 
+    if (IS_AMD_CPU(env)) {
+        return 0;
+    }
+
     cpu_x86_version(env, &family, &model);
     if ((family == 6 && model >= 14) || family > 6) {
         return 1;
@@ -89,6 +110,7 @@ int cpu_x86_support_mca_broadcast(CPUX86State *env)
 /* x86 mmu */
 /* XXX: add PGE support */
 
+#ifndef CONFIG_USER_ONLY
 void x86_cpu_set_a20(X86CPU *cpu, int a20_state)
 {
     CPUX86State *env = &cpu->env;
@@ -108,6 +130,7 @@ void x86_cpu_set_a20(X86CPU *cpu, int a20_state)
         env->a20_mask = ~(1 << 20) | (a20_state << 20);
     }
 }
+#endif
 
 void cpu_x86_update_cr0(CPUX86State *env, uint32_t new_cr0)
 {
@@ -205,10 +228,27 @@ void cpu_x86_update_cr4(CPUX86State *env, uint32_t new_cr4)
         new_cr4 &= ~CR4_PKS_MASK;
     }
 
+    if (!(env->features[FEAT_7_1_EAX] & CPUID_7_1_EAX_LAM)) {
+        new_cr4 &= ~CR4_LAM_SUP_MASK;
+    }
+
+    /*
+     * In fact, "CR4.CET can be set only if CR0.WP is set, and it must be
+     * clear before CR0.WP can be cleared". However, here we only check
+     * CR4.CET based on the supported CPUID CET bit, without checking the
+     * dependency on CR4.WP - the latter need to be determined by the
+     * underlying accelerators.
+     */
+    if (!(env->features[FEAT_7_0_ECX] & CPUID_7_0_ECX_CET_SHSTK) &&
+        !(env->features[FEAT_7_0_EDX] & CPUID_7_0_EDX_CET_IBT)) {
+        new_cr4 &= ~CR4_CET_MASK;
+    }
+
     env->cr[4] = new_cr4;
     env->hflags = hflags;
 
     cpu_sync_bndcs_hflags(env);
+    cpu_sync_avx_hflag(env);
 }
 
 #if !defined(CONFIG_USER_ONLY)
@@ -497,6 +537,27 @@ void cpu_x86_inject_mce(Monitor *mon, X86CPU *cpu, int bank,
     }
 }
 
+static inline target_ulong get_memio_eip(CPUX86State *env)
+{
+#ifdef CONFIG_TCG
+    uint64_t data[INSN_START_WORDS];
+    CPUState *cs = env_cpu(env);
+
+    if (!cpu_unwind_state_data(cs, cs->mem_io_pc, data)) {
+        return env->eip;
+    }
+
+    /* Per x86_restore_state_to_opc. */
+    if (tcg_cflags_has(cs, CF_PCREL)) {
+        return (env->eip & TARGET_PAGE_MASK) | data[0];
+    } else {
+        return data[0] - env->segs[R_CS].base;
+    }
+#else
+    qemu_build_not_reached();
+#endif
+}
+
 void cpu_report_tpr_access(CPUX86State *env, TPRAccess access)
 {
     X86CPU *cpu = env_archcpu(env);
@@ -507,9 +568,9 @@ void cpu_report_tpr_access(CPUX86State *env, TPRAccess access)
 
         cpu_interrupt(cs, CPU_INTERRUPT_TPR);
     } else if (tcg_enabled()) {
-        cpu_restore_state(cs, cs->mem_io_pc, false);
+        target_ulong eip = get_memio_eip(env);
 
-        apic_handle_tpr_access_report(cpu->apic_state, env->eip, access);
+        apic_handle_tpr_access_report(cpu->apic_state, eip, access);
     }
 }
 #endif /* !CONFIG_USER_ONLY */
@@ -544,9 +605,9 @@ int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
     return 1;
 }
 
-#if !defined(CONFIG_USER_ONLY)
 void do_cpu_init(X86CPU *cpu)
 {
+#if !defined(CONFIG_USER_ONLY)
     CPUState *cs = CPU(cpu);
     CPUX86State *env = &cpu->env;
     CPUX86State *save = g_new(CPUX86State, 1);
@@ -565,22 +626,19 @@ void do_cpu_init(X86CPU *cpu)
         kvm_arch_do_init_vcpu(cpu);
     }
     apic_init_reset(cpu->apic_state);
+#endif /* CONFIG_USER_ONLY */
 }
-
-void do_cpu_sipi(X86CPU *cpu)
-{
-    apic_sipi(cpu->apic_state);
-}
-#else
-void do_cpu_init(X86CPU *cpu)
-{
-}
-void do_cpu_sipi(X86CPU *cpu)
-{
-}
-#endif
 
 #ifndef CONFIG_USER_ONLY
+
+void do_cpu_sipi(X86CPU *cpu)
+{
+    CPUX86State *env = &cpu->env;
+    if (env->hflags & HF_SMM_MASK) {
+        return;
+    }
+    apic_sipi(cpu->apic_state);
+}
 
 void cpu_load_efer(CPUX86State *env, uint64_t val)
 {
@@ -642,16 +700,6 @@ void x86_stb_phys(CPUState *cs, hwaddr addr, uint8_t val)
     AddressSpace *as = cpu_addressspace(cs, attrs);
 
     address_space_stb(as, addr, val, attrs, NULL);
-}
-
-void x86_stl_phys_notdirty(CPUState *cs, hwaddr addr, uint32_t val)
-{
-    X86CPU *cpu = X86_CPU(cs);
-    CPUX86State *env = &cpu->env;
-    MemTxAttrs attrs = cpu_get_mem_attrs(env);
-    AddressSpace *as = cpu_addressspace(cs, attrs);
-
-    address_space_stl_notdirty(as, addr, val, attrs, NULL);
 }
 
 void x86_stw_phys(CPUState *cs, hwaddr addr, uint32_t val)

@@ -21,10 +21,11 @@
 
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/queue.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "qapi/error.h"
 
@@ -216,10 +217,10 @@ enum {
     (((data) >> field##_SHIFT) & field##_MASK)
 
 #define set_field(data, newval, field) do {                     \
-        uint32_t val = *data;                                   \
-        val &= ~(field##_MASK << field##_SHIFT);                \
-        val |= ((newval) & field##_MASK) << field##_SHIFT;      \
-        *data = val;                                            \
+        uint32_t val_ = *data;                                  \
+        val_ &= ~(field##_MASK << field##_SHIFT);               \
+        val_ |= ((newval) & field##_MASK) << field##_SHIFT;     \
+        *data = val_;                                           \
     } while (0)
 
 typedef enum EPType {
@@ -462,6 +463,12 @@ static void xhci_mfwrap_timer(void *opaque)
     xhci_mfwrap_update(xhci);
 }
 
+static void xhci_die(XHCIState *xhci)
+{
+    xhci->usbsts |= USBSTS_HCE;
+    DPRINTF("xhci: asserted controller error\n");
+}
+
 static inline dma_addr_t xhci_addr64(uint32_t low, uint32_t high)
 {
     if (sizeof(dma_addr_t) == 4) {
@@ -487,7 +494,14 @@ static inline void xhci_dma_read_u32s(XHCIState *xhci, dma_addr_t addr,
 
     assert((len % sizeof(uint32_t)) == 0);
 
-    dma_memory_read(xhci->as, addr, buf, len, MEMTXATTRS_UNSPECIFIED);
+    if (dma_memory_read(xhci->as, addr, buf, len,
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                      __func__);
+        memset(buf, 0xff, len);
+        xhci_die(xhci);
+        return;
+    }
 
     for (i = 0; i < (len / sizeof(uint32_t)); i++) {
         buf[i] = le32_to_cpu(buf[i]);
@@ -495,7 +509,7 @@ static inline void xhci_dma_read_u32s(XHCIState *xhci, dma_addr_t addr,
 }
 
 static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
-                                       uint32_t *buf, size_t len)
+                                       const uint32_t *buf, size_t len)
 {
     int i;
     uint32_t tmp[5];
@@ -507,7 +521,13 @@ static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
     for (i = 0; i < n; i++) {
         tmp[i] = cpu_to_le32(buf[i]);
     }
-    dma_memory_write(xhci->as, addr, tmp, len, MEMTXATTRS_UNSPECIFIED);
+    if (dma_memory_write(xhci->as, addr, tmp, len,
+                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                      __func__);
+        xhci_die(xhci);
+        return;
+    }
 }
 
 static XHCIPort *xhci_lookup_port(XHCIState *xhci, struct USBPort *uport)
@@ -521,18 +541,10 @@ static XHCIPort *xhci_lookup_port(XHCIState *xhci, struct USBPort *uport)
     case USB_SPEED_LOW:
     case USB_SPEED_FULL:
     case USB_SPEED_HIGH:
-        if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-            index = uport->index + xhci->numports_3;
-        } else {
-            index = uport->index;
-        }
+        index = uport->index + xhci->numports_3;
         break;
     case USB_SPEED_SUPER:
-        if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-            index = uport->index;
-        } else {
-            index = uport->index + xhci->numports_2;
-        }
+        index = uport->index;
         break;
     default:
         return NULL;
@@ -592,12 +604,6 @@ static inline int xhci_running(XHCIState *xhci)
     return !(xhci->usbsts & USBSTS_HCH);
 }
 
-static void xhci_die(XHCIState *xhci)
-{
-    xhci->usbsts |= USBSTS_HCE;
-    DPRINTF("xhci: asserted controller error\n");
-}
-
 static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
 {
     XHCIInterrupter *intr = &xhci->intr[v];
@@ -618,7 +624,12 @@ static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
                                ev_trb.status, ev_trb.control);
 
     addr = intr->er_start + TRB_SIZE*intr->er_ep_idx;
-    dma_memory_write(xhci->as, addr, &ev_trb, TRB_SIZE, MEMTXATTRS_UNSPECIFIED);
+    if (dma_memory_write(xhci->as, addr, &ev_trb, TRB_SIZE,
+                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                      __func__);
+        xhci_die(xhci);
+    }
 
     intr->er_ep_idx++;
     if (intr->er_ep_idx >= intr->er_size) {
@@ -632,6 +643,11 @@ static void xhci_event(XHCIState *xhci, XHCIEvent *event, int v)
     XHCIInterrupter *intr;
     dma_addr_t erdp;
     unsigned int dp_idx;
+
+    if (xhci->numintrs == 1 ||
+        (xhci->intr_mapping_supported && !xhci->intr_mapping_supported(xhci))) {
+        v = 0;
+    }
 
     if (v >= xhci->numintrs) {
         DPRINTF("intr nr out of range (%d >= %d)\n", v, xhci->numintrs);
@@ -679,8 +695,12 @@ static TRBType xhci_ring_fetch(XHCIState *xhci, XHCIRing *ring, XHCITRB *trb,
 
     while (1) {
         TRBType type;
-        dma_memory_read(xhci->as, ring->dequeue, trb, TRB_SIZE,
-                        MEMTXATTRS_UNSPECIFIED);
+        if (dma_memory_read(xhci->as, ring->dequeue, trb, TRB_SIZE,
+                            MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                          __func__);
+            return 0;
+        }
         trb->addr = ring->dequeue;
         trb->ccs = ring->ccs;
         le64_to_cpus(&trb->parameter);
@@ -725,10 +745,14 @@ static int xhci_ring_chain_length(XHCIState *xhci, const XHCIRing *ring)
     bool control_td_set = 0;
     uint32_t link_cnt = 0;
 
-    while (1) {
+    do {
         TRBType type;
-        dma_memory_read(xhci->as, dequeue, &trb, TRB_SIZE,
-                        MEMTXATTRS_UNSPECIFIED);
+        if (dma_memory_read(xhci->as, dequeue, &trb, TRB_SIZE,
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                          __func__);
+            return -1;
+        }
         le64_to_cpus(&trb.parameter);
         le32_to_cpus(&trb.status);
         le32_to_cpus(&trb.control);
@@ -762,7 +786,17 @@ static int xhci_ring_chain_length(XHCIState *xhci, const XHCIRing *ring)
         if (!control_td_set && !(trb.control & TRB_TR_CH)) {
             return length;
         }
-    }
+
+        /*
+         * According to the xHCI spec, Transfer Ring segments should have
+         * a maximum size of 64 kB (see chapter "6 Data Structures")
+         */
+    } while (length < TRB_LINK_LIMIT * 65536 / TRB_SIZE);
+
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: exceeded maximum transfer ring size!\n",
+                          __func__);
+
+    return -1;
 }
 
 static void xhci_er_reset(XHCIState *xhci, int v)
@@ -783,8 +817,14 @@ static void xhci_er_reset(XHCIState *xhci, int v)
         xhci_die(xhci);
         return;
     }
-    dma_memory_read(xhci->as, erstba, &seg, sizeof(seg),
-                    MEMTXATTRS_UNSPECIFIED);
+    if (dma_memory_read(xhci->as, erstba, &seg, sizeof(seg),
+                    MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
+                      __func__);
+        xhci_die(xhci);
+        return;
+    }
+
     le32_to_cpus(&seg.addr_low);
     le32_to_cpus(&seg.addr_high);
     le32_to_cpus(&seg.size);
@@ -977,7 +1017,9 @@ static XHCIStreamContext *xhci_find_stream(XHCIEPContext *epctx,
         }
         sctx = epctx->pstreams + streamid;
     } else {
-        FIXME("secondary streams not implemented yet");
+        fprintf(stderr, "xhci: FIXME: secondary streams not implemented yet");
+        *cc_error = CC_INVALID_STREAM_TYPE_ERROR;
+        return NULL;
     }
 
     if (sctx->sct == -1) {
@@ -1145,6 +1187,12 @@ static void xhci_ep_free_xfer(XHCITransfer *xfer)
     g_free(xfer);
 }
 
+static void xhci_xfer_unmap(XHCITransfer *xfer)
+{
+    usb_packet_unmap(&xfer->packet, &xfer->sgl);
+    qemu_sglist_destroy(&xfer->sgl);
+}
+
 static int xhci_ep_nuke_one_xfer(XHCITransfer *t, TRBCCode report)
 {
     int killed = 0;
@@ -1156,6 +1204,7 @@ static int xhci_ep_nuke_one_xfer(XHCITransfer *t, TRBCCode report)
 
     if (t->running_async) {
         usb_cancel_packet(&t->packet);
+        xhci_xfer_unmap(t);
         t->running_async = 0;
         killed = 1;
     }
@@ -1436,12 +1485,6 @@ err:
     qemu_sglist_destroy(&xfer->sgl);
     xhci_die(xhci);
     return -1;
-}
-
-static void xhci_xfer_unmap(XHCITransfer *xfer)
-{
-    usb_packet_unmap(&xfer->packet, &xfer->sgl);
-    qemu_sglist_destroy(&xfer->sgl);
 }
 
 static void xhci_xfer_report(XHCITransfer *xfer)
@@ -1849,7 +1892,7 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
     }
 
     if (epctx->retry) {
-        XHCITransfer *xfer = epctx->retry;
+        xfer = epctx->retry;
 
         trace_usb_xhci_xfer_retry(xfer);
         assert(xfer->running_retry);
@@ -2389,7 +2432,6 @@ static void xhci_detach_slot(XHCIState *xhci, USBPort *uport)
 static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
 {
     dma_addr_t ctx;
-    uint8_t bw_ctx[xhci->numports+1];
 
     DPRINTF("xhci_get_port_bandwidth()\n");
 
@@ -2397,11 +2439,14 @@ static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
 
     DPRINTF("xhci: bandwidth context at "DMA_ADDR_FMT"\n", ctx);
 
-    /* TODO: actually implement real values here */
-    bw_ctx[0] = 0;
-    memset(&bw_ctx[1], 80, xhci->numports); /* 80% */
-    dma_memory_write(xhci->as, ctx, bw_ctx, sizeof(bw_ctx),
-                     MEMTXATTRS_UNSPECIFIED);
+    /* TODO: actually implement real values here. This is 80% for all ports. */
+    if (stb_dma(xhci->as, ctx, 0, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
+        dma_memory_set(xhci->as, ctx + 1, 80, xhci->numports,
+                       MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory write failed!\n",
+                      __func__);
+        return CC_TRB_ERROR;
+    }
 
     return CC_SUCCESS;
 }
@@ -2732,11 +2777,7 @@ static uint64_t xhci_cap_read(void *ptr, hwaddr reg, unsigned size)
         ret = 0x20425355; /* "USB " */
         break;
     case 0x28: /* Supported Protocol:08 */
-        if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-            ret = (xhci->numports_2<<8) | (xhci->numports_3+1);
-        } else {
-            ret = (xhci->numports_2<<8) | 1;
-        }
+        ret = (xhci->numports_2 << 8) | (xhci->numports_3 + 1);
         break;
     case 0x2c: /* Supported Protocol:0c */
         ret = 0x00000000; /* reserved */
@@ -2748,11 +2789,7 @@ static uint64_t xhci_cap_read(void *ptr, hwaddr reg, unsigned size)
         ret = 0x20425355; /* "USB " */
         break;
     case 0x38: /* Supported Protocol:08 */
-        if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-            ret = (xhci->numports_3<<8) | 1;
-        } else {
-            ret = (xhci->numports_3<<8) | (xhci->numports_2+1);
-        }
+        ret = (xhci->numports_3 << 8) | 1;
         break;
     case 0x3c: /* Supported Protocol:0c */
         ret = 0x00000000; /* reserved */
@@ -2779,9 +2816,15 @@ static uint64_t xhci_port_read(void *ptr, hwaddr reg, unsigned size)
     case 0x08: /* PORTLI */
         ret = 0;
         break;
-    case 0x0c: /* reserved */
+    case 0x0c: /* PORTHLPMC */
+        ret = 0;
+        qemu_log_mask(LOG_UNIMP, "%s: read from port register PORTHLPMC",
+                      __func__);
+        break;
     default:
-        trace_usb_xhci_unimplemented("port read", reg);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: read from port offset 0x%" HWADDR_PRIx,
+                      __func__, reg);
         ret = 0;
     }
 
@@ -2850,9 +2893,22 @@ static void xhci_port_write(void *ptr, hwaddr reg,
         }
         break;
     case 0x04: /* PORTPMSC */
+    case 0x0c: /* PORTHLPMC */
+        qemu_log_mask(LOG_UNIMP,
+                      "%s: write 0x%" PRIx64
+                      " (%u bytes) to port register at offset 0x%" HWADDR_PRIx,
+                      __func__, val, size, reg);
+        break;
     case 0x08: /* PORTLI */
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Write to read-only PORTLI register",
+                      __func__);
+        break;
     default:
-        trace_usb_xhci_unimplemented("port write", reg);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: write 0x%" PRIx64 " (%u bytes) to unknown port "
+                      "register at offset 0x%" HWADDR_PRIx,
+                      __func__, val, size, reg);
+        break;
     }
 }
 
@@ -3269,7 +3325,8 @@ static void xhci_wakeup_endpoint(USBBus *bus, USBEndpoint *ep,
 
     DPRINTF("%s\n", __func__);
     slotid = ep->dev->addr;
-    if (slotid == 0 || !xhci->slots[slotid-1].enabled) {
+    if (slotid == 0 || slotid > xhci->numslots ||
+        !xhci->slots[slotid - 1].enabled) {
         DPRINTF("%s: oops, no slot for dev %d\n", __func__, ep->dev->addr);
         return;
     }
@@ -3301,13 +3358,8 @@ static void usb_xhci_init(XHCIState *xhci)
     for (i = 0; i < usbports; i++) {
         speedmask = 0;
         if (i < xhci->numports_2) {
-            if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-                port = &xhci->ports[i + xhci->numports_3];
-                port->portnr = i + 1 + xhci->numports_3;
-            } else {
-                port = &xhci->ports[i];
-                port->portnr = i + 1;
-            }
+            port = &xhci->ports[i + xhci->numports_3];
+            port->portnr = i + 1 + xhci->numports_3;
             port->uport = &xhci->uports[i];
             port->speedmask =
                 USB_SPEED_MASK_LOW  |
@@ -3318,13 +3370,8 @@ static void usb_xhci_init(XHCIState *xhci)
             speedmask |= port->speedmask;
         }
         if (i < xhci->numports_3) {
-            if (xhci_get_flag(xhci, XHCI_FLAG_SS_FIRST)) {
-                port = &xhci->ports[i];
-                port->portnr = i + 1;
-            } else {
-                port = &xhci->ports[i + xhci->numports_2];
-                port->portnr = i + 1 + xhci->numports_2;
-            }
+            port = &xhci->ports[i];
+            port->portnr = i + 1;
             port->uport = &xhci->uports[i];
             port->speedmask = USB_SPEED_MASK_SUPER;
             assert(i < XHCI_MAXPORTS);
@@ -3474,7 +3521,7 @@ static int usb_xhci_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_xhci_ring = {
     .name = "xhci-ring",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(dequeue, XHCIRing),
         VMSTATE_BOOL(ccs, XHCIRing),
         VMSTATE_END_OF_LIST()
@@ -3484,7 +3531,7 @@ static const VMStateDescription vmstate_xhci_ring = {
 static const VMStateDescription vmstate_xhci_port = {
     .name = "xhci-port",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(portsc, XHCIPort),
         VMSTATE_END_OF_LIST()
     }
@@ -3493,7 +3540,7 @@ static const VMStateDescription vmstate_xhci_port = {
 static const VMStateDescription vmstate_xhci_slot = {
     .name = "xhci-slot",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BOOL(enabled,   XHCISlot),
         VMSTATE_BOOL(addressed, XHCISlot),
         VMSTATE_END_OF_LIST()
@@ -3503,7 +3550,7 @@ static const VMStateDescription vmstate_xhci_slot = {
 static const VMStateDescription vmstate_xhci_event = {
     .name = "xhci-event",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(type,   XHCIEvent),
         VMSTATE_UINT32(ccode,  XHCIEvent),
         VMSTATE_UINT64(ptr,    XHCIEvent),
@@ -3523,7 +3570,7 @@ static bool xhci_er_full(void *opaque, int version_id)
 static const VMStateDescription vmstate_xhci_intr = {
     .name = "xhci-intr",
     .version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         /* registers */
         VMSTATE_UINT32(iman,          XHCIInterrupter),
         VMSTATE_UINT32(imod,          XHCIInterrupter),
@@ -3556,7 +3603,7 @@ const VMStateDescription vmstate_xhci = {
     .name = "xhci-core",
     .version_id = 1,
     .post_load = usb_xhci_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_VARRAY_UINT32(ports, XHCIState, numports, 1,
                                      vmstate_xhci_port, XHCIPort),
         VMSTATE_STRUCT_VARRAY_UINT32(slots, XHCIState, numslots, 1,
@@ -3583,23 +3630,22 @@ const VMStateDescription vmstate_xhci = {
     }
 };
 
-static Property xhci_properties[] = {
+static const Property xhci_properties[] = {
     DEFINE_PROP_BIT("streams", XHCIState, flags,
                     XHCI_FLAG_ENABLE_STREAMS, true),
     DEFINE_PROP_UINT32("p2",    XHCIState, numports_2, 4),
     DEFINE_PROP_UINT32("p3",    XHCIState, numports_3, 4),
     DEFINE_PROP_LINK("host",    XHCIState, hostOpaque, TYPE_DEVICE,
                      DeviceState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void xhci_class_init(ObjectClass *klass, void *data)
+static void xhci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = usb_xhci_realize;
     dc->unrealize = usb_xhci_unrealize;
-    dc->reset   = xhci_reset;
+    device_class_set_legacy_reset(dc, xhci_reset);
     device_class_set_props(dc, xhci_properties);
     dc->user_creatable = false;
 }

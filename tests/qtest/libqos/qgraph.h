@@ -21,10 +21,10 @@
 
 #include <gmodule.h>
 #include "qemu/module.h"
-#include "malloc.h"
+#include "libqos-malloc.h"
 
 /* maximum path length */
-#define QOS_PATH_MAX_ELEMENT_SIZE 50
+#define QOS_PATH_MAX_ELEMENT_SIZE 128
 
 typedef struct QOSGraphObject QOSGraphObject;
 typedef struct QOSGraphNode QOSGraphNode;
@@ -355,7 +355,7 @@ void qos_object_start_hw(QOSGraphObject *obj);
 QOSGraphObject *qos_machine_new(QOSGraphNode *node, QTestState *qts);
 
 /**
- * qos_machine_new(): instantiate a new driver node
+ * qos_driver_new(): instantiate a new driver node
  * @node: A driver node to be instantiated
  * @parent: A #QOSGraphObject to be consumed by the new driver node
  * @alloc: An allocator to be used by the new driver node.
@@ -381,7 +381,7 @@ QOSGraphObject *qos_driver_new(QOSGraphNode *node, QOSGraphObject *parent,
  * mind: only tests with a path down from the actual test case node (leaf) up
  * to the graph's root node are actually executed by the qtest framework. And
  * the qtest framework uses QMP to automatically check which QEMU drivers are
- * actually currently available, and accordingly qos marks certain pathes as
+ * actually currently available, and accordingly qos marks certain paths as
  * 'unavailable' in such cases (e.g. when QEMU was compiled without support for
  * a certain feature).
  */

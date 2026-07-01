@@ -19,7 +19,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -217,7 +217,7 @@ static void allwinner_cpucfg_write(void *opaque, hwaddr offset,
 static const MemoryRegionOps allwinner_cpucfg_ops = {
     .read = allwinner_cpucfg_read,
     .write = allwinner_cpucfg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
         .max_access_size = 4,
@@ -250,7 +250,7 @@ static const VMStateDescription allwinner_cpucfg_vmstate = {
     .name = "allwinner-cpucfg",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(gen_ctrl, AwCpuCfgState),
         VMSTATE_UINT32(super_standby, AwCpuCfgState),
         VMSTATE_UINT32(entry_addr, AwCpuCfgState),
@@ -258,11 +258,11 @@ static const VMStateDescription allwinner_cpucfg_vmstate = {
     }
 };
 
-static void allwinner_cpucfg_class_init(ObjectClass *klass, void *data)
+static void allwinner_cpucfg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->reset = allwinner_cpucfg_reset;
+    device_class_set_legacy_reset(dc, allwinner_cpucfg_reset);
     dc->vmsd = &allwinner_cpucfg_vmstate;
 }
 

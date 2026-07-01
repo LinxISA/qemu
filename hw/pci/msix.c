@@ -15,23 +15,26 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "hw/pci/pci.h"
 #include "hw/xen/xen.h"
-#include "sysemu/xen.h"
+#include "system/xen.h"
 #include "migration/qemu-file-types.h"
 #include "migration/vmstate.h"
 #include "qemu/range.h"
 #include "qapi/error.h"
 #include "trace.h"
 
+#include "hw/i386/kvm/xen_evtchn.h"
+
 /* MSI enable bit and maskall bit are in byte 1 in FLAGS register */
 #define MSIX_CONTROL_OFFSET (PCI_MSIX_FLAGS + 1)
 #define MSIX_ENABLE_MASK (PCI_MSIX_FLAGS_ENABLE >> 8)
 #define MSIX_MASKALL_MASK (PCI_MSIX_FLAGS_MASKALL >> 8)
 
-MSIMessage msix_get_message(PCIDevice *dev, unsigned vector)
+static MSIMessage msix_prepare_message(PCIDevice *dev, unsigned vector)
 {
     uint8_t *table_entry = dev->msix_table + vector * PCI_MSIX_ENTRY_SIZE;
     MSIMessage msg;
@@ -39,6 +42,11 @@ MSIMessage msix_get_message(PCIDevice *dev, unsigned vector)
     msg.address = pci_get_quad(table_entry + PCI_MSIX_ENTRY_LOWER_ADDR);
     msg.data = pci_get_long(table_entry + PCI_MSIX_ENTRY_DATA);
     return msg;
+}
+
+MSIMessage msix_get_message(PCIDevice *dev, unsigned vector)
+{
+    return dev->msix_prepare_message(dev, vector);
 }
 
 /*
@@ -64,7 +72,7 @@ static uint8_t *msix_pending_byte(PCIDevice *dev, int vector)
     return dev->msix_pba + vector / 8;
 }
 
-static int msix_is_pending(PCIDevice *dev, int vector)
+int msix_is_pending(PCIDevice *dev, unsigned int vector)
 {
     return *msix_pending_byte(dev, vector) & msix_pending_mask(vector);
 }
@@ -119,6 +127,13 @@ static void msix_handle_mask_update(PCIDevice *dev, int vector, bool was_masked)
 {
     bool is_masked = msix_is_masked(dev, vector);
 
+    if (xen_mode == XEN_EMULATE) {
+        MSIMessage msg = msix_prepare_message(dev, vector);
+
+        xen_evtchn_snoop_msi(dev, true, vector, msg.address, msg.data,
+                             is_masked);
+    }
+
     if (is_masked == was_masked) {
         return;
     }
@@ -129,6 +144,26 @@ static void msix_handle_mask_update(PCIDevice *dev, int vector, bool was_masked)
         msix_clr_pending(dev, vector);
         msix_notify(dev, vector);
     }
+}
+
+void msix_set_mask(PCIDevice *dev, int vector, bool mask)
+{
+    unsigned offset;
+    bool was_masked;
+
+    assert(vector < dev->msix_entries_nr);
+
+    offset = vector * PCI_MSIX_ENTRY_SIZE + PCI_MSIX_ENTRY_VECTOR_CTRL;
+
+    was_masked = msix_is_masked(dev, vector);
+
+    if (mask) {
+        dev->msix_table[offset] |= PCI_MSIX_ENTRY_CTRL_MASKBIT;
+    } else {
+        dev->msix_table[offset] &= ~PCI_MSIX_ENTRY_CTRL_MASKBIT;
+    }
+
+    msix_handle_mask_update(dev, vector, was_masked);
 }
 
 static bool msix_masked(PCIDevice *dev)
@@ -216,7 +251,7 @@ static uint64_t msix_pba_mmio_read(void *opaque, hwaddr addr,
     PCIDevice *dev = opaque;
     if (dev->msix_vector_poll_notifier) {
         unsigned vector_start = addr * 8;
-        unsigned vector_end = MIN(addr + size * 8, dev->msix_entries_nr);
+        unsigned vector_end = MIN((addr + size) * 8, dev->msix_entries_nr);
         dev->msix_vector_poll_notifier(dev, vector_start, vector_end);
     }
 
@@ -226,6 +261,14 @@ static uint64_t msix_pba_mmio_read(void *opaque, hwaddr addr,
 static void msix_pba_mmio_write(void *opaque, hwaddr addr,
                                 uint64_t val, unsigned size)
 {
+    PCIDevice *dev = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "PCI [%s:%02x:%02x.%x] attempt to write to MSI-X "
+                  "PBA at 0x%" FMT_PCIBUS ", ignoring.\n",
+                  pci_root_bus_path(dev), pci_dev_bus_num(dev),
+                  PCI_SLOT(dev->devfn), PCI_FUNC(dev->devfn),
+                  addr);
 }
 
 static const MemoryRegionOps msix_pba_mmio_ops = {
@@ -275,7 +318,7 @@ static void msix_mask_all(struct PCIDevice *dev, unsigned nentries)
  * also means a programming error, except device assignment, which can check
  * if a real HW is broken.
  */
-int msix_init(struct PCIDevice *dev, unsigned short nentries,
+int msix_init(struct PCIDevice *dev, uint32_t nentries,
               MemoryRegion *table_bar, uint8_t table_bar_nr,
               unsigned table_offset, MemoryRegion *pba_bar,
               uint8_t pba_bar_nr, unsigned pba_offset, uint8_t cap_pos,
@@ -344,10 +387,12 @@ int msix_init(struct PCIDevice *dev, unsigned short nentries,
                           "msix-pba", pba_size);
     memory_region_add_subregion(pba_bar, pba_offset, &dev->msix_pba_mmio);
 
+    dev->msix_prepare_message = msix_prepare_message;
+
     return 0;
 }
 
-int msix_init_exclusive_bar(PCIDevice *dev, unsigned short nentries,
+int msix_init_exclusive_bar(PCIDevice *dev, uint32_t nentries,
                             uint8_t bar_nr, Error **errp)
 {
     int ret;
@@ -355,6 +400,12 @@ int msix_init_exclusive_bar(PCIDevice *dev, unsigned short nentries,
     uint32_t bar_size = 4096;
     uint32_t bar_pba_offset = bar_size / 2;
     uint32_t bar_pba_size = QEMU_ALIGN_UP(nentries, 64) / 8;
+
+    /* Sanity-check nentries before we use it in BAR size calculations */
+    if (nentries < 1 || nentries > PCI_MSIX_FLAGS_QSIZE + 1) {
+        error_setg(errp, "The number of MSI-X vectors is invalid");
+        return -EINVAL;
+    }
 
     /*
      * Migration compatibility dictates that this remains a 4k
@@ -429,6 +480,7 @@ void msix_uninit(PCIDevice *dev, MemoryRegion *table_bar, MemoryRegion *pba_bar)
     g_free(dev->msix_entry_used);
     dev->msix_entry_used = NULL;
     dev->cap_present &= ~QEMU_PCI_CAP_MSIX;
+    dev->msix_prepare_message = NULL;
 }
 
 void msix_uninit_exclusive_bar(PCIDevice *dev)
@@ -489,7 +541,9 @@ void msix_notify(PCIDevice *dev, unsigned vector)
 {
     MSIMessage msg;
 
-    if (vector >= dev->msix_entries_nr || !dev->msix_entry_used[vector]) {
+    assert(vector < dev->msix_entries_nr);
+
+    if (!dev->msix_entry_used[vector]) {
         return;
     }
 
@@ -525,20 +579,17 @@ void msix_reset(PCIDevice *dev)
  * don't want to follow the spec suggestion can declare all vectors as used. */
 
 /* Mark vector as used. */
-int msix_vector_use(PCIDevice *dev, unsigned vector)
+void msix_vector_use(PCIDevice *dev, unsigned vector)
 {
-    if (vector >= dev->msix_entries_nr) {
-        return -EINVAL;
-    }
-
+    assert(vector < dev->msix_entries_nr);
     dev->msix_entry_used[vector]++;
-    return 0;
 }
 
 /* Mark vector as unused. */
 void msix_vector_unuse(PCIDevice *dev, unsigned vector)
 {
-    if (vector >= dev->msix_entries_nr || !dev->msix_entry_used[vector]) {
+    assert(vector < dev->msix_entries_nr);
+    if (!dev->msix_entry_used[vector]) {
         return;
     }
     if (--dev->msix_entry_used[vector]) {
@@ -612,6 +663,7 @@ undo:
     }
     dev->msix_vector_use_notifier = NULL;
     dev->msix_vector_release_notifier = NULL;
+    dev->msix_vector_poll_notifier = NULL;
     return ret;
 }
 
@@ -648,7 +700,7 @@ static int get_msix_state(QEMUFile *f, void *pv, size_t size,
     return 0;
 }
 
-static VMStateInfo vmstate_info_msix = {
+static const VMStateInfo vmstate_info_msix = {
     .name = "msix state",
     .get  = get_msix_state,
     .put  = put_msix_state,
@@ -656,7 +708,7 @@ static VMStateInfo vmstate_info_msix = {
 
 const VMStateDescription vmstate_msix = {
     .name = "msix",
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         {
             .name         = "msix",
             .version_id   = 0,

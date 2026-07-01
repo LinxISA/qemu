@@ -26,7 +26,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "system/memory.h"
+#include "hw/core/sysbus.h"
 #include "hw/block/fdc.h"
 #include "migration/vmstate.h"
 #include "fdc-internal.h"
@@ -52,6 +53,7 @@ struct FDCtrlSysBus {
     /*< public >*/
 
     struct FDCtrl state;
+    MemoryRegion iomem;
 };
 
 static uint64_t fdctrl_read_mem(void *opaque, hwaddr reg, unsigned ize)
@@ -94,18 +96,14 @@ static void fdctrl_handle_tc(void *opaque, int irq, int level)
     trace_fdctrl_tc_pulse(level);
 }
 
-void fdctrl_init_sysbus(qemu_irq irq, int dma_chann,
-                        hwaddr mmio_base, DriveInfo **fds)
+void fdctrl_init_sysbus(qemu_irq irq, hwaddr mmio_base, DriveInfo **fds)
 {
-    FDCtrl *fdctrl;
     DeviceState *dev;
     SysBusDevice *sbd;
     FDCtrlSysBus *sys;
 
     dev = qdev_new("sysbus-fdc");
     sys = SYSBUS_FDC(dev);
-    fdctrl = &sys->state;
-    fdctrl->dma_chann = dma_chann; /* FIXME */
     sbd = SYS_BUS_DEVICE(dev);
     sysbus_realize_and_unref(sbd, &error_fatal);
     sysbus_connect_irq(sbd, 0, irq);
@@ -138,13 +136,23 @@ static void sysbus_fdc_common_instance_init(Object *obj)
     FDCtrlSysBus *sys = SYSBUS_FDC(obj);
     FDCtrl *fdctrl = &sys->state;
 
+    /*
+     * DMA is not currently supported for sysbus floppy controllers.
+     * If we wanted to add support then probably the best approach is
+     * to have a QOM link property 'dma-controller' which the board
+     * code can set to an instance of IsaDmaClass, and an integer
+     * property 'dma-channel', so that we can set fdctrl->dma and
+     * fdctrl->dma_chann accordingly.
+     */
+    fdctrl->dma_chann = -1;
+
     qdev_set_legacy_instance_id(dev, 0 /* io */, 2); /* FIXME */
 
-    memory_region_init_io(&fdctrl->iomem, obj,
+    memory_region_init_io(&sys->iomem, obj,
                           sbdc->use_strict_io ? &fdctrl_mem_strict_ops
                                               : &fdctrl_mem_ops,
                           fdctrl, "fdc", 0x08);
-    sysbus_init_mmio(sbd, &fdctrl->iomem);
+    sysbus_init_mmio(sbd, &sys->iomem);
 
     sysbus_init_irq(sbd, &fdctrl->irq);
     qdev_init_gpio_in(dev, fdctrl_handle_tc, 1);
@@ -162,18 +170,18 @@ static const VMStateDescription vmstate_sysbus_fdc = {
     .name = "fdc",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(state, FDCtrlSysBus, 0, vmstate_fdc, FDCtrl),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static void sysbus_fdc_common_class_init(ObjectClass *klass, void *data)
+static void sysbus_fdc_common_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = sysbus_fdc_realize;
-    dc->reset = fdctrl_external_reset_sysbus;
+    device_class_set_legacy_reset(dc, fdctrl_external_reset_sysbus);
     dc->vmsd = &vmstate_sysbus_fdc;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
@@ -188,7 +196,7 @@ static const TypeInfo sysbus_fdc_common_typeinfo = {
     .class_size    = sizeof(FDCtrlSysBusClass),
 };
 
-static Property sysbus_fdc_properties[] = {
+static const Property sysbus_fdc_properties[] = {
     DEFINE_PROP_SIGNED("fdtypeA", FDCtrlSysBus, state.qdev_for_drives[0].type,
                         FLOPPY_DRIVE_TYPE_AUTO, qdev_prop_fdc_drive_type,
                         FloppyDriveType),
@@ -198,10 +206,9 @@ static Property sysbus_fdc_properties[] = {
     DEFINE_PROP_SIGNED("fallback", FDCtrlSysBus, state.fallback,
                         FLOPPY_DRIVE_TYPE_144, qdev_prop_fdc_drive_type,
                         FloppyDriveType),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void sysbus_fdc_class_init(ObjectClass *klass, void *data)
+static void sysbus_fdc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -215,17 +222,16 @@ static const TypeInfo sysbus_fdc_typeinfo = {
     .class_init    = sysbus_fdc_class_init,
 };
 
-static Property sun4m_fdc_properties[] = {
+static const Property sun4m_fdc_properties[] = {
     DEFINE_PROP_SIGNED("fdtype", FDCtrlSysBus, state.qdev_for_drives[0].type,
                         FLOPPY_DRIVE_TYPE_AUTO, qdev_prop_fdc_drive_type,
                         FloppyDriveType),
     DEFINE_PROP_SIGNED("fallback", FDCtrlSysBus, state.fallback,
                         FLOPPY_DRIVE_TYPE_144, qdev_prop_fdc_drive_type,
                         FloppyDriveType),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void sun4m_fdc_class_init(ObjectClass *klass, void *data)
+static void sun4m_fdc_class_init(ObjectClass *klass, const void *data)
 {
     FDCtrlSysBusClass *sbdc = SYSBUS_FDC_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);

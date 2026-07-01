@@ -10,13 +10,11 @@
  * See the COPYING file in the top-level directory.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "s390x-internal.h"
 #include "vec.h"
 #include "tcg_s390x.h"
 #include "tcg/tcg-gvec-desc.h"
-#include "exec/exec-all.h"
 #include "exec/helper-proto.h"
 #include "fpu/softfloat.h"
 
@@ -176,6 +174,30 @@ static void vop128_2(S390Vector *v1, const S390Vector *v2, CPUS390XState *env,
     *v1 = tmp;
 }
 
+static float32 vcdg32(float32 a, float_status *s)
+{
+    return int32_to_float32(a, s);
+}
+
+static float32 vcdlg32(float32 a, float_status *s)
+{
+    return uint32_to_float32(a, s);
+}
+
+static float32 vcgd32(float32 a, float_status *s)
+{
+    const float32 tmp = float32_to_int32(a, s);
+
+    return float32_is_any_nan(a) ? INT32_MIN : tmp;
+}
+
+static float32 vclgd32(float32 a, float_status *s)
+{
+    const float32 tmp = float32_to_uint32(a, s);
+
+    return float32_is_any_nan(a) ? 0 : tmp;
+}
+
 static float64 vcdg64(float64 a, float_status *s)
 {
     return int64_to_float64(a, s);
@@ -211,6 +233,9 @@ void HELPER(gvec_##NAME##BITS)(void *v1, const void *v2, CPUS390XState *env,   \
     vop##BITS##_2(v1, v2, env, se, XxC, erm, FN, GETPC());                     \
 }
 
+#define DEF_GVEC_VOP2_32(NAME)                                                 \
+DEF_GVEC_VOP2_FN(NAME, NAME##32, 32)
+
 #define DEF_GVEC_VOP2_64(NAME)                                                 \
 DEF_GVEC_VOP2_FN(NAME, NAME##64, 64)
 
@@ -219,6 +244,10 @@ DEF_GVEC_VOP2_FN(NAME, float32_##OP, 32)                                       \
 DEF_GVEC_VOP2_FN(NAME, float64_##OP, 64)                                       \
 DEF_GVEC_VOP2_FN(NAME, float128_##OP, 128)
 
+DEF_GVEC_VOP2_32(vcdg)
+DEF_GVEC_VOP2_32(vcdlg)
+DEF_GVEC_VOP2_32(vcgd)
+DEF_GVEC_VOP2_32(vclgd)
 DEF_GVEC_VOP2_64(vcdg)
 DEF_GVEC_VOP2_64(vcdlg)
 DEF_GVEC_VOP2_64(vcgd)
@@ -591,8 +620,8 @@ static void vfma32(S390Vector *v1, const S390Vector *v2, const S390Vector *v3,
     int i;
 
     for (i = 0; i < 4; i++) {
-        const float32 a = s390_vec_read_float32(v2, i);
-        const float32 b = s390_vec_read_float32(v3, i);
+        const float32 a = s390_vec_read_float32(v3, i);
+        const float32 b = s390_vec_read_float32(v2, i);
         const float32 c = s390_vec_read_float32(v4, i);
         float32 ret = float32_muladd(a, b, c, flags, &env->fpu_status);
 
@@ -615,8 +644,8 @@ static void vfma64(S390Vector *v1, const S390Vector *v2, const S390Vector *v3,
     int i;
 
     for (i = 0; i < 2; i++) {
-        const float64 a = s390_vec_read_float64(v2, i);
-        const float64 b = s390_vec_read_float64(v3, i);
+        const float64 a = s390_vec_read_float64(v3, i);
+        const float64 b = s390_vec_read_float64(v2, i);
         const float64 c = s390_vec_read_float64(v4, i);
         const float64 ret = float64_muladd(a, b, c, flags, &env->fpu_status);
 
@@ -634,8 +663,8 @@ static void vfma128(S390Vector *v1, const S390Vector *v2, const S390Vector *v3,
                     const S390Vector *v4, CPUS390XState *env, bool s, int flags,
                     uintptr_t retaddr)
 {
-    const float128 a = s390_vec_read_float128(v2);
-    const float128 b = s390_vec_read_float128(v3);
+    const float128 a = s390_vec_read_float128(v3);
+    const float128 b = s390_vec_read_float128(v2);
     const float128 c = s390_vec_read_float128(v4);
     uint8_t vxc, vec_exc = 0;
     float128 ret;
@@ -794,7 +823,7 @@ static S390MinMaxRes vfmin_res(uint16_t dcmask_a, uint16_t dcmask_b,
         default:
             g_assert_not_reached();
         }
-    } else if (unlikely(dcmask_a & dcmask_b & DCMASK_ZERO)) {
+    } else if (unlikely((dcmask_a & DCMASK_ZERO) && (dcmask_b & DCMASK_ZERO))) {
         switch (type) {
         case S390_MINMAX_TYPE_JAVA:
             return neg_a ? S390_MINMAX_RES_A : S390_MINMAX_RES_B;
@@ -844,7 +873,7 @@ static S390MinMaxRes vfmax_res(uint16_t dcmask_a, uint16_t dcmask_b,
         default:
             g_assert_not_reached();
         }
-    } else if (unlikely(dcmask_a & dcmask_b & DCMASK_ZERO)) {
+    } else if (unlikely((dcmask_a & DCMASK_ZERO) && (dcmask_b & DCMASK_ZERO))) {
         const bool neg_a = dcmask_a & DCMASK_NEGATIVE;
 
         switch (type) {

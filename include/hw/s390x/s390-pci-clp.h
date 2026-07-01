@@ -9,8 +9,8 @@
  * directory.
  */
 
-#ifndef HW_S390_PCI_CLP
-#define HW_S390_PCI_CLP
+#ifndef HW_S390_PCI_CLP_H
+#define HW_S390_PCI_CLP_H
 
 /* CLP common request & response block size */
 #define CLP_BLK_SIZE 4096
@@ -158,6 +158,7 @@ typedef struct ClpRspQueryPciGrp {
 #define CLP_RSP_QPCIG_MASK_NOI 0xfff
     uint16_t i;
     uint8_t version;
+#define CLP_RSP_QPCIG_MASK_RTR     0x20
 #define CLP_RSP_QPCIG_MASK_FRAME   0x2
 #define CLP_RSP_QPCIG_MASK_REFRESH 0x1
     uint8_t fr;

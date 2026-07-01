@@ -11,8 +11,9 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "hw/s390x/tod.h"
+#include "target/s390x/kvm/pv.h"
 #include "kvm/kvm_s390x.h"
 
 static void kvm_s390_get_tod_raw(S390TOD *tod, Error **errp)
@@ -84,6 +85,14 @@ static void kvm_s390_tod_vm_state_change(void *opaque, bool running,
     S390TODState *td = opaque;
     Error *local_err = NULL;
 
+    /*
+     * Under PV, the clock is under ultravisor control, hence we cannot restore
+     * it on resume.
+     */
+    if (s390_is_pv()) {
+        return;
+    }
+
     if (running && td->stopped) {
         /* Set the old TOD when running the VM - start the TOD clock. */
         kvm_s390_set_tod_raw(&td->base, &local_err);
@@ -124,7 +133,7 @@ static void kvm_s390_tod_realize(DeviceState *dev, Error **errp)
     qemu_add_vm_change_state_handler(kvm_s390_tod_vm_state_change, td);
 }
 
-static void kvm_s390_tod_class_init(ObjectClass *oc, void *data)
+static void kvm_s390_tod_class_init(ObjectClass *oc, const void *data)
 {
     S390TODClass *tdc = S390_TOD_CLASS(oc);
 

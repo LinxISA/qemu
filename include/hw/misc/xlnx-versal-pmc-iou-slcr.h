@@ -34,7 +34,7 @@
  *     https://www.xilinx.com/support/documentation/architecture-manuals/am011-versal-acap-trm.pdf
  *
  * [2] Versal ACAP Register Reference,
- *     https://www.xilinx.com/html_docs/registers/am012/am012-versal-register-reference.html#mod___pmc_iop_slcr.html
+ *     https://docs.xilinx.com/r/en-US/am012-versal-register-reference/PMC_IOP_SLCR-Module
  *
  * QEMU interface:
  * + sysbus MMIO region 0: MemoryRegion for the device's registers
@@ -51,10 +51,11 @@
  *   1: OSPI direct access mode.
  */
 
-#ifndef XILINX_VERSAL_PMC_IOU_SLCR_H
-#define XILINX_VERSAL_PMC_IOU_SLCR_H
+#ifndef XLNX_VERSAL_PMC_IOU_SLCR_H
+#define XLNX_VERSAL_PMC_IOU_SLCR_H
 
-#include "hw/register.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/register.h"
 
 #define TYPE_XILINX_VERSAL_PMC_IOU_SLCR "xlnx.versal-pmc-iou-slcr"
 
@@ -75,4 +76,4 @@ struct XlnxVersalPmcIouSlcr {
     RegisterInfo regs_info[XILINX_VERSAL_PMC_IOU_SLCR_R_MAX];
 };
 
-#endif /* XILINX_VERSAL_PMC_IOU_SLCR_H */
+#endif /* XLNX_VERSAL_PMC_IOU_SLCR_H */

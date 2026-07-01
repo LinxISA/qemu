@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Convert plain qtest traces to C or Bash reproducers
@@ -36,7 +35,7 @@ def c_header(owner):
 
 #include "qemu/osdep.h"
 
-#include "libqos/libqtest.h"
+#include "libqtest.h"
 
     """.format(date=date.today().year, owner=owner)
 

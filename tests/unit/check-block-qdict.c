@@ -9,8 +9,8 @@
 
 #include "qemu/osdep.h"
 #include "block/qdict.h"
-#include "qapi/qmp/qlist.h"
-#include "qapi/qmp/qnum.h"
+#include "qobject/qlist.h"
+#include "qobject/qnum.h"
 #include "qapi/error.h"
 
 static void qdict_defaults_test(void)
@@ -504,7 +504,7 @@ static void qdict_crumple_test_empty(void)
     src = qdict_new();
 
     dst = qobject_to(QDict, qdict_crumple(src, &error_abort));
-
+    g_assert(dst);
     g_assert_cmpint(qdict_size(dst), ==, 0);
 
     qobject_unref(src);

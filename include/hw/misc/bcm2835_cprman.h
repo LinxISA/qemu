@@ -6,11 +6,11 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef HW_MISC_CPRMAN_H
-#define HW_MISC_CPRMAN_H
+#ifndef HW_MISC_BCM2835_CPRMAN_H
+#define HW_MISC_BCM2835_CPRMAN_H
 
-#include "hw/sysbus.h"
-#include "hw/qdev-clock.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-clock.h"
 
 #define TYPE_BCM2835_CPRMAN "bcm2835-cprman"
 

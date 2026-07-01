@@ -45,7 +45,7 @@ static void qmp_chardev_open_file(Chardev *chr,
     DWORD accessmode;
     DWORD flags;
 
-    if (file->has_in) {
+    if (file->in) {
         error_setg(errp, "input file not supported");
         return;
     }
@@ -83,7 +83,7 @@ static void qmp_chardev_open_file(Chardev *chr,
         return;
     }
 
-    if (file->has_in) {
+    if (file->in) {
         flags = O_RDONLY;
         in = qmp_chardev_open_file_source(file->in, flags, errp);
         if (in < 0) {
@@ -92,7 +92,13 @@ static void qmp_chardev_open_file(Chardev *chr,
         }
     }
 
-    qemu_chr_open_fd(chr, in, out);
+    if (!qemu_chr_open_fd(chr, in, out, errp)) {
+        qemu_close(out);
+        if (in >= 0) {
+            qemu_close(in);
+        }
+        return;
+    }
 #endif
 }
 
@@ -100,6 +106,7 @@ static void qemu_chr_parse_file_out(QemuOpts *opts, ChardevBackend *backend,
                                     Error **errp)
 {
     const char *path = qemu_opt_get(opts, "path");
+    const char *inpath = qemu_opt_get(opts, "input-path");
     ChardevFile *file;
 
     backend->type = CHARDEV_BACKEND_KIND_FILE;
@@ -107,15 +114,22 @@ static void qemu_chr_parse_file_out(QemuOpts *opts, ChardevBackend *backend,
         error_setg(errp, "chardev: file: no filename given");
         return;
     }
+#ifdef _WIN32
+    if (inpath) {
+        error_setg(errp, "chardev: file: input-path not supported on Windows");
+        return;
+    }
+#endif
     file = backend->u.file.data = g_new0(ChardevFile, 1);
     qemu_chr_parse_common(opts, qapi_ChardevFile_base(file));
     file->out = g_strdup(path);
+    file->in = g_strdup(inpath);
 
     file->has_append = true;
     file->append = qemu_opt_get_bool(opts, "append", false);
 }
 
-static void char_file_class_init(ObjectClass *oc, void *data)
+static void char_file_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 

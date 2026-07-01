@@ -21,7 +21,7 @@
 #ifndef HW_INTC_RX_ICU_H
 #define HW_INTC_RX_ICU_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 enum TRG_MODE {
@@ -73,4 +73,4 @@ struct RXICUState {
 #define TYPE_RX_ICU "rx-icu"
 OBJECT_DECLARE_SIMPLE_TYPE(RXICUState, RX_ICU)
 
-#endif /* RX_ICU_H */
+#endif /* HW_INTC_RX_ICU_H */

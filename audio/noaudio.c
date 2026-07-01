@@ -23,10 +23,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/host-utils.h"
 #include "qemu/module.h"
-#include "audio.h"
-#include "qemu/timer.h"
+#include "qemu/audio.h"
 
 #define AUDIO_CAP "noaudio"
 #include "audio_int.h"
@@ -44,7 +42,7 @@ typedef struct NoVoiceIn {
 static size_t no_write(HWVoiceOut *hw, void *buf, size_t len)
 {
     NoVoiceOut *no = (NoVoiceOut *) hw;
-    return audio_rate_get_bytes(&hw->info, &no->rate, len);
+    return audio_rate_get_bytes(&no->rate, &hw->info, len);
 }
 
 static int no_init_out(HWVoiceOut *hw, struct audsettings *as, void *drv_opaque)
@@ -89,7 +87,7 @@ static void no_fini_in (HWVoiceIn *hw)
 static size_t no_read(HWVoiceIn *hw, void *buf, size_t size)
 {
     NoVoiceIn *no = (NoVoiceIn *) hw;
-    int64_t bytes = audio_rate_get_bytes(&hw->info, &no->rate, size);
+    int64_t bytes = audio_rate_get_bytes(&no->rate, &hw->info, size);
 
     audio_pcm_info_clear_buf(&hw->info, buf, bytes / hw->info.bytes_per_frame);
     return bytes;
@@ -104,7 +102,7 @@ static void no_enable_in(HWVoiceIn *hw, bool enable)
     }
 }
 
-static void *no_audio_init(Audiodev *dev)
+static void *no_audio_init(Audiodev *dev, Error **errp)
 {
     return &no_audio_init;
 }
@@ -131,11 +129,9 @@ static struct audio_pcm_ops no_pcm_ops = {
 
 static struct audio_driver no_audio_driver = {
     .name           = "none",
-    .descr          = "Timer based audio emulation",
     .init           = no_audio_init,
     .fini           = no_audio_fini,
     .pcm_ops        = &no_pcm_ops,
-    .can_be_default = 1,
     .max_voices_out = INT_MAX,
     .max_voices_in  = INT_MAX,
     .voice_size_out = sizeof (NoVoiceOut),

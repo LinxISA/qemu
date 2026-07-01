@@ -22,15 +22,15 @@ class NetBSDVM(basevm.BaseVM):
     name = "netbsd"
     arch = "x86_64"
 
-    link = "https://cdn.netbsd.org/pub/NetBSD/NetBSD-9.2/images/NetBSD-9.2-amd64.iso"
-    csum = "5ee0ea101f73386b9b424f5d1041e371db3c42fdd6f4e4518dc79c4a08f31d43091ebe93425c9f0dcaaed2b51131836fe6774f33f89030b58d64709b35fda72f"
+    link = "https://cdn.netbsd.org/pub/NetBSD/images/10.1/NetBSD-10.1-amd64.iso"
+    csum = "7a5e5071307e1795885ffc6e1b8aac465082c21c8b79f4c9b4103ef44e4f2da45477299d213ae0093f6534dc99dc2bbf78f41e9dd556c72a02516068bf43fe49"
     size = "20G"
     pkgs = [
         # tools
         "git-base",
         "pkgconf",
         "xz",
-        "python37",
+        "python313",
         "ninja-build",
 
         # gnu tools
@@ -39,20 +39,26 @@ class NetBSDVM(basevm.BaseVM):
         "gsed",
         "gettext-tools",
 
+        # libs: basic
+        "dtc",
+
         # libs: crypto
         "gnutls",
 
         # libs: images
-        "jpeg",
         "png",
 
-	# libs: ui
+        # libs: ui
+        "capstone",
         "SDL2",
         "gtk3+",
         "libxkbcommon",
 
         # libs: migration
         "zstd",
+
+        # libs: networking
+        "libslirp",
     ]
 
     BUILD_SCRIPT = """
@@ -62,7 +68,8 @@ class NetBSDVM(basevm.BaseVM):
         mkdir src build; cd src;
         tar -xf /dev/rld1a;
         cd ../build
-        ../src/configure --python=python3.7 --disable-opengl {configure_opts};
+        ../src/configure --disable-opengl --extra-ldflags=-L/usr/pkg/lib \
+                          --extra-cflags=-I/usr/pkg/include {configure_opts};
         gmake --output-sync -j{jobs} {target} {verbose};
     """
     poweroff = "/sbin/poweroff"
@@ -85,7 +92,6 @@ class NetBSDVM(basevm.BaseVM):
 
         self.print_step("Booting installer")
         self.boot(img_tmp, extra_args = [
-            "-bios", "pc-bios/bios-256k.bin",
             "-machine", "graphics=off",
             "-cdrom", iso
         ])
@@ -119,8 +125,6 @@ class NetBSDVM(basevm.BaseVM):
         self.print_step("Installation started now, this will take a while")
         self.console_wait_send("Hit enter to continue",    "\n")
 
-        self.console_wait_send("d: Change root password",  "d\n")
-        self.console_wait_send("a: Yes",                   "a\n")
         self.console_wait("New password:")
         self.console_send("%s\n" % self._config["root_pass"])
         self.console_wait("New password:")
@@ -146,6 +150,7 @@ class NetBSDVM(basevm.BaseVM):
         self.console_wait_send("Network media type",       "\n")
         self.console_wait("autoconfiguration")
         self.console_wait_send("a: Yes",                   "a\n")
+        self.console_wait_send("Finished",                 "netbsd-guest\n")
         self.console_wait_send("DNS domain",               "localnet\n")
         self.console_wait("Are they OK?")
         self.console_wait_send("a: Yes",                   "a\n")
@@ -153,6 +158,8 @@ class NetBSDVM(basevm.BaseVM):
         self.console_wait_send("a: Yes",                   "a\n")
 
         self.console_wait_send("e: Enable install",        "e\n")
+        self.console_wait("installed in /etc")
+        self.console_wait_send("a: Yes",                   "a\n")
         proxy = os.environ.get("http_proxy")
         if not proxy is None:
             self.console_wait_send("f: Proxy",             "f\n")
@@ -171,13 +178,13 @@ class NetBSDVM(basevm.BaseVM):
         self.console_wait_send("d: Reboot the computer",   "d\n")
 
         # setup qemu user
-        prompt = "localhost$"
+        prompt = "netbsd-guest$"
         self.console_ssh_init(prompt, self._config["guest_user"],
                                       self._config["guest_pass"])
         self.console_wait_send(prompt, "exit\n")
 
         # setup root user
-        prompt = "localhost#"
+        prompt = "netbsd-guest#"
         self.console_ssh_init(prompt, "root", self._config["root_pass"])
         self.console_sshd_config(prompt)
 

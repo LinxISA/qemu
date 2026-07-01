@@ -1,4 +1,7 @@
 TARGET_ARCH=microblaze
-TARGET_WORDS_BIGENDIAN=y
-TARGET_SUPPORTS_MTTCG=y
+TARGET_BIG_ENDIAN=y
+# needed by boot.c
 TARGET_NEED_FDT=y
+TARGET_XML_FILES=gdb-xml/microblaze-core.xml gdb-xml/microblaze-stack-protect.xml
+TARGET_LONG_BITS=32
+TARGET_NOT_USING_LEGACY_LDST_PHYS_API=y

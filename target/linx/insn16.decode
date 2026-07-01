@@ -1,0 +1,97 @@
+#
+# LinxISA 16-bit instruction decoding (minimal subset)
+#
+# This file is intentionally minimal: it includes only the instruction forms
+# currently implemented by target/linx/translate.c.
+#
+
+# Fields
+%BlockType 6:5
+%BrType 11:3
+%LoopNest3 11:3
+%RegDst 11:5
+%SrcL 6:5
+%SrcR 11:5
+%payload 14:2
+%LoopNest 14:2
+%simm12 4:s12
+%simm5_11_s5 11:s5
+%simm5_6_s5 6:s5
+%uimm5 6:5
+%imm8 6:8
+
+# Block headers / terminators
+# Note: c_bstop is all zeros - check it first before other block instructions
+c_bstop         0000 0000 0000 0000
+# C.BSTART.STD: BrType=0 aliases c_bstop, so spell out only the non-zero forms.
+c_bstart_direct .... .... .... 0010 %simm12
+c_bstart_cond   .... .... .... 0100 %simm12
+c_bstart_fp     00.. .000 1000 0000 %BrType
+c_bstart_std_fall   0000 1000 0000 0000
+c_bstart_std_direct 0001 0000 0000 0000
+c_bstart_std_cond   0001 1000 0000 0000
+c_bstart_std_call   0010 0000 0000 0000
+c_bstart_std_ind    0010 1000 0000 0000
+c_bstart_std_icall  0011 0000 0000 0000
+c_bstart_std_ret    0011 1000 0000 0000
+c_bstart_sys    0000 1000 0100 0000
+c_bstart_mpar   0000 1000 1100 0000
+c_bstart_mseq   0100 1000 1100 0000
+c_bstart_vpar   1000 1000 1100 0000
+c_bstart_vseq   1100 1000 1100 0000
+
+# Call/return support
+# Note: c_setc_tgt comes after c_bstop to avoid conflict (c_setc_tgt has bits [3:0]=1100, so doesn't match 0x0000)
+c_setc_tgt      0000 0... ..01 1100 %SrcL
+
+# Predicate/compare
+c_setc_eq       .... .... ..10 0110 %SrcL %SrcR
+c_setc_ne       .... .... ..11 0110 %SrcL %SrcR
+
+# Register moves / ALU
+# C.MOVR and C.MOVI have different opcodes ([5:0])
+# C.SETRET uses a dedicated compact encoding.
+c_movr          .... .... ..00 0110 %RegDst %SrcL
+c_add           .... .... ..00 1000 %SrcL %SrcR
+c_sub           .... .... ..01 1000 %SrcL %SrcR
+c_and           .... .... ..10 1000 %SrcL %SrcR
+c_or            .... .... ..11 1000 %SrcL %SrcR
+c_movi          .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
+
+# Loads / stores (stack and small offsets)
+c_lwi           .... .... ..00 1010 %SrcL simm5=%simm5_11_s5
+c_ldi           .... .... ..01 1010 %SrcL simm5=%simm5_11_s5
+c_swi           .... .... ..10 1010 %SrcL simm5=%simm5_11_s5
+c_sdi           .... .... ..11 1010 %SrcL simm5=%simm5_11_s5
+
+# Sign/zero extension (output to T-hand)
+c_sext_b        0100 0... ..01 1100 %SrcL
+c_sext_h        0100 1... ..01 1100 %SrcL
+c_sext_w        0101 0... ..01 1100 %SrcL
+c_zext_b        0101 1... ..01 1100 %SrcL
+c_zext_h        0110 0... ..01 1100 %SrcL
+c_zext_w        0110 1... ..01 1100 %SrcL
+
+# Add immediate to register (output to T-hand)
+c_addi          .... .... ..00 1100 %SrcL simm5=%simm5_11_s5
+
+# Shift left/right immediate (T-hand = T-hand op imm)
+c_slli          0001 0... ..10 1100 %uimm5
+c_srli          0001 1... ..10 1100 %uimm5
+
+# Block dimension immediate (LB0/LB1/LB2)
+# These forms intentionally overlap: C.B.DIM reserves bits[15:14]=11 while
+# C.B.DIMI uses the same low opcode with LoopNest encoded in bits[15:14].
+{
+  c_b_dim       11.. .... ..11 1100 loopnest=%LoopNest3 reg=%SrcL
+  # Encoding: bits[5:0]=0x3c, imm8 in [13:6], LoopNest in [15:14] (LoopNest!=3).
+  c_b_dimi      .... .... ..11 1100 loopnest=%LoopNest imm8=%imm8
+}
+
+# Compare immediate (T-hand == imm ? 1 : 0, result to T-hand)
+c_cmp_eqi       0000 0... ..10 1100 simm5=%simm5_6_s5
+c_cmp_nei       0000 1... ..10 1100 simm5=%simm5_6_s5
+
+# System / debug
+c_ebreak        1100 0... ..10 1100 imm5=%uimm5
+c_ssrget        1000 0... ..10 1100 ssrid=%SrcL

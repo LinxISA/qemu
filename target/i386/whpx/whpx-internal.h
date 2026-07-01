@@ -1,22 +1,57 @@
-#ifndef WHP_INTERNAL_H
-#define WHP_INTERNAL_H
+#ifndef TARGET_I386_WHPX_INTERNAL_H
+#define TARGET_I386_WHPX_INTERNAL_H
 
 #include <windows.h>
-#include <WinHvPlatform.h>
-#include <WinHvEmulation.h>
+#include <winhvplatform.h>
+#include <winhvemulation.h>
+
+#include "hw/i386/apic.h"
+
+typedef enum WhpxBreakpointState {
+    WHPX_BP_CLEARED = 0,
+    WHPX_BP_SET_PENDING,
+    WHPX_BP_SET,
+    WHPX_BP_CLEAR_PENDING,
+} WhpxBreakpointState;
+
+struct whpx_breakpoint {
+    vaddr address;
+    WhpxBreakpointState state;
+    uint8_t original_instruction;
+};
+
+struct whpx_breakpoint_collection {
+    int allocated, used;
+    struct whpx_breakpoint data[0];
+};
+
+struct whpx_breakpoints {
+    int original_address_count;
+    vaddr *original_addresses;
+
+    struct whpx_breakpoint_collection *breakpoints;
+};
 
 struct whpx_state {
     uint64_t mem_quota;
     WHV_PARTITION_HANDLE partition;
+    uint64_t exception_exit_bitmap;
+    int32_t running_cpus;
+    struct whpx_breakpoints breakpoints;
+    bool step_pending;
+
     bool kernel_irqchip_allowed;
     bool kernel_irqchip_required;
     bool apic_in_platform;
 };
 
 extern struct whpx_state whpx_global;
-void whpx_apic_get(DeviceState *s);
+void whpx_apic_get(APICCommonState *s);
 
 #define WHV_E_UNKNOWN_CAPABILITY 0x80370300L
+
+/* This should eventually come from the Windows SDK */
+#define WHV_E_UNKNOWN_PROPERTY 0x80370302
 
 #define LIST_WINHVPLATFORM_FUNCTIONS(X) \
   X(HRESULT, WHvGetCapability, (WHV_CAPABILITY_CODE CapabilityCode, VOID* CapabilityBuffer, UINT32 CapabilityBufferSizeInBytes, UINT32* WrittenSizeInBytes)) \
@@ -83,4 +118,4 @@ typedef enum WHPFunctionList {
     WINHV_PLATFORM_FNS_SUPPLEMENTAL
 } WHPFunctionList;
 
-#endif /* WHP_INTERNAL_H */
+#endif /* TARGET_I386_WHPX_INTERNAL_H */

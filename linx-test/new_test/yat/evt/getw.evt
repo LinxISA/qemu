@@ -1,4 +1,0 @@
-NEW_EVENT(blk_getw)
-
-
-#define TEST_DRIVER testDriver_1_64

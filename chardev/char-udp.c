@@ -178,7 +178,6 @@ static void qemu_chr_parse_udp(QemuOpts *opts, ChardevBackend *backend,
     udp->remote = addr;
 
     if (has_local) {
-        udp->has_local = true;
         addr = g_new0(SocketAddressLegacy, 1);
         addr->type = SOCKET_ADDRESS_TYPE_INET;
         addr->u.inet.data = g_new(InetSocketAddress, 1);
@@ -220,7 +219,7 @@ static void qmp_chardev_open_udp(Chardev *chr,
     *be_opened = false;
 }
 
-static void char_udp_class_init(ObjectClass *oc, void *data)
+static void char_udp_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 

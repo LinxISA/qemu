@@ -31,7 +31,6 @@
 #include "vnc-jobs.h"
 #include "qemu/sockets.h"
 #include "qemu/main-loop.h"
-#include "block/aio.h"
 #include "trace.h"
 
 /*
@@ -185,14 +184,10 @@ static void vnc_async_encoding_start(VncState *orig, VncState *local)
     local->vnc_encoding = orig->vnc_encoding;
     local->features = orig->features;
     local->vd = orig->vd;
-    local->lossy_rect = orig->lossy_rect;
     local->write_pixels = orig->write_pixels;
     local->client_pf = orig->client_pf;
-    local->client_be = orig->client_be;
-    local->tight = orig->tight;
-    local->zlib = orig->zlib;
+    local->client_endian = orig->client_endian;
     local->hextile = orig->hextile;
-    local->zrle = orig->zrle;
     local->client_width = orig->client_width;
     local->client_height = orig->client_height;
 }
@@ -200,11 +195,7 @@ static void vnc_async_encoding_start(VncState *orig, VncState *local)
 static void vnc_async_encoding_end(VncState *orig, VncState *local)
 {
     buffer_free(&local->output);
-    orig->tight = local->tight;
-    orig->zlib = local->zlib;
     orig->hextile = local->hextile;
-    orig->zrle = local->zrle;
-    orig->lossy_rect = local->lossy_rect;
 }
 
 static bool vnc_worker_clamp_rect(VncState *vs, VncJob *job, VncRect *rect)
@@ -237,6 +228,7 @@ static bool vnc_worker_clamp_rect(VncState *vs, VncJob *job, VncRect *rect)
 
 static int vnc_worker_thread_loop(VncJobQueue *queue)
 {
+    VncConnection *vc;
     VncJob *job;
     VncRectEntry *entry, *tmp;
     VncState vs = {};
@@ -250,11 +242,13 @@ static int vnc_worker_thread_loop(VncJobQueue *queue)
     /* Here job can only be NULL if queue->exit is true */
     job = QTAILQ_FIRST(&queue->jobs);
     vnc_unlock_queue(queue);
-    assert(job->vs->magic == VNC_MAGIC);
 
     if (queue->exit) {
         return -1;
     }
+
+    assert(job->vs->magic == VNC_MAGIC);
+    vc = container_of(job->vs, VncConnection, vs);
 
     vnc_lock_output(job->vs);
     if (job->vs->ioc == NULL || job->vs->abort == true) {
@@ -294,7 +288,8 @@ static int vnc_worker_thread_loop(VncJobQueue *queue)
         }
 
         if (vnc_worker_clamp_rect(&vs, job, &entry->rect)) {
-            n = vnc_send_framebuffer_update(&vs, entry->rect.x, entry->rect.y,
+            n = vnc_send_framebuffer_update(&vs, &vc->worker,
+                                            entry->rect.x, entry->rect.y,
                                             entry->rect.w, entry->rect.h);
 
             if (n >= 0) {
@@ -373,7 +368,7 @@ void vnc_start_worker_thread(void)
     VncJobQueue *q;
 
     if (vnc_worker_thread_running())
-        return ;
+        return;
 
     q = vnc_queue_init();
     qemu_thread_create(&q->thread, "vnc_worker", vnc_worker_thread, q,

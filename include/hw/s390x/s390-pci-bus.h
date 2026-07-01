@@ -39,6 +39,9 @@
 #define UID_CHECKING_ENABLED 0x01
 #define ZPCI_DTSM 0x40
 
+/* zPCI Function Types */
+#define ZPCI_PFT_ISM 5
+
 OBJECT_DECLARE_SIMPLE_TYPE(S390pciState, S390_PCI_HOST_BRIDGE)
 OBJECT_DECLARE_SIMPLE_TYPE(S390PCIBus, S390_PCI_BUS)
 OBJECT_DECLARE_SIMPLE_TYPE(S390PCIBusDevice, S390_PCI_DEVICE)
@@ -181,7 +184,7 @@ enum ZpciIoatDtype {
  * The following states make up the "configured" meta-state:
  * disabled: device is configured but not enabled; transition between this
  *           state and enabled via clp enable/disable
- * enbaled: device is ready for use; transition to disabled via clp disable;
+ * enabled: device is ready for use; transition to disabled via clp disable;
  *          may enter an error state
  * blocked: ignore all DMA and interrupts; transition back to enabled or from
  *          error state via mpcifc
@@ -274,10 +277,12 @@ struct S390PCIIOMMU {
     AddressSpace as;
     MemoryRegion mr;
     IOMMUMemoryRegion iommu_mr;
+    MemoryRegion *dm_mr;
     bool enabled;
     uint64_t g_iota;
     uint64_t pba;
     uint64_t pal;
+    uint64_t max_dma_limit;
     GHashTable *iotlb;
     S390PCIDMACount *dma_limit;
 };
@@ -315,13 +320,16 @@ typedef struct ZpciFmb {
 QEMU_BUILD_BUG_MSG(offsetof(ZpciFmb, fmt0) != 48, "padding in ZpciFmb");
 
 #define ZPCI_DEFAULT_FN_GRP 0xFF
+#define ZPCI_SIM_GRP_START 0xF0
 typedef struct S390PCIGroup {
     ClpRspQueryPciGrp zpci_group;
     int id;
+    int host_id;
     QTAILQ_ENTRY(S390PCIGroup) link;
 } S390PCIGroup;
-S390PCIGroup *s390_group_create(int id);
+S390PCIGroup *s390_group_create(int id, int host_id);
 S390PCIGroup *s390_group_find(int id);
+S390PCIGroup *s390_group_find_host_sim(int host_id);
 
 struct S390PCIBusDevice {
     DeviceState qdev;
@@ -340,6 +348,7 @@ struct S390PCIBusDevice {
     uint16_t noi;
     uint16_t maxstbl;
     uint8_t sum;
+    uint8_t pft;
     S390PCIGroup *pci_group;
     ClpRspQueryPci zpci_fn;
     S390MsixInfo msix;
@@ -348,8 +357,13 @@ struct S390PCIBusDevice {
     MemoryRegion msix_notify_mr;
     IndAddr *summary_ind;
     IndAddr *indicator;
+    Notifier shutdown_notifier;
     bool pci_unplug_request_processed;
     bool unplug_requested;
+    bool interp;
+    bool forwarding_assist;
+    bool aif;
+    bool rtr_avail;
     QTAILQ_ENTRY(S390PCIBusDevice) link;
 };
 
@@ -368,6 +382,7 @@ struct S390pciState {
     QTAILQ_HEAD(, S390PCIBusDevice) zpci_devs;
     QTAILQ_HEAD(, S390PCIDMACount) zpci_dma_limit;
     QTAILQ_HEAD(, S390PCIGroup) zpci_groups;
+    uint8_t next_sim_grp;
 };
 
 S390pciState *s390_get_phb(void);
@@ -376,6 +391,7 @@ int pci_chsc_sei_nt2_have_event(void);
 void s390_pci_sclp_configure(SCCB *sccb);
 void s390_pci_sclp_deconfigure(SCCB *sccb);
 void s390_pci_iommu_enable(S390PCIIOMMU *iommu);
+void s390_pci_iommu_direct_map_enable(S390PCIIOMMU *iommu);
 void s390_pci_iommu_disable(S390PCIIOMMU *iommu);
 void s390_pci_generate_error_event(uint16_t pec, uint32_t fh, uint32_t fid,
                                    uint64_t faddr, uint32_t e);
@@ -388,5 +404,6 @@ S390PCIBusDevice *s390_pci_find_dev_by_target(S390pciState *s,
                                               const char *target);
 S390PCIBusDevice *s390_pci_find_next_avail_dev(S390pciState *s,
                                                S390PCIBusDevice *pbdev);
+void s390_pci_ism_reset(void);
 
 #endif

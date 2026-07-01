@@ -15,7 +15,7 @@
 #define IAC 255
 
 /* character device */
-typedef struct CharBackend CharBackend;
+typedef struct CharFrontend CharFrontend;
 
 typedef enum {
     CHR_EVENT_BREAK, /* serial break char */
@@ -60,7 +60,7 @@ struct Chardev {
     Object parent_obj;
 
     QemuMutex chr_write_lock;
-    CharBackend *be;
+    CharFrontend *fe;
     char *label;
     char *filename;
     int logfd;
@@ -186,7 +186,7 @@ int qemu_chr_be_can_write(Chardev *s);
  * the caller should call @qemu_chr_be_can_write to determine how much data
  * the front end can currently accept.
  */
-void qemu_chr_be_write(Chardev *s, uint8_t *buf, int len);
+void qemu_chr_be_write(Chardev *s, const uint8_t *buf, int len);
 
 /**
  * qemu_chr_be_write_impl:
@@ -195,7 +195,7 @@ void qemu_chr_be_write(Chardev *s, uint8_t *buf, int len);
  *
  * Implementation of back end writing. Used by replay module.
  */
-void qemu_chr_be_write_impl(Chardev *s, uint8_t *buf, int len);
+void qemu_chr_be_write_impl(Chardev *s, const uint8_t *buf, int len);
 
 /**
  * qemu_chr_be_update_read_handlers:
@@ -232,6 +232,7 @@ OBJECT_DECLARE_TYPE(Chardev, ChardevClass, CHARDEV)
 
 #define TYPE_CHARDEV_NULL "chardev-null"
 #define TYPE_CHARDEV_MUX "chardev-mux"
+#define TYPE_CHARDEV_HUB "chardev-hub"
 #define TYPE_CHARDEV_RINGBUF "chardev-ringbuf"
 #define TYPE_CHARDEV_PTY "chardev-pty"
 #define TYPE_CHARDEV_CONSOLE "chardev-console"
@@ -306,6 +307,8 @@ struct ChardevClass {
 
     /* handle various events */
     void (*chr_be_event)(Chardev *s, QEMUChrEvent event);
+
+    void (*chr_listener_cleanup)(Chardev *chr);
 };
 
 Chardev *qemu_chardev_new(const char *id, const char *typename,
@@ -319,8 +322,5 @@ GSource *qemu_chr_timeout_add_ms(Chardev *chr, guint ms,
 
 void suspend_mux_open(void);
 void resume_mux_open(void);
-
-/* console.c */
-void qemu_chr_parse_vc(QemuOpts *opts, ChardevBackend *backend, Error **errp);
 
 #endif

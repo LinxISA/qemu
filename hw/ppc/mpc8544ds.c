@@ -11,9 +11,10 @@
 
 #include "qemu/osdep.h"
 #include "e500.h"
-#include "sysemu/device_tree.h"
+#include "system/device_tree.h"
 #include "hw/ppc/openpic.h"
 #include "qemu/error-report.h"
+#include "qemu/units.h"
 #include "cpu.h"
 
 static void mpc8544ds_fixup_devtree(void *fdt)
@@ -36,7 +37,7 @@ static void mpc8544ds_init(MachineState *machine)
     ppce500_init(machine);
 }
 
-static void e500plat_machine_class_init(ObjectClass *oc, void *data)
+static void mpc8544ds_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     PPCE500MachineClass *pmc = PPCE500_MACHINE_CLASS(oc);
@@ -45,17 +46,24 @@ static void e500plat_machine_class_init(ObjectClass *oc, void *data)
     pmc->pci_nr_slots = 2;
     pmc->fixup_devtree = mpc8544ds_fixup_devtree;
     pmc->mpic_version = OPENPIC_MODEL_FSL_MPIC_20;
+    pmc->platform_bus_base = 0xFF800000ULL;
+    pmc->platform_bus_size = 8 * MiB;
+    pmc->platform_bus_first_irq = 5;
+    pmc->platform_bus_num_irqs = 10;
     pmc->ccsrbar_base = 0xE0000000ULL;
     pmc->pci_mmio_base = 0xC0000000ULL;
     pmc->pci_mmio_bus_base = 0xC0000000ULL;
     pmc->pci_pio_base = 0xE1000000ULL;
     pmc->spin_base = 0xEF000000ULL;
+    pmc->clock_freq = PLATFORM_CLK_FREQ_HZ;
+    pmc->tb_freq = PLATFORM_CLK_FREQ_HZ;
 
     mc->desc = "mpc8544ds";
     mc->init = mpc8544ds_init;
     mc->max_cpus = 15;
     mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("e500v2_v30");
     mc->default_ram_id = "mpc8544ds.ram";
+    mc->default_nic = "virtio-net-pci";
 }
 
 #define TYPE_MPC8544DS_MACHINE  MACHINE_TYPE_NAME("mpc8544ds")
@@ -63,7 +71,7 @@ static void e500plat_machine_class_init(ObjectClass *oc, void *data)
 static const TypeInfo mpc8544ds_info = {
     .name          = TYPE_MPC8544DS_MACHINE,
     .parent        = TYPE_PPCE500_MACHINE,
-    .class_init    = e500plat_machine_class_init,
+    .class_init    = mpc8544ds_machine_class_init,
 };
 
 static void mpc8544ds_register_types(void)

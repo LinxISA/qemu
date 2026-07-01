@@ -16,8 +16,7 @@
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License along
-# with this program; if not, write to the Free Software Foundation, Inc.,
-# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+# with this program; if not, see <https://www.gnu.org/licenses/>.
 
 """
 Run QEMU with all combinations of -machine and -device types,
@@ -33,10 +32,18 @@ import re
 import random
 import argparse
 from itertools import chain
+from pathlib import Path
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'python'))
-from qemu.machine import QEMUMachine
-from qemu.aqmp import ConnectError
+try:
+    from qemu.machine import QEMUMachine
+    from qemu.qmp import ConnectError
+except ModuleNotFoundError as exc:
+    path = Path(__file__).resolve()
+    print(f"Module '{exc.name}' not found.")
+    print("  Try 'make check-venv' from your build directory,")
+    print("  and then one way to run this script is like so:")
+    print(f'  > $builddir/pyvenv/bin/python3 "{path}"')
+    sys.exit(1)
 
 logger = logging.getLogger('device-crash-test')
 dbg = logger.debug
@@ -86,13 +93,13 @@ ERROR_RULE_LIST = [
     {'device':'ivshmem-doorbell', 'expected':True},        # You must specify a 'chardev'
     {'device':'ivshmem-plain', 'expected':True},           # You must specify a 'memdev'
     {'device':'loader', 'expected':True},                  # please include valid arguments
-    {'device':'nand', 'expected':True},                    # Unsupported NAND block size 0x1
     {'device':'nvdimm', 'expected':True},                  # 'memdev' property is not set
     {'device':'nvme', 'expected':True},                    # Device initialization failed
     {'device':'pc-dimm', 'expected':True},                 # 'memdev' property is not set
     {'device':'pci-bridge', 'expected':True},              # Bridge chassis not specified. Each bridge is required to be assigned a unique chassis id > 0.
     {'device':'pci-bridge-seat', 'expected':True},         # Bridge chassis not specified. Each bridge is required to be assigned a unique chassis id > 0.
     {'device':'pxb', 'expected':True},                     # Bridge chassis not specified. Each bridge is required to be assigned a unique chassis id > 0.
+    {'device':'pxb-cxl', 'expected':True},                 # pxb-cxl devices cannot reside on a PCI bus.
     {'device':'scsi-block', 'expected':True},              # drive property not set
     {'device':'scsi-generic', 'expected':True},            # drive property not set
     {'device':'scsi-hd', 'expected':True},                 # drive property not set
@@ -106,8 +113,6 @@ ERROR_RULE_LIST = [
     {'device':'usb-redir', 'expected':True},               # Parameter 'chardev' is missing
     {'device':'usb-serial', 'expected':True},              # Property chardev is required
     {'device':'usb-storage', 'expected':True},             # drive property not set
-    {'device':'vfio-amd-xgbe', 'expected':True},           # -device vfio-amd-xgbe: vfio error: wrong host device name
-    {'device':'vfio-calxeda-xgmac', 'expected':True},      # -device vfio-calxeda-xgmac: vfio error: wrong host device name
     {'device':'vfio-pci', 'expected':True},                # No provided host device
     {'device':'vfio-pci-igd-lpc-bridge', 'expected':True}, # VFIO dummy ISA/LPC bridge must have address 1f.0
     {'device':'vhost-scsi.*', 'expected':True},            # vhost-scsi: missing wwpn
@@ -151,7 +156,6 @@ ERROR_RULE_LIST = [
     # Silence INFO messages for errors that are common on multiple
     # devices/machines:
     {'log':r"No '[\w-]+' bus found for device '[\w-]+'"},
-    {'log':r"images* must be given with the 'pflash' parameter"},
     {'log':r"(Guest|ROM|Flash|Kernel) image must be specified"},
     {'log':r"[cC]ould not load [\w ]+ (BIOS|bios) '[\w-]+\.bin'"},
     {'log':r"Couldn't find rom image '[\w-]+\.bin'"},
@@ -159,7 +163,6 @@ ERROR_RULE_LIST = [
     {'log':r"Can't create a second ISA bus"},
     {'log':r"duplicate fw_cfg file name"},
     # sysbus-related error messages: most machines reject most dynamic sysbus devices:
-    {'log':r"Option '-device [\w.,-]+' cannot be handled by this machine"},
     {'log':r"Device [\w.,-]+ is not supported by this machine yet"},
     {'log':r"Device [\w.,-]+ can not be dynamically instantiated"},
     {'log':r"Platform Bus: Can not fit MMIO region of size "},
@@ -167,11 +170,9 @@ ERROR_RULE_LIST = [
     {'device':'.*-spapr-cpu-core', 'log':r"CPU core type should be"},
     {'log':r"MSI(-X)? is not supported by interrupt controller"},
     {'log':r"pxb-pcie? devices cannot reside on a PCIe? bus"},
-    {'log':r"Ignoring smp_cpus value"},
     {'log':r"sd_init failed: Drive 'sd0' is already in use because it has been automatically connected to another device"},
     {'log':r"This CPU requires a smaller page size than the system is using"},
     {'log':r"MSI-X support is mandatory in the S390 architecture"},
-    {'log':r"rom check and register reset failed"},
     {'log':r"Unable to initialize GIC, CPUState for CPU#0 not valid"},
     {'log':r"Multiple VT220 operator consoles are not supported"},
     {'log':r"core 0 already populated"},
@@ -260,14 +261,14 @@ def formatTestCase(t):
 
 def qomListTypeNames(vm, **kwargs):
     """Run qom-list-types QMP command, return type names"""
-    types = vm.command('qom-list-types', **kwargs)
+    types = vm.cmd('qom-list-types', **kwargs)
     return [t['name'] for t in types]
 
 
 def infoQDM(vm):
     """Parse 'info qdm' output"""
     args = {'command-line': 'info qdm'}
-    devhelp = vm.command('human-monitor-command', **args)
+    devhelp = vm.cmd('human-monitor-command', **args)
     for l in devhelp.split('\n'):
         l = l.strip()
         if l == '' or l.endswith(':'):
@@ -295,9 +296,9 @@ class QemuBinaryInfo(object):
             # there's no way to query DeviceClass::user_creatable using QMP,
             # so use 'info qdm':
             self.no_user_devs = set([d['name'] for d in infoQDM(vm, ) if d['no-user']])
-            self.machines = list(m['name'] for m in vm.command('query-machines'))
+            self.machines = list(m['name'] for m in vm.cmd('query-machines'))
             self.user_devs = self.alldevs.difference(self.no_user_devs)
-            self.kvm_available = vm.command('query-kvm')['enabled']
+            self.kvm_available = vm.cmd('query-kvm')['enabled']
         finally:
             vm.shutdown()
 
@@ -388,7 +389,7 @@ def binariesToTest(args, testcase):
 
 
 def accelsToTest(args, testcase):
-    if getBinaryInfo(args, testcase['binary']).kvm_available:
+    if getBinaryInfo(args, testcase['binary']).kvm_available and not args.tcg_only:
         yield 'kvm'
     yield 'tcg'
 
@@ -501,6 +502,8 @@ def main():
                         help="Full mode: test cases that are expected to fail")
     parser.add_argument('--strict', action='store_true', dest='strict',
                         help="Treat all warnings as fatal")
+    parser.add_argument('--tcg-only', action='store_true', dest='tcg_only',
+                        help="Only test with TCG accelerator")
     parser.add_argument('qemu', nargs='*', metavar='QEMU',
                         help='QEMU binary to run')
     args = parser.parse_args()
@@ -517,7 +520,7 @@ def main():
         # Async QMP, when in use, is chatty about connection failures.
         # This script knowingly generates a ton of connection errors.
         # Silence this logger.
-        logging.getLogger('qemu.aqmp.qmp_client').setLevel(logging.CRITICAL)
+        logging.getLogger('qemu.qmp.protocol').setLevel(logging.CRITICAL)
 
     fatal_failures = []
     wl_stats = {}

@@ -41,6 +41,7 @@
 /* init terminal so that we can grab keys */
 static struct termios oldtty;
 static int old_fd0_flags;
+static int old_fd1_flags;
 static bool stdio_in_use;
 static bool stdio_allow_signal;
 static bool stdio_echo_state;
@@ -50,6 +51,8 @@ static void term_exit(void)
     if (stdio_in_use) {
         tcsetattr(0, TCSANOW, &oldtty);
         fcntl(0, F_SETFL, old_fd0_flags);
+        fcntl(1, F_SETFL, old_fd1_flags);
+        stdio_in_use = false;
     }
 }
 
@@ -102,15 +105,21 @@ static void qemu_chr_open_stdio(Chardev *chr,
 
     stdio_in_use = true;
     old_fd0_flags = fcntl(0, F_GETFL);
+    old_fd1_flags = fcntl(1, F_GETFL);
     tcgetattr(0, &oldtty);
-    qemu_set_nonblock(0);
+    if (!qemu_set_blocking(0, false, errp)) {
+        return;
+    }
+
+    if (!qemu_chr_open_fd(chr, 0, 1, errp)) {
+        return;
+    }
+
     atexit(term_exit);
 
     memset(&act, 0, sizeof(act));
     act.sa_handler = term_stdio_handler;
     sigaction(SIGCONT, &act, NULL);
-
-    qemu_chr_open_fd(chr, 0, 1);
 
     stdio_allow_signal = !opts->has_signal || opts->signal;
     qemu_chr_set_echo_stdio(chr, false);
@@ -129,7 +138,7 @@ static void qemu_chr_parse_stdio(QemuOpts *opts, ChardevBackend *backend,
     stdio->signal = qemu_opt_get_bool(opts, "signal", true);
 }
 
-static void char_stdio_class_init(ObjectClass *oc, void *data)
+static void char_stdio_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 

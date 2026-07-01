@@ -9,13 +9,13 @@
  * See the COPYING file in the top-level directory.
  */
 
-#ifndef IMX2_WDT_H
-#define IMX2_WDT_H
+#ifndef WDT_IMX2_H
+#define WDT_IMX2_H
 
 #include "qemu/bitops.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
-#include "hw/ptimer.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
 #include "qom/object.h"
 
 #define TYPE_IMX2_WDT "imx2.wdt"
@@ -88,4 +88,4 @@ struct IMX2WdtState {
     bool wcr_wdt_locked;        /* affects WDT (never cleared) */
 };
 
-#endif /* IMX2_WDT_H */
+#endif /* WDT_IMX2_H */

@@ -23,7 +23,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/grlib_ahb_apb_pnp.h"
 #include "trace.h"
 
@@ -136,7 +136,8 @@ static uint64_t grlib_ahb_pnp_read(void *opaque, hwaddr offset, unsigned size)
     uint32_t val;
 
     val = ahb_pnp->regs[offset >> 2];
-    trace_grlib_ahb_pnp_read(offset, val);
+    val = extract32(val, (4 - (offset & 3) - size) * 8, size * 8);
+    trace_grlib_ahb_pnp_read(offset, size, val);
 
     return val;
 }
@@ -152,7 +153,7 @@ static const MemoryRegionOps grlib_ahb_pnp_ops = {
     .write      = grlib_ahb_pnp_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
 };
@@ -167,7 +168,7 @@ static void grlib_ahb_pnp_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &ahb_pnp->iomem);
 }
 
-static void grlib_ahb_pnp_class_init(ObjectClass *klass, void *data)
+static void grlib_ahb_pnp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -247,7 +248,8 @@ static uint64_t grlib_apb_pnp_read(void *opaque, hwaddr offset, unsigned size)
     uint32_t val;
 
     val = apb_pnp->regs[offset >> 2];
-    trace_grlib_apb_pnp_read(offset, val);
+    val = extract32(val, (4 - (offset & 3) - size) * 8, size * 8);
+    trace_grlib_apb_pnp_read(offset, size, val);
 
     return val;
 }
@@ -263,7 +265,7 @@ static const MemoryRegionOps grlib_apb_pnp_ops = {
     .write      = grlib_apb_pnp_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .impl = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
 };
@@ -278,7 +280,7 @@ static void grlib_apb_pnp_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &apb_pnp->iomem);
 }
 
-static void grlib_apb_pnp_class_init(ObjectClass *klass, void *data)
+static void grlib_apb_pnp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

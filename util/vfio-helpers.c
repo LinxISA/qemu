@@ -14,9 +14,9 @@
 #include <sys/ioctl.h>
 #include <linux/vfio.h>
 #include "qapi/error.h"
-#include "exec/ramlist.h"
+#include "system/ramlist.h"
 #include "exec/cpu-common.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "trace.h"
 #include "qemu/error-report.h"
 #include "standard-headers/linux/pci_regs.h"
@@ -106,15 +106,17 @@ struct QEMUVFIOState {
  */
 static char *sysfs_find_group_file(const char *device, Error **errp)
 {
+    g_autoptr(GError) gerr = NULL;
     char *sysfs_link;
     char *sysfs_group;
     char *p;
     char *path = NULL;
 
     sysfs_link = g_strdup_printf("/sys/bus/pci/devices/%s/iommu_group", device);
-    sysfs_group = g_malloc0(PATH_MAX);
-    if (readlink(sysfs_link, sysfs_group, PATH_MAX - 1) == -1) {
-        error_setg_errno(errp, errno, "Failed to find iommu group sysfs path");
+    sysfs_group = g_file_read_link(sysfs_link, &gerr);
+    if (gerr) {
+        error_setg(errp, "Failed to find iommu group sysfs path: %s",
+                   gerr->message);
         goto out;
     }
     p = strrchr(sysfs_group, '/');
@@ -163,7 +165,7 @@ void *qemu_vfio_pci_map_bar(QEMUVFIOState *s, int index,
                             Error **errp)
 {
     void *p;
-    assert(QEMU_IS_ALIGNED(offset, qemu_real_host_page_size));
+    assert(QEMU_IS_ALIGNED(offset, qemu_real_host_page_size()));
     assert_bar_index_valid(s, index);
     p = mmap(NULL, MIN(size, s->bar_region_info[index].size - offset),
              prot, MAP_SHARED,
@@ -231,32 +233,37 @@ int qemu_vfio_pci_init_irq(QEMUVFIOState *s, EventNotifier *e,
     return 0;
 }
 
-static int qemu_vfio_pci_read_config(QEMUVFIOState *s, void *buf,
+static int qemu_vfio_pci_read_config(QEMUVFIOState *s, uint32_t *buf,
                                      int size, int ofs)
 {
     int ret;
+    uint32_t val_le;
 
     trace_qemu_vfio_pci_read_config(buf, ofs, size,
                                     s->config_region_info.offset,
                                     s->config_region_info.size);
     assert(QEMU_IS_ALIGNED(s->config_region_info.offset + ofs, size));
-    do {
-        ret = pread(s->device, buf, size, s->config_region_info.offset + ofs);
-    } while (ret == -1 && errno == EINTR);
+    ret = RETRY_ON_EINTR(
+        pread(s->device, &val_le, size, s->config_region_info.offset + ofs)
+    );
+
+    *buf = le32_to_cpu(val_le);
     return ret == size ? 0 : -errno;
 }
 
-static int qemu_vfio_pci_write_config(QEMUVFIOState *s, void *buf, int size, int ofs)
+static int qemu_vfio_pci_write_config(QEMUVFIOState *s, uint32_t *buf, int size, int ofs)
 {
     int ret;
+    uint32_t val_le;
 
+    val_le = cpu_to_le32(*buf);
     trace_qemu_vfio_pci_write_config(buf, ofs, size,
                                      s->config_region_info.offset,
                                      s->config_region_info.size);
     assert(QEMU_IS_ALIGNED(s->config_region_info.offset + ofs, size));
-    do {
-        ret = pwrite(s->device, buf, size, s->config_region_info.offset + ofs);
-    } while (ret == -1 && errno == EINTR);
+    ret = RETRY_ON_EINTR(
+        pwrite(s->device, &val_le, size, s->config_region_info.offset + ofs)
+    );
     return ret == size ? 0 : -errno;
 }
 
@@ -271,7 +278,7 @@ static void collect_usable_iova_ranges(QEMUVFIOState *s, void *buf)
         if (!cap->next) {
             return;
         }
-        cap = (struct vfio_info_cap_header *)(buf + cap->next);
+        cap = buf + cap->next;
     }
 
     cap_iova_range = (struct vfio_iommu_type1_info_cap_iova_range *)cap;
@@ -294,7 +301,7 @@ static int qemu_vfio_init_pci(QEMUVFIOState *s, const char *device,
 {
     int ret;
     int i;
-    uint16_t pci_cmd;
+    uint32_t pci_cmd;
     struct vfio_group_status group_status = { .argsz = sizeof(group_status) };
     struct vfio_iommu_type1_info *iommu_info = NULL;
     size_t iommu_info_size = sizeof(*iommu_info);
@@ -307,7 +314,7 @@ static int qemu_vfio_init_pci(QEMUVFIOState *s, const char *device,
     s->container = open("/dev/vfio/vfio", O_RDWR);
 
     if (s->container == -1) {
-        error_setg_errno(errp, errno, "Failed to open /dev/vfio/vfio");
+        error_setg_file_open(errp, errno, "/dev/vfio/vfio");
         return -errno;
     }
     if (ioctl(s->container, VFIO_GET_API_VERSION) != VFIO_API_VERSION) {
@@ -331,8 +338,7 @@ static int qemu_vfio_init_pci(QEMUVFIOState *s, const char *device,
 
     s->group = open(group_file, O_RDWR);
     if (s->group == -1) {
-        error_setg_errno(errp, errno, "Failed to open VFIO group file: %s",
-                         group_file);
+        error_setg_file_open(errp, errno, group_file);
         g_free(group_file);
         ret = -errno;
         goto fail_container;
@@ -591,9 +597,9 @@ static IOVAMapping *qemu_vfio_add_mapping(QEMUVFIOState *s,
     IOVAMapping m = {.host = host, .size = size, .iova = iova};
     IOVAMapping *insert;
 
-    assert(QEMU_IS_ALIGNED(size, qemu_real_host_page_size));
-    assert(QEMU_IS_ALIGNED(s->low_water_mark, qemu_real_host_page_size));
-    assert(QEMU_IS_ALIGNED(s->high_water_mark, qemu_real_host_page_size));
+    assert(QEMU_IS_ALIGNED(size, qemu_real_host_page_size()));
+    assert(QEMU_IS_ALIGNED(s->low_water_mark, qemu_real_host_page_size()));
+    assert(QEMU_IS_ALIGNED(s->high_water_mark, qemu_real_host_page_size()));
     trace_qemu_vfio_new_mapping(s, host, size, index, iova);
 
     assert(index >= 0);
@@ -644,7 +650,7 @@ static void qemu_vfio_undo_mapping(QEMUVFIOState *s, IOVAMapping *mapping,
 
     index = mapping - s->mappings;
     assert(mapping->size > 0);
-    assert(QEMU_IS_ALIGNED(mapping->size, qemu_real_host_page_size));
+    assert(QEMU_IS_ALIGNED(mapping->size, qemu_real_host_page_size()));
     assert(index >= 0 && index < s->nr_mappings);
     if (ioctl(s->container, VFIO_IOMMU_UNMAP_DMA, &unmap)) {
         error_setg_errno(errp, errno, "VFIO_UNMAP_DMA failed");
@@ -752,8 +758,8 @@ int qemu_vfio_dma_map(QEMUVFIOState *s, void *host, size_t size,
     IOVAMapping *mapping;
     uint64_t iova0;
 
-    assert(QEMU_PTR_IS_ALIGNED(host, qemu_real_host_page_size));
-    assert(QEMU_IS_ALIGNED(size, qemu_real_host_page_size));
+    assert(QEMU_PTR_IS_ALIGNED(host, qemu_real_host_page_size()));
+    assert(QEMU_IS_ALIGNED(size, qemu_real_host_page_size()));
     trace_qemu_vfio_dma_map(s, host, size, temporary, iova);
     QEMU_LOCK_GUARD(&s->lock);
     mapping = qemu_vfio_find_mapping(s, host, &index);
@@ -847,10 +853,13 @@ void qemu_vfio_close(QEMUVFIOState *s)
     if (!s) {
         return;
     }
+
+    ram_block_notifier_remove(&s->ram_notifier);
+
     for (i = 0; i < s->nr_mappings; ++i) {
         qemu_vfio_undo_mapping(s, &s->mappings[i], NULL);
     }
-    ram_block_notifier_remove(&s->ram_notifier);
+
     g_free(s->usable_iova_ranges);
     s->nb_iova_ranges = 0;
     qemu_vfio_reset(s);

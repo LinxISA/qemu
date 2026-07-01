@@ -14,10 +14,19 @@ virtualization capabilities.
 Supported devices
 =================
 
- * Multi processor support for many Power processors generations: POWER7,
-   POWER7+, POWER8, POWER8NVL, POWER9, and Power10. Support for POWER5+ exists,
-   but its state is unknown.
- * Interrupt Controller, XICS (POWER8) and XIVE (POWER9 and Power10)
+ * Multi processor support for many Power processors generations:
+   - POWER7, POWER7+
+   - POWER8, POWER8NVL
+   - POWER9
+   - Power10
+   - Power11
+   - Support for POWER5+ also exists, works with correct kernel/userspace
+ * Interrupt Controller
+    - XICS (POWER8)
+    - XIVE (Supported by below:)
+        - POWER9
+        - Power10
+        - Power11
  * vPHB PCIe Host bridge.
  * vscsi and vnet devices, compatible with the same devices available on a
    PowerVM hypervisor with VIOS managing LPARs.
@@ -32,13 +41,42 @@ Missing devices
 Firmware
 ========
 
+The pSeries platform in QEMU comes with 2 firmwares:
+
 `SLOF <https://github.com/aik/SLOF>`_ (Slimline Open Firmware) is an
 implementation of the `IEEE 1275-1994, Standard for Boot (Initialization
 Configuration) Firmware: Core Requirements and Practices
 <https://standards.ieee.org/standard/1275-1994.html>`_.
 
+SLOF performs bus scanning, PCI resource allocation, provides the client
+interface to boot from block devices and network.
+
 QEMU includes a prebuilt image of SLOF which is updated when a more recent
 version is required.
+
+VOF (Virtual Open Firmware) is a minimalistic firmware to work with
+``-machine pseries,x-vof=on``. When enabled, the firmware acts as a slim
+shim and QEMU implements parts of the IEEE 1275 Open Firmware interface.
+
+VOF does not have device drivers, does not do PCI resource allocation and
+relies on ``-kernel`` used with Linux kernels recent enough (v5.4+)
+to PCI resource assignment. It is ideal to use with petitboot.
+
+Booting via ``-kernel`` supports the following:
+
++-------------------+-------------------+------------------+
+| kernel            | pseries,x-vof=off | pseries,x-vof=on |
++===================+===================+==================+
+| vmlinux BE        |     ✓             |     ✓            |
++-------------------+-------------------+------------------+
+| vmlinux LE        |     ✓             |     ✓            |
++-------------------+-------------------+------------------+
+| zImage.pseries BE |     ✓¹            |     ✓¹           |
++-------------------+-------------------+------------------+
+| zImage.pseries LE |     ✓             |     ✓            |
++-------------------+-------------------+------------------+
+
+¹ must set kernel-addr=0
 
 Build directions
 ================

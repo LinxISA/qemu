@@ -51,7 +51,7 @@ static const VMStateDescription vmstate_sii9022 = {
     .name = "sii9022",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, sii9022_state),
         VMSTATE_UINT8(ptr, sii9022_state),
         VMSTATE_BOOL(addr_byte, sii9022_state),
@@ -76,6 +76,8 @@ static int sii9022_event(I2CSlave *i2c, enum i2c_event event)
         break;
     case I2C_NACK:
         break;
+    default:
+        return -1;
     }
 
     return 0;
@@ -165,7 +167,7 @@ static void sii9022_realize(DeviceState *dev, Error **errp)
     i2c_slave_create_simple(bus, TYPE_I2CDDC, 0x50);
 }
 
-static void sii9022_class_init(ObjectClass *klass, void *data)
+static void sii9022_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
@@ -173,7 +175,7 @@ static void sii9022_class_init(ObjectClass *klass, void *data)
     k->event = sii9022_event;
     k->recv = sii9022_rx;
     k->send = sii9022_tx;
-    dc->reset = sii9022_reset;
+    device_class_set_legacy_reset(dc, sii9022_reset);
     dc->realize = sii9022_realize;
     dc->vmsd = &vmstate_sii9022;
 }

@@ -11,13 +11,13 @@
  * See the COPYING file in the top-level directory.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/error-report.h"
 #include "cpu.h"
 #include "hw/i386/apic_internal.h"
 #include "hw/i386/apic-msidef.h"
 #include "hw/pci/msi.h"
-#include "sysemu/hw_accel.h"
-#include "sysemu/whpx.h"
+#include "system/hw_accel.h"
+#include "system/whpx.h"
 #include "whpx-internal.h"
 
 struct whpx_lapic_state {
@@ -90,9 +90,10 @@ static void whpx_get_apic_state(APICCommonState *s,
     apic_next_timer(s, s->initial_count_load_time);
 }
 
-static void whpx_apic_set_base(APICCommonState *s, uint64_t val)
+static int whpx_apic_set_base(APICCommonState *s, uint64_t val)
 {
     s->apicbase = val;
+    return 0;
 }
 
 static void whpx_put_apic_base(CPUState *cpu, uint64_t val)
@@ -150,9 +151,8 @@ static void whpx_apic_put(CPUState *cs, run_on_cpu_data data)
     }
 }
 
-void whpx_apic_get(DeviceState *dev)
+void whpx_apic_get(APICCommonState *s)
 {
-    APICCommonState *s = APIC_COMMON(dev);
     CPUState *cpu = CPU(s->cpu);
     struct whpx_lapic_state kapic;
 
@@ -230,7 +230,7 @@ static void whpx_apic_mem_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps whpx_apic_io_ops = {
     .read = whpx_apic_mem_read,
     .write = whpx_apic_mem_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static void whpx_apic_reset(APICCommonState *s)
@@ -251,7 +251,7 @@ static void whpx_apic_realize(DeviceState *dev, Error **errp)
     msi_nonbroken = true;
 }
 
-static void whpx_apic_class_init(ObjectClass *klass, void *data)
+static void whpx_apic_class_init(ObjectClass *klass, const void *data)
 {
     APICCommonClass *k = APIC_COMMON_CLASS(klass);
 

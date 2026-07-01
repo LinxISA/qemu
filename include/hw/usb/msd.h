@@ -7,7 +7,7 @@
  * This code is licensed under the LGPL.
  */
 
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 #include "hw/scsi/scsi.h"
 
 enum USBMSDMode {
@@ -40,6 +40,7 @@ struct MSDState {
     bool removable;
     bool commandlog;
     SCSIDevice *scsi_dev;
+    bool needs_reset;
 };
 
 typedef struct MSDState MSDState;

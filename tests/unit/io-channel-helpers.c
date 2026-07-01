@@ -20,12 +20,12 @@
 
 #include "qemu/osdep.h"
 #include "io-channel-helpers.h"
+#include "qapi/error.h"
 #include "qemu/iov.h"
 
 struct QIOChannelTest {
     QIOChannel *src;
     QIOChannel *dst;
-    bool blocking;
     size_t len;
     size_t niov;
     char *input;
@@ -42,8 +42,6 @@ static gpointer test_io_thread_writer(gpointer opaque)
 {
     QIOChannelTest *data = opaque;
 
-    qio_channel_set_blocking(data->src, data->blocking, NULL);
-
     qio_channel_writev_all(data->src,
                            data->inputv,
                            data->niov,
@@ -57,8 +55,6 @@ static gpointer test_io_thread_writer(gpointer opaque)
 static gpointer test_io_thread_reader(gpointer opaque)
 {
     QIOChannelTest *data = opaque;
-
-    qio_channel_set_blocking(data->dst, data->blocking, NULL);
 
     qio_channel_readv_all(data->dst,
                           data->outputv,
@@ -113,7 +109,9 @@ void qio_channel_test_run_threads(QIOChannelTest *test,
 
     test->src = src;
     test->dst = dst;
-    test->blocking = blocking;
+
+    qio_channel_set_blocking(test->dst, blocking, &error_abort);
+    qio_channel_set_blocking(test->src, blocking, &error_abort);
 
     reader = g_thread_new("reader",
                           test_io_thread_reader,

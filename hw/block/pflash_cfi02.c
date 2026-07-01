@@ -35,16 +35,16 @@
 #include "qemu/osdep.h"
 #include "hw/block/block.h"
 #include "hw/block/flash.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/bitmap.h"
 #include "qemu/timer.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "qemu/host-utils.h"
 #include "qemu/module.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -400,8 +400,8 @@ static void pflash_update(PFlashCFI02 *pfl, int offset, int size)
         /* widen to sector boundaries */
         offset = QEMU_ALIGN_DOWN(offset, BDRV_SECTOR_SIZE);
         offset_end = QEMU_ALIGN_UP(offset_end, BDRV_SECTOR_SIZE);
-        ret = blk_pwrite(pfl->blk, offset, pfl->storage + offset,
-                   offset_end - offset, 0);
+        ret = blk_pwrite(pfl->blk, offset, offset_end - offset,
+                         pfl->storage + offset, 0);
         if (ret < 0) {
             /* TODO set error bit in status */
             error_report("Could not update PFLASH: %s", strerror(-ret));
@@ -546,7 +546,7 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
                 }
                 goto reset_flash;
             }
-            trace_pflash_data_write(pfl->name, offset, width, value, 0);
+            trace_pflash_data_write(pfl->name, offset, width, value);
             if (!pfl->ro) {
                 p = (uint8_t *)pfl->storage + offset;
                 if (pfl->be) {
@@ -902,7 +902,7 @@ static void pflash_cfi02_realize(DeviceState *dev, Error **errp)
     }
 
     if (pfl->blk) {
-        if (!blk_check_size_and_read_all(pfl->blk, pfl->storage,
+        if (!blk_check_size_and_read_all(pfl->blk, dev, pfl->storage,
                                          pfl->chip_len, errp)) {
             vmstate_unregister_ram(&pfl->orig_mem, DEVICE(pfl));
             return;
@@ -937,7 +937,7 @@ static void pflash_cfi02_reset(DeviceState *dev)
     pflash_reset_state_machine(pfl);
 }
 
-static Property pflash_cfi02_properties[] = {
+static const Property pflash_cfi02_properties[] = {
     DEFINE_PROP_DRIVE("drive", PFlashCFI02, blk),
     DEFINE_PROP_UINT32("num-blocks", PFlashCFI02, uniform_nb_blocs, 0),
     DEFINE_PROP_UINT32("sector-length", PFlashCFI02, uniform_sector_len, 0),
@@ -959,7 +959,6 @@ static Property pflash_cfi02_properties[] = {
     DEFINE_PROP_UINT16("unlock-addr0", PFlashCFI02, unlock_addr0, 0),
     DEFINE_PROP_UINT16("unlock-addr1", PFlashCFI02, unlock_addr1, 0),
     DEFINE_PROP_STRING("name", PFlashCFI02, name),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void pflash_cfi02_unrealize(DeviceState *dev)
@@ -969,12 +968,12 @@ static void pflash_cfi02_unrealize(DeviceState *dev)
     g_free(pfl->sector_erase_map);
 }
 
-static void pflash_cfi02_class_init(ObjectClass *klass, void *data)
+static void pflash_cfi02_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pflash_cfi02_realize;
-    dc->reset = pflash_cfi02_reset;
+    device_class_set_legacy_reset(dc, pflash_cfi02_reset);
     dc->unrealize = pflash_cfi02_unrealize;
     device_class_set_props(dc, pflash_cfi02_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);

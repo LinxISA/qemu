@@ -10,7 +10,7 @@
 #ifndef LIBQOS_VIRTIO_H
 #define LIBQOS_VIRTIO_H
 
-#include "malloc.h"
+#include "libqos-malloc.h"
 #include "standard-headers/linux/virtio_ring.h"
 
 #define QVIRTIO_F_BAD_FEATURE           0x40000000ull
@@ -143,6 +143,8 @@ uint32_t qvirtqueue_add(QTestState *qts, QVirtQueue *vq, uint64_t data,
                         uint32_t len, bool write, bool next);
 uint32_t qvirtqueue_add_indirect(QTestState *qts, QVirtQueue *vq,
                                  QVRingIndirectDesc *indirect);
+void qvirtqueue_set_avail_idx(QTestState *qts, QVirtioDevice *d,
+                              QVirtQueue *vq, uint16_t idx);
 void qvirtqueue_kick(QTestState *qts, QVirtioDevice *d, QVirtQueue *vq,
                      uint32_t free_head);
 bool qvirtqueue_get_buf(QTestState *qts, QVirtQueue *vq, uint32_t *desc_idx,

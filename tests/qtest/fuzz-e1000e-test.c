@@ -8,7 +8,7 @@
 
 #include "qemu/osdep.h"
 
-#include "libqos/libqtest.h"
+#include "libqtest.h"
 
 /*
  * https://bugs.launchpad.net/qemu/+bug/1879531
@@ -17,7 +17,7 @@ static void test_lp1879531_eth_get_rss_ex_dst_addr(void)
 {
     QTestState *s;
 
-    s = qtest_init("-nographic -monitor none -serial none -M pc-q35-5.0");
+    s = qtest_init("-nographic -monitor none -serial none -M q35");
 
     qtest_outl(s, 0xcf8, 0x80001010);
     qtest_outl(s, 0xcfc, 0xe1020000);

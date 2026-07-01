@@ -1,2 +1,0 @@
-NEW_EVENT(blk_divu)
-#define TEST_DRIVER testDriver_2_64

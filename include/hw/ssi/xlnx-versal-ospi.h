@@ -34,7 +34,7 @@
  *     https://www.xilinx.com/support/documentation/architecture-manuals/am011-versal-acap-trm.pdf
  *
  * [2] Versal ACAP Register Reference,
- *     https://www.xilinx.com/html_docs/registers/am012/am012-versal-register-reference.html#mod___ospi.html
+ *     https://docs.xilinx.com/r/en-US/am012-versal-register-reference/OSPI-Module
  *
  *
  * QEMU interface:
@@ -49,10 +49,10 @@
  * + Property "indac-write-disabled": Disable indirect access writes.
  */
 
-#ifndef XILINX_VERSAL_OSPI_H
-#define XILINX_VERSAL_OSPI_H
+#ifndef XLNX_VERSAL_OSPI_H
+#define XLNX_VERSAL_OSPI_H
 
-#include "hw/register.h"
+#include "hw/core/register.h"
 #include "hw/ssi/ssi.h"
 #include "qemu/fifo8.h"
 #include "hw/dma/xlnx_csu_dma.h"
@@ -108,4 +108,4 @@ struct XlnxVersalOspi {
     uint8_t stig_membank[512];
 };
 
-#endif /* XILINX_VERSAL_OSPI_H */
+#endif /* XLNX_VERSAL_OSPI_H */

@@ -15,7 +15,7 @@
 #ifndef ZYNQ_XADC_H
 #define ZYNQ_XADC_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define ZYNQ_XADC_MMIO_SIZE     0x0020
@@ -39,8 +39,7 @@ struct ZynqXADCState {
     uint16_t xadc_dfifo[ZYNQ_XADC_FIFO_DEPTH];
     uint16_t xadc_dfifo_entries;
 
-    struct IRQState *qemu_irq;
-
+    qemu_irq irq;
 };
 
 #endif /* ZYNQ_XADC_H */

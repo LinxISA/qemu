@@ -24,27 +24,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/pci/pci_host.h"
-#include "hw/ppc/mac.h"
-#include "hw/qdev-properties.h"
-#include "hw/pci/pci.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/pci/pci_device.h"
+#include "hw/core/irq.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "trace.h"
 #include "qom/object.h"
-
-OBJECT_DECLARE_SIMPLE_TYPE(GrackleState, GRACKLE_PCI_HOST_BRIDGE)
-
-struct GrackleState {
-    PCIHostState parent_obj;
-
-    uint32_t ofw_addr;
-    qemu_irq irqs[4];
-    MemoryRegion pci_mmio;
-    MemoryRegion pci_hole;
-    MemoryRegion pci_io;
-};
+#include "hw/pci-host/grackle.h"
 
 /* Don't know if this matches real hardware, but it agrees with OHW.  */
 static int pci_grackle_map_irq(PCIDevice *pci_dev, int irq_num)
@@ -104,10 +91,10 @@ static void grackle_init(Object *obj)
 
 static void grackle_pci_realize(PCIDevice *d, Error **errp)
 {
-    d->config[0x09] = 0x01;
+    d->config[PCI_CLASS_PROG] = 0x01;
 }
 
-static void grackle_pci_class_init(ObjectClass *klass, void *data)
+static void grackle_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -129,7 +116,7 @@ static const TypeInfo grackle_pci_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = grackle_pci_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },
@@ -142,12 +129,11 @@ static char *grackle_ofw_unit_address(const SysBusDevice *dev)
     return g_strdup_printf("%x", s->ofw_addr);
 }
 
-static Property grackle_properties[] = {
+static const Property grackle_properties[] = {
     DEFINE_PROP_UINT32("ofw-addr", GrackleState, ofw_addr, -1),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void grackle_class_init(ObjectClass *klass, void *data)
+static void grackle_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     SysBusDeviceClass *sbc = SYS_BUS_DEVICE_CLASS(klass);

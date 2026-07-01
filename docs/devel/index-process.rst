@@ -1,3 +1,5 @@
+.. _development_process:
+
 QEMU Community Processes
 ------------------------
 
@@ -5,13 +7,15 @@ Notes about how to interact with the community and how and where to submit patch
 
 .. toctree::
    :maxdepth: 2
-   :includehidden:
 
    code-of-conduct
    conflict-resolution
+   maintainers
    style
    submitting-a-patch
+   code-provenance
    trivial-patches
    stable-process
    submitting-a-pull-request
    secure-coding-practices
+   rust

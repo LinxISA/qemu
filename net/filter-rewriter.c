@@ -383,7 +383,7 @@ static void colo_rewriter_setup(NetFilterState *nf, Error **errp)
     s->connection_track_table = g_hash_table_new_full(connection_key_hash,
                                                       connection_key_equal,
                                                       g_free,
-                                                      connection_destroy);
+                                                      NULL);
     s->incoming_queue = qemu_new_net_queue(qemu_netfilter_pass_to_next, nf);
 }
 
@@ -411,7 +411,7 @@ static void filter_rewriter_init(Object *obj)
     s->failover_mode = FAILOVER_MODE_OFF;
 }
 
-static void colo_rewriter_class_init(ObjectClass *oc, void *data)
+static void colo_rewriter_class_init(ObjectClass *oc, const void *data)
 {
     NetFilterClass *nfc = NETFILTER_CLASS(oc);
 

@@ -13,7 +13,7 @@
 
 #include "exec/hwaddr.h"
 #include "qapi/qapi-types-block-core.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/qdev-properties-system.h"
 
 /* Configuration */
 
@@ -31,8 +31,11 @@ typedef struct BlockConf {
     uint32_t lcyls, lheads, lsecs;
     OnOffAuto wce;
     bool share_rw;
+    OnOffAuto account_invalid, account_failed;
     BlockdevOnError rerror;
     BlockdevOnError werror;
+    uint32_t num_stats_intervals;
+    uint32_t *stats_intervals;
 } BlockConf;
 
 static inline unsigned int get_physical_block_exp(BlockConf *conf)
@@ -61,7 +64,14 @@ static inline unsigned int get_physical_block_exp(BlockConf *conf)
                        _conf.discard_granularity, -1),                  \
     DEFINE_PROP_ON_OFF_AUTO("write-cache", _state, _conf.wce,           \
                             ON_OFF_AUTO_AUTO),                          \
-    DEFINE_PROP_BOOL("share-rw", _state, _conf.share_rw, false)
+    DEFINE_PROP_BOOL("share-rw", _state, _conf.share_rw, false),        \
+    DEFINE_PROP_ON_OFF_AUTO("account-invalid", _state,                  \
+                            _conf.account_invalid, ON_OFF_AUTO_AUTO),   \
+    DEFINE_PROP_ON_OFF_AUTO("account-failed", _state,                   \
+                            _conf.account_failed, ON_OFF_AUTO_AUTO),    \
+    DEFINE_PROP_ARRAY("stats-intervals", _state,                        \
+                     _conf.num_stats_intervals, _conf.stats_intervals,  \
+                     qdev_prop_uint32, uint32_t)
 
 #define DEFINE_BLOCK_PROPERTIES(_state, _conf)                          \
     DEFINE_PROP_DRIVE("drive", _state, _conf.blk),                      \
@@ -83,8 +93,8 @@ static inline unsigned int get_physical_block_exp(BlockConf *conf)
 
 /* Backend access helpers */
 
-bool blk_check_size_and_read_all(BlockBackend *blk, void *buf, hwaddr size,
-                                 Error **errp);
+bool blk_check_size_and_read_all(BlockBackend *blk, DeviceState *dev,
+                                 void *buf, hwaddr size, Error **errp);
 
 /* Configuration helpers */
 

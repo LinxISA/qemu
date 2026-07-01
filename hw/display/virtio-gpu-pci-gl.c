@@ -15,7 +15,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio-gpu-pci.h"
@@ -47,6 +47,7 @@ static const VirtioPCIDeviceTypeInfo virtio_gpu_gl_pci_info = {
     .instance_init = virtio_gpu_gl_initfn,
 };
 module_obj(TYPE_VIRTIO_GPU_GL_PCI);
+module_kconfig(VIRTIO_PCI);
 
 static void virtio_gpu_gl_pci_register_types(void)
 {

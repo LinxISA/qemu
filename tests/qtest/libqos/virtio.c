@@ -9,7 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
-#include "libqtest.h"
+#include "../libqtest.h"
 #include "virtio.h"
 #include "standard-headers/linux/virtio_config.h"
 #include "standard-headers/linux/virtio_ring.h"
@@ -25,49 +25,63 @@
  */
 static uint16_t qvirtio_readw(QVirtioDevice *d, QTestState *qts, uint64_t addr)
 {
-    uint16_t val = qtest_readw(qts, addr);
+    uint16_t val;
 
-    if (d->features & (1ull << VIRTIO_F_VERSION_1) && qtest_big_endian(qts)) {
-        val = bswap16(val);
+    if (d->features & (1ull << VIRTIO_F_VERSION_1)) {
+        qtest_memread(qts, addr, &val, sizeof(val));
+        val = le16_to_cpu(val);
+    } else {
+        val = qtest_readw(qts, addr);
     }
+
     return val;
 }
 
 static uint32_t qvirtio_readl(QVirtioDevice *d, QTestState *qts, uint64_t addr)
 {
-    uint32_t val = qtest_readl(qts, addr);
+    uint32_t val;
 
-    if (d->features & (1ull << VIRTIO_F_VERSION_1) && qtest_big_endian(qts)) {
-        val = bswap32(val);
+    if (d->features & (1ull << VIRTIO_F_VERSION_1)) {
+        qtest_memread(qts, addr, &val, sizeof(val));
+        val = le32_to_cpu(val);
+    } else {
+        val = qtest_readl(qts, addr);
     }
+
     return val;
 }
 
 static void qvirtio_writew(QVirtioDevice *d, QTestState *qts,
                            uint64_t addr, uint16_t val)
 {
-    if (d->features & (1ull << VIRTIO_F_VERSION_1) && qtest_big_endian(qts)) {
-        val = bswap16(val);
+    if (d->features & (1ull << VIRTIO_F_VERSION_1)) {
+        val = cpu_to_le16(val);
+        qtest_memwrite(qts, addr, &val, sizeof(val));
+    } else {
+        qtest_writew(qts, addr, val);
     }
-    qtest_writew(qts, addr, val);
 }
 
 static void qvirtio_writel(QVirtioDevice *d, QTestState *qts,
                            uint64_t addr, uint32_t val)
 {
-    if (d->features & (1ull << VIRTIO_F_VERSION_1) && qtest_big_endian(qts)) {
-        val = bswap32(val);
+    if (d->features & (1ull << VIRTIO_F_VERSION_1)) {
+        val = cpu_to_le32(val);
+        qtest_memwrite(qts, addr, &val, sizeof(val));
+    } else {
+        qtest_writel(qts, addr, val);
     }
-    qtest_writel(qts, addr, val);
 }
 
 static void qvirtio_writeq(QVirtioDevice *d, QTestState *qts,
                            uint64_t addr, uint64_t val)
 {
-    if (d->features & (1ull << VIRTIO_F_VERSION_1) && qtest_big_endian(qts)) {
-        val = bswap64(val);
+    if (d->features & (1ull << VIRTIO_F_VERSION_1)) {
+        val = cpu_to_le64(val);
+        qtest_memwrite(qts, addr, &val, sizeof(val));
+    } else {
+        qtest_writeq(qts, addr, val);
     }
-    qtest_writeq(qts, addr, val);
 }
 
 uint8_t qvirtio_config_readb(QVirtioDevice *d, uint64_t addr)
@@ -101,6 +115,8 @@ uint64_t qvirtio_get_features(QVirtioDevice *d)
 
 void qvirtio_set_features(QVirtioDevice *d, uint64_t features)
 {
+    g_assert(!(features & QVIRTIO_F_BAD_FEATURE));
+
     d->features = features;
     d->bus->set_features(d, features);
 
@@ -108,7 +124,7 @@ void qvirtio_set_features(QVirtioDevice *d, uint64_t features)
      * This could be a separate function for drivers that want to access
      * configuration space before setting FEATURES_OK, but no existing users
      * need that and it's less code for callers if this is done implicitly.
-    */
+     */
     if (features & (1ull << VIRTIO_F_VERSION_1)) {
         uint8_t status = d->bus->get_status(d) |
                          VIRTIO_CONFIG_S_FEATURES_OK;
@@ -168,7 +184,6 @@ void qvirtio_wait_queue_isr(QTestState *qts, QVirtioDevice *d,
     gint64 start_time = g_get_monotonic_time();
 
     for (;;) {
-        qtest_clock_step(qts, 100);
         if (d->bus->get_queue_isr_status(d, vq)) {
             return;
         }
@@ -190,7 +205,6 @@ uint8_t qvirtio_wait_status_byte_no_isr(QTestState *qts, QVirtioDevice *d,
     uint8_t val;
 
     while ((val = qtest_readb(qts, addr)) == 0xff) {
-        qtest_clock_step(qts, 100);
         g_assert(!d->bus->get_queue_isr_status(d, vq));
         g_assert(g_get_monotonic_time() - start_time <= timeout_us);
     }
@@ -217,14 +231,12 @@ void qvirtio_wait_used_elem(QTestState *qts, QVirtioDevice *d,
     for (;;) {
         uint32_t got_desc_idx;
 
-        qtest_clock_step(qts, 100);
 
         if (d->bus->get_queue_isr_status(d, vq) &&
             qvirtqueue_get_buf(qts, vq, &got_desc_idx, len)) {
             g_assert_cmpint(got_desc_idx, ==, desc_idx);
             return;
         }
-
         g_assert(g_get_monotonic_time() - start_time <= timeout_us);
     }
 }
@@ -253,15 +265,18 @@ void qvring_init(QTestState *qts, const QGuestAllocator *alloc, QVirtQueue *vq,
 
     /* vq->avail->flags */
     qvirtio_writew(vq->vdev, qts, vq->avail, 0);
-    /* vq->avail->idx */
-    qvirtio_writew(vq->vdev, qts, vq->avail + 2, 0);
+
+    qvirtqueue_set_avail_idx(qts, vq->vdev, vq, 0);
+
     /* vq->avail->used_event */
     qvirtio_writew(vq->vdev, qts, vq->avail + 4 + (2 * vq->size), 0);
 
     /* vq->used->flags */
     qvirtio_writew(vq->vdev, qts, vq->used, 0);
+    /* vq->used->idx */
+    qvirtio_writew(vq->vdev, qts, vq->used + 2, 0);
     /* vq->used->avail_event */
-    qvirtio_writew(vq->vdev, qts, vq->used + 2 +
+    qvirtio_writew(vq->vdev, qts, vq->used + 4 +
                    sizeof(struct vring_used_elem) * vq->size, 0);
 }
 
@@ -276,14 +291,27 @@ QVRingIndirectDesc *qvring_indirect_desc_setup(QTestState *qs, QVirtioDevice *d,
     indirect->elem = elem;
     indirect->desc = guest_alloc(alloc, sizeof(struct vring_desc) * elem);
 
-    for (i = 0; i < elem - 1; ++i) {
+    for (i = 0; i < elem; ++i) {
         /* indirect->desc[i].addr */
         qvirtio_writeq(d, qs, indirect->desc + (16 * i), 0);
-        /* indirect->desc[i].flags */
-        qvirtio_writew(d, qs, indirect->desc + (16 * i) + 12,
-                       VRING_DESC_F_NEXT);
-        /* indirect->desc[i].next */
-        qvirtio_writew(d, qs, indirect->desc + (16 * i) + 14, i + 1);
+
+        /*
+         * If it's not the last element of the ring, set
+         * the chain (VRING_DESC_F_NEXT) flag and
+         * desc->next. Clear the last element - there's
+         * no guarantee that guest_alloc() will do it.
+         */
+        if (i != elem - 1) {
+            /* indirect->desc[i].flags */
+            qvirtio_writew(d, qs, indirect->desc + (16 * i) + 12,
+                           VRING_DESC_F_NEXT);
+
+            /* indirect->desc[i].next */
+            qvirtio_writew(d, qs, indirect->desc + (16 * i) + 14, i + 1);
+        } else {
+            qvirtio_writew(d, qs, indirect->desc + (16 * i) + 12, 0);
+            qvirtio_writew(d, qs, indirect->desc + (16 * i) + 14, 0);
+        }
     }
 
     return indirect;
@@ -361,6 +389,13 @@ uint32_t qvirtqueue_add_indirect(QTestState *qts, QVirtQueue *vq,
     return vq->free_head++; /* Return and increase, in this order */
 }
 
+void qvirtqueue_set_avail_idx(QTestState *qts, QVirtioDevice *d,
+                              QVirtQueue *vq, uint16_t idx)
+{
+    /* vq->avail->idx */
+    qvirtio_writew(d, qts, vq->avail + 2, idx);
+}
+
 void qvirtqueue_kick(QTestState *qts, QVirtioDevice *d, QVirtQueue *vq,
                      uint32_t free_head)
 {
@@ -373,11 +408,11 @@ void qvirtqueue_kick(QTestState *qts, QVirtioDevice *d, QVirtQueue *vq,
 
     /* vq->avail->ring[idx % vq->size] */
     qvirtio_writew(d, qts, vq->avail + 4 + (2 * (idx % vq->size)), free_head);
-    /* vq->avail->idx */
-    qvirtio_writew(d, qts, vq->avail + 2, idx + 1);
+
+    qvirtqueue_set_avail_idx(qts, d, vq, idx + 1);
 
     /* Must read after idx is updated */
-    flags = qvirtio_readw(d, qts, vq->avail);
+    flags = qvirtio_readw(d, qts, vq->used);
     avail_event = qvirtio_readw(d, qts, vq->used + 4 +
                                 sizeof(struct vring_used_elem) * vq->size);
 

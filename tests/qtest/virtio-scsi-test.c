@@ -156,7 +156,7 @@ static QVirtioSCSIQueues *qvirtio_scsi_init(QVirtioDevice *dev)
     return vs;
 }
 
-static void hotplug(void *obj, void *data, QGuestAllocator *alloc)
+static void hotplug(void *obj, void *data, QGuestAllocator *t_alloc)
 {
     QTestState *qts = global_qtest;
 
@@ -268,7 +268,7 @@ static void test_iothread_attach_node(void *obj, void *data,
     QVirtioSCSIPCI *scsi_pci = obj;
     QVirtioSCSI *scsi = &scsi_pci->scsi;
     QVirtioSCSIQueues *vs;
-    char tmp_path[] = "/tmp/qtest.XXXXXX";
+    g_autofree char *tmp_path = NULL;
     int fd;
     int ret;
 
@@ -282,7 +282,7 @@ static void test_iothread_attach_node(void *obj, void *data,
     vs = qvirtio_scsi_init(scsi->vdev);
 
     /* Create a temporary qcow2 overlay*/
-    fd = mkstemp(tmp_path);
+    fd = g_file_open_tmp("qtest.XXXXXX", &tmp_path, NULL);
     g_assert(fd >= 0);
     close(fd);
 
@@ -309,6 +309,31 @@ static void test_iothread_attach_node(void *obj, void *data,
 fail:
     qvirtio_scsi_pci_free(vs);
     unlink(tmp_path);
+}
+
+static void test_iothread_virtio_error(void *obj, void *data,
+                                       QGuestAllocator *t_alloc)
+{
+    QVirtioSCSIPCI *scsi_pci = obj;
+    QVirtioSCSI *scsi = &scsi_pci->scsi;
+    QVirtioSCSIQueues *vs;
+    QVirtQueue *vq;
+
+    alloc = t_alloc;
+    vs = qvirtio_scsi_init(scsi->vdev);
+    vq = vs->vq[2];
+
+    /* Move avail.idx out of bounds to trigger virtio_error() */
+    qvirtqueue_set_avail_idx(global_qtest, scsi->vdev, vq, vq->size * 2);
+    scsi->vdev->bus->virtqueue_kick(scsi->vdev, vq);
+
+    /*
+     * Reset the device out of the error state. If QEMU hangs or crashes then
+     * this will fail.
+     */
+    qvirtio_reset(scsi->vdev);
+
+    qvirtio_scsi_pci_free(vs);
 }
 
 static void *virtio_scsi_hotplug_setup(GString *cmd_line, void *arg)
@@ -383,6 +408,13 @@ static void register_virtio_scsi_test(void)
     };
     qos_add_test("iothread-attach-node", "virtio-scsi-pci",
                  test_iothread_attach_node, &opts);
+
+    opts.before = virtio_scsi_setup_iothread;
+    opts.edge = (QOSGraphEdgeOptions) {
+        .extra_device_opts = "iothread=thread0",
+    };
+    qos_add_test("iothread-virtio-error", "virtio-scsi-pci",
+                 test_iothread_virtio_error, &opts);
 }
 
 libqos_init(register_virtio_scsi_test);

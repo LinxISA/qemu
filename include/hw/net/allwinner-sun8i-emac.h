@@ -22,7 +22,7 @@
 
 #include "qom/object.h"
 #include "net/net.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 /**
  * Object model
@@ -101,4 +101,4 @@ struct AwSun8iEmacState {
 
 };
 
-#endif /* HW_NET_ALLWINNER_SUN8I_H */
+#endif /* HW_NET_ALLWINNER_SUN8I_EMAC_H */

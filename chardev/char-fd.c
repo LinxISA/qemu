@@ -23,7 +23,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "qemu/module.h"
 #include "qemu/sockets.h"
 #include "qapi/error.h"
@@ -51,7 +50,7 @@ static gboolean fd_chr_read(QIOChannel *chan, GIOCondition cond, void *opaque)
     Chardev *chr = CHARDEV(opaque);
     FDChardev *s = FD_CHARDEV(opaque);
     int len;
-    uint8_t buf[CHR_READ_BUF_LEN];
+    QEMU_UNINITIALIZED uint8_t buf[CHR_READ_BUF_LEN];
     ssize_t ret;
 
     len = sizeof(buf);
@@ -199,7 +198,7 @@ int qmp_chardev_open_file_source(char *src, int flags, Error **errp)
 {
     int fd = -1;
 
-    TFR(fd = qemu_open_old(src, flags, 0666));
+    fd = RETRY_ON_EINTR(qemu_open_old(src, flags, 0666));
     if (fd == -1) {
         error_setg_file_open(errp, errno, src);
     }
@@ -207,14 +206,16 @@ int qmp_chardev_open_file_source(char *src, int flags, Error **errp)
 }
 
 /* open a character device to a unix fd */
-void qemu_chr_open_fd(Chardev *chr,
-                      int fd_in, int fd_out)
+bool qemu_chr_open_fd(Chardev *chr,
+                      int fd_in, int fd_out, Error **errp)
 {
     FDChardev *s = FD_CHARDEV(chr);
     g_autofree char *name = NULL;
 
     if (fd_out >= 0) {
-        qemu_set_nonblock(fd_out);
+        if (!qemu_set_blocking(fd_out, false, errp)) {
+            return false;
+        }
     }
 
     if (fd_out == fd_in && fd_in >= 0) {
@@ -222,7 +223,7 @@ void qemu_chr_open_fd(Chardev *chr,
         name = g_strdup_printf("chardev-file-%s", chr->label);
         qio_channel_set_name(QIO_CHANNEL(s->ioc_in), name);
         s->ioc_out = QIO_CHANNEL(object_ref(s->ioc_in));
-        return;
+        return true;
     }
 
     if (fd_in >= 0) {
@@ -237,9 +238,11 @@ void qemu_chr_open_fd(Chardev *chr,
         name = g_strdup_printf("chardev-file-out-%s", chr->label);
         qio_channel_set_name(QIO_CHANNEL(s->ioc_out), name);
     }
+
+    return true;
 }
 
-static void char_fd_class_init(ObjectClass *oc, void *data)
+static void char_fd_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 

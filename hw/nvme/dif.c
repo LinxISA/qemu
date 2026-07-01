@@ -10,7 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 
 #include "nvme.h"
 #include "dif.h"
@@ -24,6 +24,11 @@ uint16_t nvme_check_prinfo(NvmeNamespace *ns, uint8_t prinfo, uint64_t slba,
     if ((NVME_ID_NS_DPS_TYPE(ns->id_ns.dps) == NVME_ID_NS_DPS_TYPE_1) &&
         (prinfo & NVME_PRINFO_PRCHK_REF) && (slba & mask) != reftag) {
         return NVME_INVALID_PROT_INFO | NVME_DNR;
+    }
+
+    if ((NVME_ID_NS_DPS_TYPE(ns->id_ns.dps) == NVME_ID_NS_DPS_TYPE_3) &&
+        (prinfo & NVME_PRINFO_PRCHK_REF)) {
+        return NVME_INVALID_PROT_INFO;
     }
 
     return NVME_SUCCESS;
@@ -110,7 +115,7 @@ static void nvme_dif_pract_generate_dif_crc64(NvmeNamespace *ns, uint8_t *buf,
         uint64_t crc = crc64_nvme(~0ULL, buf, ns->lbasz);
 
         if (pil) {
-            crc = crc64_nvme(crc, mbuf, pil);
+            crc = crc64_nvme(~crc, mbuf, pil);
         }
 
         dif->g64.guard = cpu_to_be64(crc);
@@ -241,7 +246,7 @@ static uint16_t nvme_dif_prchk_crc64(NvmeNamespace *ns, NvmeDifTuple *dif,
         uint64_t crc = crc64_nvme(~0ULL, buf, ns->lbasz);
 
         if (pil) {
-            crc = crc64_nvme(crc, mbuf, pil);
+            crc = crc64_nvme(~crc, mbuf, pil);
         }
 
         trace_pci_nvme_dif_prchk_guard_crc64(be64_to_cpu(dif->g64.guard), crc);
@@ -569,11 +574,6 @@ uint16_t nvme_dif_rw(NvmeCtrl *n, NvmeRequest *req)
         if (pract) {
             uint8_t *mbuf, *end;
             int16_t pil = ns->lbaf.ms - nvme_pi_tuple_size(ns);
-
-            status = nvme_check_prinfo(ns, prinfo, slba, reftag);
-            if (status) {
-                goto err;
-            }
 
             flags = 0;
 

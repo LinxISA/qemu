@@ -1,11 +1,12 @@
 #ifndef HW_PPC_H
 #define HW_PPC_H
 
-#include "target/ppc/cpu-qom.h"
+#include "target/ppc/cpu.h"
 
 void ppc_set_irq(PowerPCCPU *cpu, int n_IRQ, int level);
 PowerPCCPU *ppc_get_vcpu_by_pir(int pir);
 int ppc_cpu_pir(PowerPCCPU *cpu);
+int ppc_cpu_tir(PowerPCCPU *cpu);
 
 /* PowerPC hardware exceptions management helpers */
 typedef void (*clk_setup_cb)(void *opaque, uint32_t freq);
@@ -51,9 +52,11 @@ struct ppc_tb_t {
 #define PPC_DECR_UNDERFLOW_LEVEL     (1 << 4) /* Decr interrupt active when
                                                * the most significant bit is 1.
                                                */
+#define PPC_TIMER_PPE                (1 << 5) /* Enable PPE support */
 
 uint64_t cpu_ppc_get_tb(ppc_tb_t *tb_env, uint64_t vmclk, int64_t tb_offset);
-clk_setup_cb cpu_ppc_tb_init (CPUPPCState *env, uint32_t freq);
+void cpu_ppc_tb_init(CPUPPCState *env, uint32_t freq);
+void cpu_ppc_tb_reset(CPUPPCState *env);
 void cpu_ppc_tb_free(CPUPPCState *env);
 void cpu_ppc_hdecr_init(CPUPPCState *env);
 void cpu_ppc_hdecr_exit(CPUPPCState *env);
@@ -99,11 +102,11 @@ enum {
     ARCH_MAC99_U3,
 };
 
-#define FW_CFG_PPC_WIDTH	(FW_CFG_ARCH_LOCAL + 0x00)
-#define FW_CFG_PPC_HEIGHT	(FW_CFG_ARCH_LOCAL + 0x01)
-#define FW_CFG_PPC_DEPTH	(FW_CFG_ARCH_LOCAL + 0x02)
-#define FW_CFG_PPC_TBFREQ	(FW_CFG_ARCH_LOCAL + 0x03)
-#define FW_CFG_PPC_CLOCKFREQ	(FW_CFG_ARCH_LOCAL + 0x04)
+#define FW_CFG_PPC_WIDTH        (FW_CFG_ARCH_LOCAL + 0x00)
+#define FW_CFG_PPC_HEIGHT       (FW_CFG_ARCH_LOCAL + 0x01)
+#define FW_CFG_PPC_DEPTH        (FW_CFG_ARCH_LOCAL + 0x02)
+#define FW_CFG_PPC_TBFREQ       (FW_CFG_ARCH_LOCAL + 0x03)
+#define FW_CFG_PPC_CLOCKFREQ    (FW_CFG_ARCH_LOCAL + 0x04)
 #define FW_CFG_PPC_IS_KVM       (FW_CFG_ARCH_LOCAL + 0x05)
 #define FW_CFG_PPC_KVM_HC       (FW_CFG_ARCH_LOCAL + 0x06)
 #define FW_CFG_PPC_KVM_PID      (FW_CFG_ARCH_LOCAL + 0x07)
@@ -113,6 +116,13 @@ enum {
 #define FW_CFG_PPC_VIACONFIG    (FW_CFG_ARCH_LOCAL + 0x0b)
 
 #define PPC_SERIAL_MM_BAUDBASE 399193
+
+#ifndef CONFIG_USER_ONLY
+void booke206_set_tlb(ppcmas_tlb_t *tlb, target_ulong va, hwaddr pa,
+                      hwaddr len);
+void booke_set_tlb(ppcemb_tlb_t *tlb, target_ulong va, hwaddr pa,
+                   target_ulong size);
+#endif
 
 /* ppc_booke.c */
 void ppc_booke_timers_init(PowerPCCPU *cpu, uint32_t freq, uint32_t flags);

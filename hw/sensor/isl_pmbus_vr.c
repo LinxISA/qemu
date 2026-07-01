@@ -8,13 +8,25 @@
 
 #include "qemu/osdep.h"
 #include "hw/sensor/isl_pmbus_vr.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/visitor.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 
 static uint8_t isl_pmbus_vr_read_byte(PMBusDevice *pmdev)
 {
+    ISLState *s = ISL69260(pmdev);
+
+    switch (pmdev->code) {
+    case PMBUS_IC_DEVICE_ID:
+        if (!s->ic_device_id_len) {
+            break;
+        }
+        pmbus_send(pmdev, s->ic_device_id, s->ic_device_id_len);
+        pmbus_idle(pmdev);
+        return 0;
+    }
+
     qemu_log_mask(LOG_GUEST_ERROR,
                   "%s: reading from unsupported register: 0x%02x\n",
                   __func__, pmdev->code);
@@ -51,7 +63,7 @@ static void isl_pmbus_vr_set(Object *obj, Visitor *v, const char *name,
     pmbus_check_limits(pmdev);
 }
 
-static void isl_pmbus_vr_exit_reset(Object *obj)
+static void isl_pmbus_vr_exit_reset(Object *obj, ResetType type)
 {
     PMBusDevice *pmdev = PMBUS_DEVICE(obj);
 
@@ -89,12 +101,12 @@ static void isl_pmbus_vr_exit_reset(Object *obj)
     }
 }
 
-/* The raa228000 uses different direct mode coefficents from most isl devices */
-static void raa228000_exit_reset(Object *obj)
+/* The raa228000 uses different direct mode coefficients from most isl devices */
+static void raa228000_exit_reset(Object *obj, ResetType type)
 {
     PMBusDevice *pmdev = PMBUS_DEVICE(obj);
 
-    isl_pmbus_vr_exit_reset(obj);
+    isl_pmbus_vr_exit_reset(obj, type);
 
     pmdev->pages[0].read_iout = 0;
     pmdev->pages[0].read_pout = 0;
@@ -105,6 +117,18 @@ static void raa228000_exit_reset(Object *obj)
     pmdev->pages[0].read_temperature_1 = 0;
     pmdev->pages[0].read_temperature_2 = 0;
     pmdev->pages[0].read_temperature_3 = 0;
+}
+
+static void isl69259_exit_reset(Object *obj, ResetType type)
+{
+    ISLState *s = ISL69260(obj);
+    static const uint8_t ic_device_id[] = {0x04, 0x00, 0x81, 0xD2, 0x49, 0x3c};
+    g_assert(sizeof(ic_device_id) <= sizeof(s->ic_device_id));
+
+    isl_pmbus_vr_exit_reset(obj, type);
+
+    s->ic_device_id_len = sizeof(ic_device_id);
+    memcpy(s->ic_device_id, ic_device_id, sizeof(ic_device_id));
 }
 
 static void isl_pmbus_vr_add_props(Object *obj, uint64_t *flags, uint8_t pages)
@@ -209,7 +233,7 @@ static void raa228000_init(Object *obj)
     isl_pmbus_vr_add_props(obj, flags, 1);
 }
 
-static void isl_pmbus_vr_class_init(ObjectClass *klass, void *data,
+static void isl_pmbus_vr_class_init(ObjectClass *klass, const void *data,
                                     uint8_t pages)
 {
     PMBusDeviceClass *k = PMBUS_DEVICE_CLASS(klass);
@@ -218,7 +242,7 @@ static void isl_pmbus_vr_class_init(ObjectClass *klass, void *data,
     k->device_num_pages = pages;
 }
 
-static void isl69260_class_init(ObjectClass *klass, void *data)
+static void isl69260_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -227,7 +251,7 @@ static void isl69260_class_init(ObjectClass *klass, void *data)
     isl_pmbus_vr_class_init(klass, data, 2);
 }
 
-static void raa228000_class_init(ObjectClass *klass, void *data)
+static void raa228000_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -236,7 +260,7 @@ static void raa228000_class_init(ObjectClass *klass, void *data)
     isl_pmbus_vr_class_init(klass, data, 1);
 }
 
-static void raa229004_class_init(ObjectClass *klass, void *data)
+static void raa229004_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -244,6 +268,21 @@ static void raa229004_class_init(ObjectClass *klass, void *data)
     rc->phases.exit = isl_pmbus_vr_exit_reset;
     isl_pmbus_vr_class_init(klass, data, 2);
 }
+
+static void isl69259_class_init(ObjectClass *klass, const void *data)
+{
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    dc->desc = "Renesas ISL69259 Digital Multiphase Voltage Regulator";
+    rc->phases.exit = isl69259_exit_reset;
+    isl_pmbus_vr_class_init(klass, data, 2);
+}
+
+static const TypeInfo isl69259_info = {
+    .name = TYPE_ISL69259,
+    .parent = TYPE_ISL69260,
+    .class_init = isl69259_class_init,
+};
 
 static const TypeInfo isl69260_info = {
     .name = TYPE_ISL69260,
@@ -271,6 +310,7 @@ static const TypeInfo raa228000_info = {
 
 static void isl_pmbus_vr_register_types(void)
 {
+    type_register_static(&isl69259_info);
     type_register_static(&isl69260_info);
     type_register_static(&raa228000_info);
     type_register_static(&raa229004_info);

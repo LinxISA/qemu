@@ -25,9 +25,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "exec/cpu-common.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "net/net.h"
@@ -159,7 +160,7 @@ static const VMStateDescription vmstate_rxtx_stats = {
     .name = "xgmac_stats",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT64(rx_bytes, RxTxStats),
         VMSTATE_UINT64(tx_bytes, RxTxStats),
         VMSTATE_UINT64(rx, RxTxStats),
@@ -173,7 +174,7 @@ static const VMStateDescription vmstate_xgmac = {
     .name = "xgmac",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(stats, XgmacState, 0, vmstate_rxtx_stats, RxTxStats),
         VMSTATE_UINT32_ARRAY(regs, XgmacState, R_MAX),
         VMSTATE_END_OF_LIST()
@@ -207,7 +208,7 @@ static void xgmac_enet_send(XgmacState *s)
     struct desc bd;
     int frame_size;
     int len;
-    uint8_t frame[8192];
+    QEMU_UNINITIALIZED uint8_t frame[8192];
     uint8_t *ptr;
 
     ptr = frame;
@@ -402,7 +403,8 @@ static void xgmac_enet_realize(DeviceState *dev, Error **errp)
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&net_xgmac_enet_info, &s->conf,
-                          object_get_typename(OBJECT(dev)), dev->id, s);
+                          object_get_typename(OBJECT(dev)), dev->id,
+                          &dev->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 
     s->regs[XGMAC_ADDR_HIGH(0)] = (s->conf.macaddr.a[5] << 8) |
@@ -413,12 +415,11 @@ static void xgmac_enet_realize(DeviceState *dev, Error **errp)
                                   s->conf.macaddr.a[0];
 }
 
-static Property xgmac_properties[] = {
+static const Property xgmac_properties[] = {
     DEFINE_NIC_PROPERTIES(XgmacState, conf),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void xgmac_enet_class_init(ObjectClass *klass, void *data)
+static void xgmac_enet_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

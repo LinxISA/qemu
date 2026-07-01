@@ -9,8 +9,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/registerfields.h"
-#include "libqos/libqtest.h"
+#include "hw/core/registerfields.h"
+#include "libqtest.h"
 #include "qemu/module.h"
 #include "libqos/pci-pc.h"
 #include "hw/pci/pci.h"

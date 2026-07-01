@@ -1,0 +1,542 @@
+#
+# LinxISA 32-bit instruction decoding
+#
+# This file contains the 32-bit instruction forms implemented by
+# target/linx/translate.c.
+#
+
+# Fields
+%RegDst 7:5
+%SrcL 15:5
+%SrcR 20:5
+%SrcZero 20:5
+%SrcRType 25:2
+%SrcD 27:5
+%SrcP 27:5
+%SrcA 27:5
+%DstType 27:5
+%SrcType 25:2
+%imm4 24:4
+%imm20 12:20
+%simm17 15:s17
+%simm22 7:s5 15:17
+%simm25 7:s25
+%uimm12 20:12
+%simm12_20_s12 20:s12
+%simm12_7_s5_25_7 7:s5 25:7
+%shamt_27_5 27:5
+%shamt_20_6 20:6
+%shamt_20_5 20:5
+%imml 20:6
+%imms 26:6
+%immr 26:6
+%uimm17_20_12_7_5 20:12 7:5
+%lb_dst 12:3
+%ssr_id 20:12
+%lsr_id 20:12
+%acr_type 20:4
+%aq 26:1
+%rl 25:1
+%far 27:1
+%pred_imm 24:4
+%succ_imm 20:4
+%ModeHi 26:1
+%Mode 25:2
+%reserve_15_17 15:17
+
+# Block attribute (B.ATTR) fields
+%BA_C 25:1
+%BA_DR 26:1
+%BA_DataLayout 7:5
+%BA_DataType 20:5
+%BA_PadValue 27:5
+%BA_T 19:1
+%BA_aq 16:1
+%BA_atom 17:1
+%BA_far 18:1
+%BA_rl 15:1
+
+# Block hint (B.HINT) fields
+%HINT_L_UL 16:1
+%HINT_V 15:1
+%HINT_temp 17:2
+%HINT_prefetch_size 20:12
+%HINT_B_E 15:1
+%HINT_reserve_16_16 16:16
+
+# Tile block fields
+%TileDataType 27:5
+%TileFunc 20:5
+%TileOp10 15:10
+%TileDst 25:3
+%TileSrc0 15:5
+%TileSrc1 20:5
+%TileRegSrc 7:5
+%TileSize 7:5
+%TileReg0_8 16:8
+%TileReg1_8 24:8
+%TileDst8 24:8
+%CellCountM1 16:8
+%TileLast 15:1
+%TileSrcPair 10:2
+%TileDstSlot 10:2
+%TileReserve8_2 8:2
+%TileReuse0 8:1
+%TileReuse1 9:1
+%MetaGpr 15:5
+%MetaMode 11:1
+%TileFormat 7:5
+%TileGroup 12:1
+%S1R 31:1
+%S0R 30:1
+%S1V 29:1
+%S0V 28:1
+
+# Block headers
+bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
+bstart_split_cond   .... .... .... .... .... .... .010 0001 %simm25
+bstart_fall   .... .... .... .... .001 0000 0000 0001 %simm17
+bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
+bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
+bstart_call   .... .... .... .... .100 0000 0000 0001 %simm17
+bstart_ind    .... .... .... .... .101 0000 0000 0001 %simm17
+bstart_icall  .... .... .... .... .110 0000 0000 0001 %simm17
+bstart_ret    .... .... .... .... .111 0000 0000 0001 %simm17
+bstart_fp_fall    .... .... .... .... .001 0001 0000 0001 %simm17
+bstart_fp_direct  .... .... .... .... .010 0001 0000 0001 %simm17
+bstart_fp_cond    .... .... .... .... .011 0001 0000 0001 %simm17
+bstart_fp_call    .... .... .... .... .100 0001 0000 0001 %simm17
+bstart_fp_ind     .... .... .... .... .101 0001 0000 0001 reserve=%reserve_15_17
+bstart_fp_icall   .... .... .... .... .110 0001 0000 0001 reserve=%reserve_15_17
+bstart_fp_ret     .... .... .... .... .111 0001 0000 0001 reserve=%reserve_15_17
+bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
+bstart_fixp       .... .00. .... 0011 1001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
+bstart_tepl       .... .01. .... .... .001 0001 1000 0001 dtype=%TileDataType op=%TileOp10
+bstop         0000 0000 0000 0000 0000 0000 0000 0001
+
+# Vector block headers (VPAR/VSEQ). These are fall-through blocks that commit at
+# (C.)BSTOP or when the next BSTART is encountered.
+bstart_vpar 0000 0.00 0000 0010 0001 0001 1000 0001 mode=%ModeHi
+bstart_vseq 0000 0.00 0000 0010 1001 0001 1000 0001 mode=%ModeHi
+
+# Vector block headers for memory operations (MSEQ/MPAR).
+# MSEQ: sequential vector execution with memory access
+bstart_mseq 0000 0.00 0000 0000 1001 0001 1000 0001 mode=%ModeHi
+# MPAR: parallel vector execution with memory access
+bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
+
+# Tile block headers (TMA/CUBE). These are fall-through blocks that commit at
+# (C.)BSTOP or when the next BSTART is encountered.
+bstart_tma     .... .00. .... 0001 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
+bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
+
+# Tile block operand descriptors (multiple descriptors per block are legal).
+b_itp          .... .... .... .... .010 .... 0001 0011 src1=%TileReg1_8 src0=%TileReg0_8 l=%TileLast src_pair=%TileSrcPair s1r=%TileReuse1 s0r=%TileReuse0
+b_ota          .... .... .... .... .011 .... 0001 0011 dst=%TileDst8 cell_count_m1=%CellCountM1 l=%TileLast dst_slot=%TileDstSlot reserved=%TileReserve8_2
+b_meta         0000 0000 0000 .... .100 .000 0100 0011 meta=%MetaGpr mode=%MetaMode
+
+# Decoupled-body pointer (decoupled block headers).
+b_text         .... .... .... .... .... .... .000 0011 %simm25
+
+# GPR I/O dependency (decoupled block headers).
+b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
+
+# Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
+b_arg          0000 0000 0000 0000 0011 .... .100 0011 format=%TileFormat
+b_arg_norm     0000 0000 0000 1111 1010 0000 0010 0011
+b_arg_nz2dn    0000 0010 0000 1111 1010 1110 0010 0011
+b_arg_nd2zn    0001 1000 0000 0010 0010 0001 1010 0011
+b_arg_dn2nz    0001 1000 0000 0000 1010 0100 1010 0011
+b_arg_dn2zn    0001 1000 0000 0010 0010 0100 0010 0011
+
+# Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
+b_attr         .... .... .... .... .000 .... .010 0011 c=%BA_C dr=%BA_DR layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue t=%BA_T aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl
+
+# Block hints; treated as no-ops in bring-up.
+b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp
+b_hint_trace   .... .... .... .... .001 0000 0011 0011 b_e=%HINT_B_E reserve=%HINT_reserve_16_16
+b_iod          .... .00. .... .... .001 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
+
+# Block argument registers (LB0/LB1/LB2): LBx = RegSrc + uimm17
+b_dim_lb0      .... .... .... .... .000 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
+b_dim_lb1      .... .... .... .... .001 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
+b_dim_lb2      .... .... .... .... .010 .... .100 0011 reg=%SrcL uimm=%uimm17_20_12_7_5
+
+# SSR access (system registers)
+# Encoding (base form): SSR_ID[11:0] in bits [31:20].
+ssrget .... .... .... 0000 0000 .... .011 1011 %RegDst ssrid=%ssr_id
+ssrset .... .... .... .... .001 0000 0011 1011 %SrcL ssrid=%ssr_id
+ssrswap .... .... .... .... .010 .... .011 1011 %RegDst %SrcL ssrid=%ssr_id
+
+# Access Control Ring (ACR) privilege transitions
+# acrc rst_type
+acrc   0000 0000 .... 0000 0011 0000 0010 1011 rst=%acr_type
+# acre rra_type
+acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
+
+# Atomics (minimal subset for toolchain intrinsics bring-up)
+# Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
+lr_w   0010 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
+lr_d   0011 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
+sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+
+swapw  0010 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+
+lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+
+fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
+fence_i 0001 0000 0000 0000 0010 0000 0010 1011
+
+# TLB flush (bring-up).
+tlb_ia   0000 0000 0000 .... .111 0000 0010 1011 %SrcL
+tlb_iv   0000 0000 0001 .... .111 0000 0010 1011 %SrcL
+tlb_iav  0000 0000 0010 .... .111 0000 0010 1011 %SrcL
+tlb_iall 0000 0000 0011 0000 0111 0000 0010 1011
+
+# Function entry/exit macro instructions (LinxISA spec)
+# These encode register range [SrcBegin ~ SrcEnd] and stack size (uimm)
+#
+# Encoding:
+#   bits [6:0] = 0x41 (opcode)
+#   bits [11:7] = uimm[14:10] (high 5 bits of stack size / 8)
+#   bits [14:12] = type (000=FENTRY, 001=FEXIT, 010=FRET.RA, 011=FRET.STK)
+#   bits [19:15] = SrcBegin/DstBegin (start register index)
+#   bits [24:20] = SrcEnd/DstEnd (end register index)
+#   bits [31:25] = uimm[9:3] (low 7 bits of stack size / 8)
+#
+# Stack size = uimm (8-byte aligned, uimm[2:0] implicit 0)
+# Register range: R[Begin] to R[End], can wrap around R23->R2
+%fentry_uimm_hi 7:5
+%fentry_uimm_lo 25:7
+%fentry_begin 15:5
+%fentry_end 20:5
+
+# FENTRY: Function entry - save registers, adjust SP
+fentry        .... .... .... .... .000 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FEXIT: Function exit - restore registers, adjust SP (returns via setc.tgt)
+fexit         .... .... .... .... .001 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FRET.RA: Function return via RA - restore registers, adjust SP, return
+fret_ra       .... .... .... .... .010 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# FRET.STK: Function return via stack - restore registers, adjust SP, return
+fret_stk      .... .... .... .... .011 .... .100 0001 uimm_hi=%fentry_uimm_hi uimm_lo=%fentry_uimm_lo reg_begin=%fentry_begin reg_end=%fentry_end
+
+# Bulk memory template blocks (restartable).
+# Encoding per spec:
+#   MCOPY: RegSrc0=DstAddr (bits 19..15), RegSrc1=SrcAddr (24..20), RegSrc2=Size (31..27)
+#   MSET:  RegSrc0=DstAddr (bits 19..15), RegSrc1=Value   (24..20), RegSrc2=Size (31..27)
+# These are standalone template blocks (must not appear inside BSTART..BSTOP).
+mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
+mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD
+esave         .... .00. .... .... .010 0000 0011 0001 %SrcL %SrcR %SrcD
+ercov         .... .00. .... .... .011 0000 0011 0001 %SrcL %SrcR %SrcD
+
+# PC-relative address instructions (overlap group - setret is specialized addtpc with RegDst=RA)
+{
+  setret        .... .... .... .... .... 0101 0000 0111 %imm20
+  addtpc        .... .... .... .... .... .... .000 0111 %RegDst %imm20
+}
+
+# Call/return support
+setc_tgt      0000 0000 0000 .... .100 0000 0011 1011 %SrcL
+
+# Predicate/compare
+setc_eq       0000 0... .... .... .000 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_eqi      .... .... .... .... .000 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_ne       0000 0... .... .... .001 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_nei      .... .... .... .... .001 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_and      0000 0... .... .... .010 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_andi     .... .... .... .... .010 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_or       0000 0... .... .... .011 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_ori      .... .... .... .... .011 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_lt       0000 0... .... .... .100 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_lti      .... .... .... .... .100 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_ltu      0000 0... .... .... .110 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_ltui     .... .... .... .... .110 .... .111 0101 %SrcL %uimm12 shamt=%RegDst
+setc_ge       0000 0... .... .... .101 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_gei      .... .... .... .... .101 .... .111 0101 %SrcL simm12=%simm12_20_s12 shamt=%RegDst
+setc_geu      0000 0... .... .... .111 0000 0110 0101 %SrcL %SrcR %SrcRType
+setc_geui     .... .... .... .... .111 .... .111 0101 %SrcL %uimm12 shamt=%RegDst
+
+cmp_eq        0000 0... .... .... .000 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ne        0000 0... .... .... .001 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_and       0000 0... .... .... .010 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_or        0000 0... .... .... .011 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_lt        0000 0... .... .... .100 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ge        0000 0... .... .... .101 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_ltu       0000 0... .... .... .110 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+cmp_geu       0000 0... .... .... .111 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
+
+# Compare-and-branch
+b_eq          .... .... .... .... .000 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ne          .... .... .... .... .001 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_lt          .... .... .... .... .010 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ge          .... .... .... .... .011 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_ltu         .... .... .... .... .100 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+b_geu         .... .... .... .... .101 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+
+csel          .... .... .... .... .000 .... .111 0111 %RegDst %SrcL %SrcP %SrcR %SrcRType
+
+# ALU (register)
+add           .... .... .... .... .000 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+sub           .... .... .... .... .001 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+and           .... .... .... .... .010 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+or            .... .... .... .... .011 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+xor           .... .... .... .... .100 .... .000 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+addw          .... .... .... .... .000 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+subw          .... .... .... .... .001 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+andw          .... .... .... .... .010 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+orw           .... .... .... .... .011 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+xorw          .... .... .... .... .100 .... .010 0101 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+# ALU (immediate)
+addi          .... .... .... .... .000 .... .001 0101 %RegDst %SrcL %uimm12
+subi          .... .... .... .... .001 .... .001 0101 %RegDst %SrcL %uimm12
+andi          .... .... .... .... .010 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+ori           .... .... .... .... .011 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+xori          .... .... .... .... .100 .... .001 0101 %RegDst %SrcL simm12=%simm12_20_s12
+
+addiw         .... .... .... .... .000 .... .011 0101 %RegDst %SrcL %uimm12
+subiw         .... .... .... .... .001 .... .011 0101 %RegDst %SrcL %uimm12
+andiw         .... .... .... .... .010 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+oriw          .... .... .... .... .011 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+xoriw         .... .... .... .... .100 .... .011 0101 %RegDst %SrcL simm12=%simm12_20_s12
+
+# Mul/Div/Rem
+mul           0000 000. .... .... .000 .... .100 0111 %RegDst %SrcL %SrcR
+mulw          0000 000. .... .... .010 .... .100 0111 %RegDst %SrcL %SrcR
+madd          .... .00. .... .... .110 .... .100 0111 %RegDst %SrcL %SrcR %SrcD
+maddw         .... .00. .... .... .111 .... .100 0111 %RegDst %SrcL %SrcR %SrcD
+
+div           0000 000. .... .... .000 .... .101 0111 %RegDst %SrcL %SrcR
+divu          0000 000. .... .... .001 .... .101 0111 %RegDst %SrcL %SrcR
+divw          0000 000. .... .... .010 .... .101 0111 %RegDst %SrcL %SrcR
+divuw         0000 000. .... .... .011 .... .101 0111 %RegDst %SrcL %SrcR
+
+rem           0000 000. .... .... .100 .... .101 0111 %RegDst %SrcL %SrcR
+remu          0000 000. .... .... .101 .... .101 0111 %RegDst %SrcL %SrcR
+remw          0000 000. .... .... .110 .... .101 0111 %RegDst %SrcL %SrcR
+remuw         0000 000. .... .... .111 .... .101 0111 %RegDst %SrcL %SrcR
+
+# Floating-point arithmetic/compare/convert
+fabs          0000 0..0 0000 .... .000 .... .111 1011 %RegDst %SrcL %SrcType
+
+fadd          0000 0... .... .... .000 .... .100 1011 %RegDst %SrcL %SrcR %SrcType
+fsub          0000 0... .... .... .001 .... .100 1011 %RegDst %SrcL %SrcR %SrcType
+fmul          0000 0... .... .... .010 .... .100 1011 %RegDst %SrcL %SrcR %SrcType
+fdiv          0000 0... .... .... .011 .... .100 1011 %RegDst %SrcL %SrcR %SrcType
+
+feq           0000 0... .... .... .000 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fne           0000 0... .... .... .001 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+flt           0000 0... .... .... .010 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fge           0000 0... .... .... .011 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+feqs          0000 1... .... .... .000 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fnes          0000 1... .... .... .001 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+flts          0000 1... .... .... .010 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fges          0000 1... .... .... .011 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fmax          0000 0... .... .... .110 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+fmin          0000 0... .... .... .111 .... .101 1011 %RegDst %SrcL %SrcR %SrcType
+
+fmadd         .... .... .... .... .100 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fmsub         .... .... .... .... .101 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fnmadd        .... .... .... .... .110 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+fnmsub        .... .... .... .... .111 .... .100 1011 %RegDst %SrcL %SrcR %SrcA %SrcType
+
+fsqrt         0000 0..0 0000 .... .001 .... .111 1011 %RegDst %SrcL %SrcType
+frecip        0000 0..0 0000 .... .010 .... .111 1011 %RegDst %SrcL %SrcType
+fexp          0000 0..0 0000 .... .011 .... .111 1011 %RegDst %SrcL %SrcType
+
+fcvt          .... ...0 0000 .... .000 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvta         .... ...0 0000 .... .001 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtm         .... ...0 0000 .... .010 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtn         .... ...0 0000 .... .011 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtp         .... ...0 0000 .... .100 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+fcvtz         .... ...0 0000 .... .101 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+scvtf         .... ...0 0000 .... .110 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+ucvtf         .... ...0 0000 .... .111 .... .110 1011 %DstType %RegDst %SrcL %SrcType
+
+# LUI / constant materialization
+lui           .... .... .... .... .... .... .001 0111 %RegDst %imm20
+
+# Shifts (register)
+sll           0000 000. .... .... .111 .... .000 0101 %RegDst %SrcL %SrcR
+srl           0000 000. .... .... .101 .... .000 0101 %RegDst %SrcL %SrcR
+sra           0000 000. .... .... .110 .... .000 0101 %RegDst %SrcL %SrcR
+
+sllw          0000 000. .... .... .111 .... .010 0101 %RegDst %SrcL %SrcR
+srlw          0000 000. .... .... .101 .... .010 0101 %RegDst %SrcL %SrcR
+sraw          0000 000. .... .... .110 .... .010 0101 %RegDst %SrcL %SrcR
+
+# Shifts (immediate)
+slli          0000 00.. .... .... .111 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+srli          0000 00.. .... .... .101 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+srai          0000 00.. .... .... .110 .... .001 0101 %RegDst %SrcL shamt=%shamt_20_6
+
+slliw         0000 000. .... .... .111 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+srliw         0000 000. .... .... .101 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+sraiw         0000 000. .... .... .110 .... .011 0101 %RegDst %SrcL shamt=%shamt_20_5
+
+# Loads (immediate offset)
+lbi           .... .... .... .... .000 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lbui          .... .... .... .... .100 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhi           .... .... .... .... .001 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhui          .... .... .... .... .101 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwi           .... .... .... .... .010 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwui          .... .... .... .... .110 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+ldi           .... .... .... .... .011 .... .001 1001 %RegDst %SrcL simm12=%simm12_20_s12
+
+# Loads (PC-relative symbol addressing)
+lb_pcr        .... .... .... .... .000 .... .011 1001 %RegDst %simm17
+lbu_pcr       .... .... .... .... .100 .... .011 1001 %RegDst %simm17
+lh_pcr        .... .... .... .... .001 .... .011 1001 %RegDst %simm17
+lhu_pcr       .... .... .... .... .101 .... .011 1001 %RegDst %simm17
+lw_pcr        .... .... .... .... .010 .... .011 1001 %RegDst %simm17
+lwu_pcr       .... .... .... .... .110 .... .011 1001 %RegDst %simm17
+ld_pcr        .... .... .... .... .011 .... .011 1001 %RegDst %simm17
+
+# Loads (indexed)
+lb            .... .... .... .... .000 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lbu           .... .... .... .... .100 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lh            .... .... .... .... .001 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lhu           .... .... .... .... .101 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lw            .... .... .... .... .010 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+lwu           .... .... .... .... .110 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+ld            .... .... .... .... .011 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+
+# Stores (immediate offset)
+sbi           .... .... .... .... .000 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+shi           .... .... .... .... .001 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+swi           .... .... .... .... .010 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+sdi           .... .... .... .... .011 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+
+# Stores (PC-relative symbol addressing)
+sb_pcr        .... .... .... .... .000 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sh_pcr        .... .... .... .... .001 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sw_pcr        .... .... .... .... .010 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+sd_pcr        .... .... .... .... .011 .... .110 1001 %SrcL imm=%uimm17_20_12_7_5
+
+# Stores (indexed)
+sb            .... .... .... .... .000 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sh            .... .... .... .... .001 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sw            .... .... .... .... .010 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sd            .... .... .... .... .011 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sh_u          .... .... .... .... .101 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sw_u          .... .... .... .... .110 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+sd_u          .... .... .... .... .111 0000 0100 1001 %SrcD %SrcL %SrcR %SrcRType
+
+# Min/Max
+max           0000 000. .... .... .100 .... .101 1011 %RegDst %SrcL %SrcR
+maxu          0000 100. .... .... .100 .... .101 1011 %RegDst %SrcL %SrcR
+min           0000 000. .... .... .101 .... .101 1011 %RegDst %SrcL %SrcR
+minu          0000 100. .... .... .101 .... .101 1011 %RegDst %SrcL %SrcR
+
+# Bit manipulation
+clz           .... .... .... .... .101 .... .110 0111 %RegDst %SrcL %imml %imms
+ctz           .... .... .... .... .100 .... .110 0111 %RegDst %SrcL %imml %imms
+bcnt          .... .... .... .... .110 .... .110 0111 %RegDst %SrcL %imml %imms
+rev           .... .... .... .... .111 .... .110 0111 %RegDst %SrcL %imml %immr
+
+# Bit extract/insert
+bxs           .... .... .... .... .000 .... .110 0111 %RegDst %SrcL %imml %imms
+bxu           .... .... .... .... .001 .... .110 0111 %RegDst %SrcL %imml %imms
+bic           .... .... .... .... .010 .... .110 0111 %RegDst %SrcL %imml %imms
+bis           .... .... .... .... .011 .... .110 0111 %RegDst %SrcL %imml %imms
+
+# Compare with immediate
+cmp_eqi       .... .... .... .... .000 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_nei       .... .... .... .... .001 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_andi      .... .... .... .... .010 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_ori       .... .... .... .... .011 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_lti       .... .... .... .... .100 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_gei       .... .... .... .... .101 .... .101 0101 %RegDst %SrcL simm12=%simm12_20_s12
+cmp_ltui      .... .... .... .... .110 .... .101 0101 %RegDst %SrcL %uimm12
+cmp_geui      .... .... .... .... .111 .... .101 0101 %RegDst %SrcL %uimm12
+
+# Branch instructions (set condition, not direct branches)
+j             .... .... .... .... .000 .... .011 0111 %simm22
+jr            .... .... .... .... .110 .... .010 0111 %SrcL %SrcZero simm12=%simm12_7_s5_25_7
+b_z           .... .... .... .... .001 .... .011 0111 %simm22
+b_nz          .... .... .... .... .010 .... .011 0111 %simm22
+
+# Extra mul/div reachability
+mulu          0000 000. .... .... .001 .... .100 0111 %RegDst %SrcL %SrcR
+muluw         0000 000. .... .... .011 .... .100 0111 %RegDst %SrcL %SrcR
+
+# System / debug
+assert        0000 0000 0000 .... .001 0000 0010 1011 %SrcL
+bse           0000 0000 0000 .... .000 0000 0010 1011 %SrcL
+bwe           0000 0000 0001 .... .000 0000 0010 1011 %SrcL
+bwi           0000 0000 0010 .... .000 0000 0010 1011 %SrcL
+bwt           0000 0000 0011 .... .000 0000 0010 1011 %SrcL
+bc_iall       0000 0000 0001 0000 0100 0000 0010 1011
+bc_iva        0000 0000 0000 .... .100 0000 0010 1011 %SrcL
+ic_iall       0000 0000 0001 0000 0101 0000 0010 1011
+ic_iva        0000 0000 0000 .... .101 0000 0010 1011 %SrcL
+dc_iall       0000 0000 0001 0000 0110 0000 0010 1011
+dc_iva        0000 0000 0000 .... .110 0000 0010 1011 %SrcL
+dc_civa       0000 0000 0011 .... .110 0000 0010 1011 %SrcL
+dc_cva        0000 0000 0010 .... .110 0000 0010 1011 %SrcL
+dc_csw        0000 0000 0101 .... .110 0000 0010 1011 %SrcL
+dc_cisw       0000 0000 0110 .... .110 0000 0010 1011 %SrcL
+dc_isw        0000 0000 0111 .... .110 0000 0010 1011 %SrcL
+dc_zva        0000 0000 0100 .... .110 0000 0010 1011 %SrcL
+ebreak        0000 .... 0001 0000 0001 0000 0010 1011 %imm4
+lsrget        .... .... .... 0000 0011 .... .011 1011 %RegDst lsrid=%lsr_id
+
+# Unscaled immediate loads / stores
+ldi_u         .... .... .... .... .011 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhi_u         .... .... .... .... .001 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lhui_u        .... .... .... .... .101 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwi_u         .... .... .... .... .010 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+lwui_u        .... .... .... .... .110 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+shi_u         .... .... .... .... .101 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+swi_u         .... .... .... .... .110 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+sdi_u         .... .... .... .... .111 .... .101 1001 %SrcL %SrcR simm12=%simm12_7_s5_25_7
+
+# Non-faulting prefetch hints
+prf           .... .... .... .... .111 .... .000 1001 %RegDst %SrcL %SrcR %SrcRType shamt=%shamt_27_5
+prfi_u        .... .... .... .... .111 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
+
+# Atomics
+lr_b          0000 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_h          0001 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+sc_b          0000 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_h          0001 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapb         0000 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swaph         0001 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_and        0001 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_or         0010 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_xor        0011 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smax       0100 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smin       0101 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umax       0110 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umin       0111 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_and        0001 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_or         0010 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_xor        0011 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smax       0100 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smin       0101 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umax       0110 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umin       0111 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sw_add        0000 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_and        0001 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_or         0010 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_xor        0011 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_smax       0100 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_smin       0101 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_umax       0110 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sw_umin       0111 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_add        0000 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_and        0001 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_or         0010 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_xor        0011 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_smax       0100 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_smin       0101 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_umax       0110 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+sd_umin       0111 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl

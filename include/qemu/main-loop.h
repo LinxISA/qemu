@@ -25,9 +25,19 @@
 #ifndef QEMU_MAIN_LOOP_H
 #define QEMU_MAIN_LOOP_H
 
-#include "block/aio.h"
+#include "qemu/aio.h"
+#include "qom/object.h"
+#include "system/event-loop-base.h"
 
 #define SIG_IPI SIGUSR1
+
+#define TYPE_MAIN_LOOP  "main-loop"
+OBJECT_DECLARE_TYPE(MainLoop, MainLoopClass, MAIN_LOOP)
+
+struct MainLoop {
+    EventLoopBase parent_obj;
+};
+typedef struct MainLoop MainLoop;
 
 /**
  * qemu_init_main_loop: Set up the process so that it can run the main loop.
@@ -147,6 +157,8 @@ typedef void WaitObjectFunc(void *opaque);
  * in the main loop's calls to WaitForMultipleObjects.  When the handle
  * is in a signaled state, QEMU will call @func.
  *
+ * If the same HANDLE is added twice, this function returns -1.
+ *
  * @handle: The Windows handle to be observed.
  * @func: A function to be called when @handle is in a signaled state.
  * @opaque: A pointer-size value that is passed to @func.
@@ -236,19 +248,60 @@ GSource *iohandler_get_g_source(void);
 AioContext *iohandler_get_aio_context(void);
 
 /**
- * qemu_mutex_iothread_locked: Return lock status of the main loop mutex.
+ * rust_bql_mock_lock:
  *
- * The main loop mutex is the coarsest lock in QEMU, and as such it
+ * Called from Rust doctests to make bql_lock() return true.
+ * Do not touch.
+ */
+void rust_bql_mock_lock(void);
+
+/**
+ * bql_locked: Return lock status of the Big QEMU Lock (BQL)
+ *
+ * The Big QEMU Lock (BQL) is the coarsest lock in QEMU, and as such it
  * must always be taken outside other locks.  This function helps
  * functions take different paths depending on whether the current
- * thread is running within the main loop mutex.
+ * thread is running within the BQL.
  *
  * This function should never be used in the block layer, because
  * unit tests, block layer tools and qemu-storage-daemon do not
  * have a BQL.
  * Please instead refer to qemu_in_main_thread().
  */
-bool qemu_mutex_iothread_locked(void);
+bool bql_locked(void);
+
+/**
+ * mutex_is_bql:
+ *
+ * @mutex: the mutex pointer
+ *
+ * Returns whether the mutex is the BQL.
+ */
+bool mutex_is_bql(QemuMutex *mutex);
+
+/**
+ * bql_update_status:
+ *
+ * @locked: update status on whether the BQL is locked
+ *
+ * NOTE: this should normally only be invoked when the status changed.
+ */
+void bql_update_status(bool locked);
+
+/**
+ * bql_block: Allow/deny releasing the BQL
+ *
+ * The Big QEMU Lock (BQL) is used to provide interior mutability to
+ * Rust code, but this only works if other threads cannot run while
+ * the Rust code has an active borrow.  This is because C code in
+ * other threads could come in and mutate data under the Rust code's
+ * feet.
+ *
+ * @increase: Whether to increase or decrease the blocking counter.
+ *            Releasing the BQL while the counter is nonzero triggers
+ *            an assertion failure.
+ */
+void bql_block_unlock(bool increase);
 
 /**
  * qemu_in_main_thread: return whether it's possible to safely access
@@ -269,90 +322,116 @@ bool qemu_mutex_iothread_locked(void);
  */
 bool qemu_in_main_thread(void);
 
-/* Mark and check that the function is part of the global state API. */
-#ifdef CONFIG_COCOA
 /*
- * When using the Cocoa UI, addRemovableDevicesMenuItems() is called from
- * a thread different from the QEMU main thread and can not take the BQL,
- * triggering this assertions in the block layer (commit 0439c5a462).
- * As the Cocoa fix is not trivial, disable this assertion for the v7.0.0
- * release (when using Cocoa); we will restore it immediately after the
- * release.
- * This issue is tracked as https://gitlab.com/qemu-project/qemu/-/issues/926
+ * Mark and check that the function is part of the Global State API.
+ * Please refer to include/block/block-global-state.h for more
+ * information about GS API.
  */
-#define GLOBAL_STATE_CODE()
-#else
 #define GLOBAL_STATE_CODE()                                         \
     do {                                                            \
-        /* FIXME: Re-enable after 7.0 release */                    \
-        /* assert(qemu_in_main_thread()); */                        \
+        assert(qemu_in_main_thread());                              \
     } while (0)
-#endif /* CONFIG_COCOA */
 
-/* Mark and check that the function is part of the I/O API. */
+/*
+ * Mark and check that the function is part of the I/O API.
+ * Please refer to include/block/block-io.h for more
+ * information about IO API.
+ */
 #define IO_CODE()                                                   \
     do {                                                            \
         /* nop */                                                   \
     } while (0)
 
-/* Mark and check that the function is part of the "I/O OR GS" API. */
+/*
+ * Mark and check that the function is part of the "I/O OR GS" API.
+ * Please refer to include/block/block-io.h for more
+ * information about "IO or GS" API.
+ */
 #define IO_OR_GS_CODE()                                             \
     do {                                                            \
         /* nop */                                                   \
     } while (0)
 
 /**
- * qemu_mutex_lock_iothread: Lock the main loop mutex.
+ * bql_lock: Lock the Big QEMU Lock (BQL).
  *
- * This function locks the main loop mutex.  The mutex is taken by
+ * This function locks the Big QEMU Lock (BQL).  The lock is taken by
  * main() in vl.c and always taken except while waiting on
- * external events (such as with select).  The mutex should be taken
+ * external events (such as with select).  The lock should be taken
  * by threads other than the main loop thread when calling
  * qemu_bh_new(), qemu_set_fd_handler() and basically all other
  * functions documented in this file.
  *
- * NOTE: tools currently are single-threaded and qemu_mutex_lock_iothread
+ * NOTE: tools currently are single-threaded and bql_lock
  * is a no-op there.
  */
-#define qemu_mutex_lock_iothread()                      \
-    qemu_mutex_lock_iothread_impl(__FILE__, __LINE__)
-void qemu_mutex_lock_iothread_impl(const char *file, int line);
+#define bql_lock() bql_lock_impl(__FILE__, __LINE__)
+void bql_lock_impl(const char *file, int line);
 
 /**
- * qemu_mutex_unlock_iothread: Unlock the main loop mutex.
+ * bql_unlock: Unlock the Big QEMU Lock (BQL).
  *
- * This function unlocks the main loop mutex.  The mutex is taken by
+ * This function unlocks the Big QEMU Lock.  The lock is taken by
  * main() in vl.c and always taken except while waiting on
- * external events (such as with select).  The mutex should be unlocked
+ * external events (such as with select).  The lock should be unlocked
  * as soon as possible by threads other than the main loop thread,
  * because it prevents the main loop from processing callbacks,
  * including timers and bottom halves.
  *
- * NOTE: tools currently are single-threaded and qemu_mutex_unlock_iothread
+ * NOTE: tools currently are single-threaded and bql_unlock
  * is a no-op there.
  */
-void qemu_mutex_unlock_iothread(void);
+void bql_unlock(void);
+
+/**
+ * BQL_LOCK_GUARD
+ *
+ * Wrap a block of code in a conditional bql_{lock,unlock}.
+ */
+typedef struct BQLLockAuto BQLLockAuto;
+
+static inline BQLLockAuto *bql_auto_lock(const char *file, int line)
+{
+    if (bql_locked()) {
+        return NULL;
+    }
+    bql_lock_impl(file, line);
+    /* Anything non-NULL causes the cleanup function to be called */
+    return (BQLLockAuto *)(uintptr_t)1;
+}
+
+static inline void bql_auto_unlock(BQLLockAuto *l)
+{
+    bql_unlock();
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(BQLLockAuto, bql_auto_unlock)
+
+#define BQL_LOCK_GUARD() \
+    g_autoptr(BQLLockAuto) _bql_lock_auto __attribute__((unused)) \
+        = bql_auto_lock(__FILE__, __LINE__)
 
 /*
- * qemu_cond_wait_iothread: Wait on condition for the main loop mutex
+ * qemu_cond_wait_bql: Wait on condition for the Big QEMU Lock (BQL)
  *
- * This function atomically releases the main loop mutex and causes
+ * This function atomically releases the Big QEMU Lock (BQL) and causes
  * the calling thread to block on the condition.
  */
-void qemu_cond_wait_iothread(QemuCond *cond);
+void qemu_cond_wait_bql(QemuCond *cond);
 
 /*
- * qemu_cond_timedwait_iothread: like the previous, but with timeout
+ * qemu_cond_timedwait_bql: like the previous, but with timeout
  */
-void qemu_cond_timedwait_iothread(QemuCond *cond, int ms);
+void qemu_cond_timedwait_bql(QemuCond *cond, int ms);
 
 /* internal interfaces */
 
-void qemu_fd_register(int fd);
-
+#define qemu_bh_new_guarded(cb, opaque, guard) \
+    qemu_bh_new_full((cb), (opaque), (stringify(cb)), guard)
 #define qemu_bh_new(cb, opaque) \
-    qemu_bh_new_full((cb), (opaque), (stringify(cb)))
-QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name);
+    qemu_bh_new_full((cb), (opaque), (stringify(cb)), NULL)
+QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name,
+                         struct MemReentrancyGuard *reentrancy_guard);
 void qemu_bh_schedule_idle(QEMUBH *bh);
 
 enum {

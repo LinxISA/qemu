@@ -7,13 +7,10 @@
  * See the COPYING file in the top-level directory.
  */
 
-#ifndef TCG_CPUS_MTTCG_H
-#define TCG_CPUS_MTTCG_H
-
-/* kick MTTCG vCPU thread */
-void mttcg_kick_vcpu_thread(CPUState *cpu);
+#ifndef TCG_ACCEL_OPS_MTTCG_H
+#define TCG_ACCEL_OPS_MTTCG_H
 
 /* start an mttcg vCPU thread */
 void mttcg_start_vcpu_thread(CPUState *cpu);
 
-#endif /* TCG_CPUS_MTTCG_H */
+#endif /* TCG_ACCEL_OPS_MTTCG_H */

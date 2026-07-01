@@ -20,18 +20,17 @@
 #include <getopt.h>
 #include "libqtest-single.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/module.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qapi-visit-machine.h"
 #include "qapi/qapi-visit-qom.h"
-#include "libqos/malloc.h"
+#include "libqos/libqos-malloc.h"
 #include "libqos/qgraph.h"
 #include "libqos/qgraph_internal.h"
 #include "libqos/qos_external.h"
 
 static char *old_path;
-
 
 
 /**
@@ -104,8 +103,7 @@ static void restart_qemu_or_continue(char *path)
         old_path = g_strdup(path);
         qtest_start(path);
     } else { /* if cmd line is the same, reset the guest */
-        qobject_unref(qmp("{ 'execute': 'system_reset' }"));
-        qmp_eventwait("RESET");
+        qtest_system_reset(global_qtest);
     }
 }
 
@@ -185,8 +183,16 @@ static void run_one_test(const void *arg)
 static void subprocess_run_one_test(const void *arg)
 {
     const gchar *path = arg;
-    g_test_trap_subprocess(path, 0, 0);
+    g_test_trap_subprocess(path, 180 * G_USEC_PER_SEC,
+                           G_TEST_SUBPROCESS_INHERIT_STDOUT |
+                           G_TEST_SUBPROCESS_INHERIT_STDERR);
     g_test_trap_assert_passed();
+}
+
+static void destroy_pathv(void *arg)
+{
+    g_free(((char **)arg)[0]);
+    g_free(arg);
 }
 
 /*
@@ -293,10 +299,13 @@ static void walk_path(QOSGraphNode *orig_path, int len)
     if (path->u.test.subprocess) {
         gchar *subprocess_path = g_strdup_printf("/%s/%s/subprocess",
                                                  qtest_get_arch(), path_str);
-        qtest_add_data_func(path_str, subprocess_path, subprocess_run_one_test);
-        g_test_add_data_func(subprocess_path, path_vec, run_one_test);
+        qtest_add_data_func_full(path_str, subprocess_path,
+                                 subprocess_run_one_test, g_free);
+        g_test_add_data_func_full(subprocess_path, path_vec,
+                                  run_one_test, destroy_pathv);
     } else {
-        qtest_add_data_func(path_str, path_vec, run_one_test);
+        qtest_add_data_func_full(path_str, path_vec,
+                                 run_one_test, destroy_pathv);
     }
 
     g_free(path_str);

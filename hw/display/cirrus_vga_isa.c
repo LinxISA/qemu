@@ -26,11 +26,12 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
-#include "hw/loader.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/isa/isa.h"
 #include "cirrus_vga_internal.h"
 #include "qom/object.h"
+#include "ui/console.h"
 
 #define TYPE_ISA_CIRRUS_VGA "isa-cirrus-vga"
 OBJECT_DECLARE_SIMPLE_TYPE(ISACirrusVGAState, ISA_CIRRUS_VGA)
@@ -68,15 +69,14 @@ static void isa_cirrus_vga_realizefn(DeviceState *dev, Error **errp)
     /* FIXME not qdev yet */
 }
 
-static Property isa_cirrus_vga_properties[] = {
+static const Property isa_cirrus_vga_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", struct ISACirrusVGAState,
                        cirrus_vga.vga.vram_size_mb, 4),
     DEFINE_PROP_BOOL("blitter", struct ISACirrusVGAState,
                      cirrus_vga.enable_blitter, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void isa_cirrus_vga_class_init(ObjectClass *klass, void *data)
+static void isa_cirrus_vga_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -1,5 +1,0 @@
-NEW_EVENT(blk_subw_rr)
-NEW_EVENT(blk_subw_tr)
-NEW_EVENT(blk_subw_tt)
-
-#define TEST_DRIVER testDriver_2_32

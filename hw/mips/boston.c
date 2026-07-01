@@ -21,25 +21,27 @@
 #include "qemu/units.h"
 
 #include "elf.h"
-#include "hw/boards.h"
-#include "hw/char/serial.h"
+#include "hw/core/boards.h"
+#include "hw/char/serial-mm.h"
 #include "hw/ide/pci.h"
-#include "hw/ide/ahci.h"
-#include "hw/loader.h"
-#include "hw/loader-fit.h"
+#include "hw/ide/ahci-pci.h"
+#include "hw/core/loader.h"
+#include "hw/core/loader-fit.h"
 #include "hw/mips/bootloader.h"
 #include "hw/mips/cps.h"
 #include "hw/pci-host/xilinx-pcie.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/guest-random.h"
 #include "qemu/log.h"
 #include "chardev/char.h"
-#include "sysemu/device_tree.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/qtest.h"
-#include "sysemu/runstate.h"
+#include "system/device_tree.h"
+#include "system/system.h"
+#include "system/qtest.h"
+#include "system/runstate.h"
+#include "system/reset.h"
 
 #include <libfdt.h>
 #include "qom/object.h"
@@ -66,7 +68,7 @@ struct BostonState {
     SerialMM *uart;
     Clock *cpuclk;
 
-    CharBackend lcd_display;
+    CharFrontend lcd_display;
     char lcd_content[8];
     bool lcd_inited;
 
@@ -218,7 +220,7 @@ static void boston_lcd_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps boston_lcd_ops = {
     .read = boston_lcd_read,
     .write = boston_lcd_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static uint64_t boston_platreg_read(void *opaque, hwaddr addr,
@@ -297,7 +299,7 @@ static void boston_platreg_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps boston_platreg_ops = {
     .read = boston_platreg_read,
     .write = boston_platreg_write,
-    .endianness = DEVICE_NATIVE_ENDIAN,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static void mips_boston_instance_init(Object *obj)
@@ -321,7 +323,7 @@ static void boston_register_types(void)
 }
 type_init(boston_register_types)
 
-static void gen_firmware(uint32_t *p, hwaddr kernel_entry, hwaddr fdt_addr)
+static void gen_firmware(void *p, hwaddr kernel_entry, hwaddr fdt_addr)
 {
     uint64_t regaddr;
 
@@ -350,11 +352,14 @@ static void gen_firmware(uint32_t *p, hwaddr kernel_entry, hwaddr fdt_addr)
      * a2/$6 = 0
      * a3/$7 = 0
      */
-    bl_gen_jump_kernel(&p, 0, (int32_t)-2, fdt_addr, 0, 0, kernel_entry);
+    bl_gen_jump_kernel(&p,
+                       true, 0, true, (int32_t)-2,
+                       true, fdt_addr, true, 0, true, 0,
+                       kernel_entry);
 }
 
-static const void *boston_fdt_filter(void *opaque, const void *fdt_orig,
-                                     const void *match_data, hwaddr *load_addr)
+static void *boston_fdt_filter(void *opaque, const void *fdt_orig,
+                               const void *match_data, hwaddr *load_addr)
 {
     BostonState *s = BOSTON(opaque);
     MachineState *machine = s->mach;
@@ -363,12 +368,16 @@ static const void *boston_fdt_filter(void *opaque, const void *fdt_orig,
     size_t ram_low_sz, ram_high_sz;
     size_t fdt_sz = fdt_totalsize(fdt_orig) * 2;
     g_autofree void *fdt = g_malloc0(fdt_sz);
+    uint8_t rng_seed[32];
 
     err = fdt_open_into(fdt_orig, fdt, fdt_sz);
     if (err) {
         fprintf(stderr, "unable to open FDT\n");
         return NULL;
     }
+
+    qemu_guest_getrandom_nofail(rng_seed, sizeof(rng_seed));
+    qemu_fdt_setprop(fdt, "/chosen", "rng-seed", rng_seed, sizeof(rng_seed));
 
     cmdline = (machine->kernel_cmdline && machine->kernel_cmdline[0])
             ? machine->kernel_cmdline : " ";
@@ -386,7 +395,6 @@ static const void *boston_fdt_filter(void *opaque, const void *fdt_orig,
                         1, ram_high_sz);
 
     fdt = g_realloc(fdt, fdt_totalsize(fdt));
-    qemu_fdt_dumpdtb(fdt, fdt_sz);
 
     s->fdt_base = *load_addr;
 
@@ -419,7 +427,7 @@ static inline XilinxPCIEHost *
 xilinx_pcie_init(MemoryRegion *sys_mem, uint32_t bus_nr,
                  hwaddr cfg_base, uint64_t cfg_size,
                  hwaddr mmio_base, uint64_t mmio_size,
-                 qemu_irq irq, bool link_up)
+                 qemu_irq irq)
 {
     DeviceState *dev;
     MemoryRegion *cfg, *mmio;
@@ -431,7 +439,6 @@ xilinx_pcie_init(MemoryRegion *sys_mem, uint32_t bus_nr,
     qdev_prop_set_uint64(dev, "cfg_size", cfg_size);
     qdev_prop_set_uint64(dev, "mmio_base", mmio_base);
     qdev_prop_set_uint64(dev, "mmio_size", mmio_size);
-    qdev_prop_set_bit(dev, "link_up", link_up);
 
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
 
@@ -507,7 +514,7 @@ static const void *create_fdt(BostonState *s,
 {
     void *fdt;
     int cpu;
-    MachineState *mc = s->mach;
+    MachineState *ms = s->mach;
     uint32_t platreg_ph, gic_ph, clk_ph;
     char *name, *gic_name, *platreg_name, *stdout_name;
     static const char * const syscon_compat[2] = {
@@ -534,7 +541,7 @@ static const void *create_fdt(BostonState *s,
     qemu_fdt_setprop_cell(fdt, "/cpus", "#size-cells", 0x0);
     qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 0x1);
 
-    for (cpu = 0; cpu < mc->smp.cpus; cpu++) {
+    for (cpu = 0; cpu < ms->smp.cpus; cpu++) {
         name = g_strdup_printf("/cpus/cpu@%d", cpu);
         qemu_fdt_add_subnode(fdt, name);
         qemu_fdt_setprop_string(fdt, name, "compatible", "img,mips");
@@ -669,7 +676,8 @@ static void boston_mach_init(MachineState *machine)
     MemoryRegion *flash, *ddr_low_alias, *lcd, *platreg;
     MemoryRegion *sys_mem = get_system_memory();
     XilinxPCIEHost *pcie2;
-    PCIDevice *ahci;
+    PCIDevice *pdev;
+    AHCIPCIState *ich9;
     DriveInfo *hd[6];
     Chardev *chr;
     int fw_size, fit_err;
@@ -694,7 +702,7 @@ static void boston_mach_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "cps", &s->cps, TYPE_MIPS_CPS);
     object_property_set_str(OBJECT(&s->cps), "cpu-type", machine->cpu_type,
                             &error_fatal);
-    object_property_set_int(OBJECT(&s->cps), "num-vp", machine->smp.cpus,
+    object_property_set_uint(OBJECT(&s->cps), "num-vp", machine->smp.cpus,
                             &error_fatal);
     qdev_connect_clock_in(DEVICE(&s->cps), "clk-in",
                           qdev_get_clock_out(dev, "cpu-refclk"));
@@ -724,21 +732,21 @@ static void boston_mach_init(MachineState *machine)
                      boston_memmap[BOSTON_PCIE0].size,
                      boston_memmap[BOSTON_PCIE0_MMIO].base,
                      boston_memmap[BOSTON_PCIE0_MMIO].size,
-                     get_cps_irq(&s->cps, 2), false);
+                     get_cps_irq(&s->cps, 2));
 
     xilinx_pcie_init(sys_mem, 1,
                      boston_memmap[BOSTON_PCIE1].base,
                      boston_memmap[BOSTON_PCIE1].size,
                      boston_memmap[BOSTON_PCIE1_MMIO].base,
                      boston_memmap[BOSTON_PCIE1_MMIO].size,
-                     get_cps_irq(&s->cps, 1), false);
+                     get_cps_irq(&s->cps, 1));
 
     pcie2 = xilinx_pcie_init(sys_mem, 2,
                              boston_memmap[BOSTON_PCIE2].base,
                              boston_memmap[BOSTON_PCIE2].size,
                              boston_memmap[BOSTON_PCIE2_MMIO].base,
                              boston_memmap[BOSTON_PCIE2_MMIO].size,
-                             get_cps_irq(&s->cps, 0), true);
+                             get_cps_irq(&s->cps, 0));
 
     platreg = g_new(MemoryRegion, 1);
     memory_region_init_io(platreg, NULL, &boston_platreg_ops, s,
@@ -749,7 +757,7 @@ static void boston_mach_init(MachineState *machine)
 
     s->uart = serial_mm_init(sys_mem, boston_memmap[BOSTON_UART].base, 2,
                              get_cps_irq(&s->cps, 3), 10000000,
-                             serial_hd(0), DEVICE_NATIVE_ENDIAN);
+                             serial_hd(0), DEVICE_LITTLE_ENDIAN);
 
     lcd = g_new(MemoryRegion, 1);
     memory_region_init_io(lcd, NULL, &boston_lcd_ops, s, "boston-lcd", 0x8);
@@ -761,16 +769,16 @@ static void boston_mach_init(MachineState *machine)
     qemu_chr_fe_set_handlers(&s->lcd_display, NULL, NULL,
                              boston_lcd_event, NULL, s, NULL, true);
 
-    ahci = pci_create_simple_multifunction(&PCI_BRIDGE(&pcie2->root)->sec_bus,
-                                           PCI_DEVFN(0, 0),
-                                           true, TYPE_ICH9_AHCI);
-    g_assert(ARRAY_SIZE(hd) == ahci_get_num_ports(ahci));
-    ide_drive_get(hd, ahci_get_num_ports(ahci));
-    ahci_ide_create_devs(ahci, hd);
+    pdev = pci_create_simple_multifunction(&PCI_BRIDGE(&pcie2->root)->sec_bus,
+                                           PCI_DEVFN(0, 0), TYPE_ICH9_AHCI);
+    ich9 = ICH9_AHCI(pdev);
+    g_assert(ARRAY_SIZE(hd) == ich9->ahci.ports);
+    ide_drive_get(hd, ich9->ahci.ports);
+    ahci_ide_create_devs(&ich9->ahci, hd);
 
     if (machine->firmware) {
         fw_size = load_image_targphys(machine->firmware,
-                                      0x1fc00000, 4 * MiB);
+                                      0x1fc00000, 4 * MiB, NULL);
         if (fw_size == -1) {
             error_report("unable to load firmware image '%s'",
                           machine->firmware);
@@ -783,11 +791,12 @@ static void boston_mach_init(MachineState *machine)
         kernel_size = load_elf(machine->kernel_filename, NULL,
                            cpu_mips_kseg0_to_phys, NULL,
                            &kernel_entry, NULL, &kernel_high,
-                           NULL, 0, EM_MIPS, 1, 0);
+                           NULL, ELFDATA2LSB, EM_MIPS, 1, 0);
 
         if (kernel_size > 0) {
             int dt_size;
-            g_autofree const void *dtb_file_data, *dtb_load_data;
+            g_autofree const void *dtb_file_data = NULL;
+            void *dtb_load_data = NULL;
             hwaddr dtb_paddr = QEMU_ALIGN_UP(kernel_high, 64 * KiB);
             hwaddr dtb_vaddr = cpu_mips_phys_to_kseg0(NULL, dtb_paddr);
 
@@ -800,13 +809,22 @@ static void boston_mach_init(MachineState *machine)
 
             dtb_load_data = boston_fdt_filter(s, dtb_file_data,
                                               NULL, &dtb_vaddr);
+            if (!dtb_load_data) {
+                /* boston_fdt_filter() already printed the error for us */
+                exit(1);
+            }
+
+            machine->fdt = dtb_load_data;
 
             /* Calculate real fdt size after filter */
             dt_size = fdt_totalsize(dtb_load_data);
             rom_add_blob_fixed("dtb", dtb_load_data, dt_size, dtb_paddr);
+            qemu_register_reset_nosnapshotload(qemu_fdt_randomize_seeds,
+                                rom_ptr(dtb_paddr, dt_size));
         } else {
             /* Try to load file as FIT */
-            fit_err = load_fit(&boston_fit_loader, machine->kernel_filename, s);
+            fit_err = load_fit(&boston_fit_loader, machine->kernel_filename,
+                               &machine->fdt, s);
             if (fit_err) {
                 error_report("unable to load kernel image");
                 exit(1);

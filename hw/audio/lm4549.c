@@ -14,8 +14,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
-#include "audio/audio.h"
+#include "hw/core/hw-error.h"
+#include "qemu/log.h"
+#include "qemu/audio.h"
 #include "lm4549.h"
 #include "migration/vmstate.h"
 
@@ -179,8 +180,22 @@ void lm4549_write(lm4549_state *s,
         break;
 
     case LM4549_PCM_Front_DAC_Rate:
-        regfile[LM4549_PCM_Front_DAC_Rate] = value;
         DPRINTF("DAC rate change = %i\n", value);
+
+        /*
+         * Valid sample rates are 4kHz to 48kHz.
+         * The datasheet doesn't say what happens if you try to
+         * set the frequency to zero. AUD_open_out() will print
+         * a bug message if we pass it a zero frequency, so just
+         * ignore attempts to set the DAC frequency to zero.
+         */
+        if (value < 4000 || value > 48000) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: DAC sample rate %d Hz is invalid, ignoring it\n",
+                          __func__, value);
+            break;
+        }
+        regfile[LM4549_PCM_Front_DAC_Rate] = value;
 
         /* Re-open a voice with the new sample rate */
         struct audsettings as;
@@ -190,7 +205,7 @@ void lm4549_write(lm4549_state *s,
         as.endianness = 0;
 
         s->voice = AUD_open_out(
-            &s->card,
+            s->audio_be,
             s->voice,
             "lm4549.out",
             s,
@@ -260,7 +275,7 @@ static int lm4549_post_load(void *opaque, int version_id)
     as.endianness = 0;
 
     s->voice = AUD_open_out(
-        &s->card,
+        s->audio_be,
         s->voice,
         "lm4549.out",
         s,
@@ -276,9 +291,15 @@ static int lm4549_post_load(void *opaque, int version_id)
     return 0;
 }
 
-void lm4549_init(lm4549_state *s, lm4549_callback data_req_cb, void* opaque)
+void lm4549_init(lm4549_state *s, lm4549_callback data_req_cb, void* opaque,
+                 Error **errp)
 {
     struct audsettings as;
+
+    /* Register an audio card */
+    if (!AUD_backend_check(&s->audio_be, errp)) {
+        return;
+    }
 
     /* Store the callback and opaque pointer */
     s->data_req_cb = data_req_cb;
@@ -287,9 +308,6 @@ void lm4549_init(lm4549_state *s, lm4549_callback data_req_cb, void* opaque)
     /* Init the registers */
     lm4549_reset(s);
 
-    /* Register an audio card */
-    AUD_register_card("lm4549", &s->card);
-
     /* Open a default voice */
     as.freq = 48000;
     as.nchannels = 2;
@@ -297,7 +315,7 @@ void lm4549_init(lm4549_state *s, lm4549_callback data_req_cb, void* opaque)
     as.endianness = 0;
 
     s->voice = AUD_open_out(
-        &s->card,
+        s->audio_be,
         s->voice,
         "lm4549.out",
         s,
@@ -305,7 +323,7 @@ void lm4549_init(lm4549_state *s, lm4549_callback data_req_cb, void* opaque)
         &as
     );
 
-    AUD_set_volume_out(s->voice, 0, 255, 255);
+    AUD_set_volume_out_lr(s->voice, 0, 255, 255);
 
     s->voice_is_active = 0;
 
@@ -326,7 +344,7 @@ const VMStateDescription vmstate_lm4549_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = lm4549_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(voice_is_active, lm4549_state),
         VMSTATE_UINT16_ARRAY(regfile, lm4549_state, 128),
         VMSTATE_UINT16_ARRAY(buffer, lm4549_state, LM4549_BUFFER_SIZE),

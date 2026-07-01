@@ -1,7 +1,0 @@
-NEW_EVENT(blk_cmp_geu_tt)
-NEW_EVENT(blk_cmp_geu_tr)
-NEW_EVENT(blk_cmp_geu_rr)
-NEW_EVENT(blk_cmp_geu_rtl)
-NEW_EVENT(blk_cmp_geu_rth)
-
-#define TEST_DRIVER testDriver_2_64

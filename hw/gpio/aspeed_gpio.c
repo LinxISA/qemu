@@ -13,8 +13,10 @@
 #include "hw/misc/aspeed_scu.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
+#include "trace.h"
+#include "hw/core/registerfields.h"
 
 #define GPIOS_PER_GROUP 8
 
@@ -203,6 +205,60 @@
 #define GPIO_1_8V_MEM_SIZE            0x1D8
 #define GPIO_1_8V_REG_ARRAY_SIZE      (GPIO_1_8V_MEM_SIZE >> 2)
 
+/*
+ * GPIO index mode support
+ * It only supports write operation
+ */
+REG32(GPIO_INDEX_REG, 0x2AC)
+    FIELD(GPIO_INDEX_REG, NUMBER, 0, 8)
+    FIELD(GPIO_INDEX_REG, COMMAND, 12, 1)
+    FIELD(GPIO_INDEX_REG, TYPE, 16, 4)
+    FIELD(GPIO_INDEX_REG, DATA_VALUE, 20, 1)
+    FIELD(GPIO_INDEX_REG, DIRECTION, 20, 1)
+    FIELD(GPIO_INDEX_REG, INT_ENABLE, 20, 1)
+    FIELD(GPIO_INDEX_REG, INT_SENS_0, 21, 1)
+    FIELD(GPIO_INDEX_REG, INT_SENS_1, 22, 1)
+    FIELD(GPIO_INDEX_REG, INT_SENS_2, 23, 1)
+    FIELD(GPIO_INDEX_REG, INT_STATUS, 24, 1)
+    FIELD(GPIO_INDEX_REG, DEBOUNCE_1, 20, 1)
+    FIELD(GPIO_INDEX_REG, DEBOUNCE_2, 21, 1)
+    FIELD(GPIO_INDEX_REG, RESET_TOLERANT, 20, 1)
+    FIELD(GPIO_INDEX_REG, COMMAND_SRC_0, 20, 1)
+    FIELD(GPIO_INDEX_REG, COMMAND_SRC_1, 21, 1)
+    FIELD(GPIO_INDEX_REG, INPUT_MASK, 20, 1)
+
+/* AST2700 GPIO Register Address Offsets */
+REG32(GPIO_2700_DEBOUNCE_TIME_1, 0x000)
+REG32(GPIO_2700_DEBOUNCE_TIME_2, 0x004)
+REG32(GPIO_2700_DEBOUNCE_TIME_3, 0x008)
+REG32(GPIO_2700_INT_STATUS_1, 0x100)
+REG32(GPIO_2700_INT_STATUS_2, 0x104)
+REG32(GPIO_2700_INT_STATUS_3, 0x108)
+REG32(GPIO_2700_INT_STATUS_4, 0x10C)
+REG32(GPIO_2700_INT_STATUS_5, 0x110)
+REG32(GPIO_2700_INT_STATUS_6, 0x114)
+REG32(GPIO_2700_INT_STATUS_7, 0x118)
+/* GPIOA0 - GPIOAA7 Control Register */
+REG32(GPIO_A0_CONTROL, 0x180)
+    SHARED_FIELD(GPIO_CONTROL_OUT_DATA, 0, 1)
+    SHARED_FIELD(GPIO_CONTROL_DIRECTION, 1, 1)
+    SHARED_FIELD(GPIO_CONTROL_INT_ENABLE, 2, 1)
+    SHARED_FIELD(GPIO_CONTROL_INT_SENS_0, 3, 1)
+    SHARED_FIELD(GPIO_CONTROL_INT_SENS_1, 4, 1)
+    SHARED_FIELD(GPIO_CONTROL_INT_SENS_2, 5, 1)
+    SHARED_FIELD(GPIO_CONTROL_RESET_TOLERANCE, 6, 1)
+    SHARED_FIELD(GPIO_CONTROL_DEBOUNCE_1, 7, 1)
+    SHARED_FIELD(GPIO_CONTROL_DEBOUNCE_2, 8, 1)
+    SHARED_FIELD(GPIO_CONTROL_INPUT_MASK, 9, 1)
+    SHARED_FIELD(GPIO_CONTROL_BLINK_COUNTER_1, 10, 1)
+    SHARED_FIELD(GPIO_CONTROL_BLINK_COUNTER_2, 11, 1)
+    SHARED_FIELD(GPIO_CONTROL_INT_STATUS, 12, 1)
+    SHARED_FIELD(GPIO_CONTROL_IN_DATA, 13, 1)
+    SHARED_FIELD(GPIO_CONTROL_RESERVED, 14, 18)
+REG32(GPIO_AA7_CONTROL, 0x4DC)
+#define GPIO_2700_MEM_SIZE 0x4E0
+#define GPIO_2700_REG_ARRAY_SIZE (GPIO_2700_MEM_SIZE >> 2)
+
 static int aspeed_evaluate_irq(GPIOSets *regs, int gpio_prev_high, int gpio)
 {
     uint32_t falling_edge = 0, rising_edge = 0;
@@ -244,7 +300,7 @@ static ptrdiff_t aspeed_gpio_set_idx(AspeedGPIOState *s, GPIOSets *regs)
 }
 
 static void aspeed_gpio_update(AspeedGPIOState *s, GPIOSets *regs,
-                               uint32_t value)
+                               uint32_t value, uint32_t mode_mask)
 {
     uint32_t input_mask = regs->input_mask;
     uint32_t direction = regs->direction;
@@ -253,10 +309,11 @@ static void aspeed_gpio_update(AspeedGPIOState *s, GPIOSets *regs,
     uint32_t diff;
     int gpio;
 
-    diff = old ^ new;
+    diff = (old ^ new);
+    diff &= mode_mask;
     if (diff) {
         for (gpio = 0; gpio < ASPEED_GPIOS_PER_SET; gpio++) {
-            uint32_t mask = 1 << gpio;
+            uint32_t mask = 1U << gpio;
 
             /* If the gpio needs to be updated... */
             if (!(diff & mask)) {
@@ -312,10 +369,11 @@ static void aspeed_gpio_set_pin_level(AspeedGPIOState *s, uint32_t set_idx,
     if (level) {
         value |= pin_mask;
     } else {
-        value &= !pin_mask;
+        value &= ~pin_mask;
     }
 
-    aspeed_gpio_update(s, &s->sets[set_idx], value);
+    aspeed_gpio_update(s, &s->sets[set_idx], value,
+                       ~s->sets[set_idx].direction);
 }
 
 /*
@@ -523,55 +581,225 @@ static uint64_t aspeed_gpio_read(void *opaque, hwaddr offset, uint32_t size)
     uint64_t idx = -1;
     const AspeedGPIOReg *reg;
     GPIOSets *set;
+    uint32_t value = 0;
+    uint64_t debounce_value;
 
     idx = offset >> 2;
     if (idx >= GPIO_DEBOUNCE_TIME_1 && idx <= GPIO_DEBOUNCE_TIME_3) {
         idx -= GPIO_DEBOUNCE_TIME_1;
-        return (uint64_t) s->debounce_regs[idx];
+        debounce_value = (uint64_t) s->debounce_regs[idx];
+        trace_aspeed_gpio_read(offset, debounce_value);
+        return debounce_value;
+    }
+
+    if (idx >= agc->reg_table_count) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: idx 0x%" PRIx64 " out of bounds\n",
+                      __func__, idx);
+        return 0;
     }
 
     reg = &agc->reg_table[idx];
     if (reg->set_idx >= agc->nr_gpio_sets) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: no getter for offset 0x%"
-                      HWADDR_PRIx"\n", __func__, offset);
+                      PRIx64"\n", __func__, offset);
         return 0;
     }
 
     set = &s->sets[reg->set_idx];
     switch (reg->type) {
     case gpio_reg_data_value:
-        return set->data_value;
+        value = set->data_value;
+        break;
     case gpio_reg_direction:
-        return set->direction;
+        value = set->direction;
+        break;
     case gpio_reg_int_enable:
-        return set->int_enable;
+        value = set->int_enable;
+        break;
     case gpio_reg_int_sens_0:
-        return set->int_sens_0;
+        value = set->int_sens_0;
+        break;
     case gpio_reg_int_sens_1:
-        return set->int_sens_1;
+        value = set->int_sens_1;
+        break;
     case gpio_reg_int_sens_2:
-        return set->int_sens_2;
+        value = set->int_sens_2;
+        break;
     case gpio_reg_int_status:
-        return set->int_status;
+        value = set->int_status;
+        break;
     case gpio_reg_reset_tolerant:
-        return set->reset_tol;
+        value = set->reset_tol;
+        break;
     case gpio_reg_debounce_1:
-        return set->debounce_1;
+        value = set->debounce_1;
+        break;
     case gpio_reg_debounce_2:
-        return set->debounce_2;
+        value = set->debounce_2;
+        break;
     case gpio_reg_cmd_source_0:
-        return set->cmd_source_0;
+        value = set->cmd_source_0;
+        break;
     case gpio_reg_cmd_source_1:
-        return set->cmd_source_1;
+        value = set->cmd_source_1;
+        break;
     case gpio_reg_data_read:
-        return set->data_read;
+        value = set->data_read;
+        break;
     case gpio_reg_input_mask:
-        return set->input_mask;
+        value = set->input_mask;
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: no getter for offset 0x%"
-                      HWADDR_PRIx"\n", __func__, offset);
+                      PRIx64"\n", __func__, offset);
         return 0;
     }
+
+    trace_aspeed_gpio_read(offset, value);
+    return value;
+}
+
+static void aspeed_gpio_write_index_mode(void *opaque, hwaddr offset,
+                                                uint64_t data, uint32_t size)
+{
+    AspeedGPIOState *s = ASPEED_GPIO(opaque);
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    const GPIOSetProperties *props;
+    GPIOSets *set;
+    uint32_t reg_idx_number = FIELD_EX32(data, GPIO_INDEX_REG, NUMBER);
+    uint32_t reg_idx_type = FIELD_EX32(data, GPIO_INDEX_REG, TYPE);
+    uint32_t reg_idx_command = FIELD_EX32(data, GPIO_INDEX_REG, COMMAND);
+    uint32_t set_idx = reg_idx_number / ASPEED_GPIOS_PER_SET;
+    uint32_t pin_idx = reg_idx_number % ASPEED_GPIOS_PER_SET;
+    uint32_t group_idx = pin_idx / GPIOS_PER_GROUP;
+    uint32_t reg_value = 0;
+    uint32_t pending = 0;
+
+    set = &s->sets[set_idx];
+    props = &agc->props[set_idx];
+
+    if (reg_idx_command)
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: offset 0x%" PRIx64 "data 0x%"
+            PRIx64 "index mode wrong command 0x%x\n",
+            __func__, offset, data, reg_idx_command);
+
+    switch (reg_idx_type) {
+    case gpio_reg_idx_data:
+        reg_value = set->data_read;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, DATA_VALUE));
+        reg_value &= props->output;
+        reg_value = update_value_control_source(set, set->data_value,
+                                                reg_value);
+        set->data_read = reg_value;
+        aspeed_gpio_update(s, set, reg_value, set->direction);
+        return;
+    case gpio_reg_idx_direction:
+        reg_value = set->direction;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, DIRECTION));
+        /*
+         *   where data is the value attempted to be written to the pin:
+         *    pin type      | input mask | output mask | expected value
+         *    ------------------------------------------------------------
+         *   bidirectional  |   1       |   1        |  data
+         *   input only     |   1       |   0        |   0
+         *   output only    |   0       |   1        |   1
+         *   no pin         |   0       |   0        |   0
+         *
+         *  which is captured by:
+         *  data = ( data | ~input) & output;
+         */
+        reg_value = (reg_value | ~props->input) & props->output;
+        set->direction = update_value_control_source(set, set->direction,
+                                                     reg_value);
+        break;
+    case gpio_reg_idx_interrupt:
+        reg_value = set->int_enable;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, INT_ENABLE));
+        set->int_enable = update_value_control_source(set, set->int_enable,
+                                                      reg_value);
+        reg_value = set->int_sens_0;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, INT_SENS_0));
+        set->int_sens_0 = update_value_control_source(set, set->int_sens_0,
+                                                      reg_value);
+        reg_value = set->int_sens_1;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, INT_SENS_1));
+        set->int_sens_1 = update_value_control_source(set, set->int_sens_1,
+                                                      reg_value);
+        reg_value = set->int_sens_2;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, INT_SENS_2));
+        set->int_sens_2 = update_value_control_source(set, set->int_sens_2,
+                                                      reg_value);
+        /* interrupt status */
+        if (FIELD_EX32(data, GPIO_INDEX_REG, INT_STATUS)) {
+            /* pending is either 1 or 0 for a 1-bit field */
+            pending = extract32(set->int_status, pin_idx, 1);
+
+            assert(s->pending >= pending);
+
+            /* No change to s->pending if pending is 0 */
+            s->pending -= pending;
+
+            /*
+             * The write acknowledged the interrupt regardless of whether it
+             * was pending or not. The post-condition is that it mustn't be
+             * pending. Unconditionally clear the status bit.
+             */
+            set->int_status = deposit32(set->int_status, pin_idx, 1, 0);
+        }
+        break;
+    case gpio_reg_idx_debounce:
+        reg_value = set->debounce_1;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, DEBOUNCE_1));
+        set->debounce_1 = update_value_control_source(set, set->debounce_1,
+                                                      reg_value);
+        reg_value = set->debounce_2;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, DEBOUNCE_2));
+        set->debounce_2 = update_value_control_source(set, set->debounce_2,
+                                                      reg_value);
+        return;
+    case gpio_reg_idx_tolerance:
+        reg_value = set->reset_tol;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, RESET_TOLERANT));
+        set->reset_tol = update_value_control_source(set, set->reset_tol,
+                                                     reg_value);
+        return;
+    case gpio_reg_idx_cmd_src:
+        reg_value = set->cmd_source_0;
+        reg_value = deposit32(reg_value, GPIOS_PER_GROUP * group_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, COMMAND_SRC_0));
+        set->cmd_source_0 = reg_value & ASPEED_CMD_SRC_MASK;
+        reg_value = set->cmd_source_1;
+        reg_value = deposit32(reg_value, GPIOS_PER_GROUP * group_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, COMMAND_SRC_1));
+        set->cmd_source_1 = reg_value & ASPEED_CMD_SRC_MASK;
+        return;
+    case gpio_reg_idx_input_mask:
+        reg_value = set->input_mask;
+        reg_value = deposit32(reg_value, pin_idx, 1,
+                              FIELD_EX32(data, GPIO_INDEX_REG, INPUT_MASK));
+        /*
+         * feeds into interrupt generation
+         * 0: read from data value reg will be updated
+         * 1: read from data value reg will not be updated
+         */
+        set->input_mask = reg_value & props->input;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: offset 0x%" PRIx64 "data 0x%"
+            PRIx64 "index mode wrong type 0x%x\n",
+            __func__, offset, data, reg_idx_type);
+        return;
+    }
+    aspeed_gpio_update(s, set, set->data_value, UINT32_MAX);
 }
 
 static void aspeed_gpio_write(void *opaque, hwaddr offset, uint64_t data,
@@ -585,17 +813,32 @@ static void aspeed_gpio_write(void *opaque, hwaddr offset, uint64_t data,
     GPIOSets *set;
     uint32_t cleared;
 
+    trace_aspeed_gpio_write(offset, data);
+
     idx = offset >> 2;
+
+    /* check gpio index mode */
+    if (idx == R_GPIO_INDEX_REG) {
+        aspeed_gpio_write_index_mode(opaque, offset, data, size);
+        return;
+    }
+
     if (idx >= GPIO_DEBOUNCE_TIME_1 && idx <= GPIO_DEBOUNCE_TIME_3) {
         idx -= GPIO_DEBOUNCE_TIME_1;
         s->debounce_regs[idx] = (uint32_t) data;
         return;
     }
 
+    if (idx >= agc->reg_table_count) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: idx 0x%" PRIx64 " out of bounds\n",
+                      __func__, idx);
+        return;
+    }
+
     reg = &agc->reg_table[idx];
     if (reg->set_idx >= agc->nr_gpio_sets) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: no setter for offset 0x%"
-                      HWADDR_PRIx"\n", __func__, offset);
+                      PRIx64"\n", __func__, offset);
         return;
     }
 
@@ -607,7 +850,7 @@ static void aspeed_gpio_write(void *opaque, hwaddr offset, uint64_t data,
         data &= props->output;
         data = update_value_control_source(set, set->data_value, data);
         set->data_read = data;
-        aspeed_gpio_update(s, set, data);
+        aspeed_gpio_update(s, set, data, set->direction);
         return;
     case gpio_reg_direction:
         /*
@@ -680,11 +923,10 @@ static void aspeed_gpio_write(void *opaque, hwaddr offset, uint64_t data,
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: no setter for offset 0x%"
-                      HWADDR_PRIx"\n", __func__, offset);
+                      PRIx64"\n", __func__, offset);
         return;
     }
-    aspeed_gpio_update(s, set, set->data_value);
-    return;
+    aspeed_gpio_update(s, set, set->data_value, UINT32_MAX);
 }
 
 static int get_set_idx(AspeedGPIOState *s, const char *group, int *group_idx)
@@ -758,6 +1000,364 @@ static void aspeed_gpio_set_pin(Object *obj, Visitor *v, const char *name,
     aspeed_gpio_set_pin_level(s, set_idx, pin, level);
 }
 
+static uint64_t aspeed_gpio_2700_read_control_reg(AspeedGPIOState *s,
+                                    uint32_t pin)
+{
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    GPIOSets *set;
+    uint64_t value = 0;
+    uint32_t set_idx;
+    uint32_t pin_idx;
+
+    set_idx = pin / ASPEED_GPIOS_PER_SET;
+    pin_idx = pin % ASPEED_GPIOS_PER_SET;
+
+    if (set_idx >= agc->nr_gpio_sets) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: set index: %d, out of bounds\n",
+                      __func__, set_idx);
+        return 0;
+    }
+
+    set = &s->sets[set_idx];
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_OUT_DATA,
+                              extract32(set->data_read, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_DIRECTION,
+                              extract32(set->direction, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INT_ENABLE,
+                              extract32(set->int_enable, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INT_SENS_0,
+                              extract32(set->int_sens_0, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INT_SENS_1,
+                              extract32(set->int_sens_1, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INT_SENS_2,
+                              extract32(set->int_sens_2, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_RESET_TOLERANCE,
+                              extract32(set->reset_tol, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_DEBOUNCE_1,
+                              extract32(set->debounce_1, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_DEBOUNCE_2,
+                              extract32(set->debounce_2, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INPUT_MASK,
+                              extract32(set->input_mask, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_INT_STATUS,
+                              extract32(set->int_status, pin_idx, 1));
+    value = SHARED_FIELD_DP32(value, GPIO_CONTROL_IN_DATA,
+                              extract32(set->data_value, pin_idx, 1));
+    return value;
+}
+
+static void aspeed_gpio_2700_write_control_reg(AspeedGPIOState *s,
+                                uint32_t pin, uint64_t data)
+{
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    const GPIOSetProperties *props;
+    GPIOSets *set;
+    uint32_t set_idx;
+    uint32_t pin_idx;
+    uint32_t group_value = 0;
+    uint32_t pending = 0;
+
+    set_idx = pin / ASPEED_GPIOS_PER_SET;
+    pin_idx = pin % ASPEED_GPIOS_PER_SET;
+
+    if (set_idx >= agc->nr_gpio_sets) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: set index: %d, out of bounds\n",
+                      __func__, set_idx);
+        return;
+    }
+
+    set = &s->sets[set_idx];
+    props = &agc->props[set_idx];
+
+    /* direction */
+    group_value = set->direction;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_DIRECTION));
+    /*
+     * where data is the value attempted to be written to the pin:
+     * pin type      | input mask | output mask | expected value
+     * ------------------------------------------------------------
+     * bidirectional  |   1       |   1        |  data
+     * input only     |   1       |   0        |   0
+     * output only    |   0       |   1        |   1
+     * no pin         |   0       |   0        |   0
+     *
+     * which is captured by:
+     * data = ( data | ~input) & output;
+     */
+    group_value = (group_value | ~props->input) & props->output;
+    set->direction = update_value_control_source(set, set->direction,
+                                                 group_value);
+
+    /* out data */
+    group_value = set->data_read;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_OUT_DATA));
+    group_value &= props->output;
+    group_value = update_value_control_source(set, set->data_read,
+                                              group_value);
+    set->data_read = group_value;
+
+    /* interrupt enable */
+    group_value = set->int_enable;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_INT_ENABLE));
+    set->int_enable = update_value_control_source(set, set->int_enable,
+                                                  group_value);
+
+    /* interrupt sensitivity type 0 */
+    group_value = set->int_sens_0;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_INT_SENS_0));
+    set->int_sens_0 = update_value_control_source(set, set->int_sens_0,
+                                                  group_value);
+
+    /* interrupt sensitivity type 1 */
+    group_value = set->int_sens_1;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_INT_SENS_1));
+    set->int_sens_1 = update_value_control_source(set, set->int_sens_1,
+                                                  group_value);
+
+    /* interrupt sensitivity type 2 */
+    group_value = set->int_sens_2;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_INT_SENS_2));
+    set->int_sens_2 = update_value_control_source(set, set->int_sens_2,
+                                                  group_value);
+
+    /* reset tolerance enable */
+    group_value = set->reset_tol;
+    group_value = deposit32(group_value, pin_idx, 1,
+                        SHARED_FIELD_EX32(data, GPIO_CONTROL_RESET_TOLERANCE));
+    set->reset_tol = update_value_control_source(set, set->reset_tol,
+                                                 group_value);
+
+    /* debounce 1 */
+    group_value = set->debounce_1;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_DEBOUNCE_1));
+    set->debounce_1 = update_value_control_source(set, set->debounce_1,
+                                                  group_value);
+
+    /* debounce 2 */
+    group_value = set->debounce_2;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_DEBOUNCE_2));
+    set->debounce_2 = update_value_control_source(set, set->debounce_2,
+                                                  group_value);
+
+    /* input mask */
+    group_value = set->input_mask;
+    group_value = deposit32(group_value, pin_idx, 1,
+                            SHARED_FIELD_EX32(data, GPIO_CONTROL_INPUT_MASK));
+    /*
+     * feeds into interrupt generation
+     * 0: read from data value reg will be updated
+     * 1: read from data value reg will not be updated
+     */
+    set->input_mask = group_value & props->input;
+
+    /* blink counter 1 */
+    /* blink counter 2 */
+    /* unimplement */
+
+    /* interrupt status */
+    if (SHARED_FIELD_EX32(data, GPIO_CONTROL_INT_STATUS)) {
+        /* pending is either 1 or 0 for a 1-bit field */
+        pending = extract32(set->int_status, pin_idx, 1);
+
+        assert(s->pending >= pending);
+
+        /* No change to s->pending if pending is 0 */
+        s->pending -= pending;
+
+        /*
+         * The write acknowledged the interrupt regardless of whether it
+         * was pending or not. The post-condition is that it mustn't be
+         * pending. Unconditionally clear the status bit.
+         */
+        set->int_status = deposit32(set->int_status, pin_idx, 1, 0);
+    }
+
+    aspeed_gpio_update(s, set, set->data_value, UINT32_MAX);
+}
+
+static uint64_t aspeed_gpio_2700_read(void *opaque, hwaddr offset,
+                                uint32_t size)
+{
+    AspeedGPIOState *s = ASPEED_GPIO(opaque);
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    GPIOSets *set;
+    uint64_t value;
+    uint64_t reg;
+    uint32_t pin;
+    uint32_t idx;
+
+    reg = offset >> 2;
+
+    if (reg >= agc->reg_table_count) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: offset 0x%" PRIx64 " out of bounds\n",
+                      __func__, offset);
+        return 0;
+    }
+
+    switch (reg) {
+    case R_GPIO_2700_DEBOUNCE_TIME_1 ... R_GPIO_2700_DEBOUNCE_TIME_3:
+        idx = reg - R_GPIO_2700_DEBOUNCE_TIME_1;
+
+        if (idx >= ASPEED_GPIO_NR_DEBOUNCE_REGS) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: debounce index: %d, out of bounds\n",
+                          __func__, idx);
+            return 0;
+        }
+
+        value = (uint64_t) s->debounce_regs[idx];
+        break;
+    case R_GPIO_2700_INT_STATUS_1 ... R_GPIO_2700_INT_STATUS_7:
+        idx = reg - R_GPIO_2700_INT_STATUS_1;
+
+        if (idx >= agc->nr_gpio_sets) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: interrupt status index: %d, out of bounds\n",
+                          __func__, idx);
+            return 0;
+        }
+
+        set = &s->sets[idx];
+        value = (uint64_t) set->int_status;
+        break;
+    case R_GPIO_A0_CONTROL ... R_GPIO_AA7_CONTROL:
+        pin = reg - R_GPIO_A0_CONTROL;
+
+        if (pin >= agc->nr_gpio_pins) {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid pin number: %d\n",
+                          __func__, pin);
+               return 0;
+        }
+
+        value = aspeed_gpio_2700_read_control_reg(s, pin);
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: no getter for offset 0x%"
+                      PRIx64"\n", __func__, offset);
+        return 0;
+    }
+
+    trace_aspeed_gpio_read(offset, value);
+    return value;
+}
+
+static void aspeed_gpio_2700_write(void *opaque, hwaddr offset,
+                                uint64_t data, uint32_t size)
+{
+    AspeedGPIOState *s = ASPEED_GPIO(opaque);
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    uint64_t reg;
+    uint32_t pin;
+    uint32_t idx;
+
+    trace_aspeed_gpio_write(offset, data);
+
+    reg = offset >> 2;
+
+    if (reg >= agc->reg_table_count) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: offset 0x%" PRIx64 " out of bounds\n",
+                      __func__, offset);
+        return;
+    }
+
+    switch (reg) {
+    case R_GPIO_2700_DEBOUNCE_TIME_1 ... R_GPIO_2700_DEBOUNCE_TIME_3:
+        idx = reg - R_GPIO_2700_DEBOUNCE_TIME_1;
+
+        if (idx >= ASPEED_GPIO_NR_DEBOUNCE_REGS) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "%s: debounce index: %d out of bounds\n",
+                          __func__, idx);
+            return;
+        }
+
+        s->debounce_regs[idx] = (uint32_t) data;
+        break;
+    case R_GPIO_A0_CONTROL ... R_GPIO_AA7_CONTROL:
+        pin = reg - R_GPIO_A0_CONTROL;
+
+        if (pin >= agc->nr_gpio_pins) {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid pin number: %d\n",
+                          __func__, pin);
+            return;
+        }
+
+        if (SHARED_FIELD_EX32(data, GPIO_CONTROL_RESERVED)) {
+            qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid reserved data: 0x%"
+                          PRIx64"\n", __func__, data);
+            return;
+        }
+
+        aspeed_gpio_2700_write_control_reg(s, pin, data);
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: no setter for offset 0x%"
+                      PRIx64"\n", __func__, offset);
+        break;
+    }
+}
+
+/* Setup functions */
+static void aspeed_gpio_set_set(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    uint32_t set_val = 0;
+    AspeedGPIOState *s = ASPEED_GPIO(obj);
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    int set_idx = 0;
+
+    if (!visit_type_uint32(v, name, &set_val, errp)) {
+        return;
+    }
+
+    if (sscanf(name, "gpio-set[%d]", &set_idx) != 1) {
+        error_setg(errp, "%s: error reading %s", __func__, name);
+        return;
+    }
+
+    if (set_idx >= agc->nr_gpio_sets || set_idx < 0) {
+        error_setg(errp, "%s: invalid set_idx %s", __func__, name);
+        return;
+    }
+
+    aspeed_gpio_update(s, &s->sets[set_idx], set_val,
+                       ~s->sets[set_idx].direction);
+}
+
+static void aspeed_gpio_get_set(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    uint32_t set_val = 0;
+    AspeedGPIOState *s = ASPEED_GPIO(obj);
+    AspeedGPIOClass *agc = ASPEED_GPIO_GET_CLASS(s);
+    int set_idx = 0;
+
+    if (sscanf(name, "gpio-set[%d]", &set_idx) != 1) {
+        error_setg(errp, "%s: error reading %s", __func__, name);
+        return;
+    }
+
+    if (set_idx >= agc->nr_gpio_sets || set_idx < 0) {
+        error_setg(errp, "%s: invalid set_idx %s", __func__, name);
+        return;
+    }
+
+    set_val = s->sets[set_idx].data_value;
+    visit_type_uint32(v, name, &set_val, errp);
+}
+
 /****************** Setup functions ******************/
 static const GPIOSetProperties ast2400_set_props[ASPEED_GPIO_MAX_NR_SETS] = {
     [0] = {0xffffffff,  0xffffffff,  {"A", "B", "C", "D"} },
@@ -795,9 +1395,36 @@ static GPIOSetProperties ast2600_1_8v_set_props[ASPEED_GPIO_MAX_NR_SETS] = {
     [1] = {0x0000000f,  0x0000000f,  {"18E"} },
 };
 
+static GPIOSetProperties ast1030_set_props[ASPEED_GPIO_MAX_NR_SETS] = {
+    [0] = {0xffffffff,  0xffffffff,  {"A", "B", "C", "D"} },
+    [1] = {0xffffffff,  0xffffffff,  {"E", "F", "G", "H"} },
+    [2] = {0xffffffff,  0xffffffff,  {"I", "J", "K", "L"} },
+    [3] = {0xffffff3f,  0xffffff3f,  {"M", "N", "O", "P"} },
+    [4] = {0xff060c1f,  0x00060c1f,  {"Q", "R", "S", "T"} },
+    [5] = {0x000000ff,  0x00000000,  {"U"} },
+};
+
+static GPIOSetProperties ast2700_set_props[ASPEED_GPIO_MAX_NR_SETS] = {
+    [0] = {0xffffffff,  0xffffffff,  {"A", "B", "C", "D"} },
+    [1] = {0x0fffffff,  0x0fffffff,  {"E", "F", "G", "H"} },
+    [2] = {0xffffffff,  0xffffffff,  {"I", "J", "K", "L"} },
+    [3] = {0xffffffff,  0xffffffff,  {"M", "N", "O", "P"} },
+    [4] = {0xffffffff,  0xffffffff,  {"Q", "R", "S", "T"} },
+    [5] = {0xffffffff,  0xffffffff,  {"U", "V", "W", "X"} },
+    [6] = {0x00ffffff,  0x00ffffff,  {"Y", "Z", "AA"} },
+};
+
 static const MemoryRegionOps aspeed_gpio_ops = {
     .read       = aspeed_gpio_read,
     .write      = aspeed_gpio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+static const MemoryRegionOps aspeed_gpio_2700_ops = {
+    .read       = aspeed_gpio_2700_read,
+    .write      = aspeed_gpio_2700_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,
@@ -832,8 +1459,8 @@ static void aspeed_gpio_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &aspeed_gpio_ops, s,
-            TYPE_ASPEED_GPIO, 0x800);
+    memory_region_init_io(&s->iomem, OBJECT(s), agc->reg_ops, s,
+                          TYPE_ASPEED_GPIO, agc->mem_size);
 
     sysbus_init_mmio(sbd, &s->iomem);
 }
@@ -859,13 +1486,19 @@ static void aspeed_gpio_init(Object *obj)
             g_free(name);
         }
     }
+
+    for (int i = 0; i < agc->nr_gpio_sets; i++) {
+        char *name = g_strdup_printf("gpio-set[%d]", i);
+        object_property_add(obj, name, "uint32", aspeed_gpio_get_set,
+        aspeed_gpio_set_set, NULL, NULL);
+    }
 }
 
 static const VMStateDescription vmstate_gpio_regs = {
     .name = TYPE_ASPEED_GPIO"/regs",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(data_value,   GPIOSets),
         VMSTATE_UINT32(data_read,    GPIOSets),
         VMSTATE_UINT32(direction,    GPIOSets),
@@ -888,7 +1521,7 @@ static const VMStateDescription vmstate_aspeed_gpio = {
     .name = TYPE_ASPEED_GPIO,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(sets, AspeedGPIOState, ASPEED_GPIO_MAX_NR_SETS,
                              1, vmstate_gpio_regs, GPIOSets),
         VMSTATE_UINT32_ARRAY(debounce_regs, AspeedGPIOState,
@@ -897,17 +1530,17 @@ static const VMStateDescription vmstate_aspeed_gpio = {
    }
 };
 
-static void aspeed_gpio_class_init(ObjectClass *klass, void *data)
+static void aspeed_gpio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = aspeed_gpio_realize;
-    dc->reset = aspeed_gpio_reset;
+    device_class_set_legacy_reset(dc, aspeed_gpio_reset);
     dc->desc = "Aspeed GPIO Controller";
     dc->vmsd = &vmstate_aspeed_gpio;
 }
 
-static void aspeed_gpio_ast2400_class_init(ObjectClass *klass, void *data)
+static void aspeed_gpio_ast2400_class_init(ObjectClass *klass, const void *data)
 {
     AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
 
@@ -915,9 +1548,12 @@ static void aspeed_gpio_ast2400_class_init(ObjectClass *klass, void *data)
     agc->nr_gpio_pins = 216;
     agc->nr_gpio_sets = 7;
     agc->reg_table = aspeed_3_3v_gpios;
+    agc->reg_table_count = GPIO_3_3V_REG_ARRAY_SIZE;
+    agc->mem_size = 0x1000;
+    agc->reg_ops = &aspeed_gpio_ops;
 }
 
-static void aspeed_gpio_2500_class_init(ObjectClass *klass, void *data)
+static void aspeed_gpio_2500_class_init(ObjectClass *klass, const void *data)
 {
     AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
 
@@ -925,9 +1561,13 @@ static void aspeed_gpio_2500_class_init(ObjectClass *klass, void *data)
     agc->nr_gpio_pins = 228;
     agc->nr_gpio_sets = 8;
     agc->reg_table = aspeed_3_3v_gpios;
+    agc->reg_table_count = GPIO_3_3V_REG_ARRAY_SIZE;
+    agc->mem_size = 0x1000;
+    agc->reg_ops = &aspeed_gpio_ops;
 }
 
-static void aspeed_gpio_ast2600_3_3v_class_init(ObjectClass *klass, void *data)
+static void aspeed_gpio_ast2600_3_3v_class_init(ObjectClass *klass,
+                                                const void *data)
 {
     AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
 
@@ -935,9 +1575,13 @@ static void aspeed_gpio_ast2600_3_3v_class_init(ObjectClass *klass, void *data)
     agc->nr_gpio_pins = 208;
     agc->nr_gpio_sets = 7;
     agc->reg_table = aspeed_3_3v_gpios;
+    agc->reg_table_count = GPIO_3_3V_REG_ARRAY_SIZE;
+    agc->mem_size = 0x800;
+    agc->reg_ops = &aspeed_gpio_ops;
 }
 
-static void aspeed_gpio_ast2600_1_8v_class_init(ObjectClass *klass, void *data)
+static void aspeed_gpio_ast2600_1_8v_class_init(ObjectClass *klass,
+                                                const void *data)
 {
     AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
 
@@ -945,6 +1589,34 @@ static void aspeed_gpio_ast2600_1_8v_class_init(ObjectClass *klass, void *data)
     agc->nr_gpio_pins = 36;
     agc->nr_gpio_sets = 2;
     agc->reg_table = aspeed_1_8v_gpios;
+    agc->reg_table_count = GPIO_1_8V_REG_ARRAY_SIZE;
+    agc->mem_size = 0x800;
+    agc->reg_ops = &aspeed_gpio_ops;
+}
+
+static void aspeed_gpio_1030_class_init(ObjectClass *klass, const void *data)
+{
+    AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
+
+    agc->props = ast1030_set_props;
+    agc->nr_gpio_pins = 151;
+    agc->nr_gpio_sets = 6;
+    agc->reg_table = aspeed_3_3v_gpios;
+    agc->reg_table_count = GPIO_3_3V_REG_ARRAY_SIZE;
+    agc->mem_size = 0x1000;
+    agc->reg_ops = &aspeed_gpio_ops;
+}
+
+static void aspeed_gpio_2700_class_init(ObjectClass *klass, const void *data)
+{
+    AspeedGPIOClass *agc = ASPEED_GPIO_CLASS(klass);
+
+    agc->props = ast2700_set_props;
+    agc->nr_gpio_pins = 216;
+    agc->nr_gpio_sets = 7;
+    agc->reg_table_count = GPIO_2700_REG_ARRAY_SIZE;
+    agc->mem_size = 0x1000;
+    agc->reg_ops = &aspeed_gpio_2700_ops;
 }
 
 static const TypeInfo aspeed_gpio_info = {
@@ -984,6 +1656,20 @@ static const TypeInfo aspeed_gpio_ast2600_1_8v_info = {
     .instance_init  = aspeed_gpio_init,
 };
 
+static const TypeInfo aspeed_gpio_ast1030_info = {
+    .name           = TYPE_ASPEED_GPIO "-ast1030",
+    .parent         = TYPE_ASPEED_GPIO,
+    .class_init     = aspeed_gpio_1030_class_init,
+    .instance_init  = aspeed_gpio_init,
+};
+
+static const TypeInfo aspeed_gpio_ast2700_info = {
+    .name           = TYPE_ASPEED_GPIO "-ast2700",
+    .parent         = TYPE_ASPEED_GPIO,
+    .class_init     = aspeed_gpio_2700_class_init,
+    .instance_init  = aspeed_gpio_init,
+};
+
 static void aspeed_gpio_register_types(void)
 {
     type_register_static(&aspeed_gpio_info);
@@ -991,6 +1677,8 @@ static void aspeed_gpio_register_types(void)
     type_register_static(&aspeed_gpio_ast2500_info);
     type_register_static(&aspeed_gpio_ast2600_3_3v_info);
     type_register_static(&aspeed_gpio_ast2600_1_8v_info);
+    type_register_static(&aspeed_gpio_ast1030_info);
+    type_register_static(&aspeed_gpio_ast2700_info);
 }
 
 type_init(aspeed_gpio_register_types);

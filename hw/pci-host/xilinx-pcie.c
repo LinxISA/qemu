@@ -22,8 +22,8 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/pci/pci_bridge.h"
-#include "hw/qdev-properties.h"
-#include "hw/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "hw/pci-host/xilinx-pcie.h"
 
 enum root_cfg_reg {
@@ -156,17 +156,16 @@ static void xilinx_pcie_host_init(Object *obj)
     qdev_prop_set_bit(DEVICE(root), "multifunction", false);
 }
 
-static Property xilinx_pcie_host_props[] = {
+static const Property xilinx_pcie_host_props[] = {
     DEFINE_PROP_UINT32("bus_nr", XilinxPCIEHost, bus_nr, 0),
     DEFINE_PROP_SIZE("cfg_base", XilinxPCIEHost, cfg_base, 0),
     DEFINE_PROP_SIZE("cfg_size", XilinxPCIEHost, cfg_size, 32 * MiB),
     DEFINE_PROP_SIZE("mmio_base", XilinxPCIEHost, mmio_base, 0),
     DEFINE_PROP_SIZE("mmio_size", XilinxPCIEHost, mmio_size, 1 * MiB),
     DEFINE_PROP_BOOL("link_up", XilinxPCIEHost, link_up, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void xilinx_pcie_host_class_init(ObjectClass *klass, void *data)
+static void xilinx_pcie_host_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(klass);
@@ -287,7 +286,7 @@ static void xilinx_pcie_root_realize(PCIDevice *pci_dev, Error **errp)
     }
 }
 
-static void xilinx_pcie_root_class_init(ObjectClass *klass, void *data)
+static void xilinx_pcie_root_class_init(ObjectClass *klass, const void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -298,10 +297,9 @@ static void xilinx_pcie_root_class_init(ObjectClass *klass, void *data)
     k->device_id = 0x7021;
     k->revision = 0;
     k->class_id = PCI_CLASS_BRIDGE_HOST;
-    k->is_bridge = true;
     k->realize = xilinx_pcie_root_realize;
     k->exit = pci_bridge_exitfn;
-    dc->reset = pci_bridge_reset;
+    device_class_set_legacy_reset(dc, pci_bridge_reset);
     k->config_read = xilinx_pcie_root_config_read;
     k->config_write = xilinx_pcie_root_config_write;
     /*
@@ -316,7 +314,7 @@ static const TypeInfo xilinx_pcie_root_info = {
     .parent = TYPE_PCI_BRIDGE,
     .instance_size = sizeof(XilinxPCIERoot),
     .class_init = xilinx_pcie_root_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_PCIE_DEVICE },
         { }
     },

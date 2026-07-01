@@ -16,14 +16,12 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
-#include "exec/gdbstub.h"
+#include "gdbstub/helpers.h"
 
 int rx_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
 {
-    RXCPU *cpu = RX_CPU(cs);
-    CPURXState *env = &cpu->env;
+    CPURXState *env = cpu_env(cs);
 
     switch (n) {
     case 0 ... 15:
@@ -54,12 +52,11 @@ int rx_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
 
 int rx_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
 {
-    RXCPU *cpu = RX_CPU(cs);
-    CPURXState *env = &cpu->env;
+    CPURXState *env = cpu_env(cs);
     uint32_t psw;
     switch (n) {
     case 0 ... 15:
-        env->regs[n] = ldl_p(mem_buf);
+        env->regs[n] = ldl_le_p(mem_buf);
         if (n == 0) {
             if (env->psw_u) {
                 env->usp = env->regs[0];
@@ -69,38 +66,38 @@ int rx_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
         }
         break;
     case 16:
-        env->usp = ldl_p(mem_buf);
+        env->usp = ldl_le_p(mem_buf);
         if (env->psw_u) {
-            env->regs[0] = ldl_p(mem_buf);
+            env->regs[0] = ldl_le_p(mem_buf);
         }
         break;
     case 17:
-        env->isp = ldl_p(mem_buf);
+        env->isp = ldl_le_p(mem_buf);
         if (!env->psw_u) {
-            env->regs[0] = ldl_p(mem_buf);
+            env->regs[0] = ldl_le_p(mem_buf);
         }
         break;
     case 18:
-        psw = ldl_p(mem_buf);
+        psw = ldl_le_p(mem_buf);
         rx_cpu_unpack_psw(env, psw, 1);
         break;
     case 19:
-        env->pc = ldl_p(mem_buf);
+        env->pc = ldl_le_p(mem_buf);
         break;
     case 20:
-        env->intb = ldl_p(mem_buf);
+        env->intb = ldl_le_p(mem_buf);
         break;
     case 21:
-        env->bpsw = ldl_p(mem_buf);
+        env->bpsw = ldl_le_p(mem_buf);
         break;
     case 22:
-        env->bpc = ldl_p(mem_buf);
+        env->bpc = ldl_le_p(mem_buf);
         break;
     case 23:
-        env->fintv = ldl_p(mem_buf);
+        env->fintv = ldl_le_p(mem_buf);
         break;
     case 24:
-        env->fpsw = ldl_p(mem_buf);
+        env->fpsw = ldl_le_p(mem_buf);
         break;
     case 25:
         return 8;
