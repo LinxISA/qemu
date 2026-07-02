@@ -81,6 +81,27 @@ static bool linx_debug_body_replay_inited;
 static bool linx_debug_body_replay_enabled;
 static bool linx_debug_acre_stderr_inited;
 static bool linx_debug_acre_stderr_enabled;
+static bool linx_acre_trace_inited;
+static bool linx_acre_trace_enabled;
+static bool linx_acre_trace_pc_filter_enabled;
+static uint64_t linx_acre_trace_pc_lo;
+static uint64_t linx_acre_trace_pc_hi = UINT64_MAX;
+static bool linx_acre_trace_bpc_filter_enabled;
+static uint64_t linx_acre_trace_bpc_lo;
+static uint64_t linx_acre_trace_bpc_hi = UINT64_MAX;
+static bool linx_acre_trace_count_filter_enabled;
+static uint64_t linx_acre_trace_count_lo;
+static uint64_t linx_acre_trace_count_hi = UINT64_MAX;
+static bool linx_acre_trace_target_filter_enabled;
+static uint64_t linx_acre_trace_target;
+static bool linx_acre_trace_rra_filter_enabled;
+static uint64_t linx_acre_trace_rra;
+static bool linx_acre_trace_trap_filter_enabled;
+static uint64_t linx_acre_trace_trap;
+static uint64_t linx_acre_trace_limit;
+static uint64_t linx_acre_trace_emitted;
+static bool linx_acre_trace_regs_enabled;
+static unsigned linx_acre_trace_code_bytes;
 static bool linx_debug_work_grab_inited;
 static bool linx_debug_work_grab_enabled;
 static unsigned linx_debug_work_grab_emits;
@@ -989,6 +1010,243 @@ static const char *linx_env_value2(const char *name, const char *alias)
         return v;
     }
     return NULL;
+}
+
+static void linx_acre_trace_init(void)
+{
+    uint64_t lo = 0;
+    uint64_t hi = UINT64_MAX;
+    const char *lo_s;
+    const char *hi_s;
+    const char *value_s;
+
+    if (linx_acre_trace_inited) {
+        return;
+    }
+    linx_acre_trace_inited = true;
+
+    linx_acre_trace_enabled =
+        linx_env_enabled("LINX_ACRE_TRACE") ||
+        linx_env_enabled("LINX_QEMU_ACRE_TRACE");
+
+    lo_s = linx_env_value2("LINX_ACRE_TRACE_PC_LO",
+                           "LINX_QEMU_ACRE_TRACE_PC_LO");
+    hi_s = linx_env_value2("LINX_ACRE_TRACE_PC_HI",
+                           "LINX_QEMU_ACRE_TRACE_PC_HI");
+    const bool have_pc_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_pc_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_pc_lo || have_pc_hi) {
+        linx_acre_trace_pc_lo = MIN(lo, hi);
+        linx_acre_trace_pc_hi = MAX(lo, hi);
+        linx_acre_trace_pc_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_ACRE_TRACE_PC",
+                              "LINX_QEMU_ACRE_TRACE_PC");
+    if (value_s && linx_parse_u64(value_s, &lo)) {
+        linx_acre_trace_pc_lo = lo;
+        linx_acre_trace_pc_hi = lo;
+        linx_acre_trace_pc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_env_value2("LINX_ACRE_TRACE_BPC_LO",
+                           "LINX_QEMU_ACRE_TRACE_BPC_LO");
+    hi_s = linx_env_value2("LINX_ACRE_TRACE_BPC_HI",
+                           "LINX_QEMU_ACRE_TRACE_BPC_HI");
+    const bool have_bpc_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_bpc_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_bpc_lo || have_bpc_hi) {
+        linx_acre_trace_bpc_lo = MIN(lo, hi);
+        linx_acre_trace_bpc_hi = MAX(lo, hi);
+        linx_acre_trace_bpc_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_ACRE_TRACE_BPC",
+                              "LINX_QEMU_ACRE_TRACE_BPC");
+    if (value_s && linx_parse_u64(value_s, &lo)) {
+        linx_acre_trace_bpc_lo = lo;
+        linx_acre_trace_bpc_hi = lo;
+        linx_acre_trace_bpc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_env_value2("LINX_ACRE_TRACE_COUNT_LO",
+                           "LINX_QEMU_ACRE_TRACE_COUNT_LO");
+    hi_s = linx_env_value2("LINX_ACRE_TRACE_COUNT_HI",
+                           "LINX_QEMU_ACRE_TRACE_COUNT_HI");
+    const bool have_count_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_count_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_count_lo || have_count_hi) {
+        linx_acre_trace_count_lo = MIN(lo, hi);
+        linx_acre_trace_count_hi = MAX(lo, hi);
+        linx_acre_trace_count_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_ACRE_TRACE_TARGET",
+                              "LINX_QEMU_ACRE_TRACE_TARGET");
+    if (value_s && linx_parse_u64(value_s, &linx_acre_trace_target)) {
+        linx_acre_trace_target_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_ACRE_TRACE_RRA",
+                              "LINX_QEMU_ACRE_TRACE_RRA");
+    if (value_s && linx_parse_u64(value_s, &linx_acre_trace_rra)) {
+        linx_acre_trace_rra_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_ACRE_TRACE_TRAPNUM",
+                              "LINX_QEMU_ACRE_TRACE_TRAPNUM");
+    if (value_s && linx_parse_u64(value_s, &linx_acre_trace_trap)) {
+        linx_acre_trace_trap_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_ACRE_TRACE_LIMIT",
+                              "LINX_QEMU_ACRE_TRACE_LIMIT");
+    if (value_s) {
+        (void)linx_parse_u64(value_s, &linx_acre_trace_limit);
+    } else {
+        linx_acre_trace_limit = 64;
+    }
+
+    value_s = linx_env_nonzero2("LINX_ACRE_TRACE_CODE_BYTES",
+                                "LINX_QEMU_ACRE_TRACE_CODE_BYTES");
+    if (value_s) {
+        uint64_t bytes = 0;
+        if (linx_parse_u64(value_s, &bytes) && bytes != 0) {
+            linx_acre_trace_code_bytes = MIN(bytes, (uint64_t)32);
+        }
+    }
+
+    linx_acre_trace_regs_enabled =
+        linx_env_enabled("LINX_ACRE_TRACE_REGS") ||
+        linx_env_enabled("LINX_QEMU_ACRE_TRACE_REGS") ||
+        linx_env_enabled("LINX_TRACE_REGS");
+}
+
+static bool linx_acre_trace_matches(CPULinxState *env, uint32_t target,
+                                    uint32_t rra_type, uint64_t trapno,
+                                    uint64_t resume_pc, uint64_t resume_bpc)
+{
+    linx_acre_trace_init();
+    if (!linx_acre_trace_enabled) {
+        return false;
+    }
+    if (linx_acre_trace_limit &&
+        linx_acre_trace_emitted >= linx_acre_trace_limit) {
+        return false;
+    }
+    if (linx_acre_trace_pc_filter_enabled &&
+        (resume_pc < linx_acre_trace_pc_lo ||
+         resume_pc > linx_acre_trace_pc_hi)) {
+        return false;
+    }
+    if (linx_acre_trace_bpc_filter_enabled &&
+        (resume_bpc < linx_acre_trace_bpc_lo ||
+         resume_bpc > linx_acre_trace_bpc_hi)) {
+        return false;
+    }
+    if (linx_acre_trace_count_filter_enabled &&
+        (env->insn_count < linx_acre_trace_count_lo ||
+         env->insn_count > linx_acre_trace_count_hi)) {
+        return false;
+    }
+    if (linx_acre_trace_target_filter_enabled &&
+        target != linx_acre_trace_target) {
+        return false;
+    }
+    if (linx_acre_trace_rra_filter_enabled &&
+        rra_type != linx_acre_trace_rra) {
+        return false;
+    }
+    if (linx_acre_trace_trap_filter_enabled &&
+        (trapno & 0x3fu) != linx_acre_trace_trap) {
+        return false;
+    }
+    return true;
+}
+
+static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
+                                       uint32_t mgr, uint32_t target,
+                                       uint32_t rra_type, bool bi,
+                                       uint64_t trapno, uint64_t ecstate,
+                                       uint64_t resume_pc,
+                                       uint64_t resume_bpc,
+                                       uint64_t resume_tpc)
+{
+    if (!linx_acre_trace_matches(env, target, rra_type, trapno,
+                                 resume_pc, resume_bpc)) {
+        return;
+    }
+
+    linx_acre_trace_emitted++;
+    fprintf(stderr,
+            "LINX_ACRE_TRACE phase=%s count=%" PRIu64
+            " mgr=%u target=%u rra=%u bi=%u"
+            " trapno=0x%" PRIx64 " trapnum=%" PRIu64
+            " ecstate=0x%" PRIx64
+            " resume=0x%" PRIx64
+            " resume_bpc=0x%" PRIx64
+            " resume_tpc=0x%" PRIx64
+            " pc=0x%" PRIx64
+            " bpc=0x%" PRIx64
+            " cstate=0x%" PRIx64
+            " acr=%u in_body=%u blocktype=%u brtype=%u"
+            " tgt=0x%" PRIx64
+            " body_tpc=0x%" PRIx64
+            " return_pc=0x%" PRIx64
+            " call_ra_set=%u call_setret_pending=%u"
+            " sp=0x%" PRIx64
+            " ra=0x%" PRIx64
+            " tp=0x%" PRIx64
+            " etemp1=0x%" PRIx64
+            " ipending1=0x%" PRIx64
+            " a0=0x%" PRIx64
+            " a1=0x%" PRIx64
+            " a2=0x%" PRIx64
+            " a3=0x%" PRIx64
+            " a4=0x%" PRIx64
+            " a5=0x%" PRIx64
+            " a6=0x%" PRIx64
+            " a7=0x%" PRIx64
+            " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+            " tq2=0x%" PRIx64 " tq3=0x%" PRIx64
+            " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+            " uq2=0x%" PRIx64 " uq3=0x%" PRIx64
+            "\n",
+            phase, env->insn_count, mgr, target, rra_type, bi ? 1u : 0u,
+            trapno, trapno & 0x3fu, ecstate, resume_pc, resume_bpc,
+            resume_tpc, env->pc, env->bpc, env->ssr[0x20],
+            env->acr & 0xFu, env->in_body, env->blocktype, env->brtype,
+            env->tgt, env->body_tpc, env->return_pc, env->call_ra_set,
+            env->call_setret_pending, env->gpr[LINX_REG_SP],
+            env->gpr[LINX_REG_RA], env->ssr[0],
+            env->ssr_acr[1][0xF05], env->ssr_acr[1][0xF08],
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
+            env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
+            env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
+            env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7],
+            env->tq[0], env->tq[1], env->tq[2], env->tq[3],
+            env->uq[0], env->uq[1], env->uq[2], env->uq[3]);
+
+    if (linx_acre_trace_regs_enabled) {
+        fprintf(stderr, "LINX_ACRE_REGS phase=%s count=%" PRIu64,
+                phase, env->insn_count);
+        linx_fprint_gprs(stderr, env);
+        fputc('\n', stderr);
+    }
+    if (linx_acre_trace_code_bytes) {
+        fprintf(stderr, "LINX_ACRE_CODE phase=%s count=%" PRIu64,
+                phase, env->insn_count);
+        linx_fprint_guest_code_bytes(stderr, env, "resume", resume_pc,
+                                     linx_acre_trace_code_bytes);
+        linx_fprint_guest_code_bytes(stderr, env, "bpc", resume_bpc,
+                                     linx_acre_trace_code_bytes);
+        if (resume_tpc) {
+            linx_fprint_guest_code_bytes(stderr, env, "tpc", resume_tpc,
+                                         linx_acre_trace_code_bytes);
+        }
+        fputc('\n', stderr);
+    }
+    fflush(stderr);
 }
 
 static void linx_tlb_trace_init(void)
@@ -5836,6 +6094,9 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     const uint64_t resume_pc =
         ((trapno & 0x3fu) == LINX_TRAPNUM_BREAKPOINT_EXP) ? resume_bpc :
         (bi ? resume_tpc : resume_bpc);
+    linx_acre_trace_maybe_emit(env, "entry", mgr, target, rra_type, bi,
+                               trapno, ecstate, resume_pc, resume_bpc,
+                               resume_tpc);
     if (linx_debug_acre_stderr_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: acre return mgr=%u target=%u bi=%u trapno=0x%" PRIx64
@@ -5962,6 +6223,9 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     env->pc = resume_pc;
     linx_call_trace_emit(env, LINX_CALL_TRACE_ACRE_STAGED, env->pc,
                          resume_bpc, resume_tpc);
+    linx_acre_trace_maybe_emit(env, "staged", mgr, target, rra_type, bi,
+                               trapno, ecstate, resume_pc, resume_bpc,
+                               resume_tpc);
     if (target == 2 && (trapno & 0x3fu) == 16) {
         linx_syscall_trace_return_maybe_emit(env, mgr, target,
                                              resume_bpc, resume_tpc,
