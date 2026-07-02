@@ -660,10 +660,8 @@ static void *linx_virt_build_fdt(MachineState *machine,
     qemu_fdt_add_subnode(fdt, "/cpus/cpu@0");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "device_type", "cpu");
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "compatible", "linx");
-    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "riscv,isa",
-                            TARGET_LONG_BITS == 64 ? "rv64imac" : "rv32imac");
-    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "linx,isa",
-                            TARGET_LONG_BITS == 64 ? "rv64imac" : "rv32imac");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "riscv,isa", "rv64imac");
+    qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "linx,isa", "rv64imac");
     qemu_fdt_setprop_cell(fdt, "/cpus/cpu@0", "reg", 0x0);
     qemu_fdt_setprop_string(fdt, "/cpus/cpu@0", "status", "okay");
 
@@ -2450,18 +2448,6 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
     }
     phdrs = (const Elf32_Phdr *)(buf + eh->e_phoff);
 
-    for (i = 0; i < eh->e_phnum; i++) {
-        const Elf32_Phdr *ph = &phdrs[i];
-
-        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
-            continue;
-        }
-        if (ph->p_paddr != 0 || (hwaddr)ph->p_vaddr != (hwaddr)ph->p_paddr) {
-            use_phys_layout = true;
-            break;
-        }
-    }
-
     /* For ET_DYN, compute a load bias so the lowest segment starts at load_base. */
     for (i = 0; i < eh->e_phnum; i++) {
         const Elf32_Phdr *ph = &phdrs[i];
@@ -2469,6 +2455,9 @@ static bool linx_load_elf32_exec(const uint8_t *buf, size_t len,
 
         if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
             continue;
+        }
+        if (ph->p_paddr != 0 || (hwaddr)ph->p_vaddr != (hwaddr)ph->p_paddr) {
+            use_phys_layout = true;
         }
         addr = use_phys_layout ? (hwaddr)ph->p_paddr : (hwaddr)ph->p_vaddr;
         if (addr < min_load) {
