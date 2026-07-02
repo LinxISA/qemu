@@ -462,6 +462,7 @@ typedef struct CPUArchState {
     uint32_t trace_trap_valid;
     uint32_t trace_trap_cause; /* low16: (cause<<8)|trapnum */
     uint64_t trace_traparg0;
+    uint32_t trace_capture_disabled_fast;
 
     /* LR/SC reservation state (bring-up model). */
     uint64_t lr_addr;

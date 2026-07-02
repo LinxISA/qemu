@@ -2522,7 +2522,7 @@ static void linx_syscall_trace_return_maybe_emit(CPULinxState *env,
     fflush(stderr);
 }
 
-static inline bool linx_call_trace_disabled_fast(void)
+static inline QEMU_ALWAYS_INLINE bool linx_call_trace_disabled_fast(void)
 {
     return linx_call_trace_inited &&
            !linx_call_trace_enabled &&
@@ -2572,9 +2572,11 @@ static void linx_call_trace_emit_slow(CPULinxState *env, uint32_t event,
     fflush(stderr);
 }
 
-static inline void linx_call_trace_emit(CPULinxState *env, uint32_t event,
-                                        uint64_t pc, uint64_t extra0,
-                                        uint64_t extra1)
+static inline QEMU_ALWAYS_INLINE void linx_call_trace_emit(CPULinxState *env,
+                                                          uint32_t event,
+                                                          uint64_t pc,
+                                                          uint64_t extra0,
+                                                          uint64_t extra1)
 {
     if (linx_call_trace_disabled_fast()) {
         return;
@@ -2664,6 +2666,9 @@ static void linx_fret_stk_trace_init(void)
 static bool linx_fret_stk_trace_matches(CPULinxState *env, uint64_t pc,
                                         uint64_t restored_ra)
 {
+    if (linx_fret_stk_trace_inited && !linx_fret_stk_trace_enabled) {
+        return false;
+    }
     linx_fret_stk_trace_init();
     if (!linx_fret_stk_trace_enabled) {
         return false;
@@ -2702,6 +2707,9 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
 {
     uint64_t restored_ra = env->gpr[LINX_REG_RA];
 
+    if (linx_fret_stk_trace_inited && !linx_fret_stk_trace_enabled) {
+        return;
+    }
     for (int i = 0; i < count; i++) {
         if (regs[i] == LINX_REG_RA) {
             restored_ra = values[i];
@@ -2851,6 +2859,9 @@ static bool linx_fentry_trace_matches(CPULinxState *env, uint64_t pc,
                                       uint64_t old_sp, uint64_t new_sp,
                                       uint64_t save_ra)
 {
+    if (linx_fentry_trace_inited && !linx_fentry_trace_enabled) {
+        return false;
+    }
     linx_fentry_trace_init();
     if (!linx_fentry_trace_enabled) {
         return false;
@@ -4509,8 +4520,11 @@ static inline bool linx_minst_trace_active(CPULinxState *env)
     return env->minst_trace.enabled && env->minst_trace.fp;
 }
 
-static inline bool linx_trace_capture_active(CPULinxState *env)
+static inline QEMU_ALWAYS_INLINE bool linx_trace_capture_active(CPULinxState *env)
 {
+    if (likely(env->trace_capture_disabled_fast)) {
+        return false;
+    }
     if (!env->cosim.inited) {
         linx_cosim_init(env);
     }
@@ -4520,9 +4534,16 @@ static inline bool linx_trace_capture_active(CPULinxState *env)
     if (!env->minst_trace.inited) {
         linx_minst_trace_init(env);
     }
-    return (env->commit_trace.enabled && env->commit_trace.fp) ||
-           (env->minst_trace.enabled && env->minst_trace.fp) ||
-           env->cosim.active || qemu_loglevel_mask(LOG_LINX_MEM);
+    const bool mem_log_active = qemu_loglevel_mask(LOG_LINX_MEM);
+    const bool active =
+        (env->commit_trace.enabled && env->commit_trace.fp) ||
+        (env->minst_trace.enabled && env->minst_trace.fp) ||
+        env->cosim.active || mem_log_active;
+
+    if (!active && !env->cosim.enabled) {
+        env->trace_capture_disabled_fast = 1;
+    }
+    return active;
 }
 
 static inline uint32_t linx_trace_len_to_meta_len(uint32_t len)
@@ -4648,7 +4669,8 @@ void HELPER(linx_trace_operands_begin)(CPULinxState *env, uint64_t insn_raw, uin
     }
 }
 
-static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
+static inline QEMU_ALWAYS_INLINE void linx_trace_wb(CPULinxState *env,
+                                                    uint32_t rd, uint64_t data)
 {
     if (!linx_trace_capture_active(env)) {
         return;
@@ -4664,9 +4686,12 @@ static inline void linx_trace_wb(CPULinxState *env, uint32_t rd, uint64_t data)
                          data, 0);
 }
 
-static inline void linx_trace_mem(CPULinxState *env, bool is_store,
-                                  uint64_t addr, uint64_t wdata,
-                                  uint64_t rdata, uint32_t size)
+static inline QEMU_ALWAYS_INLINE void linx_trace_mem(CPULinxState *env,
+                                                     bool is_store,
+                                                     uint64_t addr,
+                                                     uint64_t wdata,
+                                                     uint64_t rdata,
+                                                     uint32_t size)
 {
     if (!linx_trace_capture_active(env)) {
         return;
