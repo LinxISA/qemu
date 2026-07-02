@@ -445,6 +445,28 @@ static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
     gen_helper_linx_trace_operands_begin(tcg_env, tcg_constant_i64(insn_raw), tcg_constant_i32((int32_t)len));
 }
 
+static void linx_tile_reset_block_tcg(void)
+{
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_arg_format));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_attr_raw));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_ior_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, vec_ri_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_itp_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_ota_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_meta_valid));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_meta_mode));
+    tcg_gen_st_i64(tcg_constant_i64(0), tcg_env,
+                   offsetof(CPULinxState, tile_meta_value));
+}
+
 static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
                                     vaddr block_pc,
                                     vaddr initial_target,
@@ -469,8 +491,9 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     tcg_gen_movi_i32(cpu_tile_func, 0);
     tcg_gen_movi_i32(cpu_tile_dtype, 17); /* INT32 default in v0.3 DataType */
     tcg_gen_movi_i32(cpu_tile_desc_valid, 0);
-    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(0));
-    gen_helper_linx_tile_reset_block(tcg_env);
+    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
+    linx_tile_reset_block_tcg();
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
