@@ -2501,9 +2501,16 @@ static void linx_syscall_trace_return_maybe_emit(CPULinxState *env,
     fflush(stderr);
 }
 
-static void linx_call_trace_emit(CPULinxState *env, uint32_t event,
-                                 uint64_t pc, uint64_t extra0,
-                                 uint64_t extra1)
+static inline bool linx_call_trace_disabled_fast(void)
+{
+    return linx_call_trace_inited &&
+           !linx_call_trace_enabled &&
+           !linx_call_trace_ring_enabled;
+}
+
+static void linx_call_trace_emit_slow(CPULinxState *env, uint32_t event,
+                                      uint64_t pc, uint64_t extra0,
+                                      uint64_t extra1)
 {
     linx_call_trace_init();
     if (!linx_call_trace_enabled && !linx_call_trace_ring_enabled) {
@@ -2542,6 +2549,16 @@ static void linx_call_trace_emit(CPULinxState *env, uint32_t event,
             env->body_tpc, env->return_pc, env->tmpl_kind,
             env->tmpl_pc, env->tmpl_step);
     fflush(stderr);
+}
+
+static inline void linx_call_trace_emit(CPULinxState *env, uint32_t event,
+                                        uint64_t pc, uint64_t extra0,
+                                        uint64_t extra1)
+{
+    if (linx_call_trace_disabled_fast()) {
+        return;
+    }
+    linx_call_trace_emit_slow(env, event, pc, extra0, extra1);
 }
 
 static void linx_fret_stk_trace_init(void)
@@ -8019,17 +8036,6 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                 if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                     const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
                     const uint64_t v = env->gpr[reg];
-                    if ((cur_pc == 0x1953c || cur_pc == 0x1921e) &&
-                        reg == LINX_REG_RA) {
-                        qemu_log_mask(LOG_GUEST_ERROR,
-                                      "Linx fentry: cur_pc=0x%" PRIx64
-                                      " save_ra=0x%" PRIx64
-                                      " save_addr=0x%" PRIx64
-                                      " sp=0x%" PRIx64
-                                      " stacksize=%" PRIu64 "\n",
-                                      cur_pc, v, addr, env->gpr[LINX_REG_SP],
-                                      stacksize);
-                    }
                     linx_trace_mem(env, true, addr, v, 0, 8);
                     cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, v, mmu_idx, GETPC());
                     if (fentry_trace) {
@@ -8120,17 +8126,6 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             const uint64_t ra = env->gpr[LINX_REG_RA];
             linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc,
                                  ra, old_sp);
-            if (cur_pc == 0x19612 || cur_pc == 0x19380) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "Linx fret_stk: cur_pc=0x%" PRIx64
-                              " restored_ra=0x%" PRIx64
-                              " sp=0x%" PRIx64
-                              " brtype=%u call_ra_set=%u call_setret_pending=%u"
-                              " in_body=%u body_tpc=0x%" PRIx64 "\n",
-                              cur_pc, ra, env->gpr[LINX_REG_SP], env->brtype,
-                              env->call_ra_set, env->call_setret_pending,
-                              env->in_body, env->body_tpc);
-            }
             HELPER(linx_check_bstart_target)(env, ra);
             linx_template_clear(env);
             env->pc = ra;
