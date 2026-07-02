@@ -193,7 +193,7 @@ typedef enum LinxTemplateKind {
 #define LINX_VEC_QUEUE_DEPTH 32u
 #define LINX_COSIM_MAX_RANGES 256u
 #define LINX_COSIM_PATH_MAX 512u
-#define LINX_BSTART_CACHE_SIZE 64u
+#define LINX_BSTART_CACHE_SIZE 1024u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
 #define LINX_TB_FLAG_USER_MMU (1u << 1)

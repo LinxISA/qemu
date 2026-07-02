@@ -37,6 +37,15 @@
 /* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
 extern uint64_t linx_callframe_size;
 
+static inline size_t linx_bstart_cache_slot(uint64_t target)
+{
+    uint64_t key = target >> 1;
+
+    key ^= key >> 12;
+    key ^= key >> 24;
+    return (size_t)(key & (LINX_BSTART_CACHE_SIZE - 1u));
+}
+
 static inline void linx_bstart_cache_reset(CPULinxState *env)
 {
     memset(env->bstart_cache_valid, 0, sizeof(env->bstart_cache_valid));
@@ -278,6 +287,18 @@ static bool linx_cfi_trace_inited;
 static bool linx_cfi_trace_enabled;
 static bool linx_bstart_cache_revalidate_inited;
 static bool linx_bstart_cache_revalidate_enabled;
+static bool linx_bstart_cache_stats_inited;
+static bool linx_bstart_cache_stats_enabled;
+static uint64_t linx_bstart_cache_stats_interval;
+static uint64_t linx_bstart_cache_stat_checks;
+static uint64_t linx_bstart_cache_stat_hits;
+static uint64_t linx_bstart_cache_stat_revalidations;
+static uint64_t linx_bstart_cache_stat_continuations;
+static uint64_t linx_bstart_cache_stat_fallthroughs;
+static uint64_t linx_bstart_cache_stat_bstarts;
+static uint64_t linx_bstart_cache_stat_defers;
+static uint64_t linx_bstart_cache_stat_bad;
+static uint64_t linx_bstart_cache_stat_inserts;
 
 #define LINX_CALL_TRACE_RING_MAX 128
 #define LINX_DEBUG_PC_WATCH_RING_MAX 128
@@ -3907,6 +3928,54 @@ static inline bool linx_bstart_cache_revalidate_enabled_p(void)
         linx_bstart_cache_revalidate_inited = true;
     }
     return linx_bstart_cache_revalidate_enabled;
+}
+
+static inline bool linx_bstart_cache_stats_enabled_p(void)
+{
+    if (!linx_bstart_cache_stats_inited) {
+        uint64_t interval = 0;
+
+        linx_bstart_cache_stats_enabled =
+            linx_env_enabled("LINX_BSTART_CACHE_STATS");
+        if (linx_bstart_cache_stats_enabled) {
+            const char *interval_s = getenv("LINX_BSTART_CACHE_STATS_INTERVAL");
+            if (interval_s && linx_parse_u64(interval_s, &interval)) {
+                linx_bstart_cache_stats_interval = interval;
+            } else {
+                linx_bstart_cache_stats_interval = 1000000u;
+            }
+        }
+        linx_bstart_cache_stats_inited = true;
+    }
+    return linx_bstart_cache_stats_enabled;
+}
+
+static inline void linx_bstart_cache_stats_emit_maybe(CPULinxState *env)
+{
+    if (!linx_bstart_cache_stats_interval ||
+        (linx_bstart_cache_stat_checks % linx_bstart_cache_stats_interval) != 0) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_BSTART_CACHE_STATS count=%" PRIu64
+            " pc=0x%" PRIx64 " bpc=0x%" PRIx64 " tpc=0x%" PRIx64
+            " checks=%" PRIu64 " hits=%" PRIu64
+            " revalidations=%" PRIu64 " continuations=%" PRIu64
+            " fallthroughs=%" PRIu64 " bstarts=%" PRIu64
+            " defers=%" PRIu64 " bad=%" PRIu64
+            " inserts=%" PRIu64 " size=%u\n",
+            env->insn_count, env->pc, env->bpc, env->body_tpc,
+            linx_bstart_cache_stat_checks, linx_bstart_cache_stat_hits,
+            linx_bstart_cache_stat_revalidations,
+            linx_bstart_cache_stat_continuations,
+            linx_bstart_cache_stat_fallthroughs,
+            linx_bstart_cache_stat_bstarts,
+            linx_bstart_cache_stat_defers,
+            linx_bstart_cache_stat_bad,
+            linx_bstart_cache_stat_inserts,
+            (unsigned)LINX_BSTART_CACHE_SIZE);
+    fflush(stderr);
 }
 
 static inline bool linx_ssr_idx_is_debug(uint32_t idx)
@@ -11927,7 +11996,12 @@ static bool linx_is_call_fallthrough_target(CPULinxState *env, uint64_t pc,
 
 void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 {
-    const size_t slot = (size_t)((target >> 1) % LINX_BSTART_CACHE_SIZE);
+    const size_t slot = linx_bstart_cache_slot(target);
+    const bool stats_enabled = unlikely(linx_bstart_cache_stats_enabled_p());
+
+    if (stats_enabled) {
+        linx_bstart_cache_stat_checks++;
+    }
 
     if (linx_cfi_trace_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -11936,14 +12010,11 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
                       env->pc, target);
     }
 
-    if (linx_is_call_continuation(env, target)) {
-        return;
-    }
-
     /*
      * This helper is on the hot path for indirect control flow (RET/IND/ICALL
      * and template returns). Cache the most recently-validated targets to avoid
-     * re-reading guest memory for tight call/return loops.
+     * re-reading guest memory or re-scanning continuation metadata for tight
+     * call/return loops.
      *
      * MMU programming, TLB invalidation, CSTATE/ACR switches, and ACRE/trap
      * transitions reset this cache. Self-modifying-code debug can opt back into
@@ -11951,7 +12022,14 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
      */
     if (env->bstart_cache_valid[slot] && env->bstart_cache_tag[slot] == target) {
         if (!linx_bstart_cache_revalidate_enabled_p()) {
+            if (stats_enabled) {
+                linx_bstart_cache_stat_hits++;
+                linx_bstart_cache_stats_emit_maybe(env);
+            }
             return;
+        }
+        if (stats_enabled) {
+            linx_bstart_cache_stat_revalidations++;
         }
         if (linx_is_bstart_at_addr(env, target)) {
             return;
@@ -11959,13 +12037,33 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
         env->bstart_cache_valid[slot] = 0;
     }
 
+    if (linx_is_call_continuation(env, target)) {
+        env->bstart_cache_tag[slot] = target;
+        env->bstart_cache_valid[slot] = 1;
+        if (stats_enabled) {
+            linx_bstart_cache_stat_continuations++;
+            linx_bstart_cache_stat_inserts++;
+            linx_bstart_cache_stats_emit_maybe(env);
+        }
+        return;
+    }
+
     if (linx_is_call_fallthrough_target(env, env->pc, target)) {
+        if (stats_enabled) {
+            linx_bstart_cache_stat_fallthroughs++;
+            linx_bstart_cache_stats_emit_maybe(env);
+        }
         return;
     }
 
     if (linx_is_bstart_at_addr(env, target)) {
         env->bstart_cache_tag[slot] = target;
         env->bstart_cache_valid[slot] = 1;
+        if (stats_enabled) {
+            linx_bstart_cache_stat_bstarts++;
+            linx_bstart_cache_stat_inserts++;
+            linx_bstart_cache_stats_emit_maybe(env);
+        }
         return;
     }
 
@@ -11988,6 +12086,10 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
                  * raising the fetch fault that would page it in.  Defer to the
                  * real fetch path so Linux can service the instruction fault.
                  */
+                if (stats_enabled) {
+                    linx_bstart_cache_stat_defers++;
+                    linx_bstart_cache_stats_emit_maybe(env);
+                }
                 return;
             }
             const uint16_t hw = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
@@ -12003,8 +12105,17 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
              * block-start validation to fetch-time instead of forcing a synthetic
              * BAD_BRANCH_TARGET trap here.
              */
+            if (stats_enabled) {
+                linx_bstart_cache_stat_defers++;
+                linx_bstart_cache_stats_emit_maybe(env);
+            }
             return;
         }
+    }
+
+    if (stats_enabled) {
+        linx_bstart_cache_stat_bad++;
+        linx_bstart_cache_stats_emit_maybe(env);
     }
 
     qemu_log_mask(LOG_GUEST_ERROR,
