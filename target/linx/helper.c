@@ -4620,9 +4620,9 @@ static inline void linx_trace_mem_clear(CPULinxState *env)
     env->trace_mem_rdata = 0;
 }
 
-static inline void linx_template_commit_and_exit(CPULinxState *env,
-                                                 CPUState *cs,
-                                                 uint64_t next_pc)
+static inline G_NORETURN void linx_template_commit_and_exit(CPULinxState *env,
+                                                            CPUState *cs,
+                                                            uint64_t next_pc)
 {
     if (linx_trace_capture_active(env)) {
         HELPER(linx_commit_trace)(env, next_pc);
@@ -4630,7 +4630,8 @@ static inline void linx_template_commit_and_exit(CPULinxState *env,
     cpu_loop_exit_noexc(cs);
 }
 
-static inline void linx_template_exit_without_commit(CPULinxState *env, CPUState *cs)
+static inline G_NORETURN void linx_template_exit_without_commit(CPULinxState *env,
+                                                                CPUState *cs)
 {
     (void)env;
     cpu_loop_exit_noexc(cs);
@@ -7887,6 +7888,209 @@ static inline void linx_extctx_write_byte(CPULinxState *env, uint64_t off, uint8
     }
 }
 
+void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
+                                  uint64_t next_pc, uint32_t reg_begin,
+                                  uint32_t reg_end, uint64_t stacksize)
+{
+    CPUState *cs = env_cpu(env);
+    const uint64_t adj = stacksize + linx_callframe_size;
+    const int begin = (int)reg_begin;
+    const int end = (int)reg_end;
+    const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
+    const uint64_t old_sp = env->gpr[LINX_REG_SP];
+    const uint64_t new_sp = old_sp - adj;
+    const int mmu_idx = linx_env_mmu_index(env);
+    void *save_hosts[LINX_GPR_COUNT] = { NULL };
+    bool fentry_trace;
+
+    linx_call_trace_emit(env, LINX_CALL_TRACE_FENTRY, cur_pc, new_sp, stacksize);
+
+    /*
+     * User stacks can grow on the first save below the old SP.  Probe the save
+     * slots before committing SP so a handled page fault retries from the
+     * original architectural state instead of subtracting the frame twice.
+     */
+    if (count > 0) {
+        int reg = begin;
+        uint32_t step = 1;
+        while (1) {
+            const int64_t off = (int64_t)stacksize - ((int64_t)step * 8);
+            if (off < 0) {
+                break;
+            }
+            if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+                const uint64_t addr = new_sp + (uint64_t)off;
+                save_hosts[reg] =
+                    probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
+            }
+            if (reg == end) {
+                break;
+            }
+            reg = linx_next_fentry_reg(reg);
+            step++;
+        }
+    }
+
+    fentry_trace = linx_fentry_trace_matches(env, cur_pc, old_sp, new_sp,
+                                             env->gpr[LINX_REG_RA]);
+
+    if (adj) {
+        env->gpr[LINX_REG_SP] = new_sp;
+        linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+        trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                            env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                            env->cond, env->carg, env->tgt, old_sp,
+                            env->gpr[LINX_REG_SP]);
+    }
+
+    if (fentry_trace) {
+        linx_fentry_trace_begin(env, cur_pc, next_pc, old_sp, new_sp,
+                                stacksize, begin, end, count, mmu_idx);
+    }
+
+    if (count > 0) {
+        int reg = begin;
+        uint32_t step = 1;
+        while (1) {
+            const int64_t off = (int64_t)stacksize - ((int64_t)step * 8);
+            if (off < 0) {
+                break;
+            }
+            if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
+                const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
+                const uint64_t v = env->gpr[reg];
+                linx_trace_mem(env, true, addr, v, 0, 8);
+                cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, v, mmu_idx, GETPC());
+                if (fentry_trace) {
+                    linx_fentry_trace_slot(env, cur_pc, reg, addr, v, mmu_idx,
+                                           save_hosts[reg]);
+                }
+                if (reg == LINX_REG_RA) {
+                    trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                                        env->gpr[LINX_REG_RA],
+                                        env->brtype & 0x7u, env->cond,
+                                        env->carg, env->tgt, addr, v);
+                }
+            }
+            if (reg == end) {
+                break;
+            }
+            reg = linx_next_fentry_reg(reg);
+            step++;
+        }
+    }
+
+    if (fentry_trace) {
+        linx_fentry_trace_end(env, cur_pc, new_sp);
+    }
+
+    linx_template_clear(env);
+    env->pc = next_pc;
+    linx_template_commit_and_exit(env, cs, env->pc);
+}
+
+void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
+                                 uint64_t next_pc, uint32_t reg_begin,
+                                 uint32_t reg_end, uint64_t stacksize)
+{
+    CPUState *cs = env_cpu(env);
+    const uint64_t adj = stacksize + linx_callframe_size;
+    const uint64_t restore_base = linx_callframe_size;
+    const int begin = (int)reg_begin;
+    const int end = (int)reg_end;
+    const uint64_t old_sp = env->gpr[LINX_REG_SP];
+    const uint64_t new_sp = old_sp + adj;
+    uint32_t regs[LINX_GPR_COUNT];
+    uint64_t addrs[LINX_GPR_COUNT];
+    uint64_t values[LINX_GPR_COUNT];
+    const int restore_count =
+        linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
+                                   begin, end, regs, addrs, values);
+
+    if (adj) {
+        env->gpr[LINX_REG_SP] = new_sp;
+        linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+    }
+
+    linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
+                              restore_count);
+
+    linx_template_clear(env);
+    env->pc = next_pc;
+    linx_template_commit_and_exit(env, cs, env->pc);
+}
+
+void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
+                                    uint64_t next_pc, uint32_t reg_begin,
+                                    uint32_t reg_end, uint64_t stacksize)
+{
+    CPUState *cs = env_cpu(env);
+    const uint64_t adj = stacksize + linx_callframe_size;
+    const uint64_t restore_base = linx_callframe_size;
+    const int begin = (int)reg_begin;
+    const int end = (int)reg_end;
+    const uint64_t old_sp = env->gpr[LINX_REG_SP];
+    const uint64_t new_sp = old_sp + adj;
+    uint32_t regs[LINX_GPR_COUNT];
+    uint64_t addrs[LINX_GPR_COUNT];
+    uint64_t values[LINX_GPR_COUNT];
+    const int restore_count =
+        linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
+                                   begin, end, regs, addrs, values);
+
+    linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp, stacksize,
+                             restore_base, begin, end, regs, addrs, values,
+                             restore_count);
+
+    if (adj) {
+        env->gpr[LINX_REG_SP] = new_sp;
+        linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+    }
+
+    linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
+                              restore_count);
+
+    const uint64_t ra = env->gpr[LINX_REG_RA];
+    linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc, ra, old_sp);
+    HELPER(linx_check_bstart_target)(env, ra);
+    linx_template_clear(env);
+    env->pc = ra;
+    linx_template_commit_and_exit(env, cs, env->pc);
+}
+
+void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
+                                   uint64_t next_pc, uint32_t reg_begin,
+                                   uint32_t reg_end, uint64_t stacksize)
+{
+    CPUState *cs = env_cpu(env);
+    const uint64_t adj = stacksize + linx_callframe_size;
+    const uint64_t restore_base = linx_callframe_size;
+    const int begin = (int)reg_begin;
+    const int end = (int)reg_end;
+    const uint64_t retRa = env->gpr[LINX_REG_RA];
+    const uint64_t old_sp = env->gpr[LINX_REG_SP];
+    const uint64_t new_sp = old_sp + adj;
+    uint32_t regs[LINX_GPR_COUNT];
+    uint64_t addrs[LINX_GPR_COUNT];
+    uint64_t values[LINX_GPR_COUNT];
+    const int restore_count =
+        linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
+                                   begin, end, regs, addrs, values);
+
+    if (adj) {
+        env->gpr[LINX_REG_SP] = new_sp;
+        linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+    }
+
+    linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
+                              restore_count);
+
+    HELPER(linx_check_bstart_target)(env, retRa);
+    linx_template_clear(env);
+    env->pc = retRa;
+    linx_template_commit_and_exit(env, cs, env->pc);
+}
+
 void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                                 uint64_t cur_pc, uint64_t next_pc,
                                 uint32_t op0, uint32_t op1, uint64_t op2)
@@ -7907,16 +8111,6 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         env->tmpl_mem_value = 0;
 
         switch (kind) {
-        case LINX_TEMPLATE_FENTRY:
-        case LINX_TEMPLATE_FEXIT:
-        case LINX_TEMPLATE_FRET_RA:
-        case LINX_TEMPLATE_FRET_STK:
-            env->tmpl_reg_begin = op0;
-            env->tmpl_reg_end = op1;
-            env->tmpl_reg_cur = op0;
-            env->tmpl_stacksize = op2;
-            break;
-
         case LINX_TEMPLATE_MCOPY: {
             const uint32_t dst_reg = op0;
             const uint32_t src_reg = op1;
@@ -7967,204 +8161,6 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
     }
 
     switch (kind) {
-    case LINX_TEMPLATE_FENTRY: {
-        const uint64_t stacksize = env->tmpl_stacksize;
-        const uint64_t adj = stacksize + linx_callframe_size;
-        const int begin = (int)env->tmpl_reg_begin;
-        const int end = (int)env->tmpl_reg_end;
-        const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
-        const uint64_t old_sp = env->gpr[LINX_REG_SP];
-        const uint64_t new_sp = old_sp - adj;
-        const int mmu_idx = linx_env_mmu_index(env);
-        void *save_hosts[LINX_GPR_COUNT] = { NULL };
-        bool fentry_trace;
-
-        linx_call_trace_emit(env, LINX_CALL_TRACE_FENTRY, cur_pc,
-                             new_sp, stacksize);
-
-        /*
-         * User stacks can grow on the first save below the old SP.  Probe the
-         * save slots before committing SP so a handled page fault retries the
-         * template from the original architectural state instead of subtracting
-         * the frame twice.
-         */
-        if (count > 0) {
-            int reg = begin;
-            uint32_t step = 1;
-            while (1) {
-                const int64_t off = (int64_t)stacksize - ((int64_t)step * 8);
-                if (off < 0) {
-                    break;
-                }
-                if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
-                    const uint64_t addr = new_sp + (uint64_t)off;
-                    save_hosts[reg] =
-                        probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
-                }
-                if (reg == end) {
-                    break;
-                }
-                reg = linx_next_fentry_reg(reg);
-                step++;
-            }
-        }
-
-        fentry_trace = linx_fentry_trace_matches(env, cur_pc, old_sp, new_sp,
-                                                 env->gpr[LINX_REG_RA]);
-
-        if (adj) {
-            env->gpr[LINX_REG_SP] = new_sp;
-            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
-            trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
-                                env->brtype & 0x7u, env->cond, env->carg, env->tgt,
-                                old_sp, env->gpr[LINX_REG_SP]);
-        }
-
-        if (fentry_trace) {
-            linx_fentry_trace_begin(env, cur_pc, next_pc, old_sp, new_sp,
-                                    stacksize, begin, end, count, mmu_idx);
-        }
-
-        if (count > 0) {
-            int reg = begin;
-            uint32_t step = 1;
-            while (1) {
-                const int64_t off = (int64_t)stacksize - ((int64_t)step * 8);
-                if (off < 0) {
-                    break;
-                }
-                if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
-                    const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
-                    const uint64_t v = env->gpr[reg];
-                    linx_trace_mem(env, true, addr, v, 0, 8);
-                    cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, v, mmu_idx, GETPC());
-                    if (fentry_trace) {
-                        linx_fentry_trace_slot(env, cur_pc, reg, addr, v,
-                                               mmu_idx, save_hosts[reg]);
-                    }
-                    if (reg == LINX_REG_RA) {
-                        trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
-                                            env->brtype & 0x7u, env->cond, env->carg, env->tgt,
-                                            addr, v);
-                    }
-                }
-                if (reg == end) {
-                    break;
-                }
-                reg = linx_next_fentry_reg(reg);
-                step++;
-            }
-        }
-
-        if (fentry_trace) {
-            linx_fentry_trace_end(env, cur_pc, new_sp);
-        }
-
-        linx_template_clear(env);
-        env->pc = next_pc;
-        linx_template_commit_and_exit(env, cs, env->pc);
-        break;
-    }
-
-    case LINX_TEMPLATE_FEXIT: {
-        const uint64_t stacksize = env->tmpl_stacksize;
-        const uint64_t adj = stacksize + linx_callframe_size;
-        const uint64_t restore_base = linx_callframe_size;
-        const int begin = (int)env->tmpl_reg_begin;
-        const int end = (int)env->tmpl_reg_end;
-        const uint64_t old_sp = env->gpr[LINX_REG_SP];
-        const uint64_t new_sp = old_sp + adj;
-        uint32_t regs[LINX_GPR_COUNT];
-        uint64_t addrs[LINX_GPR_COUNT];
-        uint64_t values[LINX_GPR_COUNT];
-        const int restore_count =
-            linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
-                                       begin, end, regs, addrs, values);
-
-        if (adj) {
-            env->gpr[LINX_REG_SP] = new_sp;
-            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
-        }
-
-        linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
-                                  restore_count);
-
-        linx_template_clear(env);
-        env->pc = next_pc;
-        linx_template_commit_and_exit(env, cs, env->pc);
-        break;
-    }
-
-    case LINX_TEMPLATE_FRET_STK: {
-        const uint64_t stacksize = env->tmpl_stacksize;
-        const uint64_t adj = stacksize + linx_callframe_size;
-        const uint64_t restore_base = linx_callframe_size;
-        const int begin = (int)env->tmpl_reg_begin;
-        const int end = (int)env->tmpl_reg_end;
-        const uint64_t old_sp = env->gpr[LINX_REG_SP];
-        const uint64_t new_sp = old_sp + adj;
-        uint32_t regs[LINX_GPR_COUNT];
-        uint64_t addrs[LINX_GPR_COUNT];
-        uint64_t values[LINX_GPR_COUNT];
-        const int restore_count =
-            linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
-                                       begin, end, regs, addrs, values);
-
-        linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp,
-                                 stacksize, restore_base, begin, end,
-                                 regs, addrs, values, restore_count);
-
-        if (adj) {
-            env->gpr[LINX_REG_SP] = new_sp;
-            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
-        }
-
-        linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
-                                  restore_count);
-
-        {
-            const uint64_t ra = env->gpr[LINX_REG_RA];
-            linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc,
-                                 ra, old_sp);
-            HELPER(linx_check_bstart_target)(env, ra);
-            linx_template_clear(env);
-            env->pc = ra;
-            linx_template_commit_and_exit(env, cs, env->pc);
-        }
-        break;
-    }
-
-    case LINX_TEMPLATE_FRET_RA: {
-        const uint64_t stacksize = env->tmpl_stacksize;
-        const uint64_t adj = stacksize + linx_callframe_size;
-        const uint64_t restore_base = linx_callframe_size;
-        const int begin = (int)env->tmpl_reg_begin;
-        const int end = (int)env->tmpl_reg_end;
-        const uint64_t retRa = env->gpr[LINX_REG_RA];
-        const uint64_t old_sp = env->gpr[LINX_REG_SP];
-        const uint64_t new_sp = old_sp + adj;
-        uint32_t regs[LINX_GPR_COUNT];
-        uint64_t addrs[LINX_GPR_COUNT];
-        uint64_t values[LINX_GPR_COUNT];
-        const int restore_count =
-            linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
-                                       begin, end, regs, addrs, values);
-
-        if (adj) {
-            env->gpr[LINX_REG_SP] = new_sp;
-            linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
-        }
-
-        linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
-                                  restore_count);
-
-        HELPER(linx_check_bstart_target)(env, retRa);
-        linx_template_clear(env);
-        env->pc = retRa;
-        linx_template_commit_and_exit(env, cs, env->pc);
-        break;
-    }
-
     case LINX_TEMPLATE_MCOPY: {
         uint64_t dst = env->tmpl_mem_dst;
         uint64_t src = env->tmpl_mem_src;

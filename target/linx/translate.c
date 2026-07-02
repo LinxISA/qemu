@@ -5972,13 +5972,12 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_step(tcg_env,
-                                  tcg_constant_i32(0), /* FENTRY */
-                                  tcg_constant_i64(current_pc),
-                                  tcg_constant_i64(ctx->base.pc_next),
-                                  tcg_constant_i32(a->reg_begin),
-                                  tcg_constant_i32(a->reg_end),
-                                  tcg_constant_i64(stacksize));
+    gen_helper_linx_template_fentry(tcg_env,
+                                    tcg_constant_i64(current_pc),
+                                    tcg_constant_i64(ctx->base.pc_next),
+                                    tcg_constant_i32(a->reg_begin),
+                                    tcg_constant_i32(a->reg_end),
+                                    tcg_constant_i64(stacksize));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -5997,13 +5996,12 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_step(tcg_env,
-                                  tcg_constant_i32(1), /* FEXIT */
-                                  tcg_constant_i64(current_pc),
-                                  tcg_constant_i64(ctx->base.pc_next),
-                                  tcg_constant_i32(a->reg_begin),
-                                  tcg_constant_i32(a->reg_end),
-                                  tcg_constant_i64(stacksize));
+    gen_helper_linx_template_fexit(tcg_env,
+                                   tcg_constant_i64(current_pc),
+                                   tcg_constant_i64(ctx->base.pc_next),
+                                   tcg_constant_i32(a->reg_begin),
+                                   tcg_constant_i32(a->reg_end),
+                                   tcg_constant_i64(stacksize));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -6022,13 +6020,12 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_step(tcg_env,
-                                  tcg_constant_i32(2), /* FRET.RA */
-                                  tcg_constant_i64(current_pc),
-                                  tcg_constant_i64(ctx->base.pc_next),
-                                  tcg_constant_i32(a->reg_begin),
-                                  tcg_constant_i32(a->reg_end),
-                                  tcg_constant_i64(stacksize));
+    gen_helper_linx_template_fret_ra(tcg_env,
+                                     tcg_constant_i64(current_pc),
+                                     tcg_constant_i64(ctx->base.pc_next),
+                                     tcg_constant_i32(a->reg_begin),
+                                     tcg_constant_i32(a->reg_end),
+                                     tcg_constant_i64(stacksize));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -6047,13 +6044,12 @@ static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_step(tcg_env,
-                                  tcg_constant_i32(3), /* FRET.STK */
-                                  tcg_constant_i64(current_pc),
-                                  tcg_constant_i64(ctx->base.pc_next),
-                                  tcg_constant_i32(a->reg_begin),
-                                  tcg_constant_i32(a->reg_end),
-                                  tcg_constant_i64(stacksize));
+    gen_helper_linx_template_fret_stk(tcg_env,
+                                      tcg_constant_i64(current_pc),
+                                      tcg_constant_i64(ctx->base.pc_next),
+                                      tcg_constant_i32(a->reg_begin),
+                                      tcg_constant_i32(a->reg_end),
+                                      tcg_constant_i64(stacksize));
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
