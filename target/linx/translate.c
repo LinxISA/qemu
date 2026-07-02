@@ -65,7 +65,14 @@ static TCGv_i64 cpu_return_pc;
 static TCGv_i32 cpu_in_body;
 static TCGv_i32 cpu_tile_func;
 static TCGv_i32 cpu_tile_dtype;
-static TCGv_i32 cpu_tile_desc_valid;
+static TCGv_i32 cpu_tile_iot_valid;
+static TCGv_i32 cpu_tile_iot_flags;
+static TCGv_i32 cpu_tile_iot_dst;
+static TCGv_i32 cpu_tile_iot_grp;
+static TCGv_i32 cpu_tile_iot_src0;
+static TCGv_i32 cpu_tile_iot_src1;
+static TCGv_i32 cpu_tile_iot_reg;
+static TCGv_i32 cpu_tile_iot_size;
 static TCGv_i32 cpu_tile_attr_pad;
 static TCGv_i32 cpu_tile_attr_dtype;
 static TCGv_i64 cpu_lb[3];
@@ -260,37 +267,40 @@ static inline int64_t linx_decode_l_bstart_simm42(uint64_t insn)
     return (hi << 17) | (int64_t)low17;
 }
 
-static void linx_emit_tile_itp_desc(DisasContext *ctx, uint32_t src0,
-                                    uint32_t src1, uint32_t last,
-                                    uint32_t src_pair, uint32_t s0r,
-                                    uint32_t s1r)
+static inline unsigned linx_tile_relreg_to_id(unsigned relreg)
 {
-    const uint64_t desc =
-        ((uint64_t)(src0 & 0xffu) << 0) |
-        ((uint64_t)(src1 & 0xffu) << 8) |
-        ((uint64_t)(last & 0x1u) << 16) |
-        ((uint64_t)(src_pair & 0x3u) << 17) |
-        ((uint64_t)(s0r & 0x1u) << 19) |
-        ((uint64_t)(s1r & 0x1u) << 20);
+    const unsigned hand = (relreg >> 4) & 0x3u;
+    const unsigned depth = relreg & 0xfu;
 
-    (void)ctx;
-    tcg_gen_movi_i32(cpu_tile_desc_valid, 1);
-    gen_helper_linx_tile_append_itp(tcg_env, tcg_constant_i64(desc));
+    return (hand * 8u) + depth;
 }
 
-static void linx_emit_tile_ota_desc(DisasContext *ctx, uint32_t dst,
-                                    uint32_t cell_count_m1,
-                                    uint32_t last, uint32_t dst_slot)
+static void linx_emit_tile_iot_desc(DisasContext *ctx, uint32_t flags,
+                                    uint32_t dst, uint32_t grp,
+                                    uint32_t src0, uint32_t src1,
+                                    uint32_t reg, uint32_t size,
+                                    bool has_size)
 {
     const uint64_t desc =
-        ((uint64_t)(dst & 0xffu) << 0) |
-        ((uint64_t)(cell_count_m1 & 0xffu) << 8) |
-        ((uint64_t)(last & 0x1u) << 16) |
-        ((uint64_t)(dst_slot & 0x3u) << 17);
+        ((uint64_t)(src0 & 0x1f) << 0) |
+        ((uint64_t)(src1 & 0x1f) << 5) |
+        ((uint64_t)(dst & 0x7) << 10) |
+        ((uint64_t)(grp & 0x1) << 13) |
+        ((uint64_t)(flags & 0xf) << 14) |
+        ((uint64_t)(reg & 0x1f) << 18) |
+        ((uint64_t)(size & 0x1f) << 23) |
+        ((uint64_t)(has_size ? 1u : 0u) << 28);
 
-    (void)ctx;
-    tcg_gen_movi_i32(cpu_tile_desc_valid, 1);
-    gen_helper_linx_tile_append_ota(tcg_env, tcg_constant_i64(desc));
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, dst & 0x7);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, grp & 0x1);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, src0 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, src1 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_reg, reg & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_size, has_size ? (size & 0x1f) : 0);
+
+    gen_helper_linx_tile_append_iot(tcg_env, tcg_constant_i64(desc));
 }
 
 /*
@@ -457,28 +467,6 @@ static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
     gen_helper_linx_trace_operands_begin(tcg_env, tcg_constant_i64(insn_raw), tcg_constant_i32((int32_t)len));
 }
 
-static void linx_tile_reset_block_tcg(void)
-{
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_arg_format));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_attr_raw));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_ior_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, vec_ri_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_itp_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_ota_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_meta_valid));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_meta_mode));
-    tcg_gen_st_i64(tcg_constant_i64(0), tcg_env,
-                   offsetof(CPULinxState, tile_meta_value));
-}
-
 static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
                                     vaddr block_pc,
                                     vaddr initial_target,
@@ -502,10 +490,16 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     tcg_gen_movi_i32(cpu_in_body, 0);
     tcg_gen_movi_i32(cpu_tile_func, 0);
     tcg_gen_movi_i32(cpu_tile_dtype, 17); /* INT32 default in v0.3 DataType */
-    tcg_gen_movi_i32(cpu_tile_desc_valid, 0);
-    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
-    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
-    linx_tile_reset_block_tcg();
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_flags, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_dst, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_grp, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
+    tcg_gen_movi_i32(cpu_tile_iot_size, 0);
+    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(0));
+    gen_helper_linx_tile_reset_block(tcg_env);
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
@@ -1301,7 +1295,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
      */
     {
         TCGLabel *no_tile_commit = gen_new_label();
-        tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_tile_desc_valid, 0,
+        tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_tile_iot_valid, 0,
                             no_tile_commit);
         gen_helper_linx_tile_commit(tcg_env);
         gen_set_label(no_tile_commit);
@@ -1691,14 +1685,8 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
 #include "decode-insn48.c.inc"
 #include "decode-insn64.c.inc"
 
+static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a);
-
-enum {
-    LINX_QEMU_BLOCK_TMA  = 2,
-    LINX_QEMU_BLOCK_CUBE = 6,
-    LINX_QEMU_BLOCK_TEPL = 7,
-    LINX_QEMU_BLOCK_FIXP = 8,
-};
 
 static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
 {
@@ -2100,10 +2088,21 @@ static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
     return linx_begin_sys_header_target(ctx, 0);
 }
 
-static bool linx_begin_tile_header(DisasContext *ctx, uint32_t blocktype,
-                                   uint32_t dtype, uint32_t func)
+static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, a->func & 0x1fu);
+}
+
+static bool trans_bstart_tepl(DisasContext *ctx, arg_bstart_tepl *a)
+{
+    return trans_bstart_par_common(ctx, a->dtype, a->op & 0x3ffu);
+}
+
+static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    op &= 0x3ffu;
+    dtype &= 0x1fu;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2113,22 +2112,42 @@ static bool linx_begin_tile_header(DisasContext *ctx, uint32_t blocktype,
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    tcg_gen_movi_i32(cpu_blocktype, blocktype);
-    tcg_gen_movi_i32(cpu_tile_func, func);
-    tcg_gen_movi_i32(cpu_tile_dtype, dtype & 0x1fu);
+    tcg_gen_movi_i32(cpu_tile_dtype, dtype);
+
+    switch (op) {
+    case 33u:  /* TLOAD */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+        tcg_gen_movi_i32(cpu_tile_func, 0);
+        break;
+    case 65u:  /* TSTORE */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+        tcg_gen_movi_i32(cpu_tile_func, 1);
+        break;
+    case 66u:  /* MAMULB.ACC */
+        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+        tcg_gen_movi_i32(cpu_tile_func, 2);
+        break;
+    case 163u: /* PAR conversion helper in sampled streams */
+        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA-like */
+        tcg_gen_movi_i32(cpu_tile_func, 31); /* dedicated compatibility slot */
+        break;
+    case 258u: /* ACCCVT */
+        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+        tcg_gen_movi_i32(cpu_tile_func, 8);
+        break;
+    default:
+        /*
+         * Canonical v0.4 TEPL path:
+         * route packed PAR TileOp10 forms to TEPL block execution.
+         */
+        tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
+        tcg_gen_movi_i32(cpu_tile_func, op & 0x3ff);
+        break;
+    }
+
+    /* Canonical v0.4 baseline keeps these tile blocks coupled in QEMU. */
     ctx->decoupled_header = false;
     return true;
-}
-
-static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
-{
-    return linx_begin_tile_header(ctx, LINX_QEMU_BLOCK_FIXP, a->dtype, a->func);
-}
-
-static bool trans_bstart_tepl(DisasContext *ctx, arg_bstart_tepl *a)
-{
-    return linx_begin_tile_header(ctx, LINX_QEMU_BLOCK_TEPL, a->dtype,
-                                  a->op & 0xffu);
 }
 
 static bool trans_bstart_vpar(DisasContext *ctx, arg_bstart_vpar *a)
@@ -2201,12 +2220,38 @@ static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
 
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
 {
-    return linx_begin_tile_header(ctx, LINX_QEMU_BLOCK_TMA, a->dtype, a->func);
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
+    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    ctx->decoupled_header = false;
+    return true;
 }
 
 static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
 {
-    return linx_begin_tile_header(ctx, LINX_QEMU_BLOCK_CUBE, a->dtype, a->func);
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
+    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    ctx->decoupled_header = false;
+    return true;
 }
 
 static bool trans_b_dim_common(DisasContext *ctx, uint32_t reg, uint32_t uimm,
@@ -2331,53 +2376,148 @@ static bool trans_b_arg_dn2zn(DisasContext *ctx, arg_b_arg_dn2zn *a)
     return linx_trans_b_arg_alias(ctx, 4u);
 }
 
-static bool trans_b_itp(DisasContext *ctx, arg_b_itp *a)
+static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
+    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
+
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_TILE);
+                                LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    linx_emit_tile_itp_desc(ctx, a->src0, a->src1, a->l, a->src_pair,
-                            a->s0r, a->s1r);
+    /*
+     * LLVM still emits bring-up-only B.IOT aliases that pack destination hand
+     * and tile size directly into the raw instruction word instead of the
+     * canonical b_iot descriptor fields exposed by decodetree. Reconstruct the
+     * canonical descriptor here so helper.c sees the same shape regardless of
+     * which assembler form produced the instruction.
+     */
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(0xfu << 25))) == 0x00006013u) {
+        const uint32_t flags = (1u << 0) | (1u << 1);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
+        return true;
+    }
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(1u << 30) | (uint32_t)(0x1fu << 7) |
+                 (uint32_t)(1u << 15) | (uint32_t)(0xfu << 25))) == 0x00005013u) {
+        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
+        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) | (1u << 1);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
+        return true;
+    }
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(1u << 30) | (uint32_t)(1u << 31) |
+                 (uint32_t)(0x1fu << 7) | (uint32_t)(1u << 15) |
+                 (uint32_t)(0x3fu << 16) | (uint32_t)(0xfu << 25))) == 0x00004013u) {
+        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
+        const uint32_t src1 = (raw >> 16) & 0x3fu;
+        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) |
+                               (((raw >> 31) & 0x1u) << 3);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, src1, 0, size, true);
+        return true;
+    }
+
+    uint32_t flags = 0;
+    if (a->s0v) {
+        flags |= 1u << 0;
+    }
+    if (a->s1v) {
+        flags |= 1u << 1;
+    }
+    if (a->s0r) {
+        flags |= 1u << 2;
+    }
+    if (a->s1r) {
+        flags |= 1u << 3;
+    }
+
+    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
+                            a->reg, 0, false);
     return true;
 }
 
-static bool trans_b_ota(DisasContext *ctx, arg_b_ota *a)
+static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
 {
+    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
+
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_TILE);
-    }
-    if (a->reserved != 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_TILE);
+                                LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    linx_emit_tile_ota_desc(ctx, a->dst, a->cell_count_m1, a->l,
-                            a->dst_slot);
-    return true;
-}
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(0xfu << 25))) == 0x00006013u) {
+        const uint32_t flags = (1u << 0) | (1u << 1);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
 
-static bool trans_b_meta(DisasContext *ctx, arg_b_meta *a)
-{
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
+        return true;
     }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_TILE);
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(1u << 30) | (uint32_t)(0x1fu << 7) |
+                 (uint32_t)(1u << 15) | (uint32_t)(0xfu << 25))) == 0x00005013u) {
+        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
+        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) | (1u << 1);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
+        return true;
+    }
+    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
+                 (uint32_t)(1u << 30) | (uint32_t)(1u << 31) |
+                 (uint32_t)(0x1fu << 7) | (uint32_t)(1u << 15) |
+                 (uint32_t)(0x3fu << 16) | (uint32_t)(0xfu << 25))) == 0x00004013u) {
+        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
+        const uint32_t src1 = (raw >> 16) & 0x3fu;
+        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) |
+                               (((raw >> 31) & 0x1u) << 3);
+        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
+        const uint32_t grp = (raw >> 29) & 0x1u;
+        const uint32_t size = (raw >> 25) & 0xfu;
+
+        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, src1, 0, size, true);
+        return true;
     }
 
-    tcg_gen_movi_i32(cpu_tile_desc_valid, 1);
-    gen_helper_linx_tile_set_meta(tcg_env, linx_get_reg(a->meta),
-                                  tcg_constant_i32(a->mode));
+    uint32_t flags = 0;
+    if (a->s0v) {
+        flags |= 1u << 0;
+    }
+    if (a->s1v) {
+        flags |= 1u << 1;
+    }
+    if (a->s0r) {
+        flags |= 1u << 2;
+    }
+    if (a->s1r) {
+        flags |= 1u << 3;
+    }
+
+    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
+                            0, a->size, true);
     return true;
 }
 
@@ -8770,7 +8910,14 @@ void linx_translate_init(void)
     cpu_in_body = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, in_body), "in_body");
     cpu_tile_func = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_func), "tile_func");
     cpu_tile_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_dtype), "tile_dtype");
-    cpu_tile_desc_valid = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_desc_valid), "tile_desc_valid");
+    cpu_tile_iot_valid = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_valid), "tile_iot_valid");
+    cpu_tile_iot_flags = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_flags), "tile_iot_flags");
+    cpu_tile_iot_dst = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_dst), "tile_iot_dst");
+    cpu_tile_iot_grp = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_grp), "tile_iot_grp");
+    cpu_tile_iot_src0 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src0), "tile_iot_src0");
+    cpu_tile_iot_src1 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src1), "tile_iot_src1");
+    cpu_tile_iot_reg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_reg), "tile_iot_reg");
+    cpu_tile_iot_size = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_size), "tile_iot_size");
     cpu_tile_attr_pad = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_pad), "tile_attr_pad");
     cpu_tile_attr_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_dtype), "tile_attr_dtype");
     cpu_lb[0] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[0]), "lb0");
