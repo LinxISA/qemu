@@ -1,5 +1,6 @@
 DEF_HELPER_2(linx_ebreak, void, env, i32)
 DEF_HELPER_2(linx_scalar_read_reg, i64, env, i32)
+DEF_HELPER_3(linx_scalar_write_reg, void, env, i32, i64)
 DEF_HELPER_3(linx_scalar_addi, i64, env, i32, i64)
 DEF_HELPER_2(linx_tq_push, void, env, i64)
 DEF_HELPER_2(linx_uq_push, void, env, i64)

@@ -5475,6 +5475,36 @@ uint64_t HELPER(linx_scalar_read_reg)(CPULinxState *env, uint32_t code)
     return 0;
 }
 
+void HELPER(linx_scalar_write_reg)(CPULinxState *env, uint32_t code, uint64_t value)
+{
+    if (code == LINX_REG_ZERO) {
+        return;
+    }
+    if (code < LINX_GPR_COUNT) {
+        env->gpr[code] = value;
+        return;
+    }
+    if (code < 28u) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx scalar write pc=0x%" PRIx64 " code=%u tq[%u]=0x%" PRIx64 "\n",
+                          env->pc, code, code - 24u, value);
+        }
+        env->tq[code - 24u] = value;
+        return;
+    }
+    if (code < 32u) {
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx scalar write pc=0x%" PRIx64 " code=%u uq[%u]=0x%" PRIx64 "\n",
+                          env->pc, code, code - 28u, value);
+        }
+        env->uq[code - 28u] = value;
+        return;
+    }
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+}
+
 uint64_t HELPER(linx_scalar_addi)(CPULinxState *env, uint32_t code, uint64_t imm)
 {
     return HELPER(linx_scalar_read_reg)(env, code) + imm;

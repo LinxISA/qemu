@@ -384,6 +384,15 @@ static void linx_push_u(TCGv_i64 v)
     tcg_gen_mov_i64(cpu_uq[0], value);
 }
 
+static void linx_trace_wb_dest(unsigned dst, TCGv_i64 v)
+{
+    if (linx_commit_trace_enabled) {
+        tcg_gen_movi_i32(cpu_trace_wb_valid, 1);
+        tcg_gen_movi_i32(cpu_trace_wb_rd, (int32_t)dst);
+        tcg_gen_mov_i64(cpu_trace_wb_data, v);
+    }
+}
+
 static void linx_set_dest(unsigned dst, TCGv_i64 v)
 {
     if (dst == 0) {
@@ -391,29 +400,32 @@ static void linx_set_dest(unsigned dst, TCGv_i64 v)
     }
     if (dst == 31) {
         linx_push_t(v);
-        if (linx_commit_trace_enabled) {
-            tcg_gen_movi_i32(cpu_trace_wb_valid, 1);
-            tcg_gen_movi_i32(cpu_trace_wb_rd, (int32_t)dst);
-            tcg_gen_mov_i64(cpu_trace_wb_data, v);
-        }
+        linx_trace_wb_dest(dst, v);
         return;
     }
     if (dst == 30) {
         linx_push_u(v);
-        if (linx_commit_trace_enabled) {
-            tcg_gen_movi_i32(cpu_trace_wb_valid, 1);
-            tcg_gen_movi_i32(cpu_trace_wb_rd, (int32_t)dst);
-            tcg_gen_mov_i64(cpu_trace_wb_data, v);
-        }
+        linx_trace_wb_dest(dst, v);
         return;
     }
     if (dst < LINX_GPR_COUNT) {
         tcg_gen_mov_i64(cpu_gpr[dst], v);
-        if (linx_commit_trace_enabled) {
-            tcg_gen_movi_i32(cpu_trace_wb_valid, 1);
-            tcg_gen_movi_i32(cpu_trace_wb_rd, (int32_t)dst);
-            tcg_gen_mov_i64(cpu_trace_wb_data, v);
-        }
+        linx_trace_wb_dest(dst, v);
+        return;
+    }
+    if (linx_debug_local_enabled_p()) {
+        gen_helper_linx_scalar_write_reg(tcg_env, tcg_constant_i32((int32_t)dst), v);
+        linx_trace_wb_dest(dst, v);
+        return;
+    }
+    if (dst < 28u) {
+        tcg_gen_mov_i64(cpu_tq[dst - 24u], v);
+        linx_trace_wb_dest(dst, v);
+        return;
+    }
+    if (dst < 30u) {
+        tcg_gen_mov_i64(cpu_uq[dst - 28u], v);
+        linx_trace_wb_dest(dst, v);
     }
 }
 
