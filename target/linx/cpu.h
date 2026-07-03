@@ -194,6 +194,7 @@ typedef enum LinxTemplateKind {
 #define LINX_COSIM_PATH_MAX 512u
 #define LINX_BSTART_CACHE_SIZE 1024u
 #define LINX_MMU_CACHE_SIZE 2048u
+#define LINX_TLB_FILL_HOT_SLOTS 16u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
 #define LINX_TB_FLAG_USER_MMU (1u << 1)
@@ -534,6 +535,26 @@ typedef struct CPUArchState {
     uint32_t tlb_fill_last_prot;
     uint32_t tlb_fill_last_cause;
     uint8_t tlb_fill_last_acr;
+
+    /*
+     * Optional hot-page sketch for SPEC/QEMU TLB-fill triage. Populated only
+     * when LINX_QEMU_TLB_FILL_HOT is enabled.
+     */
+    uint8_t tlb_fill_hot_active;
+    uint8_t tlb_fill_hot_valid[LINX_TLB_FILL_HOT_SLOTS];
+    uint8_t tlb_fill_hot_access[LINX_TLB_FILL_HOT_SLOTS];
+    uint8_t tlb_fill_hot_mmu[LINX_TLB_FILL_HOT_SLOTS];
+    uint8_t tlb_fill_hot_probe[LINX_TLB_FILL_HOT_SLOTS];
+    uint8_t tlb_fill_hot_acr[LINX_TLB_FILL_HOT_SLOTS];
+    uint32_t tlb_fill_hot_prot[LINX_TLB_FILL_HOT_SLOTS];
+    uint32_t tlb_fill_hot_cause[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_count[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_page[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_last_va[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_last_pa[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_last_pc[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_last_bpc[LINX_TLB_FILL_HOT_SLOTS];
+    uint64_t tlb_fill_hot_evictions;
 
     /*
      * Runtime-specialized fast-path state.

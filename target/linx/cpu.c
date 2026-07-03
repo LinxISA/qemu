@@ -68,6 +68,8 @@ static uint64_t linx_tlb_fill_trace_limit = 64;
 static uint64_t linx_tlb_fill_trace_emitted;
 static bool linx_tlb_fill_stats_inited;
 static bool linx_tlb_fill_stats_enabled;
+static bool linx_tlb_fill_hot_inited;
+static bool linx_tlb_fill_hot_enabled;
 static bool linx_mmu_cache_config_inited;
 static bool linx_mmu_cache_enabled;
 static bool linx_mmu_cache_stats_enabled;
@@ -2326,13 +2328,96 @@ static inline bool linx_tlb_fill_stats_enabled_p(void)
     return linx_tlb_fill_stats_enabled;
 }
 
+static inline bool linx_tlb_fill_hot_enabled_p(void)
+{
+    if (!linx_tlb_fill_hot_inited) {
+        linx_tlb_fill_hot_enabled =
+            linx_cpu_env_nonzero2("LINX_TLB_FILL_HOT",
+                                  "LINX_QEMU_TLB_FILL_HOT") != NULL;
+        linx_tlb_fill_hot_inited = true;
+    }
+    return linx_tlb_fill_hot_enabled;
+}
+
+static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
+                                     MMUAccessType access_type, int mmu_idx,
+                                     bool probe, hwaddr pa, int prot,
+                                     uint8_t cause)
+{
+    if (!linx_tlb_fill_hot_enabled_p()) {
+        return;
+    }
+
+    const uint64_t page = ((uint64_t)addr) & TARGET_PAGE_MASK;
+    int found = -1;
+    int empty = -1;
+    int min_slot = 0;
+    uint64_t min_count = UINT64_MAX;
+
+    env->tlb_fill_hot_active = 1;
+    for (unsigned i = 0; i < LINX_TLB_FILL_HOT_SLOTS; i++) {
+        if (!env->tlb_fill_hot_valid[i]) {
+            if (empty < 0) {
+                empty = (int)i;
+            }
+            continue;
+        }
+        if (env->tlb_fill_hot_page[i] == page &&
+            env->tlb_fill_hot_access[i] == (uint8_t)access_type &&
+            env->tlb_fill_hot_mmu[i] == (uint8_t)mmu_idx &&
+            env->tlb_fill_hot_probe[i] == (probe ? 1u : 0u)) {
+            found = (int)i;
+            break;
+        }
+        if (env->tlb_fill_hot_count[i] < min_count) {
+            min_count = env->tlb_fill_hot_count[i];
+            min_slot = (int)i;
+        }
+    }
+
+    int slot = found;
+    if (slot < 0) {
+        slot = empty >= 0 ? empty : min_slot;
+        if (empty < 0) {
+            env->tlb_fill_hot_evictions++;
+        }
+        env->tlb_fill_hot_valid[slot] = 1;
+        env->tlb_fill_hot_count[slot] = 0;
+        env->tlb_fill_hot_page[slot] = page;
+        env->tlb_fill_hot_access[slot] = (uint8_t)access_type;
+        env->tlb_fill_hot_mmu[slot] = (uint8_t)mmu_idx;
+        env->tlb_fill_hot_probe[slot] = probe ? 1u : 0u;
+    }
+
+    env->tlb_fill_hot_count[slot]++;
+    env->tlb_fill_hot_acr[slot] = env->acr & 0xFu;
+    env->tlb_fill_hot_prot[slot] = (uint32_t)prot;
+    env->tlb_fill_hot_cause[slot] = cause;
+    env->tlb_fill_hot_last_va[slot] = (uint64_t)addr;
+    env->tlb_fill_hot_last_pa[slot] = (uint64_t)pa;
+    env->tlb_fill_hot_last_pc[slot] = env->pc;
+    env->tlb_fill_hot_last_bpc[slot] = env->bpc;
+}
+
 static inline void linx_tlb_fill_stats_record(CPULinxState *env, vaddr addr,
                                               MMUAccessType access_type,
                                               int mmu_idx, bool probe, bool ok,
                                               hwaddr pa, int prot,
                                               uint8_t cause)
 {
-    if (!linx_tlb_fill_stats_enabled_p()) {
+    const bool stats_enabled = linx_tlb_fill_stats_enabled_p();
+    const bool hot_enabled = linx_tlb_fill_hot_enabled_p();
+
+    if (!stats_enabled && !hot_enabled) {
+        return;
+    }
+
+    if (hot_enabled) {
+        linx_tlb_fill_hot_record(env, addr, access_type, mmu_idx, probe,
+                                 pa, prot, cause);
+    }
+
+    if (!stats_enabled) {
         return;
     }
 

@@ -927,6 +927,85 @@ static uint64_t linx_heartbeat_next_count(uint64_t bucket)
     return (bucket + 1) * linx_heartbeat_interval;
 }
 
+static void linx_heartbeat_emit_tlb_fill_hot(CPULinxState *env)
+{
+    if (!env->tlb_fill_hot_active) {
+        return;
+    }
+
+    int top0 = -1;
+    int top1 = -1;
+    for (unsigned i = 0; i < LINX_TLB_FILL_HOT_SLOTS; i++) {
+        if (!env->tlb_fill_hot_valid[i]) {
+            continue;
+        }
+        if (top0 < 0 ||
+            env->tlb_fill_hot_count[i] > env->tlb_fill_hot_count[top0]) {
+            top1 = top0;
+            top0 = (int)i;
+        } else if (top1 < 0 ||
+                   env->tlb_fill_hot_count[i] > env->tlb_fill_hot_count[top1]) {
+            top1 = (int)i;
+        }
+    }
+
+    const uint64_t top0_count = top0 >= 0 ? env->tlb_fill_hot_count[top0] : 0;
+    const uint64_t top0_page = top0 >= 0 ? env->tlb_fill_hot_page[top0] : 0;
+    const uint64_t top0_va = top0 >= 0 ? env->tlb_fill_hot_last_va[top0] : 0;
+    const uint64_t top0_pa = top0 >= 0 ? env->tlb_fill_hot_last_pa[top0] : 0;
+    const uint64_t top0_pc = top0 >= 0 ? env->tlb_fill_hot_last_pc[top0] : 0;
+    const uint64_t top0_bpc = top0 >= 0 ? env->tlb_fill_hot_last_bpc[top0] : 0;
+    const unsigned top0_access = top0 >= 0 ? env->tlb_fill_hot_access[top0] : 0;
+    const unsigned top0_mmu = top0 >= 0 ? env->tlb_fill_hot_mmu[top0] : 0;
+    const unsigned top0_probe = top0 >= 0 ? env->tlb_fill_hot_probe[top0] : 0;
+    const unsigned top0_prot = top0 >= 0 ? env->tlb_fill_hot_prot[top0] : 0;
+    const unsigned top0_cause = top0 >= 0 ? env->tlb_fill_hot_cause[top0] : 0;
+    const unsigned top0_acr = top0 >= 0 ? env->tlb_fill_hot_acr[top0] : 0;
+
+    const uint64_t top1_count = top1 >= 0 ? env->tlb_fill_hot_count[top1] : 0;
+    const uint64_t top1_page = top1 >= 0 ? env->tlb_fill_hot_page[top1] : 0;
+    const uint64_t top1_va = top1 >= 0 ? env->tlb_fill_hot_last_va[top1] : 0;
+    const uint64_t top1_pa = top1 >= 0 ? env->tlb_fill_hot_last_pa[top1] : 0;
+    const uint64_t top1_pc = top1 >= 0 ? env->tlb_fill_hot_last_pc[top1] : 0;
+    const uint64_t top1_bpc = top1 >= 0 ? env->tlb_fill_hot_last_bpc[top1] : 0;
+    const unsigned top1_access = top1 >= 0 ? env->tlb_fill_hot_access[top1] : 0;
+    const unsigned top1_mmu = top1 >= 0 ? env->tlb_fill_hot_mmu[top1] : 0;
+    const unsigned top1_probe = top1 >= 0 ? env->tlb_fill_hot_probe[top1] : 0;
+    const unsigned top1_prot = top1 >= 0 ? env->tlb_fill_hot_prot[top1] : 0;
+    const unsigned top1_cause = top1 >= 0 ? env->tlb_fill_hot_cause[top1] : 0;
+    const unsigned top1_acr = top1 >= 0 ? env->tlb_fill_hot_acr[top1] : 0;
+
+    fprintf(stderr,
+            "LINX_TLB_FILL_HOT count=%" PRIu64
+            " evictions=%" PRIu64
+            " slots=%u"
+            " top0_count=%" PRIu64
+            " top0_page=0x%" PRIx64
+            " top0_last_va=0x%" PRIx64
+            " top0_last_pa=0x%" PRIx64
+            " top0_access=%u top0_mmu=%u top0_probe=%u"
+            " top0_prot=0x%x top0_cause=0x%x top0_acr=%u"
+            " top0_pc=0x%" PRIx64
+            " top0_bpc=0x%" PRIx64
+            " top1_count=%" PRIu64
+            " top1_page=0x%" PRIx64
+            " top1_last_va=0x%" PRIx64
+            " top1_last_pa=0x%" PRIx64
+            " top1_access=%u top1_mmu=%u top1_probe=%u"
+            " top1_prot=0x%x top1_cause=0x%x top1_acr=%u"
+            " top1_pc=0x%" PRIx64
+            " top1_bpc=0x%" PRIx64
+            "\n",
+            env->insn_count, env->tlb_fill_hot_evictions,
+            LINX_TLB_FILL_HOT_SLOTS,
+            top0_count, top0_page, top0_va, top0_pa,
+            top0_access, top0_mmu, top0_probe, top0_prot, top0_cause,
+            top0_acr, top0_pc, top0_bpc,
+            top1_count, top1_page, top1_va, top1_pa,
+            top1_access, top1_mmu, top1_probe, top1_prot, top1_cause,
+            top1_acr, top1_pc, top1_bpc);
+}
+
 void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
 {
     linx_heartbeat_init();
@@ -1067,6 +1146,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7]);
+    linx_heartbeat_emit_tlb_fill_hot(env);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
                 "LINX_HEARTBEAT_REGS count=%" PRIu64
