@@ -38,6 +38,10 @@
 /* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
 extern uint64_t linx_callframe_size;
 
+static uint64_t linx_bstart_cache_stat_resets;
+static uint64_t linx_bstart_cache_stat_page_resets;
+static uint64_t linx_bstart_cache_stat_page_reset_entries;
+
 static inline size_t linx_bstart_cache_slot(uint64_t target)
 {
     uint64_t key = target >> 1;
@@ -49,19 +53,24 @@ static inline size_t linx_bstart_cache_slot(uint64_t target)
 
 static inline void linx_bstart_cache_reset(CPULinxState *env)
 {
+    linx_bstart_cache_stat_resets++;
     memset(env->bstart_cache_valid, 0, sizeof(env->bstart_cache_valid));
 }
 
 static inline void linx_bstart_cache_reset_page(CPULinxState *env, uint64_t addr)
 {
     const uint64_t page = addr & TARGET_PAGE_MASK;
+    uint64_t reset_entries = 0;
 
+    linx_bstart_cache_stat_page_resets++;
     for (size_t i = 0; i < LINX_BSTART_CACHE_SIZE; i++) {
         if (env->bstart_cache_valid[i] &&
             (env->bstart_cache_tag[i] & TARGET_PAGE_MASK) == page) {
             env->bstart_cache_valid[i] = 0;
+            reset_entries++;
         }
     }
+    linx_bstart_cache_stat_page_reset_entries += reset_entries;
 }
 
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
@@ -4272,7 +4281,9 @@ static inline void linx_bstart_cache_stats_emit_maybe(CPULinxState *env)
             " revalidations=%" PRIu64 " continuations=%" PRIu64
             " fallthroughs=%" PRIu64 " bstarts=%" PRIu64
             " defers=%" PRIu64 " bad=%" PRIu64
-            " inserts=%" PRIu64 " size=%u\n",
+            " inserts=%" PRIu64
+            " resets=%" PRIu64 " page_resets=%" PRIu64
+            " page_reset_entries=%" PRIu64 " size=%u\n",
             env->insn_count, env->pc, env->bpc, env->body_tpc,
             linx_bstart_cache_stat_checks, linx_bstart_cache_stat_hits,
             linx_bstart_cache_stat_revalidations,
@@ -4282,6 +4293,9 @@ static inline void linx_bstart_cache_stats_emit_maybe(CPULinxState *env)
             linx_bstart_cache_stat_defers,
             linx_bstart_cache_stat_bad,
             linx_bstart_cache_stat_inserts,
+            linx_bstart_cache_stat_resets,
+            linx_bstart_cache_stat_page_resets,
+            linx_bstart_cache_stat_page_reset_entries,
             (unsigned)LINX_BSTART_CACHE_SIZE);
     fflush(stderr);
 }
