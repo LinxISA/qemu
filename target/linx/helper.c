@@ -5122,14 +5122,31 @@ static inline void linx_trace_mem_clear(CPULinxState *env)
     env->trace_mem_rdata = 0;
 }
 
-static inline G_NORETURN void linx_template_commit_and_exit(CPULinxState *env,
-                                                            CPUState *cs,
-                                                            uint64_t next_pc)
+static inline void linx_template_commit_trace_if_needed(CPULinxState *env,
+                                                        uint64_t next_pc)
 {
     if (linx_trace_capture_active(env)) {
         HELPER(linx_commit_trace)(env, next_pc);
     }
+}
+
+static inline G_NORETURN void linx_template_commit_and_exit(CPULinxState *env,
+                                                            CPUState *cs,
+                                                            uint64_t next_pc)
+{
+    linx_template_commit_trace_if_needed(env, next_pc);
     cpu_loop_exit_noexc(cs);
+}
+
+static inline void linx_template_commit_or_chain(CPULinxState *env,
+                                                 CPUState *cs,
+                                                 uint64_t next_pc,
+                                                 bool chain)
+{
+    linx_template_commit_trace_if_needed(env, next_pc);
+    if (!chain) {
+        cpu_loop_exit_noexc(cs);
+    }
 }
 
 static inline G_NORETURN void linx_template_exit_without_commit(CPULinxState *env,
@@ -8474,9 +8491,10 @@ static inline void linx_extctx_write_byte(CPULinxState *env, uint64_t off, uint8
     }
 }
 
-void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
-                                  uint64_t next_pc, uint32_t reg_begin,
-                                  uint32_t reg_end, uint64_t stacksize)
+static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
+                                      uint64_t next_pc, uint32_t reg_begin,
+                                      uint32_t reg_end, uint64_t stacksize,
+                                      bool chain)
 {
     CPUState *cs = env_cpu(env);
     const uint64_t adj = stacksize + linx_callframe_size;
@@ -8596,12 +8614,30 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
 
     linx_template_clear(env);
     env->pc = next_pc;
-    linx_template_commit_and_exit(env, cs, env->pc);
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
 }
 
-void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
-                                 uint64_t next_pc, uint32_t reg_begin,
-                                 uint32_t reg_end, uint64_t stacksize)
+void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
+                                  uint64_t next_pc, uint32_t reg_begin,
+                                  uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fentry_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                              stacksize, false);
+    g_assert_not_reached();
+}
+
+void HELPER(linx_template_fentry_chain)(CPULinxState *env, uint64_t cur_pc,
+                                        uint64_t next_pc, uint32_t reg_begin,
+                                        uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fentry_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                              stacksize, true);
+}
+
+static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
+                                     uint64_t next_pc, uint32_t reg_begin,
+                                     uint32_t reg_end, uint64_t stacksize,
+                                     bool chain)
 {
     CPUState *cs = env_cpu(env);
     const uint64_t adj = stacksize + linx_callframe_size;
@@ -8634,12 +8670,30 @@ void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
 
     linx_template_clear(env);
     env->pc = next_pc;
-    linx_template_commit_and_exit(env, cs, env->pc);
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
 }
 
-void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
-                                    uint64_t next_pc, uint32_t reg_begin,
-                                    uint32_t reg_end, uint64_t stacksize)
+void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
+                                 uint64_t next_pc, uint32_t reg_begin,
+                                 uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fexit_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                             stacksize, false);
+    g_assert_not_reached();
+}
+
+void HELPER(linx_template_fexit_chain)(CPULinxState *env, uint64_t cur_pc,
+                                       uint64_t next_pc, uint32_t reg_begin,
+                                       uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fexit_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                             stacksize, true);
+}
+
+static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
+                                        uint64_t next_pc, uint32_t reg_begin,
+                                        uint32_t reg_end, uint64_t stacksize,
+                                        bool chain)
 {
     CPUState *cs = env_cpu(env);
     const uint64_t adj = stacksize + linx_callframe_size;
@@ -8689,12 +8743,32 @@ void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
     }
     linx_template_clear(env);
     env->pc = ra;
-    linx_template_commit_and_exit(env, cs, env->pc);
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
 }
 
-void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
-                                   uint64_t next_pc, uint32_t reg_begin,
-                                   uint32_t reg_end, uint64_t stacksize)
+void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
+                                    uint64_t next_pc, uint32_t reg_begin,
+                                    uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fret_stk_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                                stacksize, false);
+    g_assert_not_reached();
+}
+
+void HELPER(linx_template_fret_stk_chain)(CPULinxState *env, uint64_t cur_pc,
+                                          uint64_t next_pc,
+                                          uint32_t reg_begin,
+                                          uint32_t reg_end,
+                                          uint64_t stacksize)
+{
+    linx_template_fret_stk_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                                stacksize, true);
+}
+
+static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
+                                       uint64_t next_pc, uint32_t reg_begin,
+                                       uint32_t reg_end, uint64_t stacksize,
+                                       bool chain)
 {
     CPUState *cs = env_cpu(env);
     const uint64_t adj = stacksize + linx_callframe_size;
@@ -8739,7 +8813,24 @@ void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
     }
     linx_template_clear(env);
     env->pc = retRa;
-    linx_template_commit_and_exit(env, cs, env->pc);
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
+}
+
+void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
+                                   uint64_t next_pc, uint32_t reg_begin,
+                                   uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fret_ra_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                               stacksize, false);
+    g_assert_not_reached();
+}
+
+void HELPER(linx_template_fret_ra_chain)(CPULinxState *env, uint64_t cur_pc,
+                                         uint64_t next_pc, uint32_t reg_begin,
+                                         uint32_t reg_end, uint64_t stacksize)
+{
+    linx_template_fret_ra_impl(env, cur_pc, next_pc, reg_begin, reg_end,
+                               stacksize, true);
 }
 
 void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,

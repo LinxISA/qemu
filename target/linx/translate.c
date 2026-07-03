@@ -115,6 +115,7 @@ static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_bstart_inline_cache_inited;
 static bool linx_bstart_inline_cache_enabled;
+static bool linx_template_chain_enabled;
 static bool linx_host_insn_hook_inited;
 static bool linx_host_insn_hook_global_enabled;
 static bool linx_host_insn_hook_pc_watch_requested;
@@ -6223,12 +6224,22 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_fentry(tcg_env,
-                                    tcg_constant_i64(current_pc),
-                                    tcg_constant_i64(ctx->base.pc_next),
-                                    tcg_constant_i32(a->reg_begin),
-                                    tcg_constant_i32(a->reg_end),
-                                    tcg_constant_i64(stacksize));
+    if (linx_template_chain_enabled) {
+        gen_helper_linx_template_fentry_chain(tcg_env,
+                                              tcg_constant_i64(current_pc),
+                                              tcg_constant_i64(ctx->base.pc_next),
+                                              tcg_constant_i32(a->reg_begin),
+                                              tcg_constant_i32(a->reg_end),
+                                              tcg_constant_i64(stacksize));
+        tcg_gen_lookup_and_goto_ptr();
+    } else {
+        gen_helper_linx_template_fentry(tcg_env,
+                                        tcg_constant_i64(current_pc),
+                                        tcg_constant_i64(ctx->base.pc_next),
+                                        tcg_constant_i32(a->reg_begin),
+                                        tcg_constant_i32(a->reg_end),
+                                        tcg_constant_i64(stacksize));
+    }
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -6247,12 +6258,22 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_fexit(tcg_env,
-                                   tcg_constant_i64(current_pc),
-                                   tcg_constant_i64(ctx->base.pc_next),
-                                   tcg_constant_i32(a->reg_begin),
-                                   tcg_constant_i32(a->reg_end),
-                                   tcg_constant_i64(stacksize));
+    if (linx_template_chain_enabled) {
+        gen_helper_linx_template_fexit_chain(tcg_env,
+                                             tcg_constant_i64(current_pc),
+                                             tcg_constant_i64(ctx->base.pc_next),
+                                             tcg_constant_i32(a->reg_begin),
+                                             tcg_constant_i32(a->reg_end),
+                                             tcg_constant_i64(stacksize));
+        tcg_gen_lookup_and_goto_ptr();
+    } else {
+        gen_helper_linx_template_fexit(tcg_env,
+                                       tcg_constant_i64(current_pc),
+                                       tcg_constant_i64(ctx->base.pc_next),
+                                       tcg_constant_i32(a->reg_begin),
+                                       tcg_constant_i32(a->reg_end),
+                                       tcg_constant_i64(stacksize));
+    }
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -6271,12 +6292,22 @@ static bool trans_fret_ra(DisasContext *ctx, arg_fret_ra *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_fret_ra(tcg_env,
-                                     tcg_constant_i64(current_pc),
-                                     tcg_constant_i64(ctx->base.pc_next),
-                                     tcg_constant_i32(a->reg_begin),
-                                     tcg_constant_i32(a->reg_end),
-                                     tcg_constant_i64(stacksize));
+    if (linx_template_chain_enabled) {
+        gen_helper_linx_template_fret_ra_chain(tcg_env,
+                                               tcg_constant_i64(current_pc),
+                                               tcg_constant_i64(ctx->base.pc_next),
+                                               tcg_constant_i32(a->reg_begin),
+                                               tcg_constant_i32(a->reg_end),
+                                               tcg_constant_i64(stacksize));
+        tcg_gen_lookup_and_goto_ptr();
+    } else {
+        gen_helper_linx_template_fret_ra(tcg_env,
+                                         tcg_constant_i64(current_pc),
+                                         tcg_constant_i64(ctx->base.pc_next),
+                                         tcg_constant_i32(a->reg_begin),
+                                         tcg_constant_i32(a->reg_end),
+                                         tcg_constant_i64(stacksize));
+    }
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -6295,12 +6326,22 @@ static bool trans_fret_stk(DisasContext *ctx, arg_fret_stk *a)
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_template_fret_stk(tcg_env,
-                                      tcg_constant_i64(current_pc),
-                                      tcg_constant_i64(ctx->base.pc_next),
-                                      tcg_constant_i32(a->reg_begin),
-                                      tcg_constant_i32(a->reg_end),
-                                      tcg_constant_i64(stacksize));
+    if (linx_template_chain_enabled) {
+        gen_helper_linx_template_fret_stk_chain(tcg_env,
+                                                tcg_constant_i64(current_pc),
+                                                tcg_constant_i64(ctx->base.pc_next),
+                                                tcg_constant_i32(a->reg_begin),
+                                                tcg_constant_i32(a->reg_end),
+                                                tcg_constant_i64(stacksize));
+        tcg_gen_lookup_and_goto_ptr();
+    } else {
+        gen_helper_linx_template_fret_stk(tcg_env,
+                                          tcg_constant_i64(current_pc),
+                                          tcg_constant_i64(ctx->base.pc_next),
+                                          tcg_constant_i32(a->reg_begin),
+                                          tcg_constant_i32(a->reg_end),
+                                          tcg_constant_i64(stacksize));
+    }
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
@@ -8915,6 +8956,7 @@ void linx_translate_init(void)
     const char *qemu_heartbeat_interval = getenv("LINX_QEMU_HEARTBEAT_INTERVAL");
     const char *call_trace = getenv("LINX_CALL_TRACE");
     const char *call_trace_ring = getenv("LINX_CALL_TRACE_RING");
+    const char *template_chain = getenv("LINX_QEMU_TEMPLATE_CHAIN");
     const char *mem_trace_addr = getenv("LINX_MEM_TRACE_ADDR");
     const char *mem_trace_size = getenv("LINX_MEM_TRACE_SIZE");
     const char *mem_trace_access = getenv("LINX_MEM_TRACE_ACCESS");
@@ -8947,6 +8989,8 @@ void linx_translate_init(void)
         (call_trace && call_trace[0] && strcmp(call_trace, "0") != 0) ||
         (call_trace_ring && call_trace_ring[0] &&
          strcmp(call_trace_ring, "0") != 0);
+    linx_template_chain_enabled =
+        template_chain && template_chain[0] && strcmp(template_chain, "0") != 0;
     linx_mem_trace_translate_enabled = mem_trace_addr && mem_trace_addr[0];
     if (linx_mem_trace_translate_enabled && mem_trace_access &&
         mem_trace_access[0]) {
