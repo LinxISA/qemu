@@ -69,6 +69,21 @@ void tlb_destroy(CPUState *cpu);
 bool tcg_exec_realizefn(CPUState *cpu, Error **errp);
 void tcg_exec_unrealizefn(CPUState *cpu);
 
+typedef struct LinxTcgTBStats {
+    uint64_t exec;
+    uint64_t lookup;
+    uint64_t jmp_hit;
+    uint64_t hash_hit;
+    uint64_t miss;
+    uint64_t gen;
+    uint64_t flush;
+    uint64_t phys_invalidate;
+    uint64_t code_used;
+    uint64_t code_size;
+} LinxTcgTBStats;
+
+void linx_tcg_tb_stats_snapshot(LinxTcgTBStats *stats);
+
 /* current cflags for hashing/comparison */
 uint32_t curr_cflags(CPUState *cpu);
 

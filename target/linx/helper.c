@@ -989,6 +989,31 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_ret_checks);
 }
 
+static inline void linx_tcg_tb_stats_emit_heartbeat(void)
+{
+    LinxTcgTBStats stats;
+
+    linx_tcg_tb_stats_snapshot(&stats);
+    if (stats.lookup == 0 && stats.exec == 0 && stats.gen == 0) {
+        return;
+    }
+
+    fprintf(stderr,
+            " tbs_exec=%" PRIu64
+            " tbs_lookup=%" PRIu64
+            " tbs_jmp_hit=%" PRIu64
+            " tbs_hash_hit=%" PRIu64
+            " tbs_miss=%" PRIu64
+            " tbs_gen=%" PRIu64
+            " tbs_flush=%" PRIu64
+            " tbs_phys_inv=%" PRIu64
+            " tbs_code_used=%" PRIu64
+            " tbs_code_size=%" PRIu64,
+            stats.exec, stats.lookup, stats.jmp_hit, stats.hash_hit,
+            stats.miss, stats.gen, stats.flush, stats.phys_invalidate,
+            stats.code_used, stats.code_size);
+}
+
 static uint64_t linx_heartbeat_next_count(uint64_t bucket)
 {
     if (linx_heartbeat_interval == 0 ||
@@ -1217,6 +1242,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7]);
     linx_frame_stats_emit_heartbeat();
+    linx_tcg_tb_stats_emit_heartbeat();
     fprintf(stderr, "\n");
     linx_heartbeat_emit_tlb_fill_hot(env);
     if (linx_heartbeat_regs_enabled) {
