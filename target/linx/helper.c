@@ -193,6 +193,19 @@ static uint64_t linx_heartbeat_same_site_warn;
 static bool linx_heartbeat_same_site_reported;
 static bool linx_heartbeat_regs_enabled;
 static unsigned linx_heartbeat_dump_code_bytes;
+static bool linx_frame_stats_inited;
+static bool linx_frame_stats_enabled;
+static uint64_t linx_frame_stat_fentry_calls;
+static uint64_t linx_frame_stat_fentry_save_probes;
+static uint64_t linx_frame_stat_fentry_save_slots;
+static uint64_t linx_frame_stat_fentry_host_stores;
+static uint64_t linx_frame_stat_fentry_fallback_stores;
+static uint64_t linx_frame_stat_fexit_calls;
+static uint64_t linx_frame_stat_fret_stk_calls;
+static uint64_t linx_frame_stat_fret_ra_calls;
+static uint64_t linx_frame_stat_restore_slots;
+static uint64_t linx_frame_stat_ret_fast_hits;
+static uint64_t linx_frame_stat_ret_checks;
 static bool linx_tlb_trace_inited;
 static bool linx_tlb_trace_enabled;
 static bool linx_tlb_trace_pc_filter_enabled;
@@ -928,6 +941,54 @@ static void linx_heartbeat_init(void)
     linx_heartbeat_inited = true;
 }
 
+static inline bool linx_frame_stats_env_enabled(const char *name)
+{
+    const char *v = getenv(name);
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
+static inline bool linx_frame_stats_enabled_p(void)
+{
+    if (!linx_frame_stats_inited) {
+        linx_frame_stats_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_STATS") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_STATS");
+        linx_frame_stats_inited = true;
+    }
+    return linx_frame_stats_enabled;
+}
+
+static inline void linx_frame_stats_emit_heartbeat(void)
+{
+    if (!linx_frame_stats_enabled_p()) {
+        return;
+    }
+
+    fprintf(stderr,
+            " fr_fentry=%" PRIu64
+            " fr_save_probe=%" PRIu64
+            " fr_save_slot=%" PRIu64
+            " fr_save_host=%" PRIu64
+            " fr_save_fallback=%" PRIu64
+            " fr_fexit=%" PRIu64
+            " fr_fret_stk=%" PRIu64
+            " fr_fret_ra=%" PRIu64
+            " fr_restore_slot=%" PRIu64
+            " fr_ret_fast=%" PRIu64
+            " fr_ret_check=%" PRIu64,
+            linx_frame_stat_fentry_calls,
+            linx_frame_stat_fentry_save_probes,
+            linx_frame_stat_fentry_save_slots,
+            linx_frame_stat_fentry_host_stores,
+            linx_frame_stat_fentry_fallback_stores,
+            linx_frame_stat_fexit_calls,
+            linx_frame_stat_fret_stk_calls,
+            linx_frame_stat_fret_ra_calls,
+            linx_frame_stat_restore_slots,
+            linx_frame_stat_ret_fast_hits,
+            linx_frame_stat_ret_checks);
+}
+
 static uint64_t linx_heartbeat_next_count(uint64_t bucket)
 {
     if (linx_heartbeat_interval == 0 ||
@@ -1120,8 +1181,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " a4=0x%" PRIx64
             " a5=0x%" PRIx64
             " a6=0x%" PRIx64
-            " a7=0x%" PRIx64
-            "\n",
+            " a7=0x%" PRIx64,
             qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
             env->insn_count, delta, pc, env->bpc, env->body_tpc,
             env->pc, env->acr & 0xFu, env->ssr[0x20],
@@ -1156,6 +1216,8 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7]);
+    linx_frame_stats_emit_heartbeat();
+    fprintf(stderr, "\n");
     linx_heartbeat_emit_tlb_fill_hot(env);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
@@ -8393,8 +8455,13 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
     const uint64_t new_sp = old_sp - adj;
     const int mmu_idx = linx_env_mmu_index(env);
     const bool fentry_trace_enabled = linx_fentry_trace_enabled_fast();
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     void *save_hosts[LINX_GPR_COUNT];
     bool fentry_trace = false;
+
+    if (frame_stats) {
+        linx_frame_stat_fentry_calls++;
+    }
 
     if (fentry_trace_enabled) {
         memset(save_hosts, 0, sizeof(save_hosts));
@@ -8419,6 +8486,9 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
                 const uint64_t addr = new_sp + (uint64_t)off;
                 save_hosts[reg] = probe_write(env, (vaddr)addr, 8, mmu_idx,
                                               GETPC());
+                if (frame_stats) {
+                    linx_frame_stat_fentry_save_probes++;
+                }
             }
             if (reg == end) {
                 break;
@@ -8461,6 +8531,14 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
                 linx_trace_mem(env, true, addr, v, 0, 8);
                 linx_frame_storeq_after_probe(env, addr, v, mmu_idx,
                                               save_hosts[reg]);
+                if (frame_stats) {
+                    linx_frame_stat_fentry_save_slots++;
+                    if (save_hosts[reg] != NULL) {
+                        linx_frame_stat_fentry_host_stores++;
+                    } else {
+                        linx_frame_stat_fentry_fallback_stores++;
+                    }
+                }
                 if (fentry_trace) {
                     linx_fentry_trace_slot(env, cur_pc, reg, addr, v, mmu_idx,
                                            save_hosts[reg]);
@@ -8503,9 +8581,15 @@ void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
     uint32_t regs[LINX_GPR_COUNT];
     uint64_t addrs[LINX_GPR_COUNT];
     uint64_t values[LINX_GPR_COUNT];
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values);
+
+    if (frame_stats) {
+        linx_frame_stat_fexit_calls++;
+        linx_frame_stat_restore_slots += restore_count;
+    }
 
     if (adj) {
         env->gpr[LINX_REG_SP] = new_sp;
@@ -8534,9 +8618,15 @@ void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
     uint32_t regs[LINX_GPR_COUNT];
     uint64_t addrs[LINX_GPR_COUNT];
     uint64_t values[LINX_GPR_COUNT];
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values);
+
+    if (frame_stats) {
+        linx_frame_stat_fret_stk_calls++;
+        linx_frame_stat_restore_slots += restore_count;
+    }
 
     linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp, stacksize,
                              restore_base, begin, end, regs, addrs, values,
@@ -8552,7 +8642,15 @@ void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
 
     const uint64_t ra = env->gpr[LINX_REG_RA];
     linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc, ra, old_sp);
-    if (!linx_bstart_cache_fast_hit(env, ra)) {
+    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, ra);
+    if (frame_stats) {
+        if (ret_fast_hit) {
+            linx_frame_stat_ret_fast_hits++;
+        } else {
+            linx_frame_stat_ret_checks++;
+        }
+    }
+    if (!ret_fast_hit) {
         HELPER(linx_check_bstart_target)(env, ra);
     }
     linx_template_clear(env);
@@ -8575,9 +8673,15 @@ void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
     uint32_t regs[LINX_GPR_COUNT];
     uint64_t addrs[LINX_GPR_COUNT];
     uint64_t values[LINX_GPR_COUNT];
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values);
+
+    if (frame_stats) {
+        linx_frame_stat_fret_ra_calls++;
+        linx_frame_stat_restore_slots += restore_count;
+    }
 
     if (adj) {
         env->gpr[LINX_REG_SP] = new_sp;
@@ -8587,7 +8691,15 @@ void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
     linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
                               restore_count);
 
-    if (!linx_bstart_cache_fast_hit(env, retRa)) {
+    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, retRa);
+    if (frame_stats) {
+        if (ret_fast_hit) {
+            linx_frame_stat_ret_fast_hits++;
+        } else {
+            linx_frame_stat_ret_checks++;
+        }
+    }
+    if (!ret_fast_hit) {
         HELPER(linx_check_bstart_target)(env, retRa);
     }
     linx_template_clear(env);
