@@ -204,6 +204,8 @@ static uint64_t linx_frame_stat_fexit_calls;
 static uint64_t linx_frame_stat_fret_stk_calls;
 static uint64_t linx_frame_stat_fret_ra_calls;
 static uint64_t linx_frame_stat_restore_slots;
+static uint64_t linx_frame_stat_restore_host_loads;
+static uint64_t linx_frame_stat_restore_fallback_loads;
 static uint64_t linx_frame_stat_ret_fast_hits;
 static uint64_t linx_frame_stat_ret_checks;
 static bool linx_tlb_trace_inited;
@@ -974,6 +976,8 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             " fr_fret_stk=%" PRIu64
             " fr_fret_ra=%" PRIu64
             " fr_restore_slot=%" PRIu64
+            " fr_restore_host=%" PRIu64
+            " fr_restore_fallback=%" PRIu64
             " fr_ret_fast=%" PRIu64
             " fr_ret_check=%" PRIu64,
             linx_frame_stat_fentry_calls,
@@ -985,6 +989,8 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_fret_stk_calls,
             linx_frame_stat_fret_ra_calls,
             linx_frame_stat_restore_slots,
+            linx_frame_stat_restore_host_loads,
+            linx_frame_stat_restore_fallback_loads,
             linx_frame_stat_ret_fast_hits,
             linx_frame_stat_ret_checks);
 }
@@ -8615,6 +8621,7 @@ void HELPER(linx_template_fexit)(CPULinxState *env, uint64_t cur_pc,
     if (frame_stats) {
         linx_frame_stat_fexit_calls++;
         linx_frame_stat_restore_slots += restore_count;
+        linx_frame_stat_restore_fallback_loads += restore_count;
     }
 
     if (adj) {
@@ -8652,6 +8659,7 @@ void HELPER(linx_template_fret_stk)(CPULinxState *env, uint64_t cur_pc,
     if (frame_stats) {
         linx_frame_stat_fret_stk_calls++;
         linx_frame_stat_restore_slots += restore_count;
+        linx_frame_stat_restore_fallback_loads += restore_count;
     }
 
     linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp, stacksize,
@@ -8707,6 +8715,7 @@ void HELPER(linx_template_fret_ra)(CPULinxState *env, uint64_t cur_pc,
     if (frame_stats) {
         linx_frame_stat_fret_ra_calls++;
         linx_frame_stat_restore_slots += restore_count;
+        linx_frame_stat_restore_fallback_loads += restore_count;
     }
 
     if (adj) {
