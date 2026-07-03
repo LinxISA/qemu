@@ -496,6 +496,17 @@ typedef struct CPUArchState {
     uint64_t mmu_cache_flushes;
     uint64_t mmu_cache_page_flushes;
 
+    /* Opt-in TLB invalidation counters for Linux/SPEC throughput triage. */
+    uint64_t tlb_inv_iall;
+    uint64_t tlb_inv_ia;
+    uint64_t tlb_inv_iv;
+    uint64_t tlb_inv_iav;
+    uint64_t tlb_inv_last_count;
+    uint64_t tlb_inv_last_pc;
+    uint64_t tlb_inv_last_bpc;
+    uint64_t tlb_inv_last_operand;
+    uint8_t tlb_inv_last_acr;
+
     /*
      * Runtime-specialized fast-path state.
      * These bits are folded into TB flags by cpu.c.

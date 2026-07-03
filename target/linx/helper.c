@@ -76,6 +76,13 @@ static void linx_debug_dump_guest_units(CPULinxState *env, uint64_t addr,
 static void linx_debug_dump_guest_words(CPULinxState *env, uint64_t addr,
                                         unsigned count, const char *label);
 
+typedef enum LinxTlbInvOp {
+    LINX_TLB_INV_IALL,
+    LINX_TLB_INV_IA,
+    LINX_TLB_INV_IV,
+    LINX_TLB_INV_IAV,
+} LinxTlbInvOp;
+
 static bool linx_print_insn_count_inited;
 static bool linx_print_insn_count_enabled;
 static bool linx_semihost_inited;
@@ -187,6 +194,8 @@ static uint64_t linx_tlb_trace_count_hi = UINT64_MAX;
 static uint64_t linx_tlb_trace_limit = 64;
 static uint64_t linx_tlb_trace_emitted;
 static unsigned linx_tlb_trace_code_bytes;
+static bool linx_tlb_stats_inited;
+static bool linx_tlb_stats_enabled;
 static bool linx_fcmp_trace_inited;
 static bool linx_fcmp_trace_enabled;
 static bool linx_fcmp_trace_pc_filter_enabled;
@@ -973,6 +982,15 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " mmuc_fill=%" PRIu64
             " mmuc_flush=%" PRIu64
             " mmuc_flush_page=%" PRIu64
+            " tlbi_iall=%" PRIu64
+            " tlbi_ia=%" PRIu64
+            " tlbi_iv=%" PRIu64
+            " tlbi_iav=%" PRIu64
+            " tlbi_last_count=%" PRIu64
+            " tlbi_last_pc=0x%" PRIx64
+            " tlbi_last_bpc=0x%" PRIx64
+            " tlbi_last_operand=0x%" PRIx64
+            " tlbi_last_acr=%u"
             " brtype=%u tgt=0x%" PRIx64
             " in_body=%u progress=%s same_site=%" PRIu64
             " sp=0x%" PRIx64
@@ -995,6 +1013,11 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->mmu_cache_hits, env->mmu_cache_misses,
             env->mmu_cache_fills, env->mmu_cache_flushes,
             env->mmu_cache_page_flushes,
+            env->tlb_inv_iall, env->tlb_inv_ia,
+            env->tlb_inv_iv, env->tlb_inv_iav,
+            env->tlb_inv_last_count, env->tlb_inv_last_pc,
+            env->tlb_inv_last_bpc, env->tlb_inv_last_operand,
+            env->tlb_inv_last_acr,
             env->brtype, env->tgt, env->in_body,
             progress, linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
@@ -1446,6 +1469,46 @@ static void linx_tlb_trace_emit(CPULinxState *env, const char *op,
     }
     fputc('\n', stderr);
     fflush(stderr);
+}
+
+static bool linx_tlb_stats_enabled_p(void)
+{
+    if (!linx_tlb_stats_inited) {
+        linx_tlb_stats_enabled =
+            linx_env_nonzero2("LINX_TLB_STATS",
+                              "LINX_QEMU_TLB_STATS") != NULL;
+        linx_tlb_stats_inited = true;
+    }
+    return linx_tlb_stats_enabled;
+}
+
+static void linx_tlb_stats_record(CPULinxState *env, LinxTlbInvOp op,
+                                  uint64_t pc, uint64_t operand)
+{
+    if (!linx_tlb_stats_enabled_p()) {
+        return;
+    }
+
+    switch (op) {
+    case LINX_TLB_INV_IALL:
+        env->tlb_inv_iall++;
+        break;
+    case LINX_TLB_INV_IA:
+        env->tlb_inv_ia++;
+        break;
+    case LINX_TLB_INV_IV:
+        env->tlb_inv_iv++;
+        break;
+    case LINX_TLB_INV_IAV:
+        env->tlb_inv_iav++;
+        break;
+    }
+
+    env->tlb_inv_last_count = env->insn_count;
+    env->tlb_inv_last_pc = pc;
+    env->tlb_inv_last_bpc = env->bpc;
+    env->tlb_inv_last_operand = operand;
+    env->tlb_inv_last_acr = env->acr & 0xFu;
 }
 
 static void linx_fcmp_trace_init(void)
@@ -6014,6 +6077,7 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
 void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)
 {
     linx_tlb_trace_emit(env, "iall", pc, 0, false);
+    linx_tlb_stats_record(env, LINX_TLB_INV_IALL, pc, 0);
     tlb_flush(env_cpu(env));
     linx_mmu_cache_flush(env);
     linx_bstart_cache_reset(env);
@@ -6022,6 +6086,7 @@ void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)
 void HELPER(linx_tlb_ia)(CPULinxState *env, uint64_t asid, uint64_t pc)
 {
     linx_tlb_trace_emit(env, "ia", pc, asid, true);
+    linx_tlb_stats_record(env, LINX_TLB_INV_IA, pc, asid);
     /*
      * QEMU's current Linx TLB model is not ASID-tagged independently from
      * TTBR/MMU-index state, so keep TLB.IA as a conservative local full flush.
@@ -6034,6 +6099,7 @@ void HELPER(linx_tlb_ia)(CPULinxState *env, uint64_t asid, uint64_t pc)
 void HELPER(linx_tlb_iv)(CPULinxState *env, uint64_t addr, uint64_t pc)
 {
     linx_tlb_trace_emit(env, "iv", pc, addr, true);
+    linx_tlb_stats_record(env, LINX_TLB_INV_IV, pc, addr);
     tlb_flush_page(env_cpu(env), (vaddr)addr);
     linx_mmu_cache_flush_page(env, addr);
     linx_bstart_cache_reset_page(env, addr);
@@ -6044,6 +6110,7 @@ void HELPER(linx_tlb_iav)(CPULinxState *env, uint64_t packed, uint64_t pc)
     const uint64_t addr = packed & ((UINT64_C(1) << 44) - 1);
 
     linx_tlb_trace_emit(env, "iav", pc, packed, true);
+    linx_tlb_stats_record(env, LINX_TLB_INV_IAV, pc, packed);
     tlb_flush_page(env_cpu(env), (vaddr)addr);
     linx_mmu_cache_flush_page(env, addr);
     linx_bstart_cache_reset_page(env, addr);
