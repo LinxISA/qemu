@@ -342,6 +342,28 @@ static inline void linx_lr_invalidate(void)
                    offsetof(CPULinxState, lr_valid));
 }
 
+static inline void linx_tile_set_attr_const(uint32_t packed)
+{
+    tcg_gen_st_i32(tcg_constant_i32((int32_t)packed), tcg_env,
+                   offsetof(CPULinxState, tile_attr_raw));
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, (packed >> 7) & 0x1fu);
+    tcg_gen_movi_i32(cpu_tile_attr_pad, (packed >> 12) & 0x1fu);
+}
+
+static inline void linx_tile_reset_block_inline(void)
+{
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_arg_format));
+    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_ior_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, vec_ri_count));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, tile_iot_count));
+}
+
 static TCGv_i64 linx_get_reg(unsigned code)
 {
     if (code == LINX_REG_ZERO) {
@@ -498,8 +520,8 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     tcg_gen_movi_i32(cpu_tile_iot_src1, 0);
     tcg_gen_movi_i32(cpu_tile_iot_reg, 0);
     tcg_gen_movi_i32(cpu_tile_iot_size, 0);
-    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(0));
-    gen_helper_linx_tile_reset_block(tcg_env);
+    linx_tile_set_attr_const(0);
+    linx_tile_reset_block_inline();
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
@@ -2595,7 +2617,7 @@ static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
         ((uint32_t)(a->atom & 0x1u) << 19) |
         ((uint32_t)(a->far & 0x1u) << 20) |
         ((uint32_t)(a->rl & 0x1u) << 21);
-    gen_helper_linx_tile_set_attr(tcg_env, tcg_constant_i32(packed));
+    linx_tile_set_attr_const(packed);
     return true;
 }
 
