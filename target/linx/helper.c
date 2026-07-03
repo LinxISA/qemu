@@ -223,6 +223,8 @@ static uint64_t linx_tlb_trace_emitted;
 static unsigned linx_tlb_trace_code_bytes;
 static bool linx_tlb_stats_inited;
 static bool linx_tlb_stats_enabled;
+static bool linx_tlb_inv_hot_inited;
+static bool linx_tlb_inv_hot_enabled;
 static bool linx_fcmp_trace_inited;
 static bool linx_fcmp_trace_enabled;
 static bool linx_fcmp_trace_pc_filter_enabled;
@@ -1121,6 +1123,110 @@ static void linx_heartbeat_emit_tlb_fill_hot(CPULinxState *env)
             top1_acr, top1_pc, top1_bpc);
 }
 
+static const char *linx_tlb_inv_op_name(unsigned op)
+{
+    switch ((LinxTlbInvOp)op) {
+    case LINX_TLB_INV_IALL:
+        return "iall";
+    case LINX_TLB_INV_IA:
+        return "ia";
+    case LINX_TLB_INV_IV:
+        return "iv";
+    case LINX_TLB_INV_IAV:
+        return "iav";
+    }
+    return "unknown";
+}
+
+static void linx_heartbeat_emit_tlb_inv_hot(CPULinxState *env)
+{
+    if (!env->tlb_inv_hot_active) {
+        return;
+    }
+
+    int top0 = -1;
+    int top1 = -1;
+    for (unsigned i = 0; i < LINX_TLB_INV_HOT_SLOTS; i++) {
+        if (!env->tlb_inv_hot_valid[i]) {
+            continue;
+        }
+        const uint64_t delta =
+            env->tlb_inv_hot_count[i] - env->tlb_inv_hot_emit_count[i];
+        const uint64_t top0_delta =
+            top0 >= 0 ? env->tlb_inv_hot_count[top0] -
+                        env->tlb_inv_hot_emit_count[top0] : 0;
+        const uint64_t top1_delta =
+            top1 >= 0 ? env->tlb_inv_hot_count[top1] -
+                        env->tlb_inv_hot_emit_count[top1] : 0;
+        if (top0 < 0 || delta > top0_delta) {
+            top1 = top0;
+            top0 = (int)i;
+        } else if (top1 < 0 || delta > top1_delta) {
+            top1 = (int)i;
+        }
+    }
+
+    const uint64_t top0_count = top0 >= 0 ? env->tlb_inv_hot_count[top0] : 0;
+    const uint64_t top0_delta =
+        top0 >= 0 ? env->tlb_inv_hot_count[top0] -
+                    env->tlb_inv_hot_emit_count[top0] : 0;
+    const uint64_t top0_pc = top0 >= 0 ? env->tlb_inv_hot_pc[top0] : 0;
+    const uint64_t top0_bpc = top0 >= 0 ? env->tlb_inv_hot_last_bpc[top0] : 0;
+    const uint64_t top0_operand =
+        top0 >= 0 ? env->tlb_inv_hot_last_operand[top0] : 0;
+    const uint64_t top0_page =
+        top0 >= 0 ? env->tlb_inv_hot_last_page[top0] : 0;
+    const unsigned top0_op = top0 >= 0 ? env->tlb_inv_hot_op[top0] : 0;
+    const unsigned top0_acr = top0 >= 0 ? env->tlb_inv_hot_acr[top0] : 0;
+
+    const uint64_t top1_count = top1 >= 0 ? env->tlb_inv_hot_count[top1] : 0;
+    const uint64_t top1_delta =
+        top1 >= 0 ? env->tlb_inv_hot_count[top1] -
+                    env->tlb_inv_hot_emit_count[top1] : 0;
+    const uint64_t top1_pc = top1 >= 0 ? env->tlb_inv_hot_pc[top1] : 0;
+    const uint64_t top1_bpc = top1 >= 0 ? env->tlb_inv_hot_last_bpc[top1] : 0;
+    const uint64_t top1_operand =
+        top1 >= 0 ? env->tlb_inv_hot_last_operand[top1] : 0;
+    const uint64_t top1_page =
+        top1 >= 0 ? env->tlb_inv_hot_last_page[top1] : 0;
+    const unsigned top1_op = top1 >= 0 ? env->tlb_inv_hot_op[top1] : 0;
+    const unsigned top1_acr = top1 >= 0 ? env->tlb_inv_hot_acr[top1] : 0;
+
+    fprintf(stderr,
+            "LINX_TLB_INV_HOT count=%" PRIu64
+            " evictions=%" PRIu64
+            " slots=%u"
+            " top0_count=%" PRIu64
+            " top0_delta=%" PRIu64
+            " top0_op=%s top0_opid=%u"
+            " top0_pc=0x%" PRIx64
+            " top0_bpc=0x%" PRIx64
+            " top0_operand=0x%" PRIx64
+            " top0_page=0x%" PRIx64
+            " top0_acr=%u"
+            " top1_count=%" PRIu64
+            " top1_delta=%" PRIu64
+            " top1_op=%s top1_opid=%u"
+            " top1_pc=0x%" PRIx64
+            " top1_bpc=0x%" PRIx64
+            " top1_operand=0x%" PRIx64
+            " top1_page=0x%" PRIx64
+            " top1_acr=%u"
+            "\n",
+            env->insn_count, env->tlb_inv_hot_evictions,
+            LINX_TLB_INV_HOT_SLOTS,
+            top0_count, top0_delta, linx_tlb_inv_op_name(top0_op), top0_op,
+            top0_pc, top0_bpc, top0_operand, top0_page, top0_acr,
+            top1_count, top1_delta, linx_tlb_inv_op_name(top1_op), top1_op,
+            top1_pc, top1_bpc, top1_operand, top1_page, top1_acr);
+
+    for (unsigned i = 0; i < LINX_TLB_INV_HOT_SLOTS; i++) {
+        if (env->tlb_inv_hot_valid[i]) {
+            env->tlb_inv_hot_emit_count[i] = env->tlb_inv_hot_count[i];
+        }
+    }
+}
+
 void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
 {
     linx_heartbeat_init();
@@ -1264,6 +1370,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
     linx_tcg_tb_stats_emit_heartbeat();
     fprintf(stderr, "\n");
     linx_heartbeat_emit_tlb_fill_hot(env);
+    linx_heartbeat_emit_tlb_inv_hot(env);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
                 "LINX_HEARTBEAT_REGS count=%" PRIu64
@@ -1719,9 +1826,85 @@ static bool linx_tlb_stats_enabled_p(void)
     return linx_tlb_stats_enabled;
 }
 
+static bool linx_tlb_inv_hot_enabled_p(void)
+{
+    if (!linx_tlb_inv_hot_inited) {
+        linx_tlb_inv_hot_enabled =
+            linx_env_nonzero2("LINX_TLB_INV_HOT",
+                              "LINX_QEMU_TLB_INV_HOT") != NULL;
+        linx_tlb_inv_hot_inited = true;
+    }
+    return linx_tlb_inv_hot_enabled;
+}
+
+static uint64_t linx_tlb_inv_operand_page(LinxTlbInvOp op, uint64_t operand)
+{
+    uint64_t addr = operand;
+
+    if (op == LINX_TLB_INV_IAV) {
+        addr = operand & ((UINT64_C(1) << 44) - 1);
+    } else if (op != LINX_TLB_INV_IV) {
+        return operand;
+    }
+    return addr & TARGET_PAGE_MASK;
+}
+
+static void linx_tlb_inv_hot_record(CPULinxState *env, LinxTlbInvOp op,
+                                    uint64_t pc, uint64_t operand)
+{
+    if (!linx_tlb_inv_hot_enabled_p()) {
+        return;
+    }
+
+    int found = -1;
+    int empty = -1;
+    int min_slot = 0;
+    uint64_t min_count = UINT64_MAX;
+
+    env->tlb_inv_hot_active = 1;
+    for (unsigned i = 0; i < LINX_TLB_INV_HOT_SLOTS; i++) {
+        if (!env->tlb_inv_hot_valid[i]) {
+            if (empty < 0) {
+                empty = (int)i;
+            }
+            continue;
+        }
+        if (env->tlb_inv_hot_op[i] == (uint8_t)op &&
+            env->tlb_inv_hot_pc[i] == pc) {
+            found = (int)i;
+            break;
+        }
+        if (env->tlb_inv_hot_count[i] < min_count) {
+            min_count = env->tlb_inv_hot_count[i];
+            min_slot = (int)i;
+        }
+    }
+
+    int slot = found;
+    if (slot < 0) {
+        slot = empty >= 0 ? empty : min_slot;
+        if (empty < 0) {
+            env->tlb_inv_hot_evictions++;
+        }
+        env->tlb_inv_hot_valid[slot] = 1;
+        env->tlb_inv_hot_count[slot] = 0;
+        env->tlb_inv_hot_emit_count[slot] = 0;
+        env->tlb_inv_hot_op[slot] = (uint8_t)op;
+        env->tlb_inv_hot_pc[slot] = pc;
+    }
+
+    env->tlb_inv_hot_count[slot]++;
+    env->tlb_inv_hot_last_bpc[slot] = env->bpc;
+    env->tlb_inv_hot_last_operand[slot] = operand;
+    env->tlb_inv_hot_last_page[slot] = linx_tlb_inv_operand_page(op, operand);
+    env->tlb_inv_hot_acr[slot] = env->acr & 0xFu;
+}
+
 static void linx_tlb_stats_record(CPULinxState *env, LinxTlbInvOp op,
                                   uint64_t pc, uint64_t operand)
 {
+    linx_tlb_inv_hot_record(env, op, pc, operand);
+
     if (!linx_tlb_stats_enabled_p()) {
         return;
     }

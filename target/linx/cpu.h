@@ -195,6 +195,7 @@ typedef enum LinxTemplateKind {
 #define LINX_BSTART_CACHE_SIZE 8192u
 #define LINX_MMU_CACHE_SIZE 2048u
 #define LINX_TLB_FILL_HOT_SLOTS 16u
+#define LINX_TLB_INV_HOT_SLOTS 16u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
 #define LINX_TB_FLAG_USER_MMU (1u << 1)
@@ -508,6 +509,22 @@ typedef struct CPUArchState {
     uint64_t tlb_inv_last_bpc;
     uint64_t tlb_inv_last_operand;
     uint8_t tlb_inv_last_acr;
+
+    /*
+     * Optional source-PC sketch for SPEC/QEMU TLB invalidation triage.
+     * Populated only when LINX_QEMU_TLB_INV_HOT is enabled.
+     */
+    uint8_t tlb_inv_hot_active;
+    uint8_t tlb_inv_hot_valid[LINX_TLB_INV_HOT_SLOTS];
+    uint8_t tlb_inv_hot_op[LINX_TLB_INV_HOT_SLOTS];
+    uint8_t tlb_inv_hot_acr[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_count[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_emit_count[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_pc[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_last_bpc[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_last_operand[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_last_page[LINX_TLB_INV_HOT_SLOTS];
+    uint64_t tlb_inv_hot_evictions;
 
     /* Opt-in TLB fill counters for Linux/SPEC throughput triage. */
     uint64_t tlb_fill_total;
