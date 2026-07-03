@@ -8159,6 +8159,19 @@ static inline void linx_template_clear(CPULinxState *env)
     env->tmpl_mem_value = 0;
 }
 
+static inline void linx_frame_storeq_after_probe(CPULinxState *env,
+                                                 uint64_t addr,
+                                                 uint64_t value,
+                                                 int mmu_idx,
+                                                 void *host)
+{
+    if (likely(host != NULL)) {
+        stq_le_p(host, value);
+        return;
+    }
+    cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, value, mmu_idx, GETPC());
+}
+
 static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
                                       uint64_t new_sp, uint64_t restore_base,
                                       int begin, int end,
@@ -8296,10 +8309,8 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
             }
             if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                 const uint64_t addr = new_sp + (uint64_t)off;
-                void *host = probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
-                if (fentry_trace_enabled) {
-                    save_hosts[reg] = host;
-                }
+                save_hosts[reg] = probe_write(env, (vaddr)addr, 8, mmu_idx,
+                                              GETPC());
             }
             if (reg == end) {
                 break;
@@ -8340,7 +8351,8 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
                 const uint64_t addr = env->gpr[LINX_REG_SP] + (uint64_t)off;
                 const uint64_t v = env->gpr[reg];
                 linx_trace_mem(env, true, addr, v, 0, 8);
-                cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, v, mmu_idx, GETPC());
+                linx_frame_storeq_after_probe(env, addr, v, mmu_idx,
+                                              save_hosts[reg]);
                 if (fentry_trace) {
                     linx_fentry_trace_slot(env, cur_pc, reg, addr, v, mmu_idx,
                                            save_hosts[reg]);
