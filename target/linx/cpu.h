@@ -193,6 +193,7 @@ typedef enum LinxTemplateKind {
 #define LINX_COSIM_MAX_RANGES 256u
 #define LINX_COSIM_PATH_MAX 512u
 #define LINX_BSTART_CACHE_SIZE 1024u
+#define LINX_MMU_CACHE_SIZE 2048u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
 #define LINX_TB_FLAG_USER_MMU (1u << 1)
@@ -296,6 +297,15 @@ typedef struct LinxBodyRange {
     uint64_t start;
     uint64_t end;
 } LinxBodyRange;
+
+typedef struct LinxMmuCacheEntry {
+    uint64_t tag;
+    uint64_t pbase;
+    uint64_t tlb_size;
+    uint32_t prot;
+    uint8_t valid;
+    uint8_t mmu_idx;
+} LinxMmuCacheEntry;
 
 typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
@@ -477,6 +487,14 @@ typedef struct CPUArchState {
     /* Direct-mapped hot-path cache for bstart target validation. */
     uint64_t bstart_cache_tag[LINX_BSTART_CACHE_SIZE];
     uint8_t bstart_cache_valid[LINX_BSTART_CACHE_SIZE];
+
+    /* Direct-mapped page-walk result cache for QEMU TLB miss handling. */
+    LinxMmuCacheEntry mmu_cache[LINX_MMU_CACHE_SIZE];
+    uint64_t mmu_cache_hits;
+    uint64_t mmu_cache_misses;
+    uint64_t mmu_cache_fills;
+    uint64_t mmu_cache_flushes;
+    uint64_t mmu_cache_page_flushes;
 
     /*
      * Runtime-specialized fast-path state.
@@ -802,6 +820,8 @@ void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
                                  uint64_t fault_pc);
 void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
                                      uint64_t fault_pc);
+void linx_mmu_cache_flush(CPULinxState *env);
+void linx_mmu_cache_flush_page(CPULinxState *env, uint64_t addr);
 
 static inline uint64_t linx_lookup_body_end(const CPULinxState *env,
                                             uint64_t body_tpc)

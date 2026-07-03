@@ -968,6 +968,11 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " tpc=0x%" PRIx64
             " envpc=0x%" PRIx64
             " acr=%u cstate=0x%" PRIx64
+            " mmuc_hit=%" PRIu64
+            " mmuc_miss=%" PRIu64
+            " mmuc_fill=%" PRIu64
+            " mmuc_flush=%" PRIu64
+            " mmuc_flush_page=%" PRIu64
             " brtype=%u tgt=0x%" PRIx64
             " in_body=%u progress=%s same_site=%" PRIu64
             " sp=0x%" PRIx64
@@ -987,6 +992,9 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
             env->insn_count, delta, pc, env->bpc, env->body_tpc,
             env->pc, env->acr & 0xFu, env->ssr[0x20],
+            env->mmu_cache_hits, env->mmu_cache_misses,
+            env->mmu_cache_fills, env->mmu_cache_flushes,
+            env->mmu_cache_page_flushes,
             env->brtype, env->tgt, env->in_body,
             progress, linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
@@ -5791,6 +5799,7 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                     }
                     env->ssr_acr[bank][idx] = value;
                     tlb_flush(env_cpu(env));
+                    linx_mmu_cache_flush(env);
                     linx_bstart_cache_reset(env);
                     return;
                 }
@@ -5825,6 +5834,7 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                     }
                     env->ssr_acr[bank][idx] = value;
                     tlb_flush(env_cpu(env));
+                    linx_mmu_cache_flush(env);
                     linx_bstart_cache_reset(env);
                     return;
                 }
@@ -6005,6 +6015,7 @@ void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)
 {
     linx_tlb_trace_emit(env, "iall", pc, 0, false);
     tlb_flush(env_cpu(env));
+    linx_mmu_cache_flush(env);
     linx_bstart_cache_reset(env);
 }
 
@@ -6016,6 +6027,7 @@ void HELPER(linx_tlb_ia)(CPULinxState *env, uint64_t asid, uint64_t pc)
      * TTBR/MMU-index state, so keep TLB.IA as a conservative local full flush.
      */
     tlb_flush(env_cpu(env));
+    linx_mmu_cache_flush(env);
     linx_bstart_cache_reset(env);
 }
 
@@ -6023,6 +6035,7 @@ void HELPER(linx_tlb_iv)(CPULinxState *env, uint64_t addr, uint64_t pc)
 {
     linx_tlb_trace_emit(env, "iv", pc, addr, true);
     tlb_flush_page(env_cpu(env), (vaddr)addr);
+    linx_mmu_cache_flush_page(env, addr);
     linx_bstart_cache_reset_page(env, addr);
 }
 
@@ -6032,6 +6045,7 @@ void HELPER(linx_tlb_iav)(CPULinxState *env, uint64_t packed, uint64_t pc)
 
     linx_tlb_trace_emit(env, "iav", pc, packed, true);
     tlb_flush_page(env_cpu(env), (vaddr)addr);
+    linx_mmu_cache_flush_page(env, addr);
     linx_bstart_cache_reset_page(env, addr);
 }
 

@@ -66,6 +66,9 @@ static uint64_t linx_tlb_fill_trace_count_lo;
 static uint64_t linx_tlb_fill_trace_count_hi = UINT64_MAX;
 static uint64_t linx_tlb_fill_trace_limit = 64;
 static uint64_t linx_tlb_fill_trace_emitted;
+static bool linx_mmu_cache_config_inited;
+static bool linx_mmu_cache_enabled;
+static bool linx_mmu_cache_stats_enabled;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static uint64_t linx_tp_trace_limit;
@@ -725,6 +728,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
                                MMUAccessType access_type, int mmu_idx,
                                hwaddr *pa_out, int *prot_out,
                                hwaddr *tlb_size_out, uint8_t *cause_out);
+static inline uint8_t linx_fault_acc(MMUAccessType access_type);
 static LinxLegacyMmuProbe linx_probe_legacy_mmu(CPULinxState *env, vaddr va,
                                                 MMUAccessType access_type,
                                                 int mmu_idx);
@@ -1157,6 +1161,140 @@ static inline bool linx_irq_allowed(const CPULinxState *env, uint32_t dst_acr)
         return ie;
     }
     return ie;
+}
+
+static bool linx_mmu_cache_enabled_p(void)
+{
+    if (!linx_mmu_cache_config_inited) {
+        const char *value =
+            linx_cpu_env_value2("LINX_MMU_CACHE", "LINX_QEMU_MMU_CACHE");
+
+        linx_mmu_cache_enabled =
+            value && value[0] && strcmp(value, "0") &&
+            strcmp(value, "false") && strcmp(value, "no") &&
+            strcmp(value, "off");
+        value = linx_cpu_env_value2("LINX_MMU_CACHE_STATS",
+                                    "LINX_QEMU_MMU_CACHE_STATS");
+        linx_mmu_cache_stats_enabled =
+            value && value[0] && strcmp(value, "0") &&
+            strcmp(value, "false") && strcmp(value, "no") &&
+            strcmp(value, "off");
+        linx_mmu_cache_config_inited = true;
+    }
+    return linx_mmu_cache_enabled;
+}
+
+static inline size_t linx_mmu_cache_slot(vaddr page, int mmu_idx)
+{
+    uint64_t key = ((uint64_t)page >> TARGET_PAGE_BITS) ^
+                   ((uint64_t)(unsigned)mmu_idx << 5);
+
+    key ^= key >> 11;
+    key ^= key >> 23;
+    return (size_t)(key & (LINX_MMU_CACHE_SIZE - 1u));
+}
+
+static inline bool linx_mmu_cache_access_ok(int prot,
+                                            MMUAccessType access_type)
+{
+    switch (access_type) {
+    case MMU_INST_FETCH:
+        return (prot & PAGE_EXEC) != 0;
+    case MMU_DATA_LOAD:
+        return (prot & PAGE_READ) != 0;
+    case MMU_DATA_STORE:
+        return (prot & PAGE_WRITE) != 0;
+    default:
+        return false;
+    }
+}
+
+static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
+                                  MMUAccessType access_type, int mmu_idx,
+                                  hwaddr *pa_out, int *prot_out,
+                                  hwaddr *tlb_size_out, uint8_t *cause_out)
+{
+    if (!linx_mmu_cache_enabled_p()) {
+        return false;
+    }
+
+    const vaddr page = va & TARGET_PAGE_MASK;
+    const LinxMmuCacheEntry *entry =
+        &env->mmu_cache[linx_mmu_cache_slot(page, mmu_idx)];
+
+    if (entry->valid && entry->tag == (uint64_t)page &&
+        entry->mmu_idx == (uint8_t)mmu_idx &&
+        linx_mmu_cache_access_ok((int)entry->prot, access_type)) {
+        *pa_out = (hwaddr)entry->pbase | (hwaddr)(va & ~TARGET_PAGE_MASK);
+        *prot_out = (int)entry->prot;
+        *tlb_size_out = (hwaddr)entry->tlb_size;
+        *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE,
+                                         linx_fault_acc(access_type));
+        if (linx_mmu_cache_stats_enabled) {
+            env->mmu_cache_hits++;
+        }
+        return true;
+    }
+
+    if (linx_mmu_cache_stats_enabled) {
+        env->mmu_cache_misses++;
+    }
+    return false;
+}
+
+static void linx_mmu_cache_store(CPULinxState *env, vaddr va,
+                                 int mmu_idx, hwaddr pa, int prot,
+                                 hwaddr tlb_size)
+{
+    if (!linx_mmu_cache_enabled_p()) {
+        return;
+    }
+
+    const vaddr page = va & TARGET_PAGE_MASK;
+    LinxMmuCacheEntry *entry =
+        &env->mmu_cache[linx_mmu_cache_slot(page, mmu_idx)];
+
+    entry->tag = (uint64_t)page;
+    entry->pbase = (uint64_t)(pa & TARGET_PAGE_MASK);
+    entry->tlb_size = (uint64_t)(tlb_size ? tlb_size : TARGET_PAGE_SIZE);
+    entry->prot = (uint32_t)prot;
+    entry->valid = 1;
+    entry->mmu_idx = (uint8_t)mmu_idx;
+    if (linx_mmu_cache_stats_enabled) {
+        env->mmu_cache_fills++;
+    }
+}
+
+void linx_mmu_cache_flush(CPULinxState *env)
+{
+    if (!linx_mmu_cache_enabled_p()) {
+        return;
+    }
+
+    memset(env->mmu_cache, 0, sizeof(env->mmu_cache));
+    if (linx_mmu_cache_stats_enabled) {
+        env->mmu_cache_flushes++;
+    }
+}
+
+void linx_mmu_cache_flush_page(CPULinxState *env, uint64_t addr)
+{
+    if (!linx_mmu_cache_enabled_p()) {
+        return;
+    }
+
+    const uint64_t page = addr & TARGET_PAGE_MASK;
+
+    for (int mmu_idx = 0; mmu_idx < 2; mmu_idx++) {
+        LinxMmuCacheEntry *entry =
+            &env->mmu_cache[linx_mmu_cache_slot((vaddr)page, mmu_idx)];
+        if (entry->valid && entry->tag == page) {
+            entry->valid = 0;
+        }
+    }
+    if (linx_mmu_cache_stats_enabled) {
+        env->mmu_cache_page_flushes++;
+    }
 }
 
 static inline void linx_irq_kick_if_allowed(CPUState *cs, CPULinxState *env,
@@ -2235,6 +2373,11 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
         return true;
     }
 
+    if (linx_mmu_cache_lookup(env, va, access_type, mmu_idx,
+                              pa_out, prot_out, tlb_size_out, cause_out)) {
+        return true;
+    }
+
     if (legacy_mmu) {
         const bool qpte = (legacy_mmconfig & LINX_LEGACY_MMCONFIG_Q_BIT) != 0;
         const unsigned mode = (unsigned)(legacy_mmconfig & LINX_LEGACY_MMCONFIG_MODE_MASK);
@@ -2340,6 +2483,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
             *prot_out = prot;
             *tlb_size_out = block_size;
             *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
+            linx_mmu_cache_store(env, va, mmu_idx, pa, prot, block_size);
             return true;
         }
 
@@ -2511,6 +2655,7 @@ static bool linx_mmu_translate(CPUState *cs, CPULinxState *env, vaddr va,
         *prot_out = prot;
         *tlb_size_out = block_size;
         *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE, acc);
+        linx_mmu_cache_store(env, va, mmu_idx, pa, prot, block_size);
         return true;
     }
 
