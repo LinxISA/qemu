@@ -26,6 +26,7 @@
 #include "exec/cputlb.h"
 #include "exec/target_page.h"
 #include "exec/tlb-flags.h"
+#include "hw/core/cpu.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include <inttypes.h>
@@ -143,6 +144,7 @@ static unsigned linx_debug_pc_watch_dump_source_kinds[LINX_DEBUG_PC_WATCH_DUMP_S
 static unsigned linx_debug_pc_watch_dump_source_indexes[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
 static const char *linx_debug_pc_watch_dump_source_names[LINX_DEBUG_PC_WATCH_DUMP_SOURCE_MAX];
 static unsigned linx_debug_pc_watch_dump_code_bytes;
+static unsigned linx_debug_pc_watch_dump_phys_bytes;
 static bool linx_debug_pc_watch_exit;
 static bool linx_debug_pc_watch_dump_call_ring;
 static bool linx_debug_pc_watch_regs_enabled;
@@ -835,6 +837,36 @@ static void linx_fprint_guest_code_bytes(FILE *f, CPULinxState *env,
     }
 }
 
+static void linx_fprint_guest_phys_bytes(FILE *f, CPULinxState *env,
+                                         const char *label, uint64_t va,
+                                         unsigned count)
+{
+    uint8_t bytes[32] = { 0 };
+    CPUState *cs = env_cpu(env);
+    hwaddr page = cpu_get_phys_page_debug(cs, (vaddr)va);
+
+    fprintf(f, " %s=0x%" PRIx64, label, va);
+    if (page == (hwaddr)-1) {
+        fprintf(f, " %s_pa=<fault> %s_phys_bytes=<fault>",
+                label, label);
+        return;
+    }
+
+    hwaddr pa = (page & TARGET_PAGE_MASK) |
+                (hwaddr)(va & (TARGET_PAGE_SIZE - 1));
+    MemTxResult rc = address_space_read(&address_space_memory, pa,
+                                        MEMTXATTRS_UNSPECIFIED, bytes, count);
+    fprintf(f, " %s_pa=0x%" HWADDR_PRIx " %s_phys_rc=%d %s_phys_bytes=",
+            label, pa, label, (int)rc, label);
+    if (rc == MEMTX_OK) {
+        for (unsigned i = 0; i < count; i++) {
+            fprintf(f, "%02x", bytes[i]);
+        }
+    } else {
+        fputs("<fault>", f);
+    }
+}
+
 static void linx_heartbeat_init(void)
 {
     if (linx_heartbeat_inited) {
@@ -945,6 +977,12 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " etemp0_1=0x%" PRIx64
             " a0=0x%" PRIx64
             " a1=0x%" PRIx64
+            " a2=0x%" PRIx64
+            " a3=0x%" PRIx64
+            " a4=0x%" PRIx64
+            " a5=0x%" PRIx64
+            " a6=0x%" PRIx64
+            " a7=0x%" PRIx64
             "\n",
             qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
             env->insn_count, delta, pc, env->bpc, env->body_tpc,
@@ -954,7 +992,10 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x0000], env->ssr_acr[1][0xF05],
             env->ssr_acr[1][0xF06],
-            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1]);
+            env->gpr[LINX_REG_A0], env->gpr[LINX_REG_A1],
+            env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
+            env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
+            env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7]);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
                 "LINX_HEARTBEAT_REGS count=%" PRIu64
@@ -2968,9 +3009,10 @@ static void linx_fentry_trace_end(CPULinxState *env, uint64_t cur_pc,
 }
 
 void HELPER(linx_call_trace_event)(CPULinxState *env, uint64_t pc,
-                                   uint32_t event, uint64_t extra0)
+                                   uint32_t event, uint64_t extra0,
+                                   uint64_t extra1)
 {
-    linx_call_trace_emit(env, event, pc, extra0, 0);
+    linx_call_trace_emit(env, event, pc, extra0, extra1);
 }
 
 static inline bool linx_semihost_enabled_p(void)
@@ -3201,6 +3243,21 @@ static void linx_debug_pc_watch_init(void)
         uint64_t bytes;
         if (linx_parse_u64(v, &bytes) && bytes != 0) {
             linx_debug_pc_watch_dump_code_bytes = MIN((uint64_t)32, bytes);
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_PHYS");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        linx_debug_pc_watch_dump_phys_bytes =
+            linx_debug_pc_watch_dump_code_bytes ?
+            linx_debug_pc_watch_dump_code_bytes : 16;
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_DUMP_PHYS_BYTES");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        uint64_t bytes;
+        if (linx_parse_u64(v, &bytes) && bytes != 0) {
+            linx_debug_pc_watch_dump_phys_bytes = MIN((uint64_t)32, bytes);
         }
     }
 
@@ -3497,6 +3554,14 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                     linx_debug_pc_watch_hits[i]);
             linx_fprint_guest_code_bytes(stderr, env, "pc", pc,
                                          linx_debug_pc_watch_dump_code_bytes);
+            fputc('\n', stderr);
+        }
+        if (linx_debug_pc_watch_dump_phys_bytes) {
+            fprintf(stderr,
+                    "LINX_PC_WATCH_PHYS hit=%" PRIu64,
+                    linx_debug_pc_watch_hits[i]);
+            linx_fprint_guest_phys_bytes(stderr, env, "pc", pc,
+                                         linx_debug_pc_watch_dump_phys_bytes);
             fputc('\n', stderr);
         }
         if (tp) {

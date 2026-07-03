@@ -1349,7 +1349,8 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (linx_call_trace_translate_enabled) {
             gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(source_pc),
                                              tcg_constant_i32(LINX_CALL_TRACE_CALL_COMMIT),
-                                             tcg_constant_i64(fallthrough));
+                                             tcg_constant_i64(fallthrough),
+                                             tcg_constant_i64(ctx->brtarget));
         }
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
@@ -1458,7 +1459,8 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (linx_call_trace_translate_enabled) {
             gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(source_pc),
                                              tcg_constant_i32(LINX_CALL_TRACE_CALL_COMMIT),
-                                             tcg_constant_i64(fallthrough));
+                                             tcg_constant_i64(fallthrough),
+                                             tcg_constant_i64(ctx->brtarget));
         }
         if (!ctx->tgt_modified && ctx->brtarget == 0) {
             (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT, 0);
@@ -2645,7 +2647,8 @@ static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw)
         if (linx_call_trace_translate_enabled) {
             gen_helper_linx_call_trace_event(tcg_env, tcg_constant_i64(pc),
                                              tcg_constant_i32(LINX_CALL_TRACE_SETRET),
-                                             tcg_constant_i64(tgt));
+                                             tcg_constant_i64(tgt),
+                                             tcg_constant_i64(0));
         }
     }
     ctx->ra_set = true;
