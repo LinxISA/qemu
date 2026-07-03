@@ -507,6 +507,25 @@ typedef struct CPUArchState {
     uint64_t tlb_inv_last_operand;
     uint8_t tlb_inv_last_acr;
 
+    /* Opt-in TLB fill counters for Linux/SPEC throughput triage. */
+    uint64_t tlb_fill_total;
+    uint64_t tlb_fill_fetch;
+    uint64_t tlb_fill_load;
+    uint64_t tlb_fill_store;
+    uint64_t tlb_fill_probe;
+    uint64_t tlb_fill_ok;
+    uint64_t tlb_fill_fault;
+    uint64_t tlb_fill_last_count;
+    uint64_t tlb_fill_last_pc;
+    uint64_t tlb_fill_last_bpc;
+    uint64_t tlb_fill_last_va;
+    uint64_t tlb_fill_last_pa;
+    uint32_t tlb_fill_last_access;
+    uint32_t tlb_fill_last_mmu_idx;
+    uint32_t tlb_fill_last_prot;
+    uint32_t tlb_fill_last_cause;
+    uint8_t tlb_fill_last_acr;
+
     /*
      * Runtime-specialized fast-path state.
      * These bits are folded into TB flags by cpu.c.

@@ -991,6 +991,23 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " tlbi_last_bpc=0x%" PRIx64
             " tlbi_last_operand=0x%" PRIx64
             " tlbi_last_acr=%u"
+            " tlbf_total=%" PRIu64
+            " tlbf_fetch=%" PRIu64
+            " tlbf_load=%" PRIu64
+            " tlbf_store=%" PRIu64
+            " tlbf_probe=%" PRIu64
+            " tlbf_ok=%" PRIu64
+            " tlbf_fault=%" PRIu64
+            " tlbf_last_count=%" PRIu64
+            " tlbf_last_pc=0x%" PRIx64
+            " tlbf_last_bpc=0x%" PRIx64
+            " tlbf_last_va=0x%" PRIx64
+            " tlbf_last_pa=0x%" PRIx64
+            " tlbf_last_access=%u"
+            " tlbf_last_mmu=%u"
+            " tlbf_last_prot=0x%x"
+            " tlbf_last_cause=0x%x"
+            " tlbf_last_acr=%u"
             " brtype=%u tgt=0x%" PRIx64
             " in_body=%u progress=%s same_site=%" PRIu64
             " sp=0x%" PRIx64
@@ -1018,6 +1035,15 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->tlb_inv_last_count, env->tlb_inv_last_pc,
             env->tlb_inv_last_bpc, env->tlb_inv_last_operand,
             env->tlb_inv_last_acr,
+            env->tlb_fill_total, env->tlb_fill_fetch,
+            env->tlb_fill_load, env->tlb_fill_store,
+            env->tlb_fill_probe, env->tlb_fill_ok,
+            env->tlb_fill_fault, env->tlb_fill_last_count,
+            env->tlb_fill_last_pc, env->tlb_fill_last_bpc,
+            env->tlb_fill_last_va, env->tlb_fill_last_pa,
+            env->tlb_fill_last_access, env->tlb_fill_last_mmu_idx,
+            env->tlb_fill_last_prot, env->tlb_fill_last_cause,
+            env->tlb_fill_last_acr,
             env->brtype, env->tgt, env->in_body,
             progress, linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],

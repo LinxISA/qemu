@@ -66,6 +66,8 @@ static uint64_t linx_tlb_fill_trace_count_lo;
 static uint64_t linx_tlb_fill_trace_count_hi = UINT64_MAX;
 static uint64_t linx_tlb_fill_trace_limit = 64;
 static uint64_t linx_tlb_fill_trace_emitted;
+static bool linx_tlb_fill_stats_inited;
+static bool linx_tlb_fill_stats_enabled;
 static bool linx_mmu_cache_config_inited;
 static bool linx_mmu_cache_enabled;
 static bool linx_mmu_cache_stats_enabled;
@@ -2313,6 +2315,60 @@ static void linx_tlb_fill_trace_emit(CPULinxState *env, vaddr addr, int size,
     fflush(stderr);
 }
 
+static inline bool linx_tlb_fill_stats_enabled_p(void)
+{
+    if (!linx_tlb_fill_stats_inited) {
+        linx_tlb_fill_stats_enabled =
+            linx_cpu_env_nonzero2("LINX_TLB_FILL_STATS",
+                                  "LINX_QEMU_TLB_FILL_STATS") != NULL;
+        linx_tlb_fill_stats_inited = true;
+    }
+    return linx_tlb_fill_stats_enabled;
+}
+
+static inline void linx_tlb_fill_stats_record(CPULinxState *env, vaddr addr,
+                                              MMUAccessType access_type,
+                                              int mmu_idx, bool probe, bool ok,
+                                              hwaddr pa, int prot,
+                                              uint8_t cause)
+{
+    if (!linx_tlb_fill_stats_enabled_p()) {
+        return;
+    }
+
+    env->tlb_fill_total++;
+    switch (access_type) {
+    case MMU_INST_FETCH:
+        env->tlb_fill_fetch++;
+        break;
+    case MMU_DATA_LOAD:
+        env->tlb_fill_load++;
+        break;
+    case MMU_DATA_STORE:
+        env->tlb_fill_store++;
+        break;
+    }
+    if (probe) {
+        env->tlb_fill_probe++;
+    }
+    if (ok) {
+        env->tlb_fill_ok++;
+    } else {
+        env->tlb_fill_fault++;
+    }
+
+    env->tlb_fill_last_count = env->insn_count;
+    env->tlb_fill_last_pc = env->pc;
+    env->tlb_fill_last_bpc = env->bpc;
+    env->tlb_fill_last_va = (uint64_t)addr;
+    env->tlb_fill_last_pa = (uint64_t)pa;
+    env->tlb_fill_last_access = (uint32_t)access_type;
+    env->tlb_fill_last_mmu_idx = (uint32_t)mmu_idx;
+    env->tlb_fill_last_prot = (uint32_t)prot;
+    env->tlb_fill_last_cause = cause;
+    env->tlb_fill_last_acr = env->acr & 0xFu;
+}
+
 static inline bool linx_debug_fetch_va(vaddr va)
 {
     const uint64_t low = ((uint64_t)va) & 0xfffffu;
@@ -2683,6 +2739,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
 
     if (linx_mmu_translate(cs, env, addr, access_type, mmu_idx,
                            &pa, &prot, &tlb_size, &cause)) {
+        linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
+                                   true, pa, prot, cause);
         linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
                                  probe, true, pa, prot, tlb_size, cause);
         if (access_type == MMU_INST_FETCH &&
@@ -2723,6 +2781,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         return true;
     }
 
+    linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
+                               false, pa, prot, cause);
     linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
                              probe, false, pa, prot, tlb_size, cause);
     if (probe) {
