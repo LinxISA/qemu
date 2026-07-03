@@ -2356,6 +2356,35 @@ static inline void linx_tlb_fill_stats_record(CPULinxState *env, vaddr addr,
     } else {
         env->tlb_fill_fault++;
     }
+    if (mmu_idx == 1) {
+        env->tlb_fill_user++;
+        switch (access_type) {
+        case MMU_INST_FETCH:
+            env->tlb_fill_user_fetch++;
+            break;
+        case MMU_DATA_LOAD:
+            env->tlb_fill_user_load++;
+            break;
+        case MMU_DATA_STORE:
+            env->tlb_fill_user_store++;
+            break;
+        }
+    } else if (mmu_idx == 0) {
+        env->tlb_fill_kernel++;
+        switch (access_type) {
+        case MMU_INST_FETCH:
+            env->tlb_fill_kernel_fetch++;
+            break;
+        case MMU_DATA_LOAD:
+            env->tlb_fill_kernel_load++;
+            break;
+        case MMU_DATA_STORE:
+            env->tlb_fill_kernel_store++;
+            break;
+        }
+    } else {
+        env->tlb_fill_other++;
+    }
 
     env->tlb_fill_last_count = env->insn_count;
     env->tlb_fill_last_pc = env->pc;

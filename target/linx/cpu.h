@@ -515,6 +515,15 @@ typedef struct CPUArchState {
     uint64_t tlb_fill_probe;
     uint64_t tlb_fill_ok;
     uint64_t tlb_fill_fault;
+    uint64_t tlb_fill_user;
+    uint64_t tlb_fill_user_fetch;
+    uint64_t tlb_fill_user_load;
+    uint64_t tlb_fill_user_store;
+    uint64_t tlb_fill_kernel;
+    uint64_t tlb_fill_kernel_fetch;
+    uint64_t tlb_fill_kernel_load;
+    uint64_t tlb_fill_kernel_store;
+    uint64_t tlb_fill_other;
     uint64_t tlb_fill_last_count;
     uint64_t tlb_fill_last_pc;
     uint64_t tlb_fill_last_bpc;

@@ -998,6 +998,15 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " tlbf_probe=%" PRIu64
             " tlbf_ok=%" PRIu64
             " tlbf_fault=%" PRIu64
+            " tlbf_user=%" PRIu64
+            " tlbf_user_fetch=%" PRIu64
+            " tlbf_user_load=%" PRIu64
+            " tlbf_user_store=%" PRIu64
+            " tlbf_kernel=%" PRIu64
+            " tlbf_kernel_fetch=%" PRIu64
+            " tlbf_kernel_load=%" PRIu64
+            " tlbf_kernel_store=%" PRIu64
+            " tlbf_other=%" PRIu64
             " tlbf_last_count=%" PRIu64
             " tlbf_last_pc=0x%" PRIx64
             " tlbf_last_bpc=0x%" PRIx64
@@ -1038,7 +1047,12 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->tlb_fill_total, env->tlb_fill_fetch,
             env->tlb_fill_load, env->tlb_fill_store,
             env->tlb_fill_probe, env->tlb_fill_ok,
-            env->tlb_fill_fault, env->tlb_fill_last_count,
+            env->tlb_fill_fault, env->tlb_fill_user,
+            env->tlb_fill_user_fetch, env->tlb_fill_user_load,
+            env->tlb_fill_user_store, env->tlb_fill_kernel,
+            env->tlb_fill_kernel_fetch, env->tlb_fill_kernel_load,
+            env->tlb_fill_kernel_store, env->tlb_fill_other,
+            env->tlb_fill_last_count,
             env->tlb_fill_last_pc, env->tlb_fill_last_bpc,
             env->tlb_fill_last_va, env->tlb_fill_last_pa,
             env->tlb_fill_last_access, env->tlb_fill_last_mmu_idx,
