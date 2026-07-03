@@ -74,6 +74,7 @@ static inline void linx_bstart_cache_reset_page(CPULinxState *env, uint64_t addr
 }
 
 static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc);
+static inline int linx_env_mmu_index(CPULinxState *env);
 static bool linx_parse_u64(const char *s, uint64_t *out);
 static inline bool linx_env_enabled(const char *name);
 static inline uint32_t linx_ssr_low12(uint32_t ssrid);
@@ -4261,10 +4262,12 @@ static inline QEMU_ALWAYS_INLINE bool
 linx_bstart_cache_fast_hit(CPULinxState *env, uint64_t target)
 {
     const size_t slot = linx_bstart_cache_slot(target);
+    const uint8_t mmu_idx = (uint8_t)linx_env_mmu_index(env);
 
     return linx_bstart_cache_fast_hit_available() &&
            env->bstart_cache_valid[slot] &&
-           env->bstart_cache_tag[slot] == target;
+           env->bstart_cache_tag[slot] == target &&
+           env->bstart_cache_mmu_idx[slot] == mmu_idx;
 }
 
 static inline void linx_bstart_cache_stats_emit_maybe(CPULinxState *env)
@@ -5978,7 +5981,6 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
          */
         env->ssr[idx] = value;
         env->acr = linx_cstate_get_acr(value);
-        linx_bstart_cache_reset(env);
         linx_refresh_tb_dbg_active(env);
         linx_irq_kick_if_allowed(env, 1);
         return;
@@ -6531,7 +6533,6 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     /* Disable interrupts and switch to managing ring, then vector to EVBASE. */
     env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
     env->acr = dst_acr;
-    linx_bstart_cache_reset(env);
     linx_refresh_tb_dbg_active(env);
     env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
     const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
@@ -6677,7 +6678,6 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     env->bpc = resume_bpc;
 
     env->acr = target;
-    linx_bstart_cache_reset(env);
     linx_refresh_tb_dbg_active(env);
     env->ssr[LINX_SSR_CSTATE] = ecstate & ~LINX_ECSTATE_BI_BIT;
     env->pc = resume_pc;
@@ -12313,6 +12313,7 @@ static bool linx_is_call_fallthrough_target(CPULinxState *env, uint64_t pc,
 void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 {
     const size_t slot = linx_bstart_cache_slot(target);
+    const uint8_t mmu_idx = (uint8_t)linx_env_mmu_index(env);
     const bool stats_enabled = unlikely(linx_bstart_cache_stats_enabled_p());
 
     if (stats_enabled) {
@@ -12332,11 +12333,14 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
      * re-reading guest memory or re-scanning continuation metadata for tight
      * call/return loops.
      *
-     * MMU programming, TLB invalidation, CSTATE/ACR switches, and ACRE/trap
-     * transitions reset this cache. Self-modifying-code debug can opt back into
-     * old revalidate-on-hit behavior with LINX_BSTART_CACHE_REVALIDATE=1.
+     * MMU programming and TLB invalidation reset this cache. ACR/CSTATE
+     * switches keep entries because each line is tagged by the MMU index.
+     * Self-modifying-code debug can opt back into old revalidate-on-hit
+     * behavior with LINX_BSTART_CACHE_REVALIDATE=1.
      */
-    if (env->bstart_cache_valid[slot] && env->bstart_cache_tag[slot] == target) {
+    if (env->bstart_cache_valid[slot] &&
+        env->bstart_cache_tag[slot] == target &&
+        env->bstart_cache_mmu_idx[slot] == mmu_idx) {
         if (!linx_bstart_cache_revalidate_enabled_p()) {
             if (stats_enabled) {
                 linx_bstart_cache_stat_hits++;
@@ -12355,6 +12359,7 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 
     if (linx_is_call_continuation(env, target)) {
         env->bstart_cache_tag[slot] = target;
+        env->bstart_cache_mmu_idx[slot] = mmu_idx;
         env->bstart_cache_valid[slot] = 1;
         if (stats_enabled) {
             linx_bstart_cache_stat_continuations++;
@@ -12374,6 +12379,7 @@ void HELPER(linx_check_bstart_target)(CPULinxState *env, uint64_t target)
 
     if (linx_is_bstart_at_addr(env, target)) {
         env->bstart_cache_tag[slot] = target;
+        env->bstart_cache_mmu_idx[slot] = mmu_idx;
         env->bstart_cache_valid[slot] = 1;
         if (stats_enabled) {
             linx_bstart_cache_stat_bstarts++;

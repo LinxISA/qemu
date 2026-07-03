@@ -487,6 +487,7 @@ typedef struct CPUArchState {
 
     /* Direct-mapped hot-path cache for bstart target validation. */
     uint64_t bstart_cache_tag[LINX_BSTART_CACHE_SIZE];
+    uint8_t bstart_cache_mmu_idx[LINX_BSTART_CACHE_SIZE];
     uint8_t bstart_cache_valid[LINX_BSTART_CACHE_SIZE];
 
     /* Direct-mapped page-walk result cache for QEMU TLB miss handling. */
