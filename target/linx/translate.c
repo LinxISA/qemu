@@ -113,6 +113,8 @@ static uint64_t linx_mem_trace_translate_addr;
 static uint64_t linx_mem_trace_translate_end;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
+static bool linx_bstart_inline_cache_inited;
+static bool linx_bstart_inline_cache_enabled;
 static bool linx_host_insn_hook_inited;
 static bool linx_host_insn_hook_global_enabled;
 static bool linx_host_insn_hook_pc_watch_requested;
@@ -134,6 +136,28 @@ static inline bool linx_debug_local_enabled_p(void)
         linx_debug_local_inited = true;
     }
     return linx_debug_local_enabled;
+}
+
+static inline bool linx_translate_env_enabled(const char *name)
+{
+    const char *v = getenv(name);
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
+static inline bool linx_bstart_inline_cache_enabled_p(void)
+{
+    if (!linx_bstart_inline_cache_inited) {
+        const char *v = getenv("LINX_BSTART_INLINE_CACHE");
+        const bool explicitly_disabled = v && v[0] && strcmp(v, "0") == 0;
+
+        linx_bstart_inline_cache_enabled =
+            !explicitly_disabled &&
+            !linx_translate_env_enabled("LINX_CFI_TRACE") &&
+            !linx_translate_env_enabled("LINX_BSTART_CACHE_REVALIDATE") &&
+            !linx_translate_env_enabled("LINX_BSTART_CACHE_STATS");
+        linx_bstart_inline_cache_inited = true;
+    }
+    return linx_bstart_inline_cache_enabled;
 }
 
 static bool linx_translate_parse_u64(const char *s, uint64_t *out)
@@ -362,6 +386,55 @@ static inline void linx_tile_reset_block_inline(void)
                    offsetof(CPULinxState, vec_ri_count));
     tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
                    offsetof(CPULinxState, tile_iot_count));
+}
+
+static void linx_gen_check_bstart_target(DisasContext *ctx, TCGv_i64 target)
+{
+    if (!linx_bstart_inline_cache_enabled_p()) {
+        gen_helper_linx_check_bstart_target(tcg_env, target);
+        return;
+    }
+
+    TCGLabel *miss = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    TCGv_i64 key = tcg_temp_new_i64();
+    TCGv_i64 tmp = tcg_temp_new_i64();
+    TCGv_i64 off = tcg_temp_new_i64();
+    TCGv_i64 tag = tcg_temp_new_i64();
+    TCGv_i32 valid = tcg_temp_new_i32();
+    TCGv_i32 mmu_idx = tcg_temp_new_i32();
+    TCGv_ptr ptr = tcg_temp_new_ptr();
+
+    tcg_gen_shri_i64(key, target, 1);
+    tcg_gen_shri_i64(tmp, key, 12);
+    tcg_gen_xor_i64(key, key, tmp);
+    tcg_gen_shri_i64(tmp, key, 24);
+    tcg_gen_xor_i64(key, key, tmp);
+    tcg_gen_andi_i64(key, key, LINX_BSTART_CACHE_SIZE - 1u);
+
+    tcg_gen_addi_i64(off, key, offsetof(CPULinxState, bstart_cache_valid));
+    tcg_gen_trunc_i64_ptr(ptr, off);
+    tcg_gen_add_ptr(ptr, ptr, tcg_env);
+    tcg_gen_ld8u_i32(valid, ptr, 0);
+    tcg_gen_brcondi_i32(TCG_COND_EQ, valid, 0, miss);
+
+    tcg_gen_shli_i64(off, key, 3);
+    tcg_gen_addi_i64(off, off, offsetof(CPULinxState, bstart_cache_tag));
+    tcg_gen_trunc_i64_ptr(ptr, off);
+    tcg_gen_add_ptr(ptr, ptr, tcg_env);
+    tcg_gen_ld_i64(tag, ptr, 0);
+    tcg_gen_brcond_i64(TCG_COND_NE, tag, target, miss);
+
+    tcg_gen_addi_i64(off, key, offsetof(CPULinxState, bstart_cache_mmu_idx));
+    tcg_gen_trunc_i64_ptr(ptr, off);
+    tcg_gen_add_ptr(ptr, ptr, tcg_env);
+    tcg_gen_ld8u_i32(mmu_idx, ptr, 0);
+    tcg_gen_brcondi_i32(TCG_COND_NE, mmu_idx, ctx->mem_idx, miss);
+
+    tcg_gen_br(done);
+    gen_set_label(miss);
+    gen_helper_linx_check_bstart_target(tcg_env, target);
+    gen_set_label(done);
 }
 
 static TCGv_i64 linx_get_reg(unsigned code)
@@ -1175,7 +1248,7 @@ static void linx_gen_ret_to_ra(DisasContext *ctx)
 {
     TCGv_i64 ret_tgt = cpu_gpr[LINX_REG_RA];
 
-    gen_helper_linx_check_bstart_target(tcg_env, ret_tgt);
+    linx_gen_check_bstart_target(ctx, ret_tgt);
     if (linx_commit_trace_enabled) {
         gen_helper_linx_commit_trace(tcg_env, ret_tgt);
     }
@@ -1193,7 +1266,7 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest,
          * Validate branch targets at runtime so demand-paged text can fault-in
          * naturally. Fallthrough paths do not require explicit BSTART markers.
          */
-        gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(dest));
+        linx_gen_check_bstart_target(ctx, tcg_constant_i64(dest));
     }
 
     if (linx_commit_trace_enabled) {
@@ -1239,7 +1312,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_return_pc);
         }
-        gen_helper_linx_check_bstart_target(tcg_env, cpu_return_pc);
+        linx_gen_check_bstart_target(ctx, cpu_return_pc);
         tcg_gen_mov_i64(cpu_pc, cpu_return_pc);
         tcg_gen_lookup_and_goto_ptr();
         ctx->base.is_jmp = DISAS_NORETURN;
@@ -1350,7 +1423,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, false);
         } else {
             /* Jump to cpu_tgt (diverted target from BSTART, or set target from SETC.TGT). */
-            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            linx_gen_check_bstart_target(ctx, cpu_tgt);
             if (linx_commit_trace_enabled) {
                 gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
             }
@@ -1377,7 +1450,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         if (!ctx->tgt_modified && ctx->brtarget != 0) {
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, true);
         } else {
-            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            linx_gen_check_bstart_target(ctx, cpu_tgt);
             if (linx_commit_trace_enabled) {
                 gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
             }
@@ -1406,7 +1479,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
              */
             linx_gen_goto_tb(ctx, 0, ctx->brtarget, false);
         } else {
-            gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+            linx_gen_check_bstart_target(ctx, cpu_tgt);
             if (linx_commit_trace_enabled) {
                 gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
             }
@@ -1447,7 +1520,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             linx_gen_goto_tb(ctx, 1, fallthrough, false);
             gen_set_label(taken);
         }
-        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+        linx_gen_check_bstart_target(ctx, cpu_tgt);
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
         }
@@ -1462,7 +1535,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT, 0);
             return;
         }
-        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+        linx_gen_check_bstart_target(ctx, cpu_tgt);
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
         }
@@ -1489,7 +1562,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             return;
         }
         /* Indirect jump/call: jump to cpu_tgt (must be set by SETC.TGT) */
-        gen_helper_linx_check_bstart_target(tcg_env, cpu_tgt);
+        linx_gen_check_bstart_target(ctx, cpu_tgt);
         if (linx_commit_trace_enabled) {
             gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
         }
@@ -6767,7 +6840,7 @@ static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
     tcg_gen_br(done);
     
     gen_set_label(taken);
-    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     
@@ -6790,7 +6863,7 @@ static bool trans_b_nz(DisasContext *ctx, arg_b_nz *a)
     tcg_gen_br(done);
     
     gen_set_label(taken);
-    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     
@@ -6816,7 +6889,7 @@ static bool linx_trans_branch_cmp(DisasContext *ctx, TCGCond cond,
     tcg_gen_br(done);
 
     gen_set_label(taken);
-    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
 
@@ -7948,7 +8021,7 @@ static bool trans_j(DisasContext *ctx, arg_j *a)
         return true;
     }
 
-    gen_helper_linx_check_bstart_target(tcg_env, tcg_constant_i64(target));
+    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
     tcg_gen_movi_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -7964,7 +8037,7 @@ static bool trans_jr(DisasContext *ctx, arg_jr *a)
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
     tcg_gen_addi_i64(target, base, ((int64_t)a->simm12) << 1);
-    gen_helper_linx_check_bstart_target(tcg_env, target);
+    linx_gen_check_bstart_target(ctx, target);
     tcg_gen_mov_i64(cpu_pc, target);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;
