@@ -129,6 +129,20 @@ static uint64_t linx_acre_trace_limit;
 static uint64_t linx_acre_trace_emitted;
 static bool linx_acre_trace_regs_enabled;
 static unsigned linx_acre_trace_code_bytes;
+
+enum {
+    LINX_EBARG_IDX_0 = 0xF40,
+    LINX_EBARG_IDX_TQ0 = 0xF45,
+    LINX_EBARG_IDX_TQ1 = 0xF46,
+    LINX_EBARG_IDX_TQ2 = 0xF47,
+    LINX_EBARG_IDX_TQ3 = 0xF48,
+    LINX_EBARG_IDX_UQ0 = 0xF49,
+    LINX_EBARG_IDX_UQ1 = 0xF4A,
+    LINX_EBARG_IDX_UQ2 = 0xF4B,
+    LINX_EBARG_IDX_UQ3 = 0xF4C,
+    LINX_EBARG_IDX_LB = 0xF4D,
+    LINX_EBARG_IDX_LC = 0xF4E,
+};
 static bool linx_debug_work_grab_inited;
 static bool linx_debug_work_grab_enabled;
 static unsigned linx_debug_work_grab_emits;
@@ -1650,6 +1664,9 @@ static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
         return;
     }
 
+    const LinxAcrBlockState *target_state =
+        target < LINX_ACR_COUNT ? &env->acr_block_state[target] : NULL;
+
     linx_acre_trace_emitted++;
     fprintf(stderr,
             "LINX_ACRE_TRACE phase=%s count=%" PRIu64
@@ -1680,6 +1697,14 @@ static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
             " a5=0x%" PRIx64
             " a6=0x%" PRIx64
             " a7=0x%" PRIx64
+            " ebarg_tq0=0x%" PRIx64 " ebarg_tq1=0x%" PRIx64
+            " ebarg_tq2=0x%" PRIx64 " ebarg_tq3=0x%" PRIx64
+            " ebarg_uq0=0x%" PRIx64 " ebarg_uq1=0x%" PRIx64
+            " ebarg_uq2=0x%" PRIx64 " ebarg_uq3=0x%" PRIx64
+            " saved_tq0=0x%" PRIx64 " saved_tq1=0x%" PRIx64
+            " saved_tq2=0x%" PRIx64 " saved_tq3=0x%" PRIx64
+            " saved_uq0=0x%" PRIx64 " saved_uq1=0x%" PRIx64
+            " saved_uq2=0x%" PRIx64 " saved_uq3=0x%" PRIx64
             " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
             " tq2=0x%" PRIx64 " tq3=0x%" PRIx64
             " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
@@ -1697,6 +1722,22 @@ static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
             env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_TQ0],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_TQ1],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_TQ2],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_TQ3],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_UQ0],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_UQ1],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_UQ2],
+            env->ssr_acr[mgr][LINX_EBARG_IDX_UQ3],
+            target_state ? target_state->tq[0] : 0,
+            target_state ? target_state->tq[1] : 0,
+            target_state ? target_state->tq[2] : 0,
+            target_state ? target_state->tq[3] : 0,
+            target_state ? target_state->uq[0] : 0,
+            target_state ? target_state->uq[1] : 0,
+            target_state ? target_state->uq[2] : 0,
+            target_state ? target_state->uq[3] : 0,
             env->tq[0], env->tq[1], env->tq[2], env->tq[3],
             env->uq[0], env->uq[1], env->uq[2], env->uq[3]);
 
@@ -1720,6 +1761,28 @@ static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
         fputc('\n', stderr);
     }
     fflush(stderr);
+}
+
+static void linx_restore_bstate_from_ebarg(CPULinxState *env, uint32_t mgr)
+{
+    const uint64_t lb = env->ssr_acr[mgr][LINX_EBARG_IDX_LB];
+    const uint64_t lc = env->ssr_acr[mgr][LINX_EBARG_IDX_LC];
+
+    env->blocktype = env->ssr_acr[mgr][LINX_EBARG_IDX_0] & 0x1fu;
+    env->tq[0] = env->ssr_acr[mgr][LINX_EBARG_IDX_TQ0];
+    env->tq[1] = env->ssr_acr[mgr][LINX_EBARG_IDX_TQ1];
+    env->tq[2] = env->ssr_acr[mgr][LINX_EBARG_IDX_TQ2];
+    env->tq[3] = env->ssr_acr[mgr][LINX_EBARG_IDX_TQ3];
+    env->uq[0] = env->ssr_acr[mgr][LINX_EBARG_IDX_UQ0];
+    env->uq[1] = env->ssr_acr[mgr][LINX_EBARG_IDX_UQ1];
+    env->uq[2] = env->ssr_acr[mgr][LINX_EBARG_IDX_UQ2];
+    env->uq[3] = env->ssr_acr[mgr][LINX_EBARG_IDX_UQ3];
+    env->lb[0] = lb & 0xffffu;
+    env->lb[1] = (lb >> 16) & 0xffffu;
+    env->lb[2] = (lb >> 32) & 0xffffu;
+    env->lc[0] = lc & 0xffffu;
+    env->lc[1] = (lc >> 16) & 0xffffu;
+    env->lc[2] = (lc >> 32) & 0xffffu;
 }
 
 static void linx_tlb_trace_init(void)
@@ -7039,13 +7102,17 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         }
     } else if (rra_type == 1) {
         /*
-         * RRA_RESTORE: keep the full second-level architectural snapshot that
-         * was restored by linx_acr_restore_block_state().
+         * RRA_RESTORE: restore the EBARG-carried second-level architectural
+         * snapshot.  The target ACR snapshot provides block metadata that is
+         * not represented in EBARG, while EBARG itself is the architectural
+         * trap-return transport for queue and block argument state.
          *
-         * Only continuation control-flow (BPC/TPC) is sourced from manager
-         * EBARG below. This prevents handler-side EBARG pollution from
-         * clobbering resumed queue/lane state.
+         * This is required for recoverable BI=1 data faults in the middle of a
+         * scalar block: the faulting instruction resumes at EBARG_TPC and must
+         * see the T/U queue values captured at exception entry, not a stale or
+         * zero target snapshot.
          */
+        linx_restore_bstate_from_ebarg(env, mgr);
     } else {
         env->pending_trap_arg0 = (uint64_t)rra_type;
         env->pending_trap_cause = 0;
