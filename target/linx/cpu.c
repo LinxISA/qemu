@@ -2271,6 +2271,12 @@ static void linx_tlb_fill_trace_init(void)
     linx_tlb_fill_trace_inited = true;
 }
 
+static inline bool linx_tlb_fill_trace_enabled_p(void)
+{
+    linx_tlb_fill_trace_init();
+    return linx_tlb_fill_trace_enabled;
+}
+
 static bool linx_tlb_fill_trace_addr_matches(uint64_t addr)
 {
     return addr >= linx_tlb_fill_trace_va_lo &&
@@ -2290,8 +2296,7 @@ static bool linx_tlb_fill_trace_pc_matches(CPULinxState *env)
 
 static bool linx_tlb_fill_trace_matches(CPULinxState *env, vaddr addr)
 {
-    linx_tlb_fill_trace_init();
-    if (!linx_tlb_fill_trace_enabled) {
+    if (!linx_tlb_fill_trace_enabled_p()) {
         return false;
     }
     if (linx_tlb_fill_trace_limit != 0 &&
@@ -2379,6 +2384,11 @@ static inline bool linx_tlb_fill_hot_enabled_p(void)
         linx_tlb_fill_hot_inited = true;
     }
     return linx_tlb_fill_hot_enabled;
+}
+
+static inline bool linx_tlb_fill_stats_any_enabled_p(void)
+{
+    return linx_tlb_fill_stats_enabled_p() || linx_tlb_fill_hot_enabled_p();
 }
 
 static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
@@ -2889,16 +2899,24 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
     int prot = 0;
     hwaddr tlb_size = TARGET_PAGE_SIZE;
     uint8_t cause = 0;
+    const bool fill_stats_enabled =
+        unlikely(linx_tlb_fill_stats_any_enabled_p());
+    const bool fill_trace_enabled =
+        unlikely(linx_tlb_fill_trace_enabled_p());
 
     trace_linx_tlb_fill(addr, access_type, mmu_idx, probe ? 1 : 0,
                         env->ssr_acr[1][LINX_SSR_TCR], env->acr & 0xFu);
 
     if (linx_mmu_translate(cs, env, addr, access_type, mmu_idx,
                            &pa, &prot, &tlb_size, &cause)) {
-        linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
-                                   true, pa, prot, cause);
-        linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
-                                 probe, true, pa, prot, tlb_size, cause);
+        if (fill_stats_enabled) {
+            linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
+                                       true, pa, prot, cause);
+        }
+        if (fill_trace_enabled) {
+            linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
+                                     probe, true, pa, prot, tlb_size, cause);
+        }
         if (access_type == MMU_INST_FETCH &&
             (linx_cpu_dump_debug() || linx_cpu_dump_on_event()) &&
             mmu_idx == 1 &&
@@ -2937,10 +2955,14 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
         return true;
     }
 
-    linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
-                               false, pa, prot, cause);
-    linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
-                             probe, false, pa, prot, tlb_size, cause);
+    if (fill_stats_enabled) {
+        linx_tlb_fill_stats_record(env, addr, access_type, mmu_idx, probe,
+                                   false, pa, prot, cause);
+    }
+    if (fill_trace_enabled) {
+        linx_tlb_fill_trace_emit(env, addr, size, access_type, mmu_idx,
+                                 probe, false, pa, prot, tlb_size, cause);
+    }
     if (probe) {
         return false;
     }
