@@ -290,6 +290,7 @@ static unsigned linx_fret_stk_trace_dump_words;
 static bool linx_fret_stk_trace_regs_enabled;
 static bool linx_mem_trace_inited;
 static bool linx_mem_trace_enabled;
+static bool linx_mem_trace_addr_filter_enabled;
 static uint64_t linx_mem_trace_addr;
 static uint64_t linx_mem_trace_size;
 static uint64_t linx_mem_trace_limit;
@@ -303,6 +304,8 @@ static bool linx_mem_trace_count_filter_enabled;
 static uint64_t linx_mem_trace_count_lo;
 static uint64_t linx_mem_trace_count_hi;
 static bool linx_mem_trace_context_enabled;
+static bool linx_mem_trace_pre_enabled;
+static bool linx_mem_trace_regs_enabled;
 static bool linx_mem_trace_acr_filter_enabled;
 static uint8_t linx_mem_trace_acr_filter;
 static bool linx_syscall_trace_inited;
@@ -2317,11 +2320,18 @@ static void linx_mem_trace_init(void)
     const char *hi_s;
     const char *count_lo_s;
     const char *count_hi_s;
+    const char *enabled_s;
     uint64_t lo = 0;
     uint64_t hi = 0;
 
     if (linx_mem_trace_inited) {
         return;
+    }
+
+    enabled_s = getenv("LINX_MEM_TRACE");
+    if (enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0) {
+        linx_mem_trace_limit = 128;
+        linx_mem_trace_enabled = true;
     }
 
     addr_s = getenv("LINX_MEM_TRACE_ADDR");
@@ -2330,14 +2340,16 @@ static void linx_mem_trace_init(void)
         linx_mem_trace_size = 8;
         linx_mem_trace_limit = 128;
         linx_mem_trace_enabled = true;
+        linx_mem_trace_addr_filter_enabled = true;
     }
 
     size_s = getenv("LINX_MEM_TRACE_SIZE");
-    if (linx_mem_trace_enabled && size_s && size_s[0] &&
+    if (linx_mem_trace_enabled && linx_mem_trace_addr_filter_enabled &&
+        size_s && size_s[0] &&
         strcmp(size_s, "0") != 0 && linx_parse_u64(size_s, &value)) {
         linx_mem_trace_size = value;
     }
-    if (linx_mem_trace_size == 0) {
+    if (linx_mem_trace_addr_filter_enabled && linx_mem_trace_size == 0) {
         linx_mem_trace_size = 1;
     }
 
@@ -2365,6 +2377,10 @@ static void linx_mem_trace_init(void)
 
     linx_mem_trace_context_enabled =
         linx_mem_trace_enabled && linx_env_enabled("LINX_MEM_TRACE_CONTEXT");
+    linx_mem_trace_pre_enabled =
+        linx_mem_trace_enabled && linx_env_enabled("LINX_MEM_TRACE_PRE");
+    linx_mem_trace_regs_enabled =
+        linx_mem_trace_enabled && linx_env_enabled("LINX_MEM_TRACE_REGS");
 
     acr_s = getenv("LINX_MEM_TRACE_ACR");
     if (linx_mem_trace_enabled && acr_s && acr_s[0] &&
@@ -2426,10 +2442,13 @@ static bool linx_mem_trace_ranges_overlap(uint64_t a, uint64_t a_size,
 
 static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
                                  uint64_t pc, uint64_t addr, uint32_t size,
-                                 uint64_t value)
+                                 uint64_t value, bool pre_access)
 {
     linx_mem_trace_init();
     if (!linx_mem_trace_enabled) {
+        return;
+    }
+    if (pre_access && !linx_mem_trace_pre_enabled) {
         return;
     }
     if (linx_mem_trace_limit &&
@@ -2455,7 +2474,8 @@ static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
          env->insn_count > linx_mem_trace_count_hi)) {
         return;
     }
-    if (!linx_mem_trace_ranges_overlap(addr, size,
+    if (linx_mem_trace_addr_filter_enabled &&
+        !linx_mem_trace_ranges_overlap(addr, size,
                                        linx_mem_trace_addr,
                                        linx_mem_trace_size)) {
         return;
@@ -2471,6 +2491,9 @@ static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
             is_store ? "store" : "load", pc, addr, size, value,
             env->insn_count, env->bpc, env->body_tpc, env->pc,
             (unsigned)(env->acr & 0xFu), env->ssr[0x20]);
+    if (pre_access) {
+        fprintf(stderr, " phase=pre");
+    }
     if (linx_mem_trace_context_enabled) {
         const int mmu_idx = ((env->acr & 0xFu) == 2) ? 1 : 0;
         fprintf(stderr,
@@ -2478,6 +2501,15 @@ static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
                 " ttbr1=0x%" PRIx64 " tcr=0x%" PRIx64,
                 mmu_idx, env->ssr_acr[1][0xF10], env->ssr_acr[1][0xF11],
                 env->ssr_acr[1][0xF12]);
+    }
+    if (linx_mem_trace_regs_enabled) {
+        fprintf(stderr,
+                " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+                " tq2=0x%" PRIx64 " tq3=0x%" PRIx64
+                " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+                " uq2=0x%" PRIx64 " uq3=0x%" PRIx64,
+                env->tq[0], env->tq[1], env->tq[2], env->tq[3],
+                env->uq[0], env->uq[1], env->uq[2], env->uq[3]);
     }
     fprintf(stderr,
             " ra=0x%" PRIx64 " sp=0x%" PRIx64
@@ -2489,16 +2521,23 @@ static void linx_mem_trace_probe(CPULinxState *env, bool is_store,
     fflush(stderr);
 }
 
+void HELPER(linx_mem_trace_load_pre)(CPULinxState *env, uint64_t pc,
+                                     uint64_t addr, uint32_t size,
+                                     uint64_t value)
+{
+    linx_mem_trace_probe(env, false, pc, addr, size, value, true);
+}
+
 void HELPER(linx_mem_trace_load)(CPULinxState *env, uint64_t pc, uint64_t addr,
                                  uint32_t size, uint64_t value)
 {
-    linx_mem_trace_probe(env, false, pc, addr, size, value);
+    linx_mem_trace_probe(env, false, pc, addr, size, value, false);
 }
 
 void HELPER(linx_mem_trace_store)(CPULinxState *env, uint64_t pc, uint64_t addr,
                                   uint32_t size, uint64_t value)
 {
-    linx_mem_trace_probe(env, true, pc, addr, size, value);
+    linx_mem_trace_probe(env, true, pc, addr, size, value, false);
 }
 
 static void linx_syscall_trace_init(void)

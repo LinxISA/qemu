@@ -109,8 +109,13 @@ static bool linx_mem_trace_translate_enabled;
 static bool linx_mem_trace_translate_loads = true;
 static bool linx_mem_trace_translate_stores = true;
 static bool linx_mem_trace_translate_fast_enabled;
+static bool linx_mem_trace_translate_addr_filter_enabled;
 static uint64_t linx_mem_trace_translate_addr;
 static uint64_t linx_mem_trace_translate_end;
+static bool linx_mem_trace_translate_pc_filter_enabled;
+static uint64_t linx_mem_trace_translate_pc_lo;
+static uint64_t linx_mem_trace_translate_pc_hi;
+static bool linx_mem_trace_translate_pre_enabled;
 static bool linx_debug_local_inited;
 static bool linx_debug_local_enabled;
 static bool linx_bstart_inline_cache_inited;
@@ -233,9 +238,16 @@ static inline bool linx_host_insn_hook_enabled_p(vaddr pc)
             linx_translate_pc_watch_matches(pc));
 }
 
-static void linx_gen_mem_trace_probe(bool is_store, vaddr pc, TCGv_i64 addr,
-                                     uint32_t size, TCGv_i64 value)
+static void linx_gen_mem_trace_probe(bool is_store, bool pre_access, vaddr pc,
+                                     TCGv_i64 addr, uint32_t size,
+                                     TCGv_i64 value)
 {
+    if (linx_mem_trace_translate_pc_filter_enabled &&
+        (pc < linx_mem_trace_translate_pc_lo ||
+         pc > linx_mem_trace_translate_pc_hi)) {
+        return;
+    }
+
     if (linx_mem_trace_translate_fast_enabled) {
         TCGLabel *skip = gen_new_label();
 
@@ -255,6 +267,10 @@ static void linx_gen_mem_trace_probe(bool is_store, vaddr pc, TCGv_i64 addr,
             gen_helper_linx_mem_trace_store(tcg_env, tcg_constant_i64(pc),
                                             addr, tcg_constant_i32(size),
                                             value);
+        } else if (pre_access) {
+            gen_helper_linx_mem_trace_load_pre(tcg_env, tcg_constant_i64(pc),
+                                               addr, tcg_constant_i32(size),
+                                               value);
         } else {
             gen_helper_linx_mem_trace_load(tcg_env, tcg_constant_i64(pc),
                                            addr, tcg_constant_i32(size),
@@ -267,6 +283,9 @@ static void linx_gen_mem_trace_probe(bool is_store, vaddr pc, TCGv_i64 addr,
     if (is_store) {
         gen_helper_linx_mem_trace_store(tcg_env, tcg_constant_i64(pc), addr,
                                         tcg_constant_i32(size), value);
+    } else if (pre_access) {
+        gen_helper_linx_mem_trace_load_pre(tcg_env, tcg_constant_i64(pc), addr,
+                                           tcg_constant_i32(size), value);
     } else {
         gen_helper_linx_mem_trace_load(tcg_env, tcg_constant_i64(pc), addr,
                                        tcg_constant_i32(size), value);
@@ -3989,6 +4008,20 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
         gen_helper_linx_dbg_check_load(tcg_env, tcg_constant_i64(pc), addr64,
                                        tcg_constant_i32((int32_t)size));
     }
+    if (linx_mem_trace_translate_enabled && linx_mem_trace_translate_loads) {
+        const unsigned size = memop_size(mop);
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        if (linx_mem_trace_translate_pre_enabled) {
+            linx_gen_mem_trace_probe(false, true, pc, addr64, size,
+                                     tcg_constant_i64(0));
+        }
+    }
     tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
 
     if (linx_mem_trace_translate_enabled && linx_mem_trace_translate_loads) {
@@ -4000,7 +4033,7 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
 #else
         addr64 = (TCGv_i64)addr;
 #endif
-        linx_gen_mem_trace_probe(false, pc, addr64, size, out);
+        linx_gen_mem_trace_probe(false, false, pc, addr64, size, out);
     }
 
     if (linx_commit_trace_enabled) {
@@ -4836,7 +4869,7 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
 #else
         addr64 = (TCGv_i64)addr;
 #endif
-        linx_gen_mem_trace_probe(true, pc, addr64, size, val);
+        linx_gen_mem_trace_probe(true, false, pc, addr64, size, val);
     }
 
     linx_lr_invalidate();
@@ -8971,12 +9004,20 @@ void linx_translate_init(void)
     const char *call_trace = getenv("LINX_CALL_TRACE");
     const char *call_trace_ring = getenv("LINX_CALL_TRACE_RING");
     const char *template_chain = getenv("LINX_QEMU_TEMPLATE_CHAIN");
+    const char *mem_trace = getenv("LINX_MEM_TRACE");
     const char *mem_trace_addr = getenv("LINX_MEM_TRACE_ADDR");
     const char *mem_trace_size = getenv("LINX_MEM_TRACE_SIZE");
     const char *mem_trace_access = getenv("LINX_MEM_TRACE_ACCESS");
     const char *mem_trace_fast = getenv("LINX_MEM_TRACE_FAST");
+    const char *mem_trace_pc = getenv("LINX_MEM_TRACE_PC");
+    const char *mem_trace_pc_lo = getenv("LINX_MEM_TRACE_PC_LO");
+    const char *mem_trace_pc_hi = getenv("LINX_MEM_TRACE_PC_HI");
+    const char *mem_trace_pre = getenv("LINX_MEM_TRACE_PRE");
     uint64_t mem_trace_addr_value = 0;
     uint64_t mem_trace_size_value = 8;
+    uint64_t mem_trace_pc_value = 0;
+    uint64_t mem_trace_pc_lo_value = 0;
+    uint64_t mem_trace_pc_hi_value = 0;
     static const char *gpr_names[LINX_GPR_COUNT] = {
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
         "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
@@ -9005,7 +9046,32 @@ void linx_translate_init(void)
          strcmp(call_trace_ring, "0") != 0);
     linx_template_chain_enabled =
         template_chain && template_chain[0] && strcmp(template_chain, "0") != 0;
-    linx_mem_trace_translate_enabled = mem_trace_addr && mem_trace_addr[0];
+    linx_mem_trace_translate_addr_filter_enabled =
+        mem_trace_addr && mem_trace_addr[0] &&
+        linx_translate_parse_u64(mem_trace_addr, &mem_trace_addr_value);
+    if (mem_trace_pc && mem_trace_pc[0] &&
+        linx_translate_parse_u64(mem_trace_pc, &mem_trace_pc_value)) {
+        linx_mem_trace_translate_pc_lo = mem_trace_pc_value;
+        linx_mem_trace_translate_pc_hi = mem_trace_pc_value;
+        linx_mem_trace_translate_pc_filter_enabled = true;
+    } else if (mem_trace_pc_lo && mem_trace_pc_lo[0] &&
+               mem_trace_pc_hi && mem_trace_pc_hi[0] &&
+               linx_translate_parse_u64(mem_trace_pc_lo,
+                                        &mem_trace_pc_lo_value) &&
+               linx_translate_parse_u64(mem_trace_pc_hi,
+                                        &mem_trace_pc_hi_value)) {
+        linx_mem_trace_translate_pc_lo =
+            MIN(mem_trace_pc_lo_value, mem_trace_pc_hi_value);
+        linx_mem_trace_translate_pc_hi =
+            MAX(mem_trace_pc_lo_value, mem_trace_pc_hi_value);
+        linx_mem_trace_translate_pc_filter_enabled = true;
+    }
+    linx_mem_trace_translate_enabled =
+        (mem_trace && mem_trace[0] && strcmp(mem_trace, "0") != 0) ||
+        linx_mem_trace_translate_addr_filter_enabled;
+    linx_mem_trace_translate_pre_enabled =
+        linx_mem_trace_translate_enabled &&
+        mem_trace_pre && mem_trace_pre[0] && strcmp(mem_trace_pre, "0") != 0;
     if (linx_mem_trace_translate_enabled && mem_trace_access &&
         mem_trace_access[0]) {
         if (strcmp(mem_trace_access, "load") == 0 ||
@@ -9020,9 +9086,9 @@ void linx_translate_init(void)
     }
     linx_mem_trace_translate_fast_enabled = false;
     if (linx_mem_trace_translate_enabled &&
+        linx_mem_trace_translate_addr_filter_enabled &&
         !(mem_trace_fast && mem_trace_fast[0] &&
-          strcmp(mem_trace_fast, "0") == 0) &&
-        linx_translate_parse_u64(mem_trace_addr, &mem_trace_addr_value)) {
+          strcmp(mem_trace_fast, "0") == 0)) {
         if (mem_trace_size && mem_trace_size[0] &&
             strcmp(mem_trace_size, "0") != 0) {
             (void)linx_translate_parse_u64(mem_trace_size,
