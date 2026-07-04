@@ -1285,6 +1285,20 @@ static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest,
     ctx->base.is_jmp = DISAS_NORETURN;
 }
 
+static void linx_gen_goto_tb_after_committed_helper(DisasContext *ctx,
+                                                    int slot, vaddr dest)
+{
+    if (translator_use_goto_tb(&ctx->base, dest)) {
+        tcg_gen_goto_tb(slot);
+        tcg_gen_movi_i64(cpu_pc, dest);
+        tcg_gen_exit_tb(ctx->base.tb, slot);
+    } else {
+        tcg_gen_movi_i64(cpu_pc, dest);
+        tcg_gen_lookup_and_goto_ptr();
+    }
+    ctx->base.is_jmp = DISAS_NORETURN;
+}
+
 static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
 {
     const vaddr source_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -6231,7 +6245,7 @@ static bool trans_fentry(DisasContext *ctx, arg_fentry *a)
                                               tcg_constant_i32(a->reg_begin),
                                               tcg_constant_i32(a->reg_end),
                                               tcg_constant_i64(stacksize));
-        tcg_gen_lookup_and_goto_ptr();
+        linx_gen_goto_tb_after_committed_helper(ctx, 0, ctx->base.pc_next);
     } else {
         gen_helper_linx_template_fentry(tcg_env,
                                         tcg_constant_i64(current_pc),
@@ -6265,7 +6279,7 @@ static bool trans_fexit(DisasContext *ctx, arg_fexit *a)
                                              tcg_constant_i32(a->reg_begin),
                                              tcg_constant_i32(a->reg_end),
                                              tcg_constant_i64(stacksize));
-        tcg_gen_lookup_and_goto_ptr();
+        linx_gen_goto_tb_after_committed_helper(ctx, 0, ctx->base.pc_next);
     } else {
         gen_helper_linx_template_fexit(tcg_env,
                                        tcg_constant_i64(current_pc),
