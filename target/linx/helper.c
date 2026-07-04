@@ -215,6 +215,8 @@ static bool linx_frame_restore_host_verify_inited;
 static bool linx_frame_restore_host_verify_enabled;
 static bool linx_frame_shape_hot_inited;
 static bool linx_frame_shape_hot_enabled;
+static bool linx_frame_single_reg_fast_inited;
+static bool linx_frame_single_reg_fast_enabled;
 static uint64_t linx_frame_restore_host_verify_emit_limit;
 static uint64_t linx_frame_restore_host_verify_emitted;
 static uint64_t linx_frame_stat_fentry_calls;
@@ -232,6 +234,8 @@ static uint64_t linx_frame_stat_restore_host_verify_loads;
 static uint64_t linx_frame_stat_restore_host_verify_mismatches;
 static uint64_t linx_frame_stat_ret_fast_hits;
 static uint64_t linx_frame_stat_ret_checks;
+static uint64_t linx_frame_stat_single_fast_fentry;
+static uint64_t linx_frame_stat_single_fast_fret_stk;
 static bool linx_tlb_trace_inited;
 static bool linx_tlb_trace_enabled;
 static bool linx_tlb_trace_pc_filter_enabled;
@@ -1050,6 +1054,27 @@ static inline bool linx_frame_shape_hot_enabled_p(void)
     return linx_frame_shape_hot_enabled;
 }
 
+static inline bool linx_frame_single_reg_fast_enabled_p(void)
+{
+    if (!linx_frame_single_reg_fast_inited) {
+        linx_frame_single_reg_fast_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_SINGLE_REG_FAST") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_SINGLE_REG_FAST");
+        linx_frame_single_reg_fast_inited = true;
+    }
+    return linx_frame_single_reg_fast_enabled;
+}
+
+static inline bool linx_frame_single_reg_fast_shape(uint32_t reg_begin,
+                                                    uint32_t reg_end,
+                                                    uint64_t stacksize)
+{
+    return reg_begin == reg_end &&
+           reg_begin != LINX_REG_ZERO &&
+           reg_begin < LINX_GPR_COUNT &&
+           stacksize >= 8;
+}
+
 static void linx_frame_shape_hot_record(CPULinxState *env, LinxTemplateKind kind,
                                         unsigned begin, unsigned end,
                                         uint64_t stacksize,
@@ -1127,7 +1152,9 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             " fr_restore_verify=%" PRIu64
             " fr_restore_mismatch=%" PRIu64
             " fr_ret_fast=%" PRIu64
-            " fr_ret_check=%" PRIu64,
+            " fr_ret_check=%" PRIu64
+            " fr_single_fast_fentry=%" PRIu64
+            " fr_single_fast_fret_stk=%" PRIu64,
             linx_frame_stat_fentry_calls,
             linx_frame_stat_fentry_save_probes,
             linx_frame_stat_fentry_save_slots,
@@ -1142,7 +1169,9 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_restore_host_verify_loads,
             linx_frame_stat_restore_host_verify_mismatches,
             linx_frame_stat_ret_fast_hits,
-            linx_frame_stat_ret_checks);
+            linx_frame_stat_ret_checks,
+            linx_frame_stat_single_fast_fentry,
+            linx_frame_stat_single_fast_fret_stk);
 }
 
 static void linx_heartbeat_emit_frame_shape_hot(CPULinxState *env)
@@ -9044,6 +9073,133 @@ static void linx_frame_restore_commit(CPULinxState *env, uint64_t cur_pc,
     }
 }
 
+static bool linx_template_fentry_single_reg_fast(CPULinxState *env,
+                                                 CPUState *cs,
+                                                 uint64_t cur_pc,
+                                                 uint64_t next_pc,
+                                                 uint32_t reg,
+                                                 uint64_t stacksize,
+                                                 uint64_t old_sp,
+                                                 uint64_t new_sp,
+                                                 int mmu_idx,
+                                                 bool frame_stats,
+                                                 bool chain)
+{
+    if (!linx_frame_single_reg_fast_enabled_p() ||
+        !linx_frame_single_reg_fast_shape(reg, reg, stacksize)) {
+        return false;
+    }
+
+    const uint64_t addr = new_sp + stacksize - 8;
+    void *host = probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
+
+    if (frame_stats) {
+        linx_frame_stat_fentry_save_probes++;
+    }
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FENTRY, reg, reg,
+                                stacksize, 1);
+
+    env->gpr[LINX_REG_SP] = new_sp;
+    linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+    trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                        env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                        env->cond, env->carg, env->tgt, old_sp,
+                        env->gpr[LINX_REG_SP]);
+
+    const uint64_t v = env->gpr[reg];
+    linx_trace_mem(env, true, addr, v, 0, 8);
+    linx_frame_storeq_after_probe(env, addr, v, mmu_idx, host);
+    if (frame_stats) {
+        linx_frame_stat_fentry_save_slots++;
+        if (host != NULL) {
+            linx_frame_stat_fentry_host_stores++;
+        } else {
+            linx_frame_stat_fentry_fallback_stores++;
+        }
+        linx_frame_stat_single_fast_fentry++;
+    }
+    if (reg == LINX_REG_RA) {
+        trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                            env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                            env->cond, env->carg, env->tgt, addr, v);
+    }
+
+    linx_template_clear(env);
+    env->pc = next_pc;
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
+    return true;
+}
+
+static bool linx_template_fret_stk_single_reg_fast(CPULinxState *env,
+                                                   CPUState *cs,
+                                                   uint64_t cur_pc,
+                                                   uint32_t reg,
+                                                   uint64_t stacksize,
+                                                   uint64_t old_sp,
+                                                   uint64_t new_sp,
+                                                   uint64_t restore_base,
+                                                   bool frame_stats,
+                                                   bool chain)
+{
+    if (!linx_frame_single_reg_fast_enabled_p() ||
+        !linx_frame_single_reg_fast_shape(reg, reg, stacksize) ||
+        linx_fret_stk_trace_enabled_fast()) {
+        return false;
+    }
+
+    const int mmu_idx = linx_env_mmu_index(env);
+    const bool use_cached_host = linx_frame_restore_host_load_enabled_p();
+    int restore_host_loads = 0;
+    int restore_fallback_loads = 0;
+    const uint64_t addr = new_sp - restore_base - 8;
+    const uint64_t value =
+        linx_frame_loadq_cached_or_fallback(env, addr, mmu_idx,
+                                            use_cached_host,
+                                            &restore_host_loads,
+                                            &restore_fallback_loads);
+
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_STK, reg, reg,
+                                stacksize, 1);
+
+    if (frame_stats) {
+        linx_frame_stat_fret_stk_calls++;
+        linx_frame_stat_restore_slots++;
+        linx_frame_stat_restore_host_loads += restore_host_loads;
+        linx_frame_stat_restore_fallback_loads += restore_fallback_loads;
+        linx_frame_stat_single_fast_fret_stk++;
+    }
+
+    env->gpr[LINX_REG_SP] = new_sp;
+    linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+
+    env->gpr[reg] = value;
+    linx_trace_mem(env, false, addr, 0, value, 8);
+    linx_trace_wb(env, reg, value);
+    if (reg == LINX_REG_RA) {
+        trace_linx_ra_trace(cur_pc, 3, env->gpr[LINX_REG_SP],
+                            env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                            env->cond, env->carg, env->tgt, addr, value);
+    }
+
+    const uint64_t ra = env->gpr[LINX_REG_RA];
+    linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc, ra, old_sp);
+    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, ra);
+    if (frame_stats) {
+        if (ret_fast_hit) {
+            linx_frame_stat_ret_fast_hits++;
+        } else {
+            linx_frame_stat_ret_checks++;
+        }
+    }
+    if (!ret_fast_hit) {
+        HELPER(linx_check_bstart_target)(env, ra);
+    }
+    linx_template_clear(env);
+    env->pc = ra;
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
+    return true;
+}
+
 static inline uint8_t linx_extctx_byte(const CPULinxState *env, uint64_t ext_kind, uint64_t off)
 {
     static const uint8_t magic[8] = { 'L', 'I', 'N', 'X', '_', 'E', 'X', 'T' };
@@ -9099,18 +9255,27 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
     const int mmu_idx = linx_env_mmu_index(env);
     const bool fentry_trace_enabled = linx_fentry_trace_enabled_fast();
     const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
-    void *save_hosts[LINX_GPR_COUNT];
     bool fentry_trace = false;
 
     if (frame_stats) {
         linx_frame_stat_fentry_calls++;
     }
 
+    linx_call_trace_emit(env, LINX_CALL_TRACE_FENTRY, cur_pc, new_sp, stacksize);
+
+    if (!fentry_trace_enabled &&
+        count == 1 &&
+        linx_template_fentry_single_reg_fast(env, cs, cur_pc, next_pc,
+                                             reg_begin, stacksize, old_sp,
+                                             new_sp, mmu_idx, frame_stats,
+                                             chain)) {
+        return;
+    }
+
+    void *save_hosts[LINX_GPR_COUNT];
     if (fentry_trace_enabled) {
         memset(save_hosts, 0, sizeof(save_hosts));
     }
-
-    linx_call_trace_emit(env, LINX_CALL_TRACE_FENTRY, cur_pc, new_sp, stacksize);
 
     /*
      * User stacks can grow on the first save below the old SP.  Probe the save
@@ -9241,10 +9406,11 @@ static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
     const int end = (int)reg_end;
     const uint64_t old_sp = env->gpr[LINX_REG_SP];
     const uint64_t new_sp = old_sp + adj;
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
+
     uint32_t regs[LINX_GPR_COUNT];
     uint64_t addrs[LINX_GPR_COUNT];
     uint64_t values[LINX_GPR_COUNT];
-    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     int restore_host_loads = 0;
     int restore_fallback_loads = 0;
     const int restore_count =
@@ -9304,10 +9470,19 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
     const int end = (int)reg_end;
     const uint64_t old_sp = env->gpr[LINX_REG_SP];
     const uint64_t new_sp = old_sp + adj;
+    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
+
+    if (reg_begin == reg_end &&
+        linx_template_fret_stk_single_reg_fast(env, cs, cur_pc, reg_begin,
+                                               stacksize, old_sp, new_sp,
+                                               restore_base, frame_stats,
+                                               chain)) {
+        return;
+    }
+
     uint32_t regs[LINX_GPR_COUNT];
     uint64_t addrs[LINX_GPR_COUNT];
     uint64_t values[LINX_GPR_COUNT];
-    const bool frame_stats = unlikely(linx_frame_stats_enabled_p());
     int restore_host_loads = 0;
     int restore_fallback_loads = 0;
     const int restore_count =
