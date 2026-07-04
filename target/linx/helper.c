@@ -197,6 +197,10 @@ static bool linx_frame_stats_inited;
 static bool linx_frame_stats_enabled;
 static bool linx_frame_restore_host_load_inited;
 static bool linx_frame_restore_host_load_enabled;
+static bool linx_frame_restore_host_verify_inited;
+static bool linx_frame_restore_host_verify_enabled;
+static uint64_t linx_frame_restore_host_verify_emit_limit;
+static uint64_t linx_frame_restore_host_verify_emitted;
 static uint64_t linx_frame_stat_fentry_calls;
 static uint64_t linx_frame_stat_fentry_save_probes;
 static uint64_t linx_frame_stat_fentry_save_slots;
@@ -208,6 +212,8 @@ static uint64_t linx_frame_stat_fret_ra_calls;
 static uint64_t linx_frame_stat_restore_slots;
 static uint64_t linx_frame_stat_restore_host_loads;
 static uint64_t linx_frame_stat_restore_fallback_loads;
+static uint64_t linx_frame_stat_restore_host_verify_loads;
+static uint64_t linx_frame_stat_restore_host_verify_mismatches;
 static uint64_t linx_frame_stat_ret_fast_hits;
 static uint64_t linx_frame_stat_ret_checks;
 static bool linx_tlb_trace_inited;
@@ -978,6 +984,29 @@ static inline bool linx_frame_restore_host_load_enabled_p(void)
     return linx_frame_restore_host_load_enabled;
 }
 
+static inline bool linx_frame_restore_host_verify_enabled_p(void)
+{
+    if (!linx_frame_restore_host_verify_inited) {
+        const char *limit_s;
+
+        linx_frame_restore_host_verify_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_RESTORE_HOST_VERIFY") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_RESTORE_HOST_VERIFY");
+        limit_s = getenv("LINX_QEMU_FRAME_RESTORE_HOST_VERIFY_LIMIT");
+        if (!limit_s || !limit_s[0]) {
+            limit_s = getenv("LINX_FRAME_RESTORE_HOST_VERIFY_LIMIT");
+        }
+        if (limit_s && limit_s[0]) {
+            (void)linx_parse_u64(limit_s,
+                                 &linx_frame_restore_host_verify_emit_limit);
+        } else {
+            linx_frame_restore_host_verify_emit_limit = 16;
+        }
+        linx_frame_restore_host_verify_inited = true;
+    }
+    return linx_frame_restore_host_verify_enabled;
+}
+
 static inline void linx_frame_stats_emit_heartbeat(void)
 {
     if (!linx_frame_stats_enabled_p()) {
@@ -996,6 +1025,8 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             " fr_restore_slot=%" PRIu64
             " fr_restore_host=%" PRIu64
             " fr_restore_fallback=%" PRIu64
+            " fr_restore_verify=%" PRIu64
+            " fr_restore_mismatch=%" PRIu64
             " fr_ret_fast=%" PRIu64
             " fr_ret_check=%" PRIu64,
             linx_frame_stat_fentry_calls,
@@ -1009,6 +1040,8 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_restore_slots,
             linx_frame_stat_restore_host_loads,
             linx_frame_stat_restore_fallback_loads,
+            linx_frame_stat_restore_host_verify_loads,
+            linx_frame_stat_restore_host_verify_mismatches,
             linx_frame_stat_ret_fast_hits,
             linx_frame_stat_ret_checks);
 }
@@ -8639,10 +8672,45 @@ static inline uint64_t linx_frame_loadq_cached_or_fallback(CPULinxState *env,
                                        mmu_idx);
 
         if (likely(host != NULL)) {
+            const uint64_t host_value = ldq_le_p(host);
+
             if (host_loads) {
                 (*host_loads)++;
             }
-            return ldq_le_p(host);
+            if (unlikely(linx_frame_restore_host_verify_enabled_p())) {
+                const uint64_t fallback_value =
+                    cpu_ldq_le_mmuidx_ra(env, (abi_ptr)addr, mmu_idx, GETPC());
+
+                linx_frame_stat_restore_host_verify_loads++;
+                if (unlikely(host_value != fallback_value)) {
+                    linx_frame_stat_restore_host_verify_mismatches++;
+                    if (!linx_frame_restore_host_verify_emit_limit ||
+                        linx_frame_restore_host_verify_emitted <
+                            linx_frame_restore_host_verify_emit_limit) {
+                        linx_frame_restore_host_verify_emitted++;
+                        fprintf(stderr,
+                                "LINX_FRAME_RESTORE_HOST_MISMATCH"
+                                " count=%" PRIu64
+                                " addr=0x%" PRIx64
+                                " mmu=%d acr=%u"
+                                " host=0x%" PRIx64
+                                " fallback=0x%" PRIx64
+                                " envpc=0x%" PRIx64
+                                " bpc=0x%" PRIx64
+                                " tpc=0x%" PRIx64
+                                " sp=0x%" PRIx64
+                                " cstate=0x%" PRIx64
+                                "\n",
+                                env->insn_count, addr, mmu_idx,
+                                (unsigned)(env->acr & 0xfu),
+                                host_value, fallback_value, env->pc,
+                                env->bpc, env->body_tpc,
+                                env->gpr[LINX_REG_SP], env->ssr[0x20]);
+                        fflush(stderr);
+                    }
+                }
+            }
+            return host_value;
         }
     }
 
