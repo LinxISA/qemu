@@ -1075,15 +1075,12 @@ static inline bool linx_frame_single_reg_fast_shape(uint32_t reg_begin,
            stacksize >= 8;
 }
 
-static void linx_frame_shape_hot_record(CPULinxState *env, LinxTemplateKind kind,
-                                        unsigned begin, unsigned end,
-                                        uint64_t stacksize,
-                                        unsigned frame_slots)
+static void linx_frame_shape_hot_record_slow(CPULinxState *env,
+                                             LinxTemplateKind kind,
+                                             unsigned begin, unsigned end,
+                                             uint64_t stacksize,
+                                             unsigned frame_slots)
 {
-    if (!linx_frame_shape_hot_enabled_p()) {
-        return;
-    }
-
     int found = -1;
     int empty = -1;
     int min_slot = 0;
@@ -1129,6 +1126,18 @@ static void linx_frame_shape_hot_record(CPULinxState *env, LinxTemplateKind kind
 
     env->frame_shape_hot_count[slot]++;
     env->frame_shape_hot_frame_slots[slot] += frame_slots;
+}
+
+static inline void linx_frame_shape_hot_record(CPULinxState *env,
+                                               LinxTemplateKind kind,
+                                               unsigned begin, unsigned end,
+                                               uint64_t stacksize,
+                                               unsigned frame_slots)
+{
+    if (unlikely(linx_frame_shape_hot_enabled_p())) {
+        linx_frame_shape_hot_record_slow(env, kind, begin, end, stacksize,
+                                         frame_slots);
+    }
 }
 
 static inline void linx_frame_stats_emit_heartbeat(void)
