@@ -196,6 +196,7 @@ typedef enum LinxTemplateKind {
 #define LINX_MMU_CACHE_SIZE 2048u
 #define LINX_TLB_FILL_HOT_SLOTS 16u
 #define LINX_TLB_INV_HOT_SLOTS 16u
+#define LINX_FRAME_SHAPE_HOT_SLOTS 64u
 
 #define LINX_TB_FLAG_IN_BODY (1u << 0)
 #define LINX_TB_FLAG_USER_MMU (1u << 1)
@@ -573,6 +574,22 @@ typedef struct CPUArchState {
     uint64_t tlb_fill_hot_last_pc[LINX_TLB_FILL_HOT_SLOTS];
     uint64_t tlb_fill_hot_last_bpc[LINX_TLB_FILL_HOT_SLOTS];
     uint64_t tlb_fill_hot_evictions;
+
+    /*
+     * Optional frame-template shape sketch for SPEC/QEMU throughput triage.
+     * Populated only when LINX_QEMU_FRAME_SHAPE_HOT is enabled.
+     */
+    uint8_t frame_shape_hot_active;
+    uint8_t frame_shape_hot_valid[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint8_t frame_shape_hot_kind[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint8_t frame_shape_hot_begin[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint8_t frame_shape_hot_end[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint8_t frame_shape_hot_reg_count[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint64_t frame_shape_hot_stacksize[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint64_t frame_shape_hot_count[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint64_t frame_shape_hot_emit_count[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint64_t frame_shape_hot_frame_slots[LINX_FRAME_SHAPE_HOT_SLOTS];
+    uint64_t frame_shape_hot_evictions;
 
     /*
      * Runtime-specialized fast-path state.

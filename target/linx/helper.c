@@ -213,6 +213,8 @@ static bool linx_frame_restore_host_load_inited;
 static bool linx_frame_restore_host_load_enabled;
 static bool linx_frame_restore_host_verify_inited;
 static bool linx_frame_restore_host_verify_enabled;
+static bool linx_frame_shape_hot_inited;
+static bool linx_frame_shape_hot_enabled;
 static uint64_t linx_frame_restore_host_verify_emit_limit;
 static uint64_t linx_frame_restore_host_verify_emitted;
 static uint64_t linx_frame_stat_fentry_calls;
@@ -1021,6 +1023,89 @@ static inline bool linx_frame_restore_host_verify_enabled_p(void)
     return linx_frame_restore_host_verify_enabled;
 }
 
+static const char *linx_frame_shape_kind_name(unsigned kind)
+{
+    switch ((LinxTemplateKind)kind) {
+    case LINX_TEMPLATE_FENTRY:
+        return "fentry";
+    case LINX_TEMPLATE_FEXIT:
+        return "fexit";
+    case LINX_TEMPLATE_FRET_RA:
+        return "fret_ra";
+    case LINX_TEMPLATE_FRET_STK:
+        return "fret_stk";
+    default:
+        return "unknown";
+    }
+}
+
+static inline bool linx_frame_shape_hot_enabled_p(void)
+{
+    if (!linx_frame_shape_hot_inited) {
+        linx_frame_shape_hot_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_SHAPE_HOT") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_SHAPE_HOT");
+        linx_frame_shape_hot_inited = true;
+    }
+    return linx_frame_shape_hot_enabled;
+}
+
+static void linx_frame_shape_hot_record(CPULinxState *env, LinxTemplateKind kind,
+                                        unsigned begin, unsigned end,
+                                        uint64_t stacksize,
+                                        unsigned frame_slots)
+{
+    if (!linx_frame_shape_hot_enabled_p()) {
+        return;
+    }
+
+    int found = -1;
+    int empty = -1;
+    int min_slot = 0;
+    uint64_t min_count = UINT64_MAX;
+
+    env->frame_shape_hot_active = 1;
+    for (unsigned i = 0; i < LINX_FRAME_SHAPE_HOT_SLOTS; i++) {
+        if (!env->frame_shape_hot_valid[i]) {
+            if (empty < 0) {
+                empty = (int)i;
+            }
+            continue;
+        }
+        if (env->frame_shape_hot_kind[i] == (uint8_t)kind &&
+            env->frame_shape_hot_begin[i] == (uint8_t)begin &&
+            env->frame_shape_hot_end[i] == (uint8_t)end &&
+            env->frame_shape_hot_stacksize[i] == stacksize) {
+            found = (int)i;
+            break;
+        }
+        if (env->frame_shape_hot_count[i] < min_count) {
+            min_count = env->frame_shape_hot_count[i];
+            min_slot = (int)i;
+        }
+    }
+
+    int slot = found;
+    if (slot < 0) {
+        slot = empty >= 0 ? empty : min_slot;
+        if (empty < 0) {
+            env->frame_shape_hot_evictions++;
+        }
+        env->frame_shape_hot_valid[slot] = 1;
+        env->frame_shape_hot_count[slot] = 0;
+        env->frame_shape_hot_emit_count[slot] = 0;
+        env->frame_shape_hot_frame_slots[slot] = 0;
+        env->frame_shape_hot_kind[slot] = (uint8_t)kind;
+        env->frame_shape_hot_begin[slot] = (uint8_t)begin;
+        env->frame_shape_hot_end[slot] = (uint8_t)end;
+        env->frame_shape_hot_stacksize[slot] = stacksize;
+        env->frame_shape_hot_reg_count[slot] = (uint8_t)MIN(frame_slots, 255u);
+    }
+
+    env->frame_shape_hot_count[slot]++;
+    env->frame_shape_hot_frame_slots[slot] += frame_slots;
+}
+
 static inline void linx_frame_stats_emit_heartbeat(void)
 {
     if (!linx_frame_stats_enabled_p()) {
@@ -1058,6 +1143,104 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_restore_host_verify_mismatches,
             linx_frame_stat_ret_fast_hits,
             linx_frame_stat_ret_checks);
+}
+
+static void linx_heartbeat_emit_frame_shape_hot(CPULinxState *env)
+{
+    if (!env->frame_shape_hot_active) {
+        return;
+    }
+
+    int top0 = -1;
+    int top1 = -1;
+    for (unsigned i = 0; i < LINX_FRAME_SHAPE_HOT_SLOTS; i++) {
+        if (!env->frame_shape_hot_valid[i]) {
+            continue;
+        }
+        const uint64_t delta =
+            env->frame_shape_hot_count[i] - env->frame_shape_hot_emit_count[i];
+        const uint64_t top0_delta =
+            top0 >= 0 ? env->frame_shape_hot_count[top0] -
+                        env->frame_shape_hot_emit_count[top0] : 0;
+        const uint64_t top1_delta =
+            top1 >= 0 ? env->frame_shape_hot_count[top1] -
+                        env->frame_shape_hot_emit_count[top1] : 0;
+        if (top0 < 0 || delta > top0_delta) {
+            top1 = top0;
+            top0 = (int)i;
+        } else if (top1 < 0 || delta > top1_delta) {
+            top1 = (int)i;
+        }
+    }
+
+    const uint64_t top0_count = top0 >= 0 ? env->frame_shape_hot_count[top0] : 0;
+    const uint64_t top0_delta =
+        top0 >= 0 ? env->frame_shape_hot_count[top0] -
+                    env->frame_shape_hot_emit_count[top0] : 0;
+    const uint64_t top0_stack =
+        top0 >= 0 ? env->frame_shape_hot_stacksize[top0] : 0;
+    const uint64_t top0_frame_slots =
+        top0 >= 0 ? env->frame_shape_hot_frame_slots[top0] : 0;
+    const unsigned top0_kind =
+        top0 >= 0 ? env->frame_shape_hot_kind[top0] : LINX_TEMPLATE_FENTRY;
+    const unsigned top0_begin =
+        top0 >= 0 ? env->frame_shape_hot_begin[top0] : 0;
+    const unsigned top0_end =
+        top0 >= 0 ? env->frame_shape_hot_end[top0] : 0;
+    const unsigned top0_regs =
+        top0 >= 0 ? env->frame_shape_hot_reg_count[top0] : 0;
+
+    const uint64_t top1_count = top1 >= 0 ? env->frame_shape_hot_count[top1] : 0;
+    const uint64_t top1_delta =
+        top1 >= 0 ? env->frame_shape_hot_count[top1] -
+                    env->frame_shape_hot_emit_count[top1] : 0;
+    const uint64_t top1_stack =
+        top1 >= 0 ? env->frame_shape_hot_stacksize[top1] : 0;
+    const uint64_t top1_frame_slots =
+        top1 >= 0 ? env->frame_shape_hot_frame_slots[top1] : 0;
+    const unsigned top1_kind =
+        top1 >= 0 ? env->frame_shape_hot_kind[top1] : LINX_TEMPLATE_FENTRY;
+    const unsigned top1_begin =
+        top1 >= 0 ? env->frame_shape_hot_begin[top1] : 0;
+    const unsigned top1_end =
+        top1 >= 0 ? env->frame_shape_hot_end[top1] : 0;
+    const unsigned top1_regs =
+        top1 >= 0 ? env->frame_shape_hot_reg_count[top1] : 0;
+
+    fprintf(stderr,
+            "LINX_FRAME_SHAPE_HOT count=%" PRIu64
+            " evictions=%" PRIu64
+            " slots=%u"
+            " top0_count=%" PRIu64
+            " top0_delta=%" PRIu64
+            " top0_kind=%s top0_kindid=%u"
+            " top0_begin=%u top0_end=%u"
+            " top0_stack=%" PRIu64
+            " top0_regs=%u"
+            " top0_frame_slots=%" PRIu64
+            " top1_count=%" PRIu64
+            " top1_delta=%" PRIu64
+            " top1_kind=%s top1_kindid=%u"
+            " top1_begin=%u top1_end=%u"
+            " top1_stack=%" PRIu64
+            " top1_regs=%u"
+            " top1_frame_slots=%" PRIu64
+            "\n",
+            env->insn_count, env->frame_shape_hot_evictions,
+            LINX_FRAME_SHAPE_HOT_SLOTS,
+            top0_count, top0_delta, linx_frame_shape_kind_name(top0_kind),
+            top0_kind, top0_begin, top0_end, top0_stack, top0_regs,
+            top0_frame_slots,
+            top1_count, top1_delta, linx_frame_shape_kind_name(top1_kind),
+            top1_kind, top1_begin, top1_end, top1_stack, top1_regs,
+            top1_frame_slots);
+
+    for (unsigned i = 0; i < LINX_FRAME_SHAPE_HOT_SLOTS; i++) {
+        if (env->frame_shape_hot_valid[i]) {
+            env->frame_shape_hot_emit_count[i] =
+                env->frame_shape_hot_count[i];
+        }
+    }
 }
 
 static inline void linx_tcg_tb_stats_emit_heartbeat(void)
@@ -1421,6 +1604,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
     fprintf(stderr, "\n");
     linx_heartbeat_emit_tlb_fill_hot(env);
     linx_heartbeat_emit_tlb_inv_hot(env);
+    linx_heartbeat_emit_frame_shape_hot(env);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
                 "LINX_HEARTBEAT_REGS count=%" PRIu64
@@ -8956,6 +9140,8 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
             step++;
         }
     }
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FENTRY, reg_begin, reg_end,
+                                stacksize, count);
 
     if (fentry_trace_enabled) {
         fentry_trace = linx_fentry_trace_matches(env, cur_pc, old_sp, new_sp,
@@ -9066,6 +9252,8 @@ static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
                                    begin, end, regs, addrs, values,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FEXIT, reg_begin, reg_end,
+                                stacksize, restore_count);
 
     if (frame_stats) {
         linx_frame_stat_fexit_calls++;
@@ -9127,6 +9315,8 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
                                    begin, end, regs, addrs, values,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_STK, reg_begin,
+                                reg_end, stacksize, restore_count);
 
     if (frame_stats) {
         linx_frame_stat_fret_stk_calls++;
@@ -9208,6 +9398,8 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
                                    begin, end, regs, addrs, values,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_RA, reg_begin, reg_end,
+                                stacksize, restore_count);
 
     if (frame_stats) {
         linx_frame_stat_fret_ra_calls++;
