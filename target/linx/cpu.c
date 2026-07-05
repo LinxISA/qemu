@@ -2968,6 +2968,8 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
     }
 
     if (linx_fault_trace_tlb_matches(env, (uint64_t)addr)) {
+        const LinxLegacyMmuProbe legacy =
+            linx_probe_legacy_mmu(env, addr, access_type, mmu_idx);
         fprintf(stderr,
                 "LINX_TLB_FAULT_TRACE count=%" PRIu64
                 " pc=0x%" PRIx64 " va=0x%" VADDR_PRIx
@@ -2977,14 +2979,24 @@ static bool linx_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
                 " in_body=%u brtype=%u tgt=0x%" PRIx64
                 " cstate=0x%" PRIx64
                 " tcr=0x%" PRIx64 " ttbr0=0x%" PRIx64
-                " ttbr1=0x%" PRIx64 "\n",
+                " ttbr1=0x%" PRIx64
+                " legacy=%u legacy_ok=%u legacy_why=%s"
+                " legacy_level=%u legacy_desc_addr=0x%" HWADDR_PRIx
+                " legacy_desc=0x%" PRIx64
+                " legacy_prot=0x%x legacy_pa=0x%" HWADDR_PRIx
+                " legacy_block=0x%" HWADDR_PRIx
+                " legacy_cause=0x%x\n",
                 env->insn_count, env->pc, addr, access_type, cause, mmu_idx,
                 probe ? 1 : 0, (unsigned)(env->acr & 0xFu), env->bpc,
                 env->body_tpc, env->insn_pc_next, env->in_body,
                 env->brtype, env->tgt, env->ssr[LINX_SSR_CSTATE],
                 env->ssr_acr[1][LINX_SSR_TCR],
                 env->ssr_acr[1][LINX_SSR_TTBR0],
-                env->ssr_acr[1][LINX_SSR_TTBR1]);
+                env->ssr_acr[1][LINX_SSR_TTBR1],
+                legacy.legacy ? 1u : 0u, legacy.ok ? 1u : 0u,
+                legacy.why ? legacy.why : "null", legacy.level,
+                legacy.desc_addr, legacy.desc, legacy.prot, legacy.pa,
+                legacy.block_size, legacy.cause);
         fflush(stderr);
     }
 
