@@ -129,6 +129,32 @@ static uint64_t linx_acre_trace_limit;
 static uint64_t linx_acre_trace_emitted;
 static bool linx_acre_trace_regs_enabled;
 static unsigned linx_acre_trace_code_bytes;
+static bool linx_queue_trace_inited;
+static bool linx_queue_trace_enabled;
+static bool linx_queue_trace_pc_filter_enabled;
+static uint64_t linx_queue_trace_pc_lo;
+static uint64_t linx_queue_trace_pc_hi = UINT64_MAX;
+static bool linx_queue_trace_bpc_filter_enabled;
+static uint64_t linx_queue_trace_bpc_lo;
+static uint64_t linx_queue_trace_bpc_hi = UINT64_MAX;
+static bool linx_queue_trace_count_filter_enabled;
+static uint64_t linx_queue_trace_count_lo;
+static uint64_t linx_queue_trace_count_hi = UINT64_MAX;
+static bool linx_queue_trace_all;
+static uint64_t linx_queue_trace_limit;
+static uint64_t linx_queue_trace_emitted;
+static bool linx_queue_trace_last_valid;
+static uint64_t linx_queue_trace_last_tq[4];
+static uint64_t linx_queue_trace_last_uq[4];
+static uint64_t linx_queue_trace_last_tgt;
+static uint64_t linx_queue_trace_last_body_tpc;
+static uint64_t linx_queue_trace_last_return_pc;
+static uint32_t linx_queue_trace_last_acr;
+static uint32_t linx_queue_trace_last_in_body;
+static uint32_t linx_queue_trace_last_blocktype;
+static uint32_t linx_queue_trace_last_brtype;
+static uint32_t linx_queue_trace_last_call_ra_set;
+static uint32_t linx_queue_trace_last_call_setret_pending;
 
 enum {
     LINX_EBARG_IDX_0 = 0xF40,
@@ -2024,6 +2050,206 @@ static void linx_acre_trace_maybe_emit(CPULinxState *env, const char *phase,
         fputc('\n', stderr);
     }
     fflush(stderr);
+}
+
+static void linx_queue_trace_init(void)
+{
+    uint64_t lo = 0;
+    uint64_t hi = UINT64_MAX;
+    const char *lo_s;
+    const char *hi_s;
+    const char *value_s;
+
+    if (linx_queue_trace_inited) {
+        return;
+    }
+    linx_queue_trace_inited = true;
+
+    linx_queue_trace_enabled =
+        linx_env_enabled("LINX_QUEUE_TRACE") ||
+        linx_env_enabled("LINX_QEMU_QUEUE_TRACE");
+
+    lo_s = linx_env_value2("LINX_QUEUE_TRACE_PC_LO",
+                           "LINX_QEMU_QUEUE_TRACE_PC_LO");
+    hi_s = linx_env_value2("LINX_QUEUE_TRACE_PC_HI",
+                           "LINX_QEMU_QUEUE_TRACE_PC_HI");
+    const bool have_pc_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_pc_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_pc_lo || have_pc_hi) {
+        linx_queue_trace_pc_lo = MIN(lo, hi);
+        linx_queue_trace_pc_hi = MAX(lo, hi);
+        linx_queue_trace_pc_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_QUEUE_TRACE_PC",
+                              "LINX_QEMU_QUEUE_TRACE_PC");
+    if (value_s && linx_parse_u64(value_s, &lo)) {
+        linx_queue_trace_pc_lo = lo;
+        linx_queue_trace_pc_hi = lo;
+        linx_queue_trace_pc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_env_value2("LINX_QUEUE_TRACE_BPC_LO",
+                           "LINX_QEMU_QUEUE_TRACE_BPC_LO");
+    hi_s = linx_env_value2("LINX_QUEUE_TRACE_BPC_HI",
+                           "LINX_QEMU_QUEUE_TRACE_BPC_HI");
+    const bool have_bpc_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_bpc_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_bpc_lo || have_bpc_hi) {
+        linx_queue_trace_bpc_lo = MIN(lo, hi);
+        linx_queue_trace_bpc_hi = MAX(lo, hi);
+        linx_queue_trace_bpc_filter_enabled = true;
+    }
+    value_s = linx_env_value2("LINX_QUEUE_TRACE_BPC",
+                              "LINX_QEMU_QUEUE_TRACE_BPC");
+    if (value_s && linx_parse_u64(value_s, &lo)) {
+        linx_queue_trace_bpc_lo = lo;
+        linx_queue_trace_bpc_hi = lo;
+        linx_queue_trace_bpc_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = UINT64_MAX;
+    lo_s = linx_env_value2("LINX_QUEUE_TRACE_COUNT_LO",
+                           "LINX_QEMU_QUEUE_TRACE_COUNT_LO");
+    hi_s = linx_env_value2("LINX_QUEUE_TRACE_COUNT_HI",
+                           "LINX_QEMU_QUEUE_TRACE_COUNT_HI");
+    const bool have_count_lo = lo_s && linx_parse_u64(lo_s, &lo);
+    const bool have_count_hi = hi_s && linx_parse_u64(hi_s, &hi);
+    if (have_count_lo || have_count_hi) {
+        linx_queue_trace_count_lo = MIN(lo, hi);
+        linx_queue_trace_count_hi = MAX(lo, hi);
+        linx_queue_trace_count_filter_enabled = true;
+    }
+
+    value_s = linx_env_value2("LINX_QUEUE_TRACE_LIMIT",
+                              "LINX_QEMU_QUEUE_TRACE_LIMIT");
+    if (value_s) {
+        (void)linx_parse_u64(value_s, &linx_queue_trace_limit);
+    } else {
+        linx_queue_trace_limit = 128;
+    }
+
+    linx_queue_trace_all =
+        linx_env_enabled("LINX_QUEUE_TRACE_ALL") ||
+        linx_env_enabled("LINX_QEMU_QUEUE_TRACE_ALL");
+}
+
+static bool linx_queue_trace_state_changed(CPULinxState *env)
+{
+    if (!linx_queue_trace_last_valid) {
+        return true;
+    }
+    if ((env->acr & 0xFu) != linx_queue_trace_last_acr ||
+        env->in_body != linx_queue_trace_last_in_body ||
+        env->blocktype != linx_queue_trace_last_blocktype ||
+        env->brtype != linx_queue_trace_last_brtype ||
+        env->tgt != linx_queue_trace_last_tgt ||
+        env->body_tpc != linx_queue_trace_last_body_tpc ||
+        env->return_pc != linx_queue_trace_last_return_pc ||
+        env->call_ra_set != linx_queue_trace_last_call_ra_set ||
+        env->call_setret_pending != linx_queue_trace_last_call_setret_pending) {
+        return true;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (env->tq[i] != linx_queue_trace_last_tq[i] ||
+            env->uq[i] != linx_queue_trace_last_uq[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void linx_queue_trace_remember(CPULinxState *env)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        linx_queue_trace_last_tq[i] = env->tq[i];
+        linx_queue_trace_last_uq[i] = env->uq[i];
+    }
+    linx_queue_trace_last_tgt = env->tgt;
+    linx_queue_trace_last_body_tpc = env->body_tpc;
+    linx_queue_trace_last_return_pc = env->return_pc;
+    linx_queue_trace_last_acr = env->acr & 0xFu;
+    linx_queue_trace_last_in_body = env->in_body;
+    linx_queue_trace_last_blocktype = env->blocktype;
+    linx_queue_trace_last_brtype = env->brtype;
+    linx_queue_trace_last_call_ra_set = env->call_ra_set;
+    linx_queue_trace_last_call_setret_pending = env->call_setret_pending;
+    linx_queue_trace_last_valid = true;
+}
+
+static void linx_queue_trace_probe(CPULinxState *env, uint64_t pc)
+{
+    linx_queue_trace_init();
+    if (!linx_queue_trace_enabled) {
+        return;
+    }
+    if (linx_queue_trace_limit &&
+        linx_queue_trace_emitted >= linx_queue_trace_limit) {
+        return;
+    }
+    if (linx_queue_trace_pc_filter_enabled &&
+        (pc < linx_queue_trace_pc_lo || pc > linx_queue_trace_pc_hi)) {
+        return;
+    }
+    if (linx_queue_trace_bpc_filter_enabled &&
+        (env->bpc < linx_queue_trace_bpc_lo ||
+         env->bpc > linx_queue_trace_bpc_hi)) {
+        return;
+    }
+    if (linx_queue_trace_count_filter_enabled &&
+        (env->insn_count < linx_queue_trace_count_lo ||
+         env->insn_count > linx_queue_trace_count_hi)) {
+        return;
+    }
+    if (!linx_queue_trace_all && !linx_queue_trace_state_changed(env)) {
+        return;
+    }
+
+    linx_queue_trace_emitted++;
+    fprintf(stderr,
+            "LINX_QUEUE_TRACE seq=%" PRIu64
+            " count=%" PRIu64
+            " pc=0x%" PRIx64
+            " envpc=0x%" PRIx64
+            " bpc=0x%" PRIx64
+            " tpc=0x%" PRIx64
+            " acr=%u cstate=0x%" PRIx64
+            " in_body=%u blocktype=%u brtype=%u"
+            " tgt=0x%" PRIx64
+            " body_tpc=0x%" PRIx64
+            " return_pc=0x%" PRIx64
+            " call_ra_set=%u call_setret_pending=%u"
+            " sp=0x%" PRIx64
+            " ra=0x%" PRIx64
+            " a0=0x%" PRIx64
+            " a1=0x%" PRIx64
+            " a2=0x%" PRIx64
+            " a3=0x%" PRIx64
+            " a4=0x%" PRIx64
+            " a5=0x%" PRIx64
+            " a6=0x%" PRIx64
+            " a7=0x%" PRIx64
+            " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
+            " tq2=0x%" PRIx64 " tq3=0x%" PRIx64
+            " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
+            " uq2=0x%" PRIx64 " uq3=0x%" PRIx64
+            "\n",
+            linx_queue_trace_emitted, env->insn_count, pc, env->pc,
+            env->bpc, env->body_tpc, env->acr & 0xFu, env->ssr[0x20],
+            env->in_body, env->blocktype, env->brtype, env->tgt,
+            env->body_tpc, env->return_pc, env->call_ra_set,
+            env->call_setret_pending, env->gpr[LINX_REG_SP],
+            env->gpr[LINX_REG_RA], env->gpr[LINX_REG_A0],
+            env->gpr[LINX_REG_A1], env->gpr[LINX_REG_A2],
+            env->gpr[LINX_REG_A3], env->gpr[LINX_REG_A4],
+            env->gpr[LINX_REG_A5], env->gpr[LINX_REG_A6],
+            env->gpr[LINX_REG_A7], env->tq[0], env->tq[1],
+            env->tq[2], env->tq[3], env->uq[0], env->uq[1],
+            env->uq[2], env->uq[3]);
+    fflush(stderr);
+    linx_queue_trace_remember(env);
 }
 
 static void linx_restore_bstate_from_ebarg(CPULinxState *env, uint32_t mgr)
@@ -5378,6 +5604,7 @@ void HELPER(linx_cosim_before_insn)(CPULinxState *env, uint64_t pc)
 {
     char start_line[1024];
 
+    linx_queue_trace_probe(env, pc);
     linx_debug_pc_watch_probe(env, pc);
     linx_debug_work_grab_probe(env, pc);
 

@@ -124,6 +124,12 @@ static bool linx_template_chain_enabled;
 static bool linx_host_insn_hook_inited;
 static bool linx_host_insn_hook_global_enabled;
 static bool linx_host_insn_hook_pc_watch_requested;
+static bool linx_host_insn_hook_queue_trace_requested;
+static bool linx_translate_queue_trace_inited;
+static bool linx_translate_queue_trace_enabled;
+static bool linx_translate_queue_trace_pc_filter_enabled;
+static uint64_t linx_translate_queue_trace_pc_lo;
+static uint64_t linx_translate_queue_trace_pc_hi = UINT64_MAX;
 #define LINX_TRANSLATE_PC_WATCH_MAX 16
 static bool linx_translate_pc_watch_inited;
 static unsigned linx_translate_pc_watch_count;
@@ -219,23 +225,96 @@ static bool linx_translate_pc_watch_matches(vaddr pc)
     return false;
 }
 
+static void linx_translate_queue_trace_init(void)
+{
+    const char *enabled_s;
+    const char *lo_s;
+    const char *hi_s;
+    const char *value_s;
+    uint64_t lo = 0;
+    uint64_t hi = UINT64_MAX;
+
+    if (linx_translate_queue_trace_inited) {
+        return;
+    }
+    linx_translate_queue_trace_inited = true;
+
+    enabled_s = getenv("LINX_QUEUE_TRACE");
+    if (!enabled_s || !enabled_s[0] || strcmp(enabled_s, "0") == 0) {
+        enabled_s = getenv("LINX_QEMU_QUEUE_TRACE");
+    }
+    linx_translate_queue_trace_enabled =
+        enabled_s && enabled_s[0] && strcmp(enabled_s, "0") != 0;
+    if (!linx_translate_queue_trace_enabled) {
+        return;
+    }
+
+    lo_s = getenv("LINX_QUEUE_TRACE_PC_LO");
+    if (!lo_s || !lo_s[0]) {
+        lo_s = getenv("LINX_QEMU_QUEUE_TRACE_PC_LO");
+    }
+    hi_s = getenv("LINX_QUEUE_TRACE_PC_HI");
+    if (!hi_s || !hi_s[0]) {
+        hi_s = getenv("LINX_QEMU_QUEUE_TRACE_PC_HI");
+    }
+    const bool have_pc_lo = lo_s && linx_translate_parse_u64(lo_s, &lo);
+    const bool have_pc_hi = hi_s && linx_translate_parse_u64(hi_s, &hi);
+    if (have_pc_lo || have_pc_hi) {
+        linx_translate_queue_trace_pc_lo = MIN(lo, hi);
+        linx_translate_queue_trace_pc_hi = MAX(lo, hi);
+        linx_translate_queue_trace_pc_filter_enabled = true;
+    }
+
+    value_s = getenv("LINX_QUEUE_TRACE_PC");
+    if (!value_s || !value_s[0]) {
+        value_s = getenv("LINX_QEMU_QUEUE_TRACE_PC");
+    }
+    if (value_s && linx_translate_parse_u64(value_s, &lo)) {
+        linx_translate_queue_trace_pc_lo = lo;
+        linx_translate_queue_trace_pc_hi = lo;
+        linx_translate_queue_trace_pc_filter_enabled = true;
+    }
+}
+
+static bool linx_translate_queue_trace_matches(vaddr pc)
+{
+    linx_translate_queue_trace_init();
+    if (!linx_translate_queue_trace_enabled) {
+        return false;
+    }
+    if (!linx_translate_queue_trace_pc_filter_enabled) {
+        return true;
+    }
+    return pc >= linx_translate_queue_trace_pc_lo &&
+           pc <= linx_translate_queue_trace_pc_hi;
+}
+
 static inline bool linx_host_insn_hook_enabled_p(vaddr pc)
 {
     if (!linx_host_insn_hook_inited) {
         const char *cosim = getenv("LINX_COSIM_ENABLE");
         const char *pc_watch = getenv("LINX_DEBUG_PC_WATCH");
         const char *work_grab = getenv("LINX_DEBUG_WORK_GRAB");
+        const char *queue_trace = getenv("LINX_QUEUE_TRACE");
+        if (!queue_trace || !queue_trace[0] ||
+            strcmp(queue_trace, "0") == 0) {
+            queue_trace = getenv("LINX_QEMU_QUEUE_TRACE");
+        }
 
         linx_host_insn_hook_global_enabled =
             (cosim && cosim[0] && strcmp(cosim, "0") != 0) ||
             (work_grab && work_grab[0] && strcmp(work_grab, "0") != 0);
         linx_host_insn_hook_pc_watch_requested =
             pc_watch && pc_watch[0] && strcmp(pc_watch, "0") != 0;
+        linx_host_insn_hook_queue_trace_requested =
+            queue_trace && queue_trace[0] && strcmp(queue_trace, "0") != 0;
         linx_host_insn_hook_inited = true;
     }
     return linx_host_insn_hook_global_enabled ||
            (linx_host_insn_hook_pc_watch_requested &&
-            linx_translate_pc_watch_matches(pc));
+            linx_translate_pc_watch_matches(pc)) ||
+           (linx_host_insn_hook_queue_trace_requested &&
+            linx_translate_queue_trace_matches(pc));
 }
 
 static void linx_gen_mem_trace_probe(bool is_store, bool pre_access, vaddr pc,
