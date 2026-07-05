@@ -2619,6 +2619,7 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
         env->tlb_fill_hot_mmu[last_slot] == (uint8_t)mmu_idx &&
         env->tlb_fill_hot_probe[last_slot] == (probe ? 1u : 0u)) {
         found = (int)last_slot;
+        env->tlb_fill_hot_last_hits++;
         goto update_slot;
     }
 
@@ -2634,6 +2635,7 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
             env->tlb_fill_hot_mmu[i] == (uint8_t)mmu_idx &&
             env->tlb_fill_hot_probe[i] == (probe ? 1u : 0u)) {
             found = (int)i;
+            env->tlb_fill_hot_slot_hits++;
             break;
         }
         if (env->tlb_fill_hot_count[i] < min_count) {
@@ -2645,6 +2647,7 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
     slot = found;
     if (slot < 0) {
         slot = empty >= 0 ? empty : min_slot;
+        env->tlb_fill_hot_inserts++;
         if (empty < 0) {
             env->tlb_fill_hot_evictions++;
         }

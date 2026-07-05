@@ -575,6 +575,9 @@ typedef struct CPUArchState {
     uint64_t tlb_fill_hot_last_pc[LINX_TLB_FILL_HOT_SLOTS];
     uint64_t tlb_fill_hot_last_bpc[LINX_TLB_FILL_HOT_SLOTS];
     uint64_t tlb_fill_hot_evictions;
+    uint64_t tlb_fill_hot_inserts;
+    uint64_t tlb_fill_hot_last_hits;
+    uint64_t tlb_fill_hot_slot_hits;
 
     /*
      * Optional frame-template shape sketch for SPEC/QEMU throughput triage.

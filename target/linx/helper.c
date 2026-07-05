@@ -1446,6 +1446,9 @@ static void linx_heartbeat_emit_tlb_fill_hot(CPULinxState *env)
     fprintf(stderr,
             "LINX_TLB_FILL_HOT count=%" PRIu64
             " evictions=%" PRIu64
+            " inserts=%" PRIu64
+            " last_hits=%" PRIu64
+            " slot_hits=%" PRIu64
             " slots=%u"
             " top0_count=%" PRIu64
             " top0_page=0x%" PRIx64
@@ -1465,6 +1468,8 @@ static void linx_heartbeat_emit_tlb_fill_hot(CPULinxState *env)
             " top1_bpc=0x%" PRIx64
             "\n",
             env->insn_count, env->tlb_fill_hot_evictions,
+            env->tlb_fill_hot_inserts, env->tlb_fill_hot_last_hits,
+            env->tlb_fill_hot_slot_hits,
             LINX_TLB_FILL_HOT_SLOTS,
             top0_count, top0_page, top0_va, top0_pa,
             top0_access, top0_mmu, top0_probe, top0_prot, top0_cause,
