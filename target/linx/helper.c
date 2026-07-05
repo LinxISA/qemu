@@ -233,6 +233,7 @@ static uint64_t linx_heartbeat_last_tpc;
 static uint64_t linx_heartbeat_same_site_repeats;
 static uint64_t linx_heartbeat_same_site_warn;
 static bool linx_heartbeat_same_site_reported;
+static bool linx_heartbeat_extended_enabled;
 static bool linx_heartbeat_regs_enabled;
 static unsigned linx_heartbeat_dump_code_bytes;
 static bool linx_frame_stats_inited;
@@ -1005,6 +1006,16 @@ static void linx_heartbeat_init(void)
         (void)linx_parse_u64(warn_s, &linx_heartbeat_same_site_warn);
     }
 
+    linx_heartbeat_extended_enabled =
+        linx_env_enabled("LINX_HEARTBEAT_EXTENDED") ||
+        linx_env_enabled("LINX_QEMU_HEARTBEAT_EXTENDED") ||
+        linx_env_enabled("LINX_MMU_CACHE_STATS") ||
+        linx_env_enabled("LINX_QEMU_MMU_CACHE_STATS") ||
+        linx_env_enabled("LINX_TLB_STATS") ||
+        linx_env_enabled("LINX_QEMU_TLB_STATS") ||
+        linx_env_enabled("LINX_TLB_FILL_STATS") ||
+        linx_env_enabled("LINX_QEMU_TLB_FILL_STATS");
+
     linx_heartbeat_inited = true;
 }
 
@@ -1617,6 +1628,15 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " tpc=0x%" PRIx64
             " envpc=0x%" PRIx64
             " acr=%u cstate=0x%" PRIx64
+            " brtype=%u tgt=0x%" PRIx64
+            " in_body=%u progress=%s same_site=%" PRIu64,
+            qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
+            env->insn_count, delta, pc, env->bpc, env->body_tpc,
+            env->pc, env->acr & 0xFu, env->ssr[0x20],
+            env->brtype, env->tgt, env->in_body,
+            progress, linx_heartbeat_same_site_repeats);
+    if (linx_heartbeat_extended_enabled) {
+        fprintf(stderr,
             " mmuc_hit=%" PRIu64
             " mmuc_miss=%" PRIu64
             " mmuc_fill=%" PRIu64
@@ -1657,8 +1677,6 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " tlbf_last_prot=0x%x"
             " tlbf_last_cause=0x%x"
             " tlbf_last_acr=%u"
-            " brtype=%u tgt=0x%" PRIx64
-            " in_body=%u progress=%s same_site=%" PRIu64
             " sp=0x%" PRIx64
             " ra=0x%" PRIx64
             " tp=0x%" PRIx64
@@ -1672,9 +1690,6 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " a5=0x%" PRIx64
             " a6=0x%" PRIx64
             " a7=0x%" PRIx64,
-            qemu_clock_get_ms(QEMU_CLOCK_REALTIME),
-            env->insn_count, delta, pc, env->bpc, env->body_tpc,
-            env->pc, env->acr & 0xFu, env->ssr[0x20],
             env->mmu_cache_hits, env->mmu_cache_misses,
             env->mmu_cache_fills, env->mmu_cache_flushes,
             env->mmu_cache_page_flushes,
@@ -1697,8 +1712,6 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->tlb_fill_last_access, env->tlb_fill_last_mmu_idx,
             env->tlb_fill_last_prot, env->tlb_fill_last_cause,
             env->tlb_fill_last_acr,
-            env->brtype, env->tgt, env->in_body,
-            progress, linx_heartbeat_same_site_repeats,
             env->gpr[LINX_REG_SP], env->gpr[LINX_REG_RA],
             env->ssr[0x0000], env->ssr_acr[1][0xF05],
             env->ssr_acr[1][0xF06],
@@ -1706,6 +1719,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->gpr[LINX_REG_A2], env->gpr[LINX_REG_A3],
             env->gpr[LINX_REG_A4], env->gpr[LINX_REG_A5],
             env->gpr[LINX_REG_A6], env->gpr[LINX_REG_A7]);
+    }
     linx_frame_stats_emit_heartbeat();
     linx_tcg_tb_stats_emit_heartbeat();
     fprintf(stderr, "\n");
