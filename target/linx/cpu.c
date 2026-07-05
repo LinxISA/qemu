@@ -51,6 +51,12 @@ static uint64_t linx_fault_trace_emitted;
 static bool linx_fault_trace_regs_enabled;
 static bool linx_tlb_fault_trace_inited;
 static bool linx_tlb_fault_trace_enabled;
+static bool linx_tlb_fault_trace_addr_filter_enabled;
+static uint64_t linx_tlb_fault_trace_addr_lo;
+static uint64_t linx_tlb_fault_trace_addr_hi = UINT64_MAX;
+static bool linx_tlb_fault_trace_count_filter_enabled;
+static uint64_t linx_tlb_fault_trace_count_lo;
+static uint64_t linx_tlb_fault_trace_count_hi = UINT64_MAX;
 static uint64_t linx_tlb_fault_trace_limit;
 static uint64_t linx_tlb_fault_trace_emitted;
 static bool linx_tlb_fill_trace_inited;
@@ -347,6 +353,48 @@ static void linx_tlb_fault_trace_init(void)
         linx_cpu_env_enabled("LINX_TLB_FAULT_TRACE") ||
         linx_cpu_env_enabled("LINX_QEMU_TLB_FAULT_TRACE");
 
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    const char *lo_s =
+        linx_cpu_env_value4("LINX_TLB_FAULT_TRACE_ADDR_LO",
+                            "LINX_QEMU_TLB_FAULT_TRACE_ADDR_LO",
+                            "LINX_TLB_FAULT_TRACE_VA_LO",
+                            "LINX_QEMU_TLB_FAULT_TRACE_VA_LO");
+    const char *hi_s =
+        linx_cpu_env_value4("LINX_TLB_FAULT_TRACE_ADDR_HI",
+                            "LINX_QEMU_TLB_FAULT_TRACE_ADDR_HI",
+                            "LINX_TLB_FAULT_TRACE_VA_HI",
+                            "LINX_QEMU_TLB_FAULT_TRACE_VA_HI");
+    if (lo_s && hi_s &&
+        linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
+        linx_tlb_fault_trace_addr_lo = MIN(lo, hi);
+        linx_tlb_fault_trace_addr_hi = MAX(lo, hi);
+        linx_tlb_fault_trace_addr_filter_enabled = true;
+    }
+    const char *addr_s =
+        linx_cpu_env_value4("LINX_TLB_FAULT_TRACE_ADDR",
+                            "LINX_QEMU_TLB_FAULT_TRACE_ADDR",
+                            "LINX_TLB_FAULT_TRACE_VA",
+                            "LINX_QEMU_TLB_FAULT_TRACE_VA");
+    if (addr_s && linx_cpu_parse_u64(addr_s, &lo)) {
+        linx_tlb_fault_trace_addr_lo = lo;
+        linx_tlb_fault_trace_addr_hi = lo;
+        linx_tlb_fault_trace_addr_filter_enabled = true;
+    }
+
+    lo = 0;
+    hi = 0;
+    lo_s = linx_cpu_env_nonzero2("LINX_TLB_FAULT_TRACE_COUNT_LO",
+                                 "LINX_QEMU_TLB_FAULT_TRACE_COUNT_LO");
+    hi_s = linx_cpu_env_nonzero2("LINX_TLB_FAULT_TRACE_COUNT_HI",
+                                 "LINX_QEMU_TLB_FAULT_TRACE_COUNT_HI");
+    if (lo_s && hi_s &&
+        linx_cpu_parse_u64(lo_s, &lo) && linx_cpu_parse_u64(hi_s, &hi)) {
+        linx_tlb_fault_trace_count_lo = MIN(lo, hi);
+        linx_tlb_fault_trace_count_hi = MAX(lo, hi);
+        linx_tlb_fault_trace_count_filter_enabled = true;
+    }
+
     const char *limit_s =
         linx_cpu_env_nonzero2("LINX_TLB_FAULT_TRACE_LIMIT",
                               "LINX_QEMU_TLB_FAULT_TRACE_LIMIT");
@@ -402,7 +450,13 @@ static bool linx_fault_trace_tlb_matches(CPULinxState *env, uint64_t va)
     if (!linx_tlb_fault_trace_enabled) {
         return false;
     }
-    if (linx_fault_trace_count_filter_enabled &&
+    if (linx_tlb_fault_trace_count_filter_enabled &&
+        (env->insn_count < linx_tlb_fault_trace_count_lo ||
+         env->insn_count > linx_tlb_fault_trace_count_hi)) {
+        return false;
+    }
+    if (!linx_tlb_fault_trace_count_filter_enabled &&
+        linx_fault_trace_count_filter_enabled &&
         (env->insn_count < linx_fault_trace_count_lo ||
          env->insn_count > linx_fault_trace_count_hi)) {
         return false;
@@ -416,6 +470,11 @@ static bool linx_fault_trace_tlb_matches(CPULinxState *env, uint64_t va)
         !linx_fault_trace_addr_matches(env->bpc) &&
         !linx_fault_trace_addr_matches(env->body_tpc) &&
         !linx_fault_trace_addr_matches(va)) {
+        return false;
+    }
+    if (linx_tlb_fault_trace_addr_filter_enabled &&
+        (va < linx_tlb_fault_trace_addr_lo ||
+         va > linx_tlb_fault_trace_addr_hi)) {
         return false;
     }
     linx_tlb_fault_trace_emitted++;
