@@ -1387,6 +1387,47 @@ static inline bool linx_mmu_cache_access_ok(int prot,
     }
 }
 
+static inline void linx_mmu_cache_count_size(hwaddr size, uint64_t *count_4k,
+                                             uint64_t *count_2m,
+                                             uint64_t *count_1g,
+                                             uint64_t *count_512g)
+{
+    if (size == TARGET_PAGE_SIZE) {
+        (*count_4k)++;
+    } else if (size == ((hwaddr)1ull << 21)) {
+        (*count_2m)++;
+    } else if (size == ((hwaddr)1ull << 30)) {
+        (*count_1g)++;
+    } else if (size == ((hwaddr)1ull << 39)) {
+        (*count_512g)++;
+    }
+}
+
+static inline void linx_mmu_cache_count_hit(CPULinxState *env, hwaddr size)
+{
+    linx_mmu_cache_count_size(size, &env->mmu_cache_hit_4k,
+                              &env->mmu_cache_hit_2m,
+                              &env->mmu_cache_hit_1g,
+                              &env->mmu_cache_hit_512g);
+}
+
+static inline void linx_mmu_cache_count_fill(CPULinxState *env, hwaddr size)
+{
+    linx_mmu_cache_count_size(size, &env->mmu_cache_fill_4k,
+                              &env->mmu_cache_fill_2m,
+                              &env->mmu_cache_fill_1g,
+                              &env->mmu_cache_fill_512g);
+}
+
+static inline void linx_mmu_cache_count_collision(CPULinxState *env,
+                                                  hwaddr size)
+{
+    linx_mmu_cache_count_size(size, &env->mmu_cache_collision_4k,
+                              &env->mmu_cache_collision_2m,
+                              &env->mmu_cache_collision_1g,
+                              &env->mmu_cache_collision_512g);
+}
+
 static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
                                   MMUAccessType access_type, int mmu_idx,
                                   hwaddr *pa_out, int *prot_out,
@@ -1421,6 +1462,7 @@ static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
                                              linx_fault_acc(access_type));
             if (linx_mmu_cache_stats_enabled) {
                 env->mmu_cache_hits++;
+                linx_mmu_cache_count_hit(env, size);
             }
             return true;
         }
@@ -1444,6 +1486,11 @@ static void linx_mmu_cache_store(CPULinxState *env, vaddr va,
     const vaddr base = linx_mmu_cache_base(va, size);
     LinxMmuCacheEntry *entry =
         &env->mmu_cache[linx_mmu_cache_slot(base, mmu_idx, size)];
+    const bool collision =
+        entry->valid &&
+        (entry->tag != (uint64_t)base ||
+         entry->tlb_size != (uint64_t)size ||
+         entry->mmu_idx != (uint8_t)mmu_idx);
 
     entry->tag = (uint64_t)base;
     entry->pbase = (uint64_t)(pa & ~(hwaddr)(size - 1u));
@@ -1453,6 +1500,11 @@ static void linx_mmu_cache_store(CPULinxState *env, vaddr va,
     entry->mmu_idx = (uint8_t)mmu_idx;
     if (linx_mmu_cache_stats_enabled) {
         env->mmu_cache_fills++;
+        linx_mmu_cache_count_fill(env, size);
+        if (collision) {
+            env->mmu_cache_collisions++;
+            linx_mmu_cache_count_collision(env, size);
+        }
     }
 }
 

@@ -499,6 +499,19 @@ typedef struct CPUArchState {
     uint64_t mmu_cache_fills;
     uint64_t mmu_cache_flushes;
     uint64_t mmu_cache_page_flushes;
+    uint64_t mmu_cache_collisions;
+    uint64_t mmu_cache_hit_4k;
+    uint64_t mmu_cache_hit_2m;
+    uint64_t mmu_cache_hit_1g;
+    uint64_t mmu_cache_hit_512g;
+    uint64_t mmu_cache_fill_4k;
+    uint64_t mmu_cache_fill_2m;
+    uint64_t mmu_cache_fill_1g;
+    uint64_t mmu_cache_fill_512g;
+    uint64_t mmu_cache_collision_4k;
+    uint64_t mmu_cache_collision_2m;
+    uint64_t mmu_cache_collision_1g;
+    uint64_t mmu_cache_collision_512g;
 
     /* Opt-in TLB invalidation counters for Linux/SPEC throughput triage. */
     uint64_t tlb_inv_iall;

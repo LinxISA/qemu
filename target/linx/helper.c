@@ -1647,6 +1647,19 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " mmuc_fill=%" PRIu64
             " mmuc_flush=%" PRIu64
             " mmuc_flush_page=%" PRIu64
+            " mmuc_col=%" PRIu64
+            " mmuc_hit4k=%" PRIu64
+            " mmuc_hit2m=%" PRIu64
+            " mmuc_hit1g=%" PRIu64
+            " mmuc_hit512g=%" PRIu64
+            " mmuc_fill4k=%" PRIu64
+            " mmuc_fill2m=%" PRIu64
+            " mmuc_fill1g=%" PRIu64
+            " mmuc_fill512g=%" PRIu64
+            " mmuc_col4k=%" PRIu64
+            " mmuc_col2m=%" PRIu64
+            " mmuc_col1g=%" PRIu64
+            " mmuc_col512g=%" PRIu64
             " tlbi_iall=%" PRIu64
             " tlbi_ia=%" PRIu64
             " tlbi_iv=%" PRIu64
@@ -1698,6 +1711,13 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->mmu_cache_hits, env->mmu_cache_misses,
             env->mmu_cache_fills, env->mmu_cache_flushes,
             env->mmu_cache_page_flushes,
+            env->mmu_cache_collisions,
+            env->mmu_cache_hit_4k, env->mmu_cache_hit_2m,
+            env->mmu_cache_hit_1g, env->mmu_cache_hit_512g,
+            env->mmu_cache_fill_4k, env->mmu_cache_fill_2m,
+            env->mmu_cache_fill_1g, env->mmu_cache_fill_512g,
+            env->mmu_cache_collision_4k, env->mmu_cache_collision_2m,
+            env->mmu_cache_collision_1g, env->mmu_cache_collision_512g,
             env->tlb_inv_iall, env->tlb_inv_ia,
             env->tlb_inv_iv, env->tlb_inv_iav,
             env->tlb_inv_last_count, env->tlb_inv_last_pc,
