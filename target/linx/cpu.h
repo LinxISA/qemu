@@ -560,6 +560,7 @@ typedef struct CPUArchState {
      * when LINX_QEMU_TLB_FILL_HOT is enabled.
      */
     uint8_t tlb_fill_hot_active;
+    uint8_t tlb_fill_hot_last_slot;
     uint8_t tlb_fill_hot_valid[LINX_TLB_FILL_HOT_SLOTS];
     uint8_t tlb_fill_hot_access[LINX_TLB_FILL_HOT_SLOTS];
     uint8_t tlb_fill_hot_mmu[LINX_TLB_FILL_HOT_SLOTS];

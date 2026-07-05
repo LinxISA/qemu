@@ -2592,7 +2592,10 @@ static inline bool linx_tlb_fill_hot_enabled_p(void)
 
 static inline bool linx_tlb_fill_stats_any_enabled_p(void)
 {
-    return linx_tlb_fill_stats_enabled_p() || linx_tlb_fill_hot_enabled_p();
+    const bool stats_enabled = linx_tlb_fill_stats_enabled_p();
+    const bool hot_enabled = linx_tlb_fill_hot_enabled_p();
+
+    return stats_enabled || hot_enabled;
 }
 
 static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
@@ -2600,17 +2603,25 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
                                      bool probe, hwaddr pa, int prot,
                                      uint8_t cause)
 {
-    if (!linx_tlb_fill_hot_enabled_p()) {
-        return;
-    }
-
     const uint64_t page = ((uint64_t)addr) & TARGET_PAGE_MASK;
     int found = -1;
     int empty = -1;
     int min_slot = 0;
+    int slot = -1;
     uint64_t min_count = UINT64_MAX;
+    const uint8_t last_slot = env->tlb_fill_hot_last_slot;
 
     env->tlb_fill_hot_active = 1;
+    if (last_slot < LINX_TLB_FILL_HOT_SLOTS &&
+        env->tlb_fill_hot_valid[last_slot] &&
+        env->tlb_fill_hot_page[last_slot] == page &&
+        env->tlb_fill_hot_access[last_slot] == (uint8_t)access_type &&
+        env->tlb_fill_hot_mmu[last_slot] == (uint8_t)mmu_idx &&
+        env->tlb_fill_hot_probe[last_slot] == (probe ? 1u : 0u)) {
+        found = (int)last_slot;
+        goto update_slot;
+    }
+
     for (unsigned i = 0; i < LINX_TLB_FILL_HOT_SLOTS; i++) {
         if (!env->tlb_fill_hot_valid[i]) {
             if (empty < 0) {
@@ -2631,7 +2642,7 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
         }
     }
 
-    int slot = found;
+    slot = found;
     if (slot < 0) {
         slot = empty >= 0 ? empty : min_slot;
         if (empty < 0) {
@@ -2645,6 +2656,8 @@ static void linx_tlb_fill_hot_record(CPULinxState *env, vaddr addr,
         env->tlb_fill_hot_probe[slot] = probe ? 1u : 0u;
     }
 
+update_slot:
+    env->tlb_fill_hot_last_slot = (uint8_t)slot;
     env->tlb_fill_hot_count[slot]++;
     env->tlb_fill_hot_acr[slot] = env->acr & 0xFu;
     env->tlb_fill_hot_prot[slot] = (uint32_t)prot;
@@ -2661,8 +2674,8 @@ static inline void linx_tlb_fill_stats_record(CPULinxState *env, vaddr addr,
                                               hwaddr pa, int prot,
                                               uint8_t cause)
 {
-    const bool stats_enabled = linx_tlb_fill_stats_enabled_p();
-    const bool hot_enabled = linx_tlb_fill_hot_enabled_p();
+    const bool stats_enabled = linx_tlb_fill_stats_enabled;
+    const bool hot_enabled = linx_tlb_fill_hot_enabled;
 
     if (!stats_enabled && !hot_enabled) {
         return;
