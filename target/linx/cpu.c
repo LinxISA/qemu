@@ -1825,9 +1825,11 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 " pending_cause=0x%" PRIx32
                 " envpc=0x%" PRIx64 " body_tpc=0x%" PRIx64
                 " in_body=%u brtype=%u tgt=0x%" PRIx64
-                " src_blocktype=%u src_tq0=0x%" PRIx64
-                " src_tq1=0x%" PRIx64 " src_uq0=0x%" PRIx64
-                " src_uq1=0x%" PRIx64
+                " src_blocktype=%u"
+                " src_tq0=0x%" PRIx64 " src_tq1=0x%" PRIx64
+                " src_tq2=0x%" PRIx64 " src_tq3=0x%" PRIx64
+                " src_uq0=0x%" PRIx64 " src_uq1=0x%" PRIx64
+                " src_uq2=0x%" PRIx64 " src_uq3=0x%" PRIx64
                 " src_lb=0x%" PRIx64 ":%" PRIx64 ":%" PRIx64
                 " src_lc=0x%" PRIx64 ":%" PRIx64 ":%" PRIx64
                 " dst_evbase=0x%" PRIx64
@@ -1843,8 +1845,11 @@ static void linx_deliver_sync_trap(CPUState *cs, CPULinxState *env,
                 tpc, tpc_next, src_bpc, report_bpc,
                 env->pending_trap_arg0, env->pending_trap_cause,
                 env->pc, env->body_tpc, env->in_body, env->brtype,
-                env->tgt, src_state->blocktype, src_state->tq[0],
-                src_state->tq[1], src_state->uq[0], src_state->uq[1],
+                env->tgt, src_state->blocktype,
+                src_state->tq[0], src_state->tq[1],
+                src_state->tq[2], src_state->tq[3],
+                src_state->uq[0], src_state->uq[1],
+                src_state->uq[2], src_state->uq[3],
                 src_state->lb[0], src_state->lb[1], src_state->lb[2],
                 src_state->lc[0], src_state->lc[1], src_state->lc[2],
                 evbase, src_cstate, env->gpr[LINX_REG_SP],
