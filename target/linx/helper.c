@@ -182,8 +182,10 @@ static uint64_t linx_debug_pc_watch_count_hi = UINT64_MAX;
 static uint64_t linx_debug_pc_watch_hit_lo;
 static uint64_t linx_debug_pc_watch_hit_hi = UINT64_MAX;
 static uint64_t linx_debug_pc_watch_hit_limit;
-static bool linx_debug_pc_watch_match_gpr_enabled;
-static unsigned linx_debug_pc_watch_match_gpr;
+static bool linx_debug_pc_watch_match_source_enabled;
+static unsigned linx_debug_pc_watch_match_kind;
+static unsigned linx_debug_pc_watch_match_index;
+static const char *linx_debug_pc_watch_match_name;
 static uint64_t linx_debug_pc_watch_match_value;
 static uint64_t linx_debug_pc_watch_match_mask = UINT64_MAX;
 static unsigned linx_debug_pc_watch_dump_words;
@@ -4301,8 +4303,29 @@ static void linx_debug_pc_watch_init(void)
         if (linx_parse_gpr_name(v, &gpr) &&
             value_s && value_s[0] &&
             linx_parse_u64(value_s, &value)) {
-            linx_debug_pc_watch_match_gpr_enabled = true;
-            linx_debug_pc_watch_match_gpr = gpr;
+            linx_debug_pc_watch_match_source_enabled = true;
+            linx_debug_pc_watch_match_kind = LINX_DEBUG_PC_WATCH_DUMP_GPR;
+            linx_debug_pc_watch_match_index = gpr;
+            linx_debug_pc_watch_match_name = linx_gpr_names[gpr];
+            linx_debug_pc_watch_match_value = value;
+        }
+    }
+
+    v = getenv("LINX_DEBUG_PC_WATCH_MATCH_REG");
+    if (v && v[0] && strcmp(v, "0") != 0) {
+        unsigned kind;
+        unsigned index;
+        const char *name;
+        const char *value_s = getenv("LINX_DEBUG_PC_WATCH_MATCH_VALUE");
+        uint64_t value;
+
+        if (linx_debug_pc_watch_parse_source_copy(v, &kind, &index, &name) &&
+            value_s && value_s[0] &&
+            linx_parse_u64(value_s, &value)) {
+            linx_debug_pc_watch_match_source_enabled = true;
+            linx_debug_pc_watch_match_kind = kind;
+            linx_debug_pc_watch_match_index = index;
+            linx_debug_pc_watch_match_name = name;
             linx_debug_pc_watch_match_value = value;
         }
     }
@@ -4633,8 +4656,10 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
             hit > linx_debug_pc_watch_hit_hi) {
             continue;
         }
-        if (linx_debug_pc_watch_match_gpr_enabled) {
-            const uint64_t actual = env->gpr[linx_debug_pc_watch_match_gpr];
+        if (linx_debug_pc_watch_match_source_enabled) {
+            const uint64_t actual = linx_debug_pc_watch_dump_addr_for(
+                env, linx_debug_pc_watch_match_kind,
+                linx_debug_pc_watch_match_index);
             if ((actual & linx_debug_pc_watch_match_mask) !=
                 (linx_debug_pc_watch_match_value &
                  linx_debug_pc_watch_match_mask)) {
@@ -4660,7 +4685,7 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 " bpc=0x%" PRIx64 " tq0=0x%" PRIx64 " tq1=0x%" PRIx64
                 " uq0=0x%" PRIx64 " uq1=0x%" PRIx64
                 " in_body=%u blocktype=%u body_tpc=0x%" PRIx64
-                " return_pc=0x%" PRIx64 " call_ra_set=%u call_setret_pending=%u\n",
+                " return_pc=0x%" PRIx64 " call_ra_set=%u call_setret_pending=%u",
                 pc, linx_debug_pc_watch_hits[i],
                 linx_debug_pc_watch_printed[i], env->insn_count,
                 env->gpr[LINX_REG_SP],
@@ -4670,6 +4695,18 @@ static void linx_debug_pc_watch_probe(CPULinxState *env, uint64_t pc)
                 env->tq[0], env->tq[1], env->uq[0], env->uq[1],
                 env->in_body, env->blocktype, env->body_tpc,
                 env->return_pc, env->call_ra_set, env->call_setret_pending);
+        if (linx_debug_pc_watch_match_source_enabled) {
+            const char *name = linx_debug_pc_watch_match_name ?
+                linx_debug_pc_watch_match_name : "unknown";
+            fprintf(stderr,
+                    " match_src=%s match_kind=%u match_index=%u"
+                    " match_value=0x%" PRIx64 " match_mask=0x%" PRIx64,
+                    name, linx_debug_pc_watch_match_kind,
+                    linx_debug_pc_watch_match_index,
+                    linx_debug_pc_watch_match_value,
+                    linx_debug_pc_watch_match_mask);
+        }
+        fputc('\n', stderr);
         if (linx_debug_pc_watch_regs_enabled) {
             fprintf(stderr,
                     "LINX_PC_WATCH_REGS pc=0x%" PRIx64
