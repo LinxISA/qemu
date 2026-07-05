@@ -217,6 +217,8 @@ static bool linx_frame_shape_hot_inited;
 static bool linx_frame_shape_hot_enabled;
 static bool linx_frame_single_reg_fast_inited;
 static bool linx_frame_single_reg_fast_enabled;
+static bool linx_frame_page_fast_inited;
+static bool linx_frame_page_fast_enabled;
 static uint64_t linx_frame_restore_host_verify_emit_limit;
 static uint64_t linx_frame_restore_host_verify_emitted;
 static uint64_t linx_frame_stat_fentry_calls;
@@ -236,6 +238,8 @@ static uint64_t linx_frame_stat_ret_fast_hits;
 static uint64_t linx_frame_stat_ret_checks;
 static uint64_t linx_frame_stat_single_fast_fentry;
 static uint64_t linx_frame_stat_single_fast_fret_stk;
+static uint64_t linx_frame_stat_page_fast_fentry;
+static uint64_t linx_frame_stat_page_fast_restore;
 static bool linx_tlb_trace_inited;
 static bool linx_tlb_trace_enabled;
 static bool linx_tlb_trace_pc_filter_enabled;
@@ -1065,6 +1069,17 @@ static inline bool linx_frame_single_reg_fast_enabled_p(void)
     return linx_frame_single_reg_fast_enabled;
 }
 
+static inline bool linx_frame_page_fast_enabled_p(void)
+{
+    if (!linx_frame_page_fast_inited) {
+        linx_frame_page_fast_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_PAGE_FAST") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_PAGE_FAST");
+        linx_frame_page_fast_inited = true;
+    }
+    return linx_frame_page_fast_enabled;
+}
+
 static inline bool linx_frame_single_reg_fast_shape(uint32_t reg_begin,
                                                     uint32_t reg_end,
                                                     uint64_t stacksize)
@@ -1073,6 +1088,28 @@ static inline bool linx_frame_single_reg_fast_shape(uint32_t reg_begin,
            reg_begin != LINX_REG_ZERO &&
            reg_begin < LINX_GPR_COUNT &&
            stacksize >= 8;
+}
+
+static inline bool linx_frame_dense_reg_range(int begin, int end, int count)
+{
+    return begin >= 2 && begin < LINX_GPR_COUNT &&
+           end >= 2 && end < LINX_GPR_COUNT &&
+           count > 1 && count <= (LINX_GPR_COUNT - 2);
+}
+
+static inline bool linx_frame_page_fast_shape(int begin, int end,
+                                              uint64_t stacksize, int count)
+{
+    return linx_frame_page_fast_enabled_p() &&
+           linx_frame_dense_reg_range(begin, end, count) &&
+           stacksize >= ((uint64_t)count * 8ull);
+}
+
+static inline bool linx_frame_range_one_page(uint64_t low, uint64_t bytes)
+{
+    return bytes > 0 &&
+           bytes <= TARGET_PAGE_SIZE &&
+           ((low ^ (low + bytes - 1)) & TARGET_PAGE_MASK) == 0;
 }
 
 static void linx_frame_shape_hot_record_slow(CPULinxState *env,
@@ -1163,7 +1200,9 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             " fr_ret_fast=%" PRIu64
             " fr_ret_check=%" PRIu64
             " fr_single_fast_fentry=%" PRIu64
-            " fr_single_fast_fret_stk=%" PRIu64,
+            " fr_single_fast_fret_stk=%" PRIu64
+            " fr_page_fast_fentry=%" PRIu64
+            " fr_page_fast_restore=%" PRIu64,
             linx_frame_stat_fentry_calls,
             linx_frame_stat_fentry_save_probes,
             linx_frame_stat_fentry_save_slots,
@@ -1180,7 +1219,9 @@ static inline void linx_frame_stats_emit_heartbeat(void)
             linx_frame_stat_ret_fast_hits,
             linx_frame_stat_ret_checks,
             linx_frame_stat_single_fast_fentry,
-            linx_frame_stat_single_fast_fret_stk);
+            linx_frame_stat_single_fast_fret_stk,
+            linx_frame_stat_page_fast_fentry,
+            linx_frame_stat_page_fast_restore);
 }
 
 static void linx_heartbeat_emit_frame_shape_hot(CPULinxState *env)
@@ -9009,6 +9050,69 @@ static inline uint64_t linx_frame_loadq_cached_or_fallback(CPULinxState *env,
     return cpu_ldq_le_mmuidx_ra(env, (abi_ptr)addr, mmu_idx, GETPC());
 }
 
+static bool linx_frame_restore_prepare_page_fast(CPULinxState *env,
+                                                 uint64_t stacksize,
+                                                 uint64_t new_sp,
+                                                 uint64_t restore_base,
+                                                 int begin, int end,
+                                                 uint32_t regs[LINX_GPR_COUNT],
+                                                 uint64_t addrs[LINX_GPR_COUNT],
+                                                 uint64_t values[LINX_GPR_COUNT],
+                                                 int *host_loads,
+                                                 int *fallback_loads,
+                                                 int *count_out)
+{
+    const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
+    int reg = begin;
+    uint32_t step = 1;
+    int n = 0;
+
+    if (!linx_frame_page_fast_shape(begin, end, stacksize, count) ||
+        linx_frame_restore_host_verify_enabled_p()) {
+        return false;
+    }
+
+    const uint64_t bytes = (uint64_t)count * 8ull;
+    const uint64_t low_addr = new_sp - restore_base - bytes;
+    if (!linx_frame_range_one_page(low_addr, bytes)) {
+        return false;
+    }
+
+    const int mmu_idx = linx_env_mmu_index(env);
+    uint8_t *host = probe_read(env, (vaddr)low_addr, (int)bytes, mmu_idx,
+                               GETPC());
+    if (host == NULL) {
+        return false;
+    }
+
+    while (1) {
+        const uint64_t addr = new_sp - restore_base - ((uint64_t)step * 8ull);
+        const uint64_t off = addr - low_addr;
+
+        regs[n] = (uint32_t)reg;
+        addrs[n] = addr;
+        values[n] = ldq_le_p(host + off);
+        n++;
+        if (reg == end) {
+            break;
+        }
+        reg = linx_next_fentry_reg(reg);
+        step++;
+    }
+
+    if (host_loads) {
+        *host_loads = n;
+    }
+    if (fallback_loads) {
+        *fallback_loads = 0;
+    }
+    if (count_out) {
+        *count_out = n;
+    }
+    linx_frame_stat_page_fast_restore++;
+    return true;
+}
+
 static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
                                       uint64_t new_sp, uint64_t restore_base,
                                       int begin, int end,
@@ -9034,6 +9138,13 @@ static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
 
     if (count <= 0) {
         return 0;
+    }
+
+    if (linx_frame_restore_prepare_page_fast(env, stacksize, new_sp,
+                                             restore_base, begin, end,
+                                             regs, addrs, values,
+                                             host_loads, fallback_loads, &n)) {
+        return n;
     }
 
     while (1) {
@@ -9133,6 +9244,86 @@ static bool linx_template_fentry_single_reg_fast(CPULinxState *env,
                             env->cond, env->carg, env->tgt, addr, v);
     }
 
+    linx_template_clear(env);
+    env->pc = next_pc;
+    linx_template_commit_or_chain(env, cs, env->pc, chain);
+    return true;
+}
+
+static bool linx_template_fentry_page_fast(CPULinxState *env,
+                                           CPUState *cs,
+                                           uint64_t cur_pc,
+                                           uint64_t next_pc,
+                                           uint32_t reg_begin,
+                                           uint32_t reg_end,
+                                           uint64_t stacksize,
+                                           uint64_t old_sp,
+                                           uint64_t new_sp,
+                                           int mmu_idx,
+                                           int count,
+                                           bool frame_stats,
+                                           bool chain)
+{
+    const int begin = (int)reg_begin;
+    const int end = (int)reg_end;
+    int reg = begin;
+    uint32_t step = 1;
+
+    if (!linx_frame_page_fast_shape(begin, end, stacksize, count)) {
+        return false;
+    }
+
+    const uint64_t bytes = (uint64_t)count * 8ull;
+    const uint64_t low_addr = new_sp + stacksize - bytes;
+    if (!linx_frame_range_one_page(low_addr, bytes)) {
+        return false;
+    }
+
+    uint8_t *host = probe_write(env, (vaddr)low_addr, (int)bytes, mmu_idx,
+                                GETPC());
+    if (host == NULL) {
+        return false;
+    }
+
+    if (frame_stats) {
+        linx_frame_stat_fentry_save_probes++;
+    }
+    linx_frame_shape_hot_record(env, LINX_TEMPLATE_FENTRY, reg_begin, reg_end,
+                                stacksize, count);
+
+    env->gpr[LINX_REG_SP] = new_sp;
+    linx_trace_wb(env, LINX_REG_SP, env->gpr[LINX_REG_SP]);
+    trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                        env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                        env->cond, env->carg, env->tgt, old_sp,
+                        env->gpr[LINX_REG_SP]);
+
+    while (1) {
+        const uint64_t addr = new_sp + stacksize - ((uint64_t)step * 8ull);
+        const uint64_t off = addr - low_addr;
+        const uint64_t v = env->gpr[reg];
+
+        linx_trace_mem(env, true, addr, v, 0, 8);
+        stq_le_p(host + off, v);
+        if (frame_stats) {
+            linx_frame_stat_fentry_save_slots++;
+            linx_frame_stat_fentry_host_stores++;
+        }
+        if (reg == LINX_REG_RA) {
+            trace_linx_ra_trace(cur_pc, 2, env->gpr[LINX_REG_SP],
+                                env->gpr[LINX_REG_RA], env->brtype & 0x7u,
+                                env->cond, env->carg, env->tgt, addr, v);
+        }
+        if (reg == end) {
+            break;
+        }
+        reg = linx_next_fentry_reg(reg);
+        step++;
+    }
+
+    if (frame_stats) {
+        linx_frame_stat_page_fast_fentry++;
+    }
     linx_template_clear(env);
     env->pc = next_pc;
     linx_template_commit_or_chain(env, cs, env->pc, chain);
@@ -9278,6 +9469,12 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
                                              reg_begin, stacksize, old_sp,
                                              new_sp, mmu_idx, frame_stats,
                                              chain)) {
+        return;
+    }
+    if (!fentry_trace_enabled &&
+        linx_template_fentry_page_fast(env, cs, cur_pc, next_pc, reg_begin,
+                                       reg_end, stacksize, old_sp, new_sp,
+                                       mmu_idx, count, frame_stats, chain)) {
         return;
     }
 
