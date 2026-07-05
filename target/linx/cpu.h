@@ -492,8 +492,9 @@ typedef struct CPUArchState {
     uint8_t bstart_cache_mmu_idx[LINX_BSTART_CACHE_SIZE];
     uint8_t bstart_cache_valid[LINX_BSTART_CACHE_SIZE];
 
-    /* Direct-mapped page-walk result cache for QEMU TLB miss handling. */
+    /* Page-walk result cache for QEMU TLB miss handling. */
     LinxMmuCacheEntry mmu_cache[LINX_MMU_CACHE_SIZE];
+    uint8_t mmu_cache_next_way[LINX_MMU_CACHE_SIZE / 2u];
     uint64_t mmu_cache_hits;
     uint64_t mmu_cache_misses;
     uint64_t mmu_cache_fills;

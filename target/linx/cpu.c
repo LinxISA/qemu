@@ -79,6 +79,7 @@ static bool linx_tlb_fill_hot_enabled;
 static bool linx_mmu_cache_config_inited;
 static bool linx_mmu_cache_enabled;
 static bool linx_mmu_cache_stats_enabled;
+static bool linx_mmu_cache_assoc2_enabled;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static uint64_t linx_tp_trace_limit;
@@ -1340,6 +1341,12 @@ static bool linx_mmu_cache_enabled_p(void)
             value && value[0] && strcmp(value, "0") &&
             strcmp(value, "false") && strcmp(value, "no") &&
             strcmp(value, "off");
+        value = linx_cpu_env_value2("LINX_MMU_CACHE_ASSOC2",
+                                    "LINX_QEMU_MMU_CACHE_ASSOC2");
+        linx_mmu_cache_assoc2_enabled =
+            value && value[0] && strcmp(value, "0") &&
+            strcmp(value, "false") && strcmp(value, "no") &&
+            strcmp(value, "off");
         linx_mmu_cache_config_inited = true;
     }
     return linx_mmu_cache_enabled;
@@ -1370,6 +1377,26 @@ static inline size_t linx_mmu_cache_slot(vaddr base, int mmu_idx,
     key ^= key >> 11;
     key ^= key >> 23;
     return (size_t)(key & (LINX_MMU_CACHE_SIZE - 1u));
+}
+
+static inline size_t linx_mmu_cache_set_base(size_t slot)
+{
+    return linx_mmu_cache_assoc2_enabled ? (slot & ~(size_t)1u) : slot;
+}
+
+static inline size_t linx_mmu_cache_way_count(void)
+{
+    return linx_mmu_cache_assoc2_enabled ? 2u : 1u;
+}
+
+static inline bool linx_mmu_cache_entry_matches(const LinxMmuCacheEntry *entry,
+                                                vaddr base, int mmu_idx,
+                                                hwaddr size)
+{
+    return entry->valid &&
+           entry->tag == (uint64_t)base &&
+           entry->tlb_size == (uint64_t)size &&
+           entry->mmu_idx == (uint8_t)mmu_idx;
 }
 
 static inline bool linx_mmu_cache_access_ok(int prot,
@@ -1447,24 +1474,26 @@ static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
     for (size_t i = 0; i < ARRAY_SIZE(candidate_sizes); i++) {
         const hwaddr size = candidate_sizes[i];
         const vaddr base = linx_mmu_cache_base(va, size);
-        const LinxMmuCacheEntry *entry =
-            &env->mmu_cache[linx_mmu_cache_slot(base, mmu_idx, size)];
+        const size_t set_base = linx_mmu_cache_set_base(
+            linx_mmu_cache_slot(base, mmu_idx, size));
+        const size_t ways = linx_mmu_cache_way_count();
 
-        if (entry->valid &&
-            entry->tag == (uint64_t)base &&
-            entry->tlb_size == (uint64_t)size &&
-            entry->mmu_idx == (uint8_t)mmu_idx &&
-            linx_mmu_cache_access_ok((int)entry->prot, access_type)) {
-            *pa_out = (hwaddr)entry->pbase | (hwaddr)(va & (size - 1u));
-            *prot_out = (int)entry->prot;
-            *tlb_size_out = size;
-            *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE,
-                                             linx_fault_acc(access_type));
-            if (linx_mmu_cache_stats_enabled) {
-                env->mmu_cache_hits++;
-                linx_mmu_cache_count_hit(env, size);
+        for (size_t way = 0; way < ways; way++) {
+            const LinxMmuCacheEntry *entry = &env->mmu_cache[set_base + way];
+
+            if (linx_mmu_cache_entry_matches(entry, base, mmu_idx, size) &&
+                linx_mmu_cache_access_ok((int)entry->prot, access_type)) {
+                *pa_out = (hwaddr)entry->pbase | (hwaddr)(va & (size - 1u));
+                *prot_out = (int)entry->prot;
+                *tlb_size_out = size;
+                *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE,
+                                                 linx_fault_acc(access_type));
+                if (linx_mmu_cache_stats_enabled) {
+                    env->mmu_cache_hits++;
+                    linx_mmu_cache_count_hit(env, size);
+                }
+                return true;
             }
-            return true;
         }
     }
 
@@ -1484,8 +1513,34 @@ static void linx_mmu_cache_store(CPULinxState *env, vaddr va,
 
     const hwaddr size = linx_mmu_cache_size_or_page(tlb_size);
     const vaddr base = linx_mmu_cache_base(va, size);
-    LinxMmuCacheEntry *entry =
-        &env->mmu_cache[linx_mmu_cache_slot(base, mmu_idx, size)];
+    const size_t set_base = linx_mmu_cache_set_base(
+        linx_mmu_cache_slot(base, mmu_idx, size));
+    const size_t ways = linx_mmu_cache_way_count();
+    LinxMmuCacheEntry *entry = NULL;
+
+    for (size_t way = 0; way < ways; way++) {
+        LinxMmuCacheEntry *candidate = &env->mmu_cache[set_base + way];
+
+        if (linx_mmu_cache_entry_matches(candidate, base, mmu_idx, size)) {
+            entry = candidate;
+            break;
+        }
+        if (!candidate->valid && entry == NULL) {
+            entry = candidate;
+        }
+    }
+
+    if (entry == NULL) {
+        if (linx_mmu_cache_assoc2_enabled) {
+            const size_t set_index = set_base >> 1;
+            const size_t victim_way = env->mmu_cache_next_way[set_index] & 1u;
+            entry = &env->mmu_cache[set_base + victim_way];
+            env->mmu_cache_next_way[set_index] = (uint8_t)(victim_way ^ 1u);
+        } else {
+            entry = &env->mmu_cache[set_base];
+        }
+    }
+
     const bool collision =
         entry->valid &&
         (entry->tag != (uint64_t)base ||
@@ -1515,6 +1570,7 @@ void linx_mmu_cache_flush(CPULinxState *env)
     }
 
     memset(env->mmu_cache, 0, sizeof(env->mmu_cache));
+    memset(env->mmu_cache_next_way, 0, sizeof(env->mmu_cache_next_way));
     if (linx_mmu_cache_stats_enabled) {
         env->mmu_cache_flushes++;
     }
@@ -1537,13 +1593,18 @@ void linx_mmu_cache_flush_page(CPULinxState *env, uint64_t addr)
         for (size_t i = 0; i < ARRAY_SIZE(candidate_sizes); i++) {
             const hwaddr size = candidate_sizes[i];
             const vaddr base = linx_mmu_cache_base((vaddr)addr, size);
-            LinxMmuCacheEntry *entry =
-                &env->mmu_cache[linx_mmu_cache_slot(base, mmu_idx, size)];
+            const size_t set_base = linx_mmu_cache_set_base(
+                linx_mmu_cache_slot(base, mmu_idx, size));
+            const size_t ways = linx_mmu_cache_way_count();
 
-            if (entry->valid &&
-                entry->tag == (uint64_t)base &&
-                entry->tlb_size == (uint64_t)size) {
-                entry->valid = 0;
+            for (size_t way = 0; way < ways; way++) {
+                LinxMmuCacheEntry *entry = &env->mmu_cache[set_base + way];
+
+                if (entry->valid &&
+                    entry->tag == (uint64_t)base &&
+                    entry->tlb_size == (uint64_t)size) {
+                    entry->valid = 0;
+                }
             }
         }
     }
