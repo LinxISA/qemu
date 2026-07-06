@@ -80,6 +80,7 @@ static bool linx_mmu_cache_config_inited;
 static bool linx_mmu_cache_enabled;
 static bool linx_mmu_cache_stats_enabled;
 static bool linx_mmu_cache_assoc2_enabled;
+static bool linx_mmu_cache_victim_enabled;
 static bool linx_tp_trace_inited;
 static bool linx_tp_trace_enabled;
 static uint64_t linx_tp_trace_limit;
@@ -1347,9 +1348,22 @@ static bool linx_mmu_cache_enabled_p(void)
             value && value[0] && strcmp(value, "0") &&
             strcmp(value, "false") && strcmp(value, "no") &&
             strcmp(value, "off");
+        value = linx_cpu_env_value2("LINX_MMU_CACHE_VICTIM",
+                                    "LINX_QEMU_MMU_CACHE_VICTIM");
+        linx_mmu_cache_victim_enabled =
+            value && value[0] && strcmp(value, "0") &&
+            strcmp(value, "false") && strcmp(value, "no") &&
+            strcmp(value, "off");
         linx_mmu_cache_config_inited = true;
     }
     return linx_mmu_cache_enabled;
+}
+
+static inline bool linx_mmu_cache_victim_enabled_p(void)
+{
+    return linx_mmu_cache_enabled_p() &&
+           linx_mmu_cache_victim_enabled &&
+           !linx_mmu_cache_assoc2_enabled;
 }
 
 static inline bool linx_mmu_cache_size_valid(hwaddr size)
@@ -1479,7 +1493,7 @@ static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
         const size_t ways = linx_mmu_cache_way_count();
 
         for (size_t way = 0; way < ways; way++) {
-            const LinxMmuCacheEntry *entry = &env->mmu_cache[set_base + way];
+            LinxMmuCacheEntry *entry = &env->mmu_cache[set_base + way];
 
             if (linx_mmu_cache_entry_matches(entry, base, mmu_idx, size) &&
                 linx_mmu_cache_access_ok((int)entry->prot, access_type)) {
@@ -1494,6 +1508,29 @@ static bool linx_mmu_cache_lookup(CPULinxState *env, vaddr va,
                 }
                 return true;
             }
+        }
+
+        if (linx_mmu_cache_victim_enabled_p() &&
+            linx_mmu_cache_entry_matches(&env->mmu_cache_victim, base,
+                                         mmu_idx, size) &&
+            linx_mmu_cache_access_ok((int)env->mmu_cache_victim.prot,
+                                     access_type)) {
+            LinxMmuCacheEntry *primary = &env->mmu_cache[set_base];
+            LinxMmuCacheEntry tmp = *primary;
+
+            *primary = env->mmu_cache_victim;
+            env->mmu_cache_victim = tmp;
+            *pa_out = (hwaddr)primary->pbase | (hwaddr)(va & (size - 1u));
+            *prot_out = (int)primary->prot;
+            *tlb_size_out = size;
+            *cause_out = linx_trapcause_make(LINX_TRAPCAUSE_CAT_NONE,
+                                             linx_fault_acc(access_type));
+            if (linx_mmu_cache_stats_enabled) {
+                env->mmu_cache_hits++;
+                env->mmu_cache_victim_hits++;
+                linx_mmu_cache_count_hit(env, size);
+            }
+            return true;
         }
     }
 
@@ -1547,6 +1584,13 @@ static void linx_mmu_cache_store(CPULinxState *env, vaddr va,
          entry->tlb_size != (uint64_t)size ||
          entry->mmu_idx != (uint8_t)mmu_idx);
 
+    if (collision && linx_mmu_cache_victim_enabled_p()) {
+        env->mmu_cache_victim = *entry;
+        if (linx_mmu_cache_stats_enabled) {
+            env->mmu_cache_victim_fills++;
+        }
+    }
+
     entry->tag = (uint64_t)base;
     entry->pbase = (uint64_t)(pa & ~(hwaddr)(size - 1u));
     entry->tlb_size = (uint64_t)size;
@@ -1571,6 +1615,7 @@ void linx_mmu_cache_flush(CPULinxState *env)
 
     memset(env->mmu_cache, 0, sizeof(env->mmu_cache));
     memset(env->mmu_cache_next_way, 0, sizeof(env->mmu_cache_next_way));
+    memset(&env->mmu_cache_victim, 0, sizeof(env->mmu_cache_victim));
     if (linx_mmu_cache_stats_enabled) {
         env->mmu_cache_flushes++;
     }
@@ -1605,6 +1650,11 @@ void linx_mmu_cache_flush_page(CPULinxState *env, uint64_t addr)
                     entry->tlb_size == (uint64_t)size) {
                     entry->valid = 0;
                 }
+            }
+            if (env->mmu_cache_victim.valid &&
+                env->mmu_cache_victim.tag == (uint64_t)base &&
+                env->mmu_cache_victim.tlb_size == (uint64_t)size) {
+                env->mmu_cache_victim.valid = 0;
             }
         }
     }

@@ -495,12 +495,15 @@ typedef struct CPUArchState {
     /* Page-walk result cache for QEMU TLB miss handling. */
     LinxMmuCacheEntry mmu_cache[LINX_MMU_CACHE_SIZE];
     uint8_t mmu_cache_next_way[LINX_MMU_CACHE_SIZE / 2u];
+    LinxMmuCacheEntry mmu_cache_victim;
     uint64_t mmu_cache_hits;
     uint64_t mmu_cache_misses;
     uint64_t mmu_cache_fills;
     uint64_t mmu_cache_flushes;
     uint64_t mmu_cache_page_flushes;
     uint64_t mmu_cache_collisions;
+    uint64_t mmu_cache_victim_hits;
+    uint64_t mmu_cache_victim_fills;
     uint64_t mmu_cache_hit_4k;
     uint64_t mmu_cache_hit_2m;
     uint64_t mmu_cache_hit_1g;

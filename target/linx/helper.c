@@ -1685,6 +1685,8 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             " mmuc_flush=%" PRIu64
             " mmuc_flush_page=%" PRIu64
             " mmuc_col=%" PRIu64
+            " mmuc_vhit=%" PRIu64
+            " mmuc_vfill=%" PRIu64
             " mmuc_hit4k=%" PRIu64
             " mmuc_hit2m=%" PRIu64
             " mmuc_hit1g=%" PRIu64
@@ -1749,6 +1751,8 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
             env->mmu_cache_fills, env->mmu_cache_flushes,
             env->mmu_cache_page_flushes,
             env->mmu_cache_collisions,
+            env->mmu_cache_victim_hits,
+            env->mmu_cache_victim_fills,
             env->mmu_cache_hit_4k, env->mmu_cache_hit_2m,
             env->mmu_cache_hit_1g, env->mmu_cache_hit_512g,
             env->mmu_cache_fill_4k, env->mmu_cache_fill_2m,
