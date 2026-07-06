@@ -1386,6 +1386,43 @@ static inline void linx_tcg_tb_stats_emit_heartbeat(void)
             stats.code_used, stats.code_size);
 }
 
+static void linx_tcg_tb_hot_emit_entry(const char *prefix,
+                                       const LinxTcgTBHotEntry *entry)
+{
+    fprintf(stderr,
+            " %s_pc=0x%" PRIx64
+            " %s_lookup=%" PRIu64
+            " %s_delta=%" PRIu64
+            " %s_jmp=%" PRIu64
+            " %s_hash=%" PRIu64
+            " %s_miss=%" PRIu64,
+            prefix, entry->pc,
+            prefix, entry->lookup,
+            prefix, entry->delta,
+            prefix, entry->jmp_hit,
+            prefix, entry->hash_hit,
+            prefix, entry->miss);
+}
+
+static inline void linx_tcg_tb_hot_emit_heartbeat(CPULinxState *env)
+{
+    LinxTcgTBHotStats stats;
+
+    linx_tcg_tb_hot_snapshot(&stats);
+    if (!stats.seen) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_TB_HOT count=%" PRIu64
+            " evictions=%" PRIu64
+            " slots=%" PRIu64,
+            env->insn_count, stats.evictions, stats.slots);
+    linx_tcg_tb_hot_emit_entry("top0", &stats.top0);
+    linx_tcg_tb_hot_emit_entry("top1", &stats.top1);
+    fputc('\n', stderr);
+}
+
 static uint64_t linx_heartbeat_next_count(uint64_t bucket)
 {
     if (linx_heartbeat_interval == 0 ||
@@ -1751,6 +1788,7 @@ void HELPER(linx_heartbeat)(CPULinxState *env, uint64_t pc)
     linx_heartbeat_emit_tlb_fill_hot(env);
     linx_heartbeat_emit_tlb_inv_hot(env);
     linx_heartbeat_emit_frame_shape_hot(env);
+    linx_tcg_tb_hot_emit_heartbeat(env);
     if (linx_heartbeat_regs_enabled) {
         fprintf(stderr,
                 "LINX_HEARTBEAT_REGS count=%" PRIu64

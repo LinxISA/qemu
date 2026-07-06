@@ -82,7 +82,27 @@ typedef struct LinxTcgTBStats {
     uint64_t code_size;
 } LinxTcgTBStats;
 
+#define LINX_TCG_TB_HOT_SLOTS 256u
+
+typedef struct LinxTcgTBHotEntry {
+    uint64_t pc;
+    uint64_t lookup;
+    uint64_t delta;
+    uint64_t jmp_hit;
+    uint64_t hash_hit;
+    uint64_t miss;
+} LinxTcgTBHotEntry;
+
+typedef struct LinxTcgTBHotStats {
+    bool seen;
+    uint64_t evictions;
+    uint64_t slots;
+    LinxTcgTBHotEntry top0;
+    LinxTcgTBHotEntry top1;
+} LinxTcgTBHotStats;
+
 void linx_tcg_tb_stats_snapshot(LinxTcgTBStats *stats);
+void linx_tcg_tb_hot_snapshot(LinxTcgTBHotStats *stats);
 
 /* current cflags for hashing/comparison */
 uint32_t curr_cflags(CPUState *cpu);

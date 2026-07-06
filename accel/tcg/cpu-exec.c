@@ -63,6 +63,22 @@ static uint64_t linx_tcg_tb_stat_jmp_hit;
 static uint64_t linx_tcg_tb_stat_hash_hit;
 static uint64_t linx_tcg_tb_stat_miss;
 static uint64_t linx_tcg_tb_stat_gen;
+static bool linx_tcg_tb_hot_inited;
+static bool linx_tcg_tb_hot_enabled;
+static bool linx_tcg_tb_hot_valid[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_pc[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_lookup[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_emit_lookup[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_jmp_hit[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_hash_hit[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_miss[LINX_TCG_TB_HOT_SLOTS];
+static uint64_t linx_tcg_tb_hot_evictions;
+
+typedef enum LinxTcgTBHotKind {
+    LINX_TCG_TB_HOT_JMP_HIT,
+    LINX_TCG_TB_HOT_HASH_HIT,
+    LINX_TCG_TB_HOT_MISS,
+} LinxTcgTBHotKind;
 
 static bool linx_tcg_tb_stats_enabled_p(void)
 {
@@ -105,6 +121,118 @@ void linx_tcg_tb_stats_snapshot(LinxTcgTBStats *stats)
         uintptr_t ptr = (uintptr_t)qatomic_read(&tcg_ctx->code_gen_ptr);
         if (ptr >= base) {
             stats->code_used = ptr - base;
+        }
+    }
+}
+
+static bool linx_tcg_tb_hot_enabled_p(void)
+{
+    if (!linx_tcg_tb_hot_inited) {
+        const char *v = getenv("LINX_QEMU_TB_HOT");
+        if (!v || !v[0] || strcmp(v, "0") == 0) {
+            v = getenv("LINX_TB_HOT");
+        }
+        linx_tcg_tb_hot_enabled = v && v[0] && strcmp(v, "0") != 0;
+        linx_tcg_tb_hot_inited = true;
+    }
+    return linx_tcg_tb_hot_enabled;
+}
+
+static inline void linx_tcg_tb_hot_reset_slot(size_t slot, uint64_t pc)
+{
+    if (linx_tcg_tb_hot_valid[slot]) {
+        qatomic_inc(&linx_tcg_tb_hot_evictions);
+    }
+    linx_tcg_tb_hot_valid[slot] = true;
+    qatomic_set(&linx_tcg_tb_hot_pc[slot], pc);
+    qatomic_set(&linx_tcg_tb_hot_lookup[slot], 0);
+    qatomic_set(&linx_tcg_tb_hot_emit_lookup[slot], 0);
+    qatomic_set(&linx_tcg_tb_hot_jmp_hit[slot], 0);
+    qatomic_set(&linx_tcg_tb_hot_hash_hit[slot], 0);
+    qatomic_set(&linx_tcg_tb_hot_miss[slot], 0);
+}
+
+static inline void linx_tcg_tb_hot_record(uint64_t pc, LinxTcgTBHotKind kind)
+{
+    if (likely(!linx_tcg_tb_hot_enabled_p())) {
+        return;
+    }
+
+    const size_t slot = (pc >> 1) & (LINX_TCG_TB_HOT_SLOTS - 1u);
+
+    if (!linx_tcg_tb_hot_valid[slot] ||
+        qatomic_read(&linx_tcg_tb_hot_pc[slot]) != pc) {
+        linx_tcg_tb_hot_reset_slot(slot, pc);
+    }
+
+    qatomic_inc(&linx_tcg_tb_hot_lookup[slot]);
+    switch (kind) {
+    case LINX_TCG_TB_HOT_JMP_HIT:
+        qatomic_inc(&linx_tcg_tb_hot_jmp_hit[slot]);
+        break;
+    case LINX_TCG_TB_HOT_HASH_HIT:
+        qatomic_inc(&linx_tcg_tb_hot_hash_hit[slot]);
+        break;
+    case LINX_TCG_TB_HOT_MISS:
+        qatomic_inc(&linx_tcg_tb_hot_miss[slot]);
+        break;
+    }
+}
+
+static inline bool linx_tcg_tb_hot_entry_better(
+    const LinxTcgTBHotEntry *candidate,
+    const LinxTcgTBHotEntry *current)
+{
+    if (candidate->delta != current->delta) {
+        return candidate->delta > current->delta;
+    }
+    return candidate->lookup > current->lookup;
+}
+
+void linx_tcg_tb_hot_snapshot(LinxTcgTBHotStats *stats)
+{
+    memset(stats, 0, sizeof(*stats));
+    if (!linx_tcg_tb_hot_enabled_p()) {
+        return;
+    }
+
+    stats->slots = LINX_TCG_TB_HOT_SLOTS;
+    stats->evictions = qatomic_read(&linx_tcg_tb_hot_evictions);
+    for (size_t slot = 0; slot < LINX_TCG_TB_HOT_SLOTS; slot++) {
+        if (!linx_tcg_tb_hot_valid[slot]) {
+            continue;
+        }
+
+        const uint64_t lookup = qatomic_read(&linx_tcg_tb_hot_lookup[slot]);
+        const uint64_t emitted = qatomic_read(
+            &linx_tcg_tb_hot_emit_lookup[slot]);
+        if (lookup == 0) {
+            continue;
+        }
+
+        LinxTcgTBHotEntry entry = {
+            .pc = qatomic_read(&linx_tcg_tb_hot_pc[slot]),
+            .lookup = lookup,
+            .delta = lookup >= emitted ? lookup - emitted : 0,
+            .jmp_hit = qatomic_read(&linx_tcg_tb_hot_jmp_hit[slot]),
+            .hash_hit = qatomic_read(&linx_tcg_tb_hot_hash_hit[slot]),
+            .miss = qatomic_read(&linx_tcg_tb_hot_miss[slot]),
+        };
+
+        if (!stats->seen ||
+            linx_tcg_tb_hot_entry_better(&entry, &stats->top0)) {
+            stats->top1 = stats->top0;
+            stats->top0 = entry;
+        } else if (linx_tcg_tb_hot_entry_better(&entry, &stats->top1)) {
+            stats->top1 = entry;
+        }
+        stats->seen = true;
+    }
+
+    for (size_t slot = 0; slot < LINX_TCG_TB_HOT_SLOTS; slot++) {
+        if (linx_tcg_tb_hot_valid[slot]) {
+            qatomic_set(&linx_tcg_tb_hot_emit_lookup[slot],
+                        qatomic_read(&linx_tcg_tb_hot_lookup[slot]));
         }
     }
 }
@@ -298,15 +426,18 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, TCGTBCPUState s)
                tb->flags == s.flags &&
                tb_cflags(tb) == s.cflags)) {
         linx_tcg_tb_stat_inc(&linx_tcg_tb_stat_jmp_hit);
+        linx_tcg_tb_hot_record(s.pc, LINX_TCG_TB_HOT_JMP_HIT);
         goto hit;
     }
 
     tb = tb_htable_lookup(cpu, s);
     if (tb == NULL) {
         linx_tcg_tb_stat_inc(&linx_tcg_tb_stat_miss);
+        linx_tcg_tb_hot_record(s.pc, LINX_TCG_TB_HOT_MISS);
         return NULL;
     }
     linx_tcg_tb_stat_inc(&linx_tcg_tb_stat_hash_hit);
+    linx_tcg_tb_hot_record(s.pc, LINX_TCG_TB_HOT_HASH_HIT);
 
     jc->array[hash].pc = s.pc;
     qatomic_set(&jc->array[hash].tb, tb);
