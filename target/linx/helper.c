@@ -240,6 +240,8 @@ static bool linx_frame_stats_inited;
 static bool linx_frame_stats_enabled;
 static bool linx_frame_restore_host_load_inited;
 static bool linx_frame_restore_host_load_enabled;
+static bool linx_frame_single_restore_host_load_inited;
+static bool linx_frame_single_restore_host_load_enabled;
 static bool linx_frame_restore_host_verify_inited;
 static bool linx_frame_restore_host_verify_enabled;
 static bool linx_frame_shape_hot_inited;
@@ -1045,6 +1047,17 @@ static inline bool linx_frame_restore_host_load_enabled_p(void)
         linx_frame_restore_host_load_inited = true;
     }
     return linx_frame_restore_host_load_enabled;
+}
+
+static inline bool linx_frame_single_restore_host_load_enabled_p(void)
+{
+    if (!linx_frame_single_restore_host_load_inited) {
+        linx_frame_single_restore_host_load_enabled =
+            linx_frame_stats_env_enabled("LINX_QEMU_FRAME_SINGLE_RESTORE_HOST_LOAD") ||
+            linx_frame_stats_env_enabled("LINX_FRAME_SINGLE_RESTORE_HOST_LOAD");
+        linx_frame_single_restore_host_load_inited = true;
+    }
+    return linx_frame_single_restore_host_load_enabled;
 }
 
 static inline bool linx_frame_restore_host_verify_enabled_p(void)
@@ -9693,7 +9706,9 @@ static bool linx_template_fret_stk_single_reg_fast(CPULinxState *env,
     }
 
     const int mmu_idx = linx_env_mmu_index(env);
-    const bool use_cached_host = linx_frame_restore_host_load_enabled_p();
+    const bool use_cached_host =
+        linx_frame_restore_host_load_enabled_p() ||
+        linx_frame_single_restore_host_load_enabled_p();
     int restore_host_loads = 0;
     int restore_fallback_loads = 0;
     const uint64_t addr = new_sp - restore_base - 8;
