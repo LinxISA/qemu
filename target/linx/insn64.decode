@@ -187,18 +187,24 @@ v_rdfmin 0000 0000 0000 .... .011 .... .000 1101 0000 0000 0000 .... .001 .... .
 # Stores (bridged)
 # ---------------------------------------------------------------------------
 
-# V.LW / V.LW.BRG (word loads; `.local` uses tile bases, `.brg` uses RI bases)
+# V.L* / V.L*.BRG (`.local` uses tile bases, `.brg` uses RI bases)
 v_lw     .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 v_lw_brg .... .00. .... .... .010 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lb     .... .00. .... .... .000 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 v_lb_brg .... .00. .... .... .000 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lh     .... .00. .... .... .001 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 v_lh_brg .... .00. .... .... .001 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lbu    .... .00. .... .... .100 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 v_lbu_brg .... .00. .... .... .100 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
+v_lhu    .... .00. .... .... .101 .... .000 1001 0000 000. .... .... ..0. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 v_lhu_brg .... .00. .... .... .101 .... .000 1001 0000 000. .... .... ..1. .... .111 1111 %RegDst %SrcL %SrcR shamt=%shamt_hi c=%C l=%L
 
-# V.SB.BRG
+# V.SB / V.SB.BRG
+v_sb     .... .00. .... .... .000 0000 0100 1001 .... .00. .... .... ..0. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
 v_sb_brg .... .00. .... .... .000 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
 
-# V.SH.BRG
+# V.SH / V.SH.BRG
+v_sh     .... .00. .... .... .001 0000 0100 1001 .... .00. .... .... ..0. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
 v_sh_brg .... .00. .... .... .001 0000 0100 1001 .... .00. .... .... ..1. .... .111 1111 %SrcD %SrcL %SrcR shamt=%shamt_lo c=%C l=%L
 
 # V.SW.BRG

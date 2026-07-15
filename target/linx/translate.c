@@ -6048,6 +6048,20 @@ static bool trans_v_lw_brg(DisasContext *ctx, arg_v_lw_brg *a)
     return true;
 }
 
+static bool trans_v_lb(DisasContext *ctx, arg_v_lb *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_lb_local(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
+                               tcg_constant_i32((int32_t)a->SrcL),
+                               tcg_constant_i32((int32_t)a->SrcR),
+                               tcg_constant_i32((int32_t)a->shamt),
+                               tcg_constant_i32((int32_t)a->l));
+    return true;
+}
+
 static bool trans_v_lb_brg(DisasContext *ctx, arg_v_lb_brg *a)
 {
     if (!linx_require_in_body(ctx)) {
@@ -6070,6 +6084,20 @@ static bool trans_v_lb_brg(DisasContext *ctx, arg_v_lb_brg *a)
     return true;
 }
 
+static bool trans_v_lh(DisasContext *ctx, arg_v_lh *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_lh_local(tcg_env, tcg_constant_i32((int32_t)a->RegDst),
+                               tcg_constant_i32((int32_t)a->SrcL),
+                               tcg_constant_i32((int32_t)a->SrcR),
+                               tcg_constant_i32((int32_t)a->shamt),
+                               tcg_constant_i32((int32_t)a->l));
+    return true;
+}
+
 static bool trans_v_lh_brg(DisasContext *ctx, arg_v_lh_brg *a)
 {
     if (!linx_require_in_body(ctx)) {
@@ -6089,6 +6117,21 @@ static bool trans_v_lh_brg(DisasContext *ctx, arg_v_lh_brg *a)
                                  tcg_constant_i32((int32_t)a->shamt),
                                  tcg_constant_i32(0));
     }
+    return true;
+}
+
+static bool trans_v_lbu(DisasContext *ctx, arg_v_lbu *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_lbu_local(tcg_env,
+                                tcg_constant_i32((int32_t)a->RegDst),
+                                tcg_constant_i32((int32_t)a->SrcL),
+                                tcg_constant_i32((int32_t)a->SrcR),
+                                tcg_constant_i32((int32_t)a->shamt),
+                                tcg_constant_i32((int32_t)a->l));
     return true;
 }
 
@@ -6116,6 +6159,21 @@ static bool trans_v_lbu_brg(DisasContext *ctx, arg_v_lbu_brg *a)
     return true;
 }
 
+static bool trans_v_lhu(DisasContext *ctx, arg_v_lhu *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_lhu_local(tcg_env,
+                                tcg_constant_i32((int32_t)a->RegDst),
+                                tcg_constant_i32((int32_t)a->SrcL),
+                                tcg_constant_i32((int32_t)a->SrcR),
+                                tcg_constant_i32((int32_t)a->shamt),
+                                tcg_constant_i32((int32_t)a->l));
+    return true;
+}
+
 static bool trans_v_lhu_brg(DisasContext *ctx, arg_v_lhu_brg *a)
 {
     if (!linx_require_in_body(ctx)) {
@@ -6140,6 +6198,20 @@ static bool trans_v_lhu_brg(DisasContext *ctx, arg_v_lhu_brg *a)
     return true;
 }
 
+static bool trans_v_sb(DisasContext *ctx, arg_v_sb *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_sb_local(tcg_env, tcg_constant_i32((int32_t)a->SrcD),
+                               tcg_constant_i32((int32_t)a->SrcL),
+                               tcg_constant_i32((int32_t)a->SrcR),
+                               tcg_constant_i32((int32_t)a->shamt),
+                               tcg_constant_i32((int32_t)a->l));
+    return true;
+}
+
 static bool trans_v_sb_brg(DisasContext *ctx, arg_v_sb_brg *a)
 {
     if (!linx_require_in_body(ctx)) {
@@ -6159,6 +6231,20 @@ static bool trans_v_sb_brg(DisasContext *ctx, arg_v_sb_brg *a)
                                  tcg_constant_i32((int32_t)a->shamt),
                                  tcg_constant_i32(0));
     }
+    return true;
+}
+
+static bool trans_v_sh(DisasContext *ctx, arg_v_sh *a)
+{
+    if (!linx_require_in_body(ctx)) {
+        return false;
+    }
+    (void)a->c;
+    gen_helper_linx_v_sh_local(tcg_env, tcg_constant_i32((int32_t)a->SrcD),
+                               tcg_constant_i32((int32_t)a->SrcL),
+                               tcg_constant_i32((int32_t)a->SrcR),
+                               tcg_constant_i32((int32_t)a->shamt),
+                               tcg_constant_i32((int32_t)a->l));
     return true;
 }
 
