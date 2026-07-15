@@ -6444,19 +6444,20 @@ void HELPER(linx_test_finisher)(CPULinxState *env, uint64_t addr,
 {
     CPUState *cs = env_cpu(env);
     const char *enabled = getenv("LINX_VIRT_TEST_FINISHER");
+    uint64_t status = value & UINT64_C(0xffff);
     int exit_code;
 
     if (addr != LINX_VIRT_FINISHER_ADDR || !enabled || !enabled[0] ||
         strcmp(enabled, "0") == 0) {
         return;
     }
-    if (value == LINX_VIRT_FINISHER_RESET) {
+    if (status == LINX_VIRT_FINISHER_RESET) {
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         cpu_loop_exit_noexc(cs);
     }
-    if (value == LINX_VIRT_FINISHER_PASS) {
+    if (status == LINX_VIRT_FINISHER_PASS) {
         exit_code = 0;
-    } else if (value == LINX_VIRT_FINISHER_FAIL) {
+    } else if (status == LINX_VIRT_FINISHER_FAIL) {
         exit_code = 1;
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -11062,6 +11063,19 @@ static void linx_tile_acccvt(CPULinxState *env, unsigned dst_tile, unsigned size
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
 }
 
+static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
+                                                     unsigned slot)
+{
+    /*
+     * The B.IOR assembly list is encoded as RegSrc1, RegSrc0, RegSrc2,
+     * followed by RegDst.  Keep both RI consumers on this canonical order.
+     */
+    static const unsigned shifts[] = { 10, 5, 15, 0 };
+
+    g_assert(slot < ARRAY_SIZE(shifts));
+    return (desc >> shifts[slot]) & 0x1fu;
+}
+
 static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
                                   unsigned *addr_reg_out)
 {
@@ -11080,18 +11094,13 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
     const unsigned desc_count = MIN(env->tile_ior_count, LINX_TILE_MAX_IOR);
     for (unsigned i = 0; i < desc_count; i++) {
         const uint64_t desc = env->tile_ior_desc[i];
-        const unsigned src0 = (desc >> 5) & 0x1fu;  /* RegSrc0 */
-        const unsigned src1 = (desc >> 10) & 0x1fu; /* RegSrc1 */
-        const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
-        const unsigned dst = desc & 0x1fu;          /* RegDst */
 
         /*
          * Bring-up launcher streams treat RI bindings as the authored B.IOR
          * operand-list order across descriptors.
          */
-        const unsigned srcs[4] = { src0, src1, src2, dst };
         for (unsigned s = 0; s < 4; s++) {
-            const unsigned reg = srcs[s];
+            const unsigned reg = linx_ior_desc_reg_in_authored_order(desc, s);
             if (reg == 0) {
                 continue;
             }
@@ -11116,14 +11125,9 @@ static void linx_vec_capture_ri_values(CPULinxState *env)
     const unsigned desc_count = MIN(env->tile_ior_count, LINX_TILE_MAX_IOR);
     for (unsigned i = 0; i < desc_count; i++) {
         const uint64_t desc = env->tile_ior_desc[i];
-        const unsigned src0 = (desc >> 5) & 0x1fu;  /* RegSrc0 */
-        const unsigned src1 = (desc >> 10) & 0x1fu; /* RegSrc1 */
-        const unsigned src2 = (desc >> 15) & 0x1fu; /* RegSrc2 */
-        const unsigned dst = desc & 0x1fu;          /* RegDst */
-        const unsigned srcs[4] = { src0, src1, src2, dst };
 
         for (unsigned s = 0; s < 4; s++) {
-            const unsigned reg = srcs[s];
+            const unsigned reg = linx_ior_desc_reg_in_authored_order(desc, s);
             if (reg == 0 || reg >= LINX_GPR_COUNT) {
                 continue;
             }

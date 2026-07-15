@@ -193,19 +193,20 @@ typedef struct LinxUARTState {
 
 static void linx_finish_guest(LinxUARTState *s, uint64_t value)
 {
+    uint64_t status = value & UINT64_C(0xffff);
     int exit_code;
 
     trace_linx_virt_exit_write(value);
-    if (value == LINX_VIRT_FINISHER_RESET) {
+    if (status == LINX_VIRT_FINISHER_RESET) {
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
         if (s->cpu) {
             cpu_exit(CPU(s->cpu));
         }
         return;
     }
-    if (value == LINX_VIRT_FINISHER_PASS) {
+    if (status == LINX_VIRT_FINISHER_PASS) {
         exit_code = 0;
-    } else if (value == LINX_VIRT_FINISHER_FAIL) {
+    } else if (status == LINX_VIRT_FINISHER_FAIL) {
         exit_code = 1;
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
