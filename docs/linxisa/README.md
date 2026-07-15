@@ -100,7 +100,10 @@ Memory map:
 - UART MMIO: `0x10000000` (size `0x100`)
   - `UART+0x0` write: TX data byte (printed to stdout)
   - `UART+0x4` read: status (bit0 = TX ready, always 1)
-- Exit register: `0x10000004` write: request VM shutdown with exit code
+- Opt-in test finisher: `0x10009000` 32-bit write (`LINX_VIRT_TEST_FINISHER=1`)
+  - `0x5555`: pass (exit status 0)
+  - `0x3333`: fail (exit status 1)
+  - `0x7777`: reset
 
 ### Timer + trap SSRs (bring-up)
 

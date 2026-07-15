@@ -950,14 +950,14 @@ And provide **C++ wrappers** (RAII for MCALL blocks, range-strong types for tile
 * **Block headers**:
 
   ```
-  BSTART.PAR   <OP>, <DataType>
+  BSTART.TEPL  <TileOpcode>, <DataType>
   B.DIM        reg|imm, val, ->M|N|K|Row|Col
-  B.IOT        [Tiles...], group=<0|1|2>, ->DstTile<Size|RegSrc>
+  B.IOT        SrcTile0, SrcTile1, last, ->DstTile<Size>
   B.IOR        [Tiles...]
   B.ARG        key=value, key=value, ...
-  BEND
+  C.BSTOP
   ```
-* **Acquire/Release** as header suffix: `TLOAD.aq`, `TSTORE.rl`, or via `BATTR.aq/rl` block attribute directive.
+* **Acquire/Release** through the canonical `B.CATR aq`, `B.CATR rl`, or `B.CATR aqrl` control-attribute descriptor.
 
 ### D.2 MC layer checks
 
