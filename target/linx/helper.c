@@ -6439,40 +6439,6 @@ static inline const char *linx_minst_block_kind_name_from_code(uint8_t code)
     }
 }
 
-void HELPER(linx_test_finisher)(CPULinxState *env, uint64_t addr,
-                                uint64_t value)
-{
-    CPUState *cs = env_cpu(env);
-    const char *enabled = getenv("LINX_VIRT_TEST_FINISHER");
-    uint64_t status = value & UINT64_C(0xffff);
-    int exit_code;
-
-    if (addr != LINX_VIRT_FINISHER_ADDR || !enabled || !enabled[0] ||
-        strcmp(enabled, "0") == 0) {
-        return;
-    }
-    if (status == LINX_VIRT_FINISHER_RESET) {
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
-        cpu_loop_exit_noexc(cs);
-    }
-    if (status == LINX_VIRT_FINISHER_PASS) {
-        exit_code = 0;
-    } else if (status == LINX_VIRT_FINISHER_FAIL) {
-        exit_code = 1;
-    } else {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx: ignored invalid finisher value 0x%" PRIx64 "\n",
-                      value);
-        return;
-    }
-
-    env->commit_trace.stop_after_commit = 1;
-    env->minst_trace.stop_after_commit = 1;
-    qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
-                                           exit_code);
-    cpu_loop_exit_noexc(cs);
-}
-
 static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
 {
     bool emit_file = false;
@@ -6620,7 +6586,7 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
             dst_valid, dst_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
             dst_valid ? dst_reg : 0u, dst_data,
             mem_valid, mem_is_load, mem_is_store, mem_addr,
-            mem_size, 0ull, mem_rdata,
+            mem_size, mem_is_store ? env->trace_mem_wdata : 0ull, mem_rdata,
             trap_valid, trap_cause, env->trace_traparg0);
     fflush(env->minst_trace.fp);
 

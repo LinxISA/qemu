@@ -4862,20 +4862,6 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
         linx_gen_mem_trace_probe(true, false, pc, addr64, size, val);
     }
 
-    if (memop_size(mop) == 4) {
-        TCGLabel *not_finisher = gen_new_label();
-        TCGv_i64 addr64;
-#if TARGET_LONG_BITS == 32
-        addr64 = tcg_temp_new_i64();
-        tcg_gen_extu_tl_i64(addr64, addr);
-#else
-        addr64 = (TCGv_i64)addr;
-#endif
-        tcg_gen_brcondi_i64(TCG_COND_NE, addr64,
-                            LINX_VIRT_FINISHER_ADDR, not_finisher);
-        gen_helper_linx_test_finisher(tcg_env, addr64, val);
-        gen_set_label(not_finisher);
-    }
     linx_lr_invalidate();
     tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
     return true;
