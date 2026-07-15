@@ -35,10 +35,10 @@ _start:
   C.BSTOP
 
 high_entry:
-  # PASS: write 0 to the virt exit MMIO register (0x10000004).
+  # PASS: write 0x5555 to the canonical finisher (0x10009000).
   C.BSTART
-  addi zero, 0, ->a0
-  hl.lui 268435460, ->t
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
@@ -47,10 +47,10 @@ high_entry:
   C.BSTOP
 
 .Ltrap_vector:
-  # FAIL: write 1 to the virt exit MMIO register (0x10000004).
+  # FAIL: write 0x3333 to the canonical finisher (0x10009000).
   C.BSTART
-  addi zero, 1, ->a0
-  hl.lui 268435460, ->t
+  hl.lui 13107, ->a0
+  hl.lui 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 

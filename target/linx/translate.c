@@ -73,6 +73,7 @@ static TCGv_i32 cpu_tile_iot_src0;
 static TCGv_i32 cpu_tile_iot_src1;
 static TCGv_i32 cpu_tile_iot_reg;
 static TCGv_i32 cpu_tile_iot_size;
+static TCGv_i32 cpu_tile_attr_raw;
 static TCGv_i32 cpu_tile_attr_pad;
 static TCGv_i32 cpu_tile_attr_dtype;
 static TCGv_i64 cpu_lb[3];
@@ -941,7 +942,7 @@ static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
     return false;
 }
 
-static bool linx_is_b_attr_at_pc(DisasContext *ctx, vaddr pc)
+static bool linx_is_b_catr_at_pc(DisasContext *ctx, vaddr pc)
 {
     unsigned len;
     uint64_t raw;
@@ -1895,7 +1896,7 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
 #include "decode-insn48.c.inc"
 #include "decode-insn64.c.inc"
 
-static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
+static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a);
 
 static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
@@ -1915,7 +1916,7 @@ static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr ta
     if (current_pc != ctx->base.pc_first &&
         brtype == LINX_BR_FALL &&
         ctx->brtype != 0 &&
-        linx_is_b_attr_at_pc(ctx, ctx->base.pc_next)) {
+        linx_is_b_catr_at_pc(ctx, ctx->base.pc_next)) {
         return true;
     }
     /*
@@ -2204,6 +2205,7 @@ static bool trans_bstart_cond(DisasContext *ctx, arg_bstart_cond *a)
 static bool trans_bstart_ind(DisasContext *ctx, arg_bstart_ind *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2211,13 +2213,14 @@ static bool trans_bstart_ind(DisasContext *ctx, arg_bstart_ind *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
-    linx_block_begin(ctx, LINX_BR_IND, linx_pcrel_target(current_pc, a->simm17));
+    linx_block_begin(ctx, LINX_BR_IND, 0);
     return true;
 }
 
 static bool trans_bstart_icall(DisasContext *ctx, arg_bstart_icall *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2225,13 +2228,14 @@ static bool trans_bstart_icall(DisasContext *ctx, arg_bstart_icall *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
-    linx_block_begin(ctx, LINX_BR_ICALL, linx_pcrel_target(current_pc, a->simm17));
+    linx_block_begin(ctx, LINX_BR_ICALL, 0);
     return true;
 }
 
 static bool trans_bstart_ret(DisasContext *ctx, arg_bstart_ret *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    (void)a;
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2239,7 +2243,7 @@ static bool trans_bstart_ret(DisasContext *ctx, arg_bstart_ret *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
-    linx_block_begin(ctx, LINX_BR_RET, linx_pcrel_target(current_pc, a->simm17));
+    linx_block_begin(ctx, LINX_BR_RET, 0);
     return true;
 }
 
@@ -2300,15 +2304,15 @@ static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
 
 static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
 {
-    return trans_bstart_par_common(ctx, a->dtype, a->func & 0x1fu);
+    return trans_bstart_tile_common(ctx, a->dtype, a->func & 0x1fu);
 }
 
 static bool trans_bstart_tepl(DisasContext *ctx, arg_bstart_tepl *a)
 {
-    return trans_bstart_par_common(ctx, a->dtype, a->op & 0x3ffu);
+    return trans_bstart_tile_common(ctx, a->dtype, a->op & 0x3ffu);
 }
 
-static bool trans_bstart_par_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
+static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     op &= 0x3ffu;
@@ -2586,10 +2590,10 @@ static bool trans_b_arg_dn2zn(DisasContext *ctx, arg_b_arg_dn2zn *a)
     return linx_trans_b_arg_alias(ctx, 4u);
 }
 
-static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
+static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
+                             uint32_t last, uint32_t src0, uint32_t src1,
+                             uint32_t size)
 {
-    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
-
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2598,137 +2602,23 @@ static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    /*
-     * LLVM still emits bring-up-only B.IOT aliases that pack destination hand
-     * and tile size directly into the raw instruction word instead of the
-     * canonical b_iot descriptor fields exposed by decodetree. Reconstruct the
-     * canonical descriptor here so helper.c sees the same shape regardless of
-     * which assembler form produced the instruction.
-     */
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(0xfu << 25))) == 0x00006013u) {
-        const uint32_t flags = (1u << 0) | (1u << 1);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
-        return true;
-    }
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(1u << 30) | (uint32_t)(0x1fu << 7) |
-                 (uint32_t)(1u << 15) | (uint32_t)(0xfu << 25))) == 0x00005013u) {
-        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
-        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) | (1u << 1);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
-        return true;
-    }
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(1u << 30) | (uint32_t)(1u << 31) |
-                 (uint32_t)(0x1fu << 7) | (uint32_t)(1u << 15) |
-                 (uint32_t)(0x3fu << 16) | (uint32_t)(0xfu << 25))) == 0x00004013u) {
-        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
-        const uint32_t src1 = (raw >> 16) & 0x3fu;
-        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) |
-                               (((raw >> 31) & 0x1u) << 3);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, src1, 0, size, true);
-        return true;
-    }
-
-    uint32_t flags = 0;
-    if (a->s0v) {
-        flags |= 1u << 0;
-    }
-    if (a->s1v) {
-        flags |= 1u << 1;
-    }
-    if (a->s0r) {
-        flags |= 1u << 2;
-    }
-    if (a->s1r) {
-        flags |= 1u << 3;
-    }
-
-    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
-                            a->reg, 0, false);
+    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, 0, size, true);
     return true;
 }
 
-static bool trans_b_ioti(DisasContext *ctx, arg_b_ioti *a)
+static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
-    const uint32_t raw = (uint32_t)ctx->cur_insn_raw;
-
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    const uint32_t form = ((uint32_t)ctx->cur_insn_raw >> 12) & 0x7u;
+    uint32_t flags;
+    if (form == 4u) {
+        flags = ((a->s0r & 1u) << 2) | ((a->s1r & 1u) << 3);
+    } else if (form == 5u) {
+        flags = (1u << 1) | ((a->s0r & 1u) << 2);
+    } else {
+        flags = (1u << 0) | (1u << 1);
     }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
-                                LINX_BLOCKFMT_FAMILY_IOT);
-    }
-
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(0xfu << 25))) == 0x00006013u) {
-        const uint32_t flags = (1u << 0) | (1u << 1);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, 0, 0, 0, size, true);
-        return true;
-    }
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(1u << 30) | (uint32_t)(0x1fu << 7) |
-                 (uint32_t)(1u << 15) | (uint32_t)(0xfu << 25))) == 0x00005013u) {
-        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
-        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) | (1u << 1);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, 0, 0, size, true);
-        return true;
-    }
-    if ((raw & ~((uint32_t)(0x7u << 22) | (uint32_t)(1u << 29) |
-                 (uint32_t)(1u << 30) | (uint32_t)(1u << 31) |
-                 (uint32_t)(0x1fu << 7) | (uint32_t)(1u << 15) |
-                 (uint32_t)(0x3fu << 16) | (uint32_t)(0xfu << 25))) == 0x00004013u) {
-        const uint32_t src0 = ((raw >> 7) & 0x1fu) | (((raw >> 15) & 0x1u) << 5);
-        const uint32_t src1 = (raw >> 16) & 0x3fu;
-        const uint32_t flags = (((raw >> 30) & 0x1u) << 2) |
-                               (((raw >> 31) & 0x1u) << 3);
-        const uint32_t dst = ((raw >> 22) & 0x7u) + 1u;
-        const uint32_t grp = (raw >> 29) & 0x1u;
-        const uint32_t size = (raw >> 25) & 0xfu;
-
-        linx_emit_tile_iot_desc(ctx, flags, dst, grp, src0, src1, 0, size, true);
-        return true;
-    }
-
-    uint32_t flags = 0;
-    if (a->s0v) {
-        flags |= 1u << 0;
-    }
-    if (a->s1v) {
-        flags |= 1u << 1;
-    }
-    if (a->s0r) {
-        flags |= 1u << 2;
-    }
-    if (a->s1r) {
-        flags |= 1u << 3;
-    }
-
-    linx_emit_tile_iot_desc(ctx, flags, a->dst, a->grp, a->src0, a->src1,
-                            0, a->size, true);
-    return true;
+    return linx_trans_b_iot(ctx, flags, a->dst, a->l, a->src0, a->src1,
+                            a->imm4);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)
@@ -2784,7 +2674,7 @@ static bool trans_b_ior(DisasContext *ctx, arg_b_ior *a)
     return true;
 }
 
-static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
+static bool trans_b_catr(DisasContext *ctx, arg_b_catr *a)
 {
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
@@ -2793,17 +2683,38 @@ static bool trans_b_attr(DisasContext *ctx, arg_b_attr *a)
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
     }
     const uint32_t packed =
-        ((uint32_t)(a->c & 0x1u) << 0) |
+        ((uint32_t)(a->trap & 0x1u) << 0) |
         ((uint32_t)(a->dr & 0x1u) << 1) |
-        ((uint32_t)(a->layout & 0x1fu) << 2) |
-        ((uint32_t)(a->dtype & 0x1fu) << 7) |
-        ((uint32_t)(a->pad & 0x1fu) << 12) |
-        ((uint32_t)(a->t & 0x1u) << 17) |
         ((uint32_t)(a->aq & 0x1u) << 18) |
         ((uint32_t)(a->atom & 0x1u) << 19) |
         ((uint32_t)(a->far & 0x1u) << 20) |
         ((uint32_t)(a->rl & 0x1u) << 21);
-    linx_tile_set_attr_const(packed);
+    const uint32_t data_mask = 0x1fc1fffcu;
+    tcg_gen_andi_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, data_mask);
+    tcg_gen_ori_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, packed);
+    return true;
+}
+
+static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
+    }
+    const uint32_t packed =
+        ((uint32_t)(a->layout & 0x1fu) << 2) |
+        ((uint32_t)(a->dtype & 0x1fu) << 7) |
+        ((uint32_t)(a->pad & 0x1fu) << 12) |
+        ((uint32_t)(a->cmode & 0x7u) << 22) |
+        ((uint32_t)(a->rmode & 0x7u) << 25) |
+        ((uint32_t)(a->sat & 0x1u) << 28);
+    const uint32_t control_mask = 0x003c0003u;
+    tcg_gen_andi_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, control_mask);
+    tcg_gen_ori_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, packed);
+    tcg_gen_movi_i32(cpu_tile_attr_dtype, a->dtype & 0x1fu);
+    tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x1fu);
     return true;
 }
 
@@ -4951,6 +4862,20 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
         linx_gen_mem_trace_probe(true, false, pc, addr64, size, val);
     }
 
+    if (memop_size(mop) == 4) {
+        TCGLabel *not_finisher = gen_new_label();
+        TCGv_i64 addr64;
+#if TARGET_LONG_BITS == 32
+        addr64 = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(addr64, addr);
+#else
+        addr64 = (TCGv_i64)addr;
+#endif
+        tcg_gen_brcondi_i64(TCG_COND_NE, addr64,
+                            LINX_VIRT_FINISHER_ADDR, not_finisher);
+        gen_helper_linx_test_finisher(tcg_env, addr64, val);
+        gen_set_label(not_finisher);
+    }
     linx_lr_invalidate();
     tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
     return true;
@@ -7666,82 +7591,23 @@ static bool trans_hl_bstart_sys(DisasContext *ctx, arg_hl_bstart_sys *a)
                                         linx_pcrel_target(current_pc, a->simm));
 }
 
-static bool trans_l_bstart_std_fall(DisasContext *ctx, arg_l_bstart_std_fall *a)
+static bool linx_trans_l_bstart(DisasContext *ctx)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
+    const uint8_t brtype = (ctx->cur_insn_raw >> 44) & 0x7u;
+    return linx_begin_header_target(ctx, brtype,
                                     linx_pcrel_target(current_pc, simm));
 }
 
-static bool trans_l_bstart_std_direct(DisasContext *ctx, arg_l_bstart_std_direct *a)
+static bool trans_l_bstart_std(DisasContext *ctx, arg_l_bstart_std *a)
 {
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
-                                    linx_pcrel_target(current_pc, simm));
+    return linx_trans_l_bstart(ctx);
 }
 
-static bool trans_l_bstart_std_cond(DisasContext *ctx, arg_l_bstart_std_cond *a)
+static bool trans_l_bstart_fp(DisasContext *ctx, arg_l_bstart_fp *a)
 {
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    if (linx_debug_local_enabled_p()) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx debug: l.bstart.std.cond pc=0x%" VADDR_PRIx
-                      " insn=0x%016" PRIx64 " simm=0x%" PRIx64 " target=0x%" VADDR_PRIx "\n",
-                      current_pc, ctx->cur_insn_raw, (uint64_t)simm,
-                      linx_pcrel_target(current_pc, simm));
-    }
-    return linx_begin_header_target(ctx, LINX_BR_COND,
-                                    linx_pcrel_target(current_pc, simm));
-}
-
-static bool trans_l_bstart_std_call(DisasContext *ctx, arg_l_bstart_std_call *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    if (linx_debug_local_enabled_p()) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "Linx debug: l.bstart.std.call pc=0x%" VADDR_PRIx
-                      " insn=0x%016" PRIx64 " simm=0x%" PRIx64 " target=0x%" VADDR_PRIx "\n",
-                      current_pc, ctx->cur_insn_raw, (uint64_t)simm,
-                      linx_pcrel_target(current_pc, simm));
-    }
-    return linx_begin_header_target(ctx, LINX_BR_CALL,
-                                    linx_pcrel_target(current_pc, simm));
-}
-
-static bool trans_l_bstart_fp_fall(DisasContext *ctx, arg_l_bstart_fp_fall *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_FALL,
-                                    linx_pcrel_target(current_pc, simm));
-}
-
-static bool trans_l_bstart_fp_direct(DisasContext *ctx, arg_l_bstart_fp_direct *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
-                                    linx_pcrel_target(current_pc, simm));
-}
-
-static bool trans_l_bstart_fp_cond(DisasContext *ctx, arg_l_bstart_fp_cond *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_COND,
-                                    linx_pcrel_target(current_pc, simm));
-}
-
-static bool trans_l_bstart_fp_call(DisasContext *ctx, arg_l_bstart_fp_call *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    int64_t simm = linx_decode_l_bstart_simm42(ctx->cur_insn_raw);
-    return linx_begin_header_target(ctx, LINX_BR_CALL,
-                                    linx_pcrel_target(current_pc, simm));
+    return linx_trans_l_bstart(ctx);
 }
 
 static bool trans_l_bstart_sys(DisasContext *ctx, arg_l_bstart_sys *a)
@@ -7991,13 +7857,6 @@ static bool trans_bwi(DisasContext *ctx, arg_bwi *a)
 }
 
 static bool trans_bwt(DisasContext *ctx, arg_bwt *a)
-{
-    (void)ctx;
-    (void)a;
-    return true;
-}
-
-static bool trans_b_iod(DisasContext *ctx, arg_b_iod *a)
 {
     (void)ctx;
     (void)a;
@@ -9219,6 +9078,7 @@ void linx_translate_init(void)
     cpu_tile_iot_src1 = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_src1), "tile_iot_src1");
     cpu_tile_iot_reg = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_reg), "tile_iot_reg");
     cpu_tile_iot_size = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_iot_size), "tile_iot_size");
+    cpu_tile_attr_raw = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_raw), "tile_attr_raw");
     cpu_tile_attr_pad = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_pad), "tile_attr_pad");
     cpu_tile_attr_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_dtype), "tile_attr_dtype");
     cpu_lb[0] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[0]), "lb0");

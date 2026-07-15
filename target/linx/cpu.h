@@ -21,6 +21,12 @@
 #error "LinxISA does not support user mode emulation"
 #endif
 
+/* Canonical v0.56 test-finisher MMIO contract. */
+#define LINX_VIRT_FINISHER_ADDR UINT64_C(0x10009000)
+#define LINX_VIRT_FINISHER_FAIL UINT64_C(0x3333)
+#define LINX_VIRT_FINISHER_PASS UINT64_C(0x5555)
+#define LINX_VIRT_FINISHER_RESET UINT64_C(0x7777)
+
 /* Exception types
  * Note: We start from 1, not 0, because exception_index = 0 would
  * trigger do_interrupt via replay_exception() even when there's no exception.

@@ -20,7 +20,7 @@ _start:
   C.BSTOP
 
   C.BSTART
-  addi zero, 0, ->a0
-  hl.lui 268435460, ->t
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP

@@ -10,9 +10,9 @@ _start:
   sdi a0, [a1, 0]
   ldi [a1, 0], ->a2
 
-  # exit code = 0 (virt exit MMIO at 0x10000004)
-  addi zero, 0, ->a0
-  hl.lui 268435460, ->t
+  # canonical finisher PASS value 0x5555 (virt exit MMIO at 0x10009000)
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
   swi a0, [t#1, 0]
 
   C.BSTOP

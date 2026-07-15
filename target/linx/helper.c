@@ -6439,7 +6439,38 @@ static inline const char *linx_minst_block_kind_name_from_code(uint8_t code)
     }
 }
 
-#define LINX_VIRT_EXIT_REG UINT64_C(0x10000004)
+void HELPER(linx_test_finisher)(CPULinxState *env, uint64_t addr,
+                                uint64_t value)
+{
+    CPUState *cs = env_cpu(env);
+    const char *enabled = getenv("LINX_VIRT_TEST_FINISHER");
+    int exit_code;
+
+    if (addr != LINX_VIRT_FINISHER_ADDR || !enabled || !enabled[0] ||
+        strcmp(enabled, "0") == 0) {
+        return;
+    }
+    if (value == LINX_VIRT_FINISHER_RESET) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        cpu_loop_exit_noexc(cs);
+    }
+    if (value == LINX_VIRT_FINISHER_PASS) {
+        exit_code = 0;
+    } else if (value == LINX_VIRT_FINISHER_FAIL) {
+        exit_code = 1;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: ignored invalid finisher value 0x%" PRIx64 "\n",
+                      value);
+        return;
+    }
+
+    env->commit_trace.stop_after_commit = 1;
+    env->minst_trace.stop_after_commit = 1;
+    qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
+                                           exit_code);
+    cpu_loop_exit_noexc(cs);
+}
 
 static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
 {
@@ -6536,7 +6567,8 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
     mem_addr = mem_valid ? env->trace_mem_addr : 0;
     mem_size = mem_valid ? env->trace_mem_size : 0;
     mem_rdata = mem_is_load ? env->trace_mem_rdata : 0;
-    terminal_store = mem_is_store && env->trace_mem_addr == LINX_VIRT_EXIT_REG;
+    terminal_store = mem_is_store &&
+                     env->trace_mem_addr == LINX_VIRT_FINISHER_ADDR;
     dst_data = dst_valid ? dst_data_raw : 0;
     if (trap_valid && strcmp(info.mnemonic, "C.BSTOP") == 0) {
         return;
@@ -11181,10 +11213,10 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
 
     /*
      * v0.3 bring-up: allocate/size the destination tile when it is encoded in
-     * an absent source slot and a size code is present (B.IOTI).
+     * an absent source slot and a size code is present (B.IOT).
      *
      * This supports `.local` vector accesses using TO/TS bases, which rely on
-     * B.IOTI to establish tile footprints.
+     * B.IOT to establish tile footprints.
      */
     if (desc.has_size) {
         const bool allow_tile_alloc =
@@ -11194,7 +11226,7 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
             /* ACCCVT writes an output tile. */
             (env->blocktype == LINX_BLOCK_CUBE &&
              (env->tile_func & 0x1f) == LINX_CUBE_ACCCVT) ||
-            /* Vector blocks use B.IOTI to establish TO/TS footprints. */
+            /* Vector blocks use B.IOT to establish TO/TS footprints. */
             (env->blocktype == 0 || env->blocktype == 1 ||
              env->blocktype == 4 || env->blocktype == 5);
         if (!allow_tile_alloc) {
@@ -11642,8 +11674,7 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
      * - TA/TB/TC/TD: first four input tiles in header order
      * - TO/TS: first two output tiles (dst encoded in absent source slot)
      *
-     * Inputs/outputs are derived from the active header's B.IOT/B.IOTI
-     * descriptors.
+     * Inputs/outputs are derived from the active header's B.IOT descriptors.
      */
     unsigned inputs[4];
     unsigned outputs[2];

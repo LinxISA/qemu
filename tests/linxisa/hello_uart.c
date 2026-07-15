@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #define LINX_VIRT_UART_BASE 0x10000000u
+#define LINX_VIRT_FINISHER_BASE 0x10009000u
 
 static inline uint32_t mmio_read32(uint32_t addr)
 {
@@ -32,8 +33,9 @@ static void uart_puts(const char *s)
 
 static __attribute__((noreturn)) void virt_exit(uint32_t code)
 {
-    /* Writing to UART+0x4 triggers shutdown (exit register). */
-    mmio_write32(LINX_VIRT_UART_BASE + 0x4, code);
+    const uint32_t value = code == 0 ? 0x5555u : 0x3333u;
+
+    mmio_write32(LINX_VIRT_FINISHER_BASE, value);
     for (;;) {
     }
 }
@@ -43,4 +45,3 @@ int _start(void)
     uart_puts("hello from LinxISA QEMU virt UART\n");
     virt_exit(0);
 }
-

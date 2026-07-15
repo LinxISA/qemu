@@ -95,11 +95,7 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define LINX_UART_BASE 0x10000000
 #define LINX_UART_SIZE 0x100
 
-/* Legacy exit register address */
-#define LINX_EXIT_REG 0x10000004
-
 /* Canonical AVS/system test finisher MMIO */
-#define LINX_TEST_FINISHER_BASE 0x10009000
 #define LINX_TEST_FINISHER_SIZE 0x4
 
 /* Linx virt-uart MMIO register layout (offsets from LINX_UART_BASE). */
@@ -198,6 +194,27 @@ typedef struct LinxUARTState {
 
 static void linx_finish_guest(LinxUARTState *s, uint64_t value)
 {
+    int exit_code;
+
+    trace_linx_virt_exit_write(value);
+    if (value == LINX_VIRT_FINISHER_RESET) {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        if (s->cpu) {
+            cpu_exit(CPU(s->cpu));
+        }
+        return;
+    }
+    if (value == LINX_VIRT_FINISHER_PASS) {
+        exit_code = 0;
+    } else if (value == LINX_VIRT_FINISHER_FAIL) {
+        exit_code = 1;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "Linx: ignored invalid finisher value 0x%" PRIx64 "\n",
+                      value);
+        return;
+    }
+
     if (s->cpu) {
         CPULinxState *env = &s->cpu->env;
         if (linx_virt_print_insn_count_enabled()) {
@@ -208,9 +225,11 @@ static void linx_finish_guest(LinxUARTState *s, uint64_t value)
         env->commit_trace.stop_after_commit = 1;
         env->minst_trace.stop_after_commit = 1;
     }
-    trace_linx_virt_exit_write(value);
     qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_GUEST_SHUTDOWN,
-                                           (int)(uint32_t)value);
+                                           exit_code);
+    if (s->cpu) {
+        cpu_exit(CPU(s->cpu));
+    }
 }
 
 static int linx_uart_can_receive(void *opaque)
@@ -291,12 +310,6 @@ static void linx_uart_write(void *opaque, hwaddr addr, uint64_t value,
     unsigned char c;
     (void)size;
 
-    /* Handle exit register */
-    if (addr == LINX_EXIT_REG - LINX_UART_BASE) {
-        linx_finish_guest(s, value);
-        return;
-    }
-
     if (addr != 0) {
         return;  /* Ignore non-data writes */
     }
@@ -366,10 +379,10 @@ static void linx_uart_init(LinxUARTState *s, LinxCPU *cpu)
     if (linx_test_finisher_enabled()) {
         memory_region_init_io(&s->finisher_mmio, NULL, &linx_finisher_ops, s,
                               "linx-test-finisher", LINX_TEST_FINISHER_SIZE);
-        memory_region_add_subregion(get_system_memory(), LINX_TEST_FINISHER_BASE,
-                                    &s->finisher_mmio);
+        memory_region_add_subregion_overlap(get_system_memory(),
+                                            LINX_VIRT_FINISHER_ADDR,
+                                            &s->finisher_mmio, 1);
     }
-
     s->rx_head = 0;
     s->rx_tail = 0;
 
@@ -554,7 +567,7 @@ static void linx_fdt_set_memory_reg(void *fdt, hwaddr mem_size)
 {
     static const LinxFdtReservedRange reserved[] = {
         { LINX_UART_BASE, LINX_UART_SIZE },
-        { LINX_TEST_FINISHER_BASE, LINX_TEST_FINISHER_SIZE },
+        { LINX_VIRT_FINISHER_ADDR, LINX_TEST_FINISHER_SIZE },
         { LINX_VIRTIO_MMIO_BASE, LINX_VIRTIO_MMIO_TOTAL_SIZE },
     };
     uint64_t values[ARRAY_SIZE(reserved) * 4 + 4];
