@@ -8417,14 +8417,49 @@ static bool trans_hl_bfi(DisasContext *ctx, arg_hl_bfi *a)
 
 static bool trans_hl_ccat(DisasContext *ctx, arg_hl_ccat *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    const unsigned shamt = a->shamt;
+    TCGv_i64 src_l = linx_get_reg(a->SrcL);
+    TCGv_i64 src_r = linx_get_reg(a->SrcR);
+    TCGv_i64 out0 = tcg_temp_new_i64();
+    TCGv_i64 out1 = tcg_temp_new_i64();
+
+    if (shamt < 64) {
+        tcg_gen_extract2_i64(out0, src_r, src_l, shamt);
+        tcg_gen_shri_i64(out1, src_l, shamt);
+    } else {
+        tcg_gen_shri_i64(out0, src_l, shamt - 64);
+        tcg_gen_movi_i64(out1, 0);
+    }
+
+    /* Compute both results before either destination can alias a source. */
+    linx_set_dest(a->RegDst0, out0);
+    linx_set_dest(a->RegDst1, out1);
+    return true;
 }
 
 static bool trans_hl_ccatw(DisasContext *ctx, arg_hl_ccatw *a)
 {
-    (void)a;
-    return linx_illegal(ctx);
+    const unsigned shamt = a->shamt;
+    TCGv_i64 packed = tcg_temp_new_i64();
+    TCGv_i64 shifted = tcg_temp_new_i64();
+    TCGv_i64 out0 = tcg_temp_new_i64();
+    TCGv_i64 out1 = tcg_temp_new_i64();
+
+    if (shamt < 64) {
+        tcg_gen_deposit_i64(packed, linx_get_reg(a->SrcR),
+                            linx_get_reg(a->SrcL), 32, 32);
+        tcg_gen_shri_i64(shifted, packed, shamt);
+        tcg_gen_ext32s_i64(out0, shifted);
+        tcg_gen_sari_i64(out1, shifted, 32);
+    } else {
+        tcg_gen_movi_i64(out0, 0);
+        tcg_gen_movi_i64(out1, 0);
+    }
+
+    /* Compute both results before either destination can alias a source. */
+    linx_set_dest(a->RegDst0, out0);
+    linx_set_dest(a->RegDst1, out1);
+    return true;
 }
 
 static bool trans_hl_setc_eqi(DisasContext *ctx, arg_hl_setc_eqi *a)
