@@ -1896,7 +1896,6 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
 static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
 static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
                                           uint32_t blocktype, uint32_t func);
-static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a);
 
 static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
 {
@@ -2431,11 +2430,6 @@ static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
     return true;
 }
 
-static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, a->func);
-}
-
 static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, a->func);
@@ -2449,6 +2443,11 @@ static bool trans_bstart_tload(DisasContext *ctx, arg_bstart_tload *a)
 static bool trans_bstart_tstore(DisasContext *ctx, arg_bstart_tstore *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
+}
+
+static bool trans_bstart_tmov(DisasContext *ctx, arg_bstart_tmov *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 2);
 }
 
 static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)

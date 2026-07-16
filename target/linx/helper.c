@@ -6230,10 +6230,14 @@ static const char *linx_trace_block_kind_name(const LinxOpcodeMeta *meta,
     if (strstr(mnemonic, "bstart_vseq")) {
         return "vseq";
     }
-    if (strstr(mnemonic, "bstart_tma")) {
+    if (strcmp(mnemonic, "bstart_tload") == 0 ||
+        strcmp(mnemonic, "bstart_tstore") == 0 ||
+        strcmp(mnemonic, "bstart_tmov") == 0) {
         return "tma";
     }
-    if (strstr(mnemonic, "bstart_cube")) {
+    if (strcmp(mnemonic, "bstart_cube") == 0 ||
+        strcmp(mnemonic, "bstart_tmatmul") == 0 ||
+        strcmp(mnemonic, "bstart_tmatmul_acc") == 0) {
         return "cube";
     }
     if (strstr(mnemonic, "tepl")) {
@@ -6306,8 +6310,14 @@ static LinxMinstCanonicalInfo linx_minst_canonical_info(const LinxOpcodeMeta *me
     if (strcmp(mnemonic, "bstart_split_cond") == 0) {
         return (LinxMinstCanonicalInfo){ "BSTART", "e11e678a32ac", "system", NULL };
     }
-    if (strcmp(mnemonic, "bstart_tma") == 0) {
+    if (strcmp(mnemonic, "bstart_tload") == 0) {
         return (LinxMinstCanonicalInfo){ "BSTART.TLOAD", "d0c18bb0ab15", "system", "tma" };
+    }
+    if (strcmp(mnemonic, "bstart_tstore") == 0) {
+        return (LinxMinstCanonicalInfo){ "BSTART.TSTORE", "4048b6e8b0f4", "system", "tma" };
+    }
+    if (strcmp(mnemonic, "bstart_tmov") == 0) {
+        return (LinxMinstCanonicalInfo){ "BSTART.TMOV", "211446509efb", "system", "tma" };
     }
     if (strcmp(mnemonic, "c_bstart_cond") == 0) {
         return (LinxMinstCanonicalInfo){ "C.BSTART", "c4e238a9227a", "system", NULL };
