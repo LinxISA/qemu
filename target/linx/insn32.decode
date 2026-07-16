@@ -170,8 +170,8 @@ acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
 
 # Atomics (minimal subset for toolchain intrinsics bring-up)
 # Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
-lr_w   0010 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
-lr_d   0011 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
+lr_w   0010 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_d   0011 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
 sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
