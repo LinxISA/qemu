@@ -190,6 +190,8 @@ typedef enum LinxTemplateKind {
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
+#define LINX_TILE_HAND_COUNT 4u
+#define LINX_TILE_HAND_DEPTH 8u
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
 /*
  * v0.3 SIMT bring-up: LLVM autovec may reference VT indices up to VT#31 in
@@ -416,6 +418,19 @@ typedef struct CPUArchState {
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+
+    /*
+     * Shared 4x8 tile backing and allocation state for the current bring-up
+     * model.  These fields are deliberately not ACR-switched: tile_reg[] is
+     * shared as well, so restoring per-ACR liveness would describe stale or
+     * overwritten global backing.
+     */
+    uint8_t tile_hand_live[LINX_TILE_HAND_COUNT];
+    uint8_t tile_acc_carrier_valid;
+    uint8_t tile_acc_carrier;
+    uint8_t tile_acc_sources_valid;
+    uint8_t tile_acc_src0;
+    uint8_t tile_acc_src1;
 
     /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
     uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
