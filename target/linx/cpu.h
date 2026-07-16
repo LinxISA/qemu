@@ -297,6 +297,10 @@ typedef struct LinxAcrBlockState {
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
+    uint8_t tile_iot_output_valid[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_output_phys[LINX_TILE_MAX_IOT];
 } LinxAcrBlockState;
 
 typedef struct LinxCosimRange {
@@ -418,6 +422,10 @@ typedef struct CPUArchState {
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
+    uint8_t tile_iot_output_valid[LINX_TILE_MAX_IOT];
+    uint8_t tile_iot_output_phys[LINX_TILE_MAX_IOT];
 
     /*
      * Shared 4x8 tile backing and allocation state for the current bring-up
@@ -426,6 +434,12 @@ typedef struct CPUArchState {
      * overwritten global backing.
      */
     uint8_t tile_hand_live[LINX_TILE_HAND_COUNT];
+    uint8_t tile_hand_reserved[LINX_TILE_HAND_COUNT];
+    /* Per-hand architectural rank (index 0 is #1/newest) -> physical tile. */
+    uint8_t tile_hand_order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
+    uint8_t tile_hand_count[LINX_TILE_HAND_COUNT];
+    /* ACR owner bits pin header-frozen physical sources across ACR switches. */
+    uint16_t tile_pin_owner[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH];
     uint8_t tile_acc_carrier_valid;
     uint8_t tile_acc_carrier;
     uint8_t tile_acc_sources_valid;
@@ -817,6 +831,11 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->tile_iot_count = env->tile_iot_count;
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         s->tile_iot_desc[i] = env->tile_iot_desc[i];
+        s->tile_iot_src_valid[i] = env->tile_iot_src_valid[i];
+        s->tile_iot_src_phys[i][0] = env->tile_iot_src_phys[i][0];
+        s->tile_iot_src_phys[i][1] = env->tile_iot_src_phys[i][1];
+        s->tile_iot_output_valid[i] = env->tile_iot_output_valid[i];
+        s->tile_iot_output_phys[i] = env->tile_iot_output_phys[i];
     }
 }
 
@@ -831,6 +850,20 @@ static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
     }
 
     s = &env->acr_block_state[acr];
+    const uint16_t owner = 1u << acr;
+    for (unsigned i = 0; i < s->tile_iot_count; i++) {
+        for (unsigned source = 0; source < 2; source++) {
+            if ((s->tile_iot_src_valid[i] & (1u << source)) != 0) {
+                env->tile_pin_owner[s->tile_iot_src_phys[i][source]] &=
+                    ~owner;
+            }
+        }
+        if (s->tile_iot_output_valid[i]) {
+            const unsigned tile = s->tile_iot_output_phys[i];
+            env->tile_hand_reserved[tile / LINX_TILE_HAND_DEPTH] &=
+                ~(1u << (tile % LINX_TILE_HAND_DEPTH));
+        }
+    }
     memset(s, 0, sizeof(*s));
     s->bpc = bpc;
     s->tile_dtype = 17; /* INT32 default in v0.3 DataType. */
@@ -917,6 +950,11 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_iot_count = s->tile_iot_count;
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         env->tile_iot_desc[i] = s->tile_iot_desc[i];
+        env->tile_iot_src_valid[i] = s->tile_iot_src_valid[i];
+        env->tile_iot_src_phys[i][0] = s->tile_iot_src_phys[i][0];
+        env->tile_iot_src_phys[i][1] = s->tile_iot_src_phys[i][1];
+        env->tile_iot_output_valid[i] = s->tile_iot_output_valid[i];
+        env->tile_iot_output_phys[i] = s->tile_iot_output_phys[i];
     }
 }
 

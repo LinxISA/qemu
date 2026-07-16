@@ -411,21 +411,22 @@ static void linx_emit_tile_iot_desc(DisasContext *ctx, uint32_t flags,
                                     bool has_size)
 {
     const uint64_t desc =
-        ((uint64_t)(src0 & 0x1f) << 0) |
-        ((uint64_t)(src1 & 0x1f) << 5) |
-        ((uint64_t)(dst & 0x7) << 10) |
-        ((uint64_t)(grp & 0x1) << 13) |
-        ((uint64_t)(flags & 0xf) << 14) |
-        ((uint64_t)(reg & 0x1f) << 18) |
-        ((uint64_t)(size & 0x1f) << 23) |
-        ((uint64_t)(has_size ? 1u : 0u) << 28);
+        ((uint64_t)(src0 & 0x3f) << 0) |
+        ((uint64_t)(src1 & 0x3f) << 6) |
+        ((uint64_t)(dst & 0x7) << 12) |
+        /* `grp` is the B.IOT L/last bit, not either source's hand bit. */
+        ((uint64_t)(grp & 0x1) << 15) |
+        ((uint64_t)(flags & 0xf) << 16) |
+        ((uint64_t)(reg & 0x1f) << 20) |
+        ((uint64_t)(size & 0x1f) << 25) |
+        ((uint64_t)(has_size ? 1u : 0u) << 30);
 
     tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
     tcg_gen_movi_i32(cpu_tile_iot_flags, flags);
     tcg_gen_movi_i32(cpu_tile_iot_dst, dst & 0x7);
     tcg_gen_movi_i32(cpu_tile_iot_grp, grp & 0x1);
-    tcg_gen_movi_i32(cpu_tile_iot_src0, src0 & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_iot_src1, src1 & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_iot_src0, src0 & 0x3f);
+    tcg_gen_movi_i32(cpu_tile_iot_src1, src1 & 0x3f);
     tcg_gen_movi_i32(cpu_tile_iot_reg, reg & 0x1f);
     tcg_gen_movi_i32(cpu_tile_iot_size, has_size ? (size & 0x1f) : 0);
 
@@ -481,16 +482,7 @@ static inline void linx_tile_set_attr_const(uint32_t packed)
 
 static inline void linx_tile_reset_block_inline(void)
 {
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_arg_format));
-    tcg_gen_movi_i32(cpu_tile_attr_pad, 0);
-    tcg_gen_movi_i32(cpu_tile_attr_dtype, 0);
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_ior_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, vec_ri_count));
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, tile_iot_count));
+    gen_helper_linx_tile_reset_block(tcg_env);
 }
 
 static void linx_gen_check_bstart_target(DisasContext *ctx, TCGv_i64 target)
