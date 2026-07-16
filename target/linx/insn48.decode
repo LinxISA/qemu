@@ -279,7 +279,7 @@ hl_setc_gei  0000 0000 0000 0000 .... .... .... .... .101 .... .111 0101 .... ..
 hl_setc_ltui 0000 0000 0000 0000 .... .... .... .... .110 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
 hl_setc_geui 0000 0000 0000 0000 .... .... .... .... .111 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
 {
-  hl_prf     0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
+  hl_prf     0000 0000 0000 0000 .... .... .... .... .111 0000 0000 1001 .... .000 0000 1110 %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
   hl_prf_a   0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
 }
 hl_prfi_u    0000 0000 0000 0000 .... .... .... .... .111 0000 0010 1001 .... .... ..00 1110 %SrcL model=%model simm=%simm17_6_s5_36_12

@@ -8483,7 +8483,6 @@ static bool trans_hl_setc_geui(DisasContext *ctx, arg_hl_setc_geui *a)
 
 static bool trans_hl_prf(DisasContext *ctx, arg_hl_prf *a)
 {
-    (void)a->RegDst;
     (void)a->model;
     (void)linx_addr_add_reg(ctx, a->SrcL, a->SrcR, a->SrcRType, a->shamt);
     return true;
