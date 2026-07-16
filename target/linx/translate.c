@@ -1902,6 +1902,8 @@ static bool linx_block_fault(DisasContext *ctx, uint32_t legacy_cause, uint64_t 
 #include "decode-insn64.c.inc"
 
 static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op);
+static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
+                                          uint32_t blocktype, uint32_t func);
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a);
 
 static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
@@ -2439,23 +2441,37 @@ static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
 
 static bool trans_bstart_tma(DisasContext *ctx, arg_bstart_tma *a)
 {
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    linx_block_begin(ctx, LINX_BR_FALL, 0);
-    tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
-    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
-    ctx->decoupled_header = false;
-    return true;
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, a->func);
 }
 
 static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, a->func);
+}
+
+static bool trans_bstart_tload(DisasContext *ctx, arg_bstart_tload *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 0);
+}
+
+static bool trans_bstart_tstore(DisasContext *ctx, arg_bstart_tstore *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
+}
+
+static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 0);
+}
+
+static bool trans_bstart_tmatmul_acc(DisasContext *ctx,
+                                     arg_bstart_tmatmul_acc *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 2);
+}
+
+static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
+                                          uint32_t blocktype, uint32_t func)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     if (ctx->in_body) {
@@ -2466,9 +2482,9 @@ static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
         return true;
     }
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
-    tcg_gen_movi_i32(cpu_tile_func, a->func & 0x1f);
-    tcg_gen_movi_i32(cpu_tile_dtype, a->dtype & 0x1f);
+    tcg_gen_movi_i32(cpu_blocktype, blocktype);
+    tcg_gen_movi_i32(cpu_tile_func, func & 0x1f);
+    tcg_gen_movi_i32(cpu_tile_dtype, dtype & 0x1f);
     ctx->decoupled_header = false;
     return true;
 }
