@@ -12160,20 +12160,33 @@ static uint32_t linx_vec_normalize_source_code(uint32_t raw)
     return raw;
 }
 
-static uint32_t linx_vec_normalize_dst_code(uint32_t raw)
+static bool linx_vec_has_bound_tile_inputs(const CPULinxState *env)
+{
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        if (env->tile_iot_src_valid[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t linx_vec_normalize_dst_code(const CPULinxState *env,
+                                            uint32_t raw)
 {
     if (linx_vec_is_canonical_dst_code(raw)) {
         const unsigned cls = linx_vec_reg_class(raw);
 
-        if (cls == LINX_VEC_REGCLASS_P) {
+        if (cls == LINX_VEC_REGCLASS_P ||
+            !linx_vec_has_bound_tile_inputs(env)) {
             return raw;
         }
 
         /*
-         * Queue destination indices name the value after it has been pushed;
-         * they are not fixed-slot write selectors.  Normalize every typed
-         * VT/VU/VM/VN destination to the architectural idx0 push operation.
-         * Source indices retain their queue-relative meaning.
+         * Tile-backed VPAR/TEPL bodies publish their typed result as the new
+         * queue head even when an older compiler encoded a physical vector
+         * slot.  Ordinary MSEQ/MPAR bodies retain their existing fixed-slot
+         * compatibility until compiler vector-queue lowering is converted as
+         * one cross-layer change.
          */
         return linx_vec_reg_code(cls, 0u);
     }
@@ -12307,7 +12320,7 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
         }
     }
 
-    /* Descriptor order is architectural: the last output becomes #1. */
+    /* Descriptor order is architectural: the last persistent output is #1. */
     for (unsigned i = 0; i < env->tile_iot_count; i++) {
         if (!env->tile_iot_output_valid[i]) {
             continue;
@@ -12317,6 +12330,20 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
         const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
 
         reserved[hand] &= ~(1u << depth);
+
+        /*
+         * Source-less MSEQ/MPAR outputs back block-local LTAR scratch such as
+         * TS.  They are addressable while the body runs, but are not tile
+         * values that survive the block.  Publishing them would fill an
+         * architectural hand after a few loop iterations and make the next
+         * header retry forever.
+         */
+        if (env->tile_iot_src_valid[i] == 0) {
+            live[hand] &= ~(1u << depth);
+            env->tile_reg_bytes[tile] = 0;
+            continue;
+        }
+
         linx_tile_publish_output(live, tile);
         if (!linx_tile_publish_order_state(order, count_by_hand, tile)) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -12636,7 +12663,7 @@ void HELPER(linx_debug_body_pred_branch)(CPULinxState *env, uint64_t current_pc,
 
 static void linx_vec_write_dst(CPULinxState *env, uint32_t dst, uint64_t value)
 {
-    dst = linx_vec_normalize_dst_code(dst);
+    dst = linx_vec_normalize_dst_code(env, dst);
 
     const unsigned cls = linx_vec_reg_class(dst);
     const unsigned didx = linx_vec_reg_index(dst);
