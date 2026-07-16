@@ -43,6 +43,8 @@
 %r 42:1
 %s 43:1
 %h 43:1
+%fused_call_simm25 7:s25
+%fused_call_uimm5 38:5
 
 # HL.LUI | hl.lui imm, ->{t, u, Rd} (load upper immediate, 32-bit)
 hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
@@ -115,6 +117,9 @@ hl_remw     0000 0000 0000 0000 0000 000. .... .... .110 .... .101 0111 .... .00
 hl_remuw    0000 0000 0000 0000 0000 000. .... .... .111 .... .101 0111 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR
 
 # HL.BSTART.STD variants (29-bit PC-relative)
+# Atomic 32+16 HL.BSTART.CALL. The top 16 zeroes are decodetree padding; the
+# architectural instruction remains 48 bits.
+start_call_48 0000 0000 0000 0000 0101 0... ..01 0110 .... .... .... .... .... .... .001 0001 simm25=%fused_call_simm25 uimm5=%fused_call_uimm5
 hl_bstart_std_fall   0000 0000 0000 0000 .... .... .... .... .001 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 hl_bstart_std_direct 0000 0000 0000 0000 .... .... .... .... .010 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 hl_bstart_std_cond   0000 0000 0000 0000 .... .... .... .... .011 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17

@@ -21,6 +21,8 @@
 %simm17 15:s17
 %simm22 7:s5 15:17
 %simm25 7:s25
+%fused_call_simm12 4:s12
+%fused_call_uimm5 22:5
 %uimm12 20:12
 %simm12_20_s12 20:s12
 %simm12_7_s5_25_7 7:s5 25:7
@@ -90,6 +92,9 @@
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
 bstart_split_cond   .... .... .... .... .... .... .010 0001 %simm25
+# Atomic 16+16 BSTART.CALL. Runtime fetch recognizes the complete word before
+# dispatch because the low halfword uses the compressed length prefix.
+start_call_32 0101 0... ..01 0110 .... .... .... 0010 simm12=%fused_call_simm12 uimm5=%fused_call_uimm5
 bstart_fall   .... .... .... .... .001 0000 0000 0001 %simm17
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17

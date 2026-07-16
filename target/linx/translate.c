@@ -799,6 +799,40 @@ static bool linx_try_fetch_code_u32(DisasContext *ctx, vaddr pc,
     return true;
 }
 
+typedef enum LinxFusedCallProbe {
+    LINX_FUSED_CALL_NO_MATCH,
+    LINX_FUSED_CALL_MATCH,
+    LINX_FUSED_CALL_UNAVAILABLE,
+} LinxFusedCallProbe;
+
+static bool linx_is_hl_fused_call_raw(uint64_t raw)
+{
+    return (raw & UINT64_C(0xf83f0000007f)) ==
+           UINT64_C(0x501600000011);
+}
+
+static LinxFusedCallProbe linx_probe_hl_fused_call(DisasContext *ctx,
+                                                    vaddr pc, uint16_t hw,
+                                                    uint64_t *raw_out)
+{
+    uint16_t hw2;
+    uint16_t hw3;
+    uint64_t raw;
+
+    if ((hw & 0x007fu) != 0x0011u) {
+        return LINX_FUSED_CALL_NO_MATCH;
+    }
+    if (!linx_try_fetch_code_u16(ctx, pc + 2, &hw2) ||
+        !linx_try_fetch_code_u16(ctx, pc + 4, &hw3)) {
+        return LINX_FUSED_CALL_UNAVAILABLE;
+    }
+
+    raw = (uint64_t)hw | ((uint64_t)hw2 << 16) | ((uint64_t)hw3 << 32);
+    *raw_out = raw;
+    return linx_is_hl_fused_call_raw(raw) ? LINX_FUSED_CALL_MATCH
+                                           : LINX_FUSED_CALL_NO_MATCH;
+}
+
 static bool linx_try_fetch_code_insn(DisasContext *ctx, vaddr pc,
                                      uint64_t *raw_out, unsigned *len_out)
 {
@@ -812,6 +846,21 @@ static bool linx_try_fetch_code_insn(DisasContext *ctx, vaddr pc,
 
     len = linx_insn_len(hw);
     raw = hw;
+
+    if (len == 4 && (hw & 0x007fu) == 0x0011u) {
+        LinxFusedCallProbe probe =
+            linx_probe_hl_fused_call(ctx, pc, hw, &raw);
+
+        if (probe == LINX_FUSED_CALL_UNAVAILABLE) {
+            return false;
+        }
+        if (probe == LINX_FUSED_CALL_MATCH) {
+            *raw_out = raw;
+            *len_out = 6;
+            return true;
+        }
+        raw &= UINT32_MAX;
+    }
 
     if (len >= 4) {
         uint16_t hw2;
@@ -910,6 +959,9 @@ static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
     }
 
     if (len == 6) {
+        if (linx_is_hl_fused_call_raw(raw)) {
+            return true;
+        }
         const uint16_t prefix = raw & 0xffffu;
         const uint32_t main32 = (raw >> 16) & UINT32_MAX;
         if ((prefix & 0xf) != 0xe) {
@@ -1188,6 +1240,11 @@ static bool linx_is_call_like_bstart_at_pc(DisasContext *ctx, vaddr pc,
     if (len == 6) {
         uint32_t main32 = (raw >> 16) & UINT32_MAX;
         uint32_t brtype;
+
+        if (linx_is_hl_fused_call_raw(raw)) {
+            *len_out = len;
+            return true;
+        }
 
         if ((hw & 0xf) != 0xe) {
             return false;
@@ -8776,9 +8833,10 @@ static uint8_t linx_c_setret_uimm5(uint16_t hw)
     return (uint8_t)((hw >> 6) & 0x1fu);
 }
 
-static bool linx_trans_c_bstart_call_setret(DisasContext *ctx,
-                                            int64_t call_simm12,
-                                            uint8_t ret_uimm5)
+static bool linx_trans_fused_bstart_call(DisasContext *ctx,
+                                         int64_t call_simm,
+                                         uint8_t ret_uimm5,
+                                         unsigned ret_base_offset)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
 
@@ -8791,16 +8849,24 @@ static bool linx_trans_c_bstart_call_setret(DisasContext *ctx,
     }
 
     linx_block_begin(ctx, LINX_BR_CALL,
-                     linx_pcrel_target(current_pc, call_simm12));
+                     linx_pcrel_target(current_pc, call_simm));
 
     /*
-     * LLVM's fused 32-bit BSTART.CALL form packs a 16-bit compressed
-     * fixed-target header followed by compact C.SETRET. The return target is
-     * encoded relative to the implicit C.SETRET halfword, not the BSTART PC.
+     * Both exact fused forms carry the call and return displacements in one
+     * architectural instruction. The return field uses the address of its
+     * embedded compact SETRET component as its PC base: P+2 for the 16+16
+     * form and P+4 for the 32+16 form.
      */
     {
-        vaddr ret_target = current_pc + 2 + ((vaddr)ret_uimm5 << 1);
+        vaddr ret_target = current_pc + ret_base_offset +
+                           ((vaddr)ret_uimm5 << 1);
         linx_set_dest(LINX_REG_RA, tcg_constant_i64(ret_target));
+        if (linx_call_trace_translate_enabled) {
+            gen_helper_linx_call_trace_event(
+                tcg_env, tcg_constant_i64(current_pc + ret_base_offset),
+                tcg_constant_i32(LINX_CALL_TRACE_SETRET),
+                tcg_constant_i64(ret_target), tcg_constant_i64(0));
+        }
         ctx->ra_set = true;
         ctx->call_ra_target = ret_target;
         tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
@@ -8809,6 +8875,16 @@ static bool linx_trans_c_bstart_call_setret(DisasContext *ctx,
                        offsetof(CPULinxState, call_setret_pending));
     }
     return true;
+}
+
+static bool trans_start_call_32(DisasContext *ctx, arg_start_call_32 *a)
+{
+    return linx_trans_fused_bstart_call(ctx, a->simm12, a->uimm5, 2);
+}
+
+static bool trans_start_call_48(DisasContext *ctx, arg_start_call_48 *a)
+{
+    return linx_trans_fused_bstart_call(ctx, a->simm25, a->uimm5, 4);
 }
 
 static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
@@ -8835,6 +8911,27 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     hw = translator_lduw_end(env, &ctx->base, pc, MO_LE);
     
     len = linx_insn_len(hw);
+    /*
+     * HL.BSTART.CALL is a 32+16 fused form whose low halfword has the normal
+     * 32-bit BSTART prefix. Peek at the extension before committing to the
+     * base length, and only promote the exact golden mask/match to six bytes.
+     */
+    if (len == 4 && (hw & 0x007fu) == 0x0011u) {
+        uint64_t candidate;
+        LinxFusedCallProbe probe =
+            linx_probe_hl_fused_call(ctx, pc, hw, &candidate);
+
+        if (probe == LINX_FUSED_CALL_UNAVAILABLE) {
+            /* Restart with this PC as the first page instead of executing the
+             * low 32 bits before the extension can be inspected. */
+            ctx->base.is_jmp = DISAS_TOO_MANY;
+            ctx->base.pc_next = pc;
+            return;
+        }
+        if (probe == LINX_FUSED_CALL_MATCH) {
+            len = 6;
+        }
+    }
     ctx->cur_insn_len = len;
     /* Always update pc_next to ensure tb->size is non-zero even if exception occurs */
     ctx->base.pc_next = pc + len;
@@ -8857,9 +8954,9 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                        insn_val = (uint32_t)hw | ((uint32_t)hw2 << 16);
                        ctx->cur_insn_raw = insn_val;
                        linx_trace_begin(pc, (uint64_t)insn_val, len);
-                       decoded = linx_trans_c_bstart_call_setret(
+                       decoded = linx_trans_fused_bstart_call(
                            ctx, sextract32(hw, 4, 12),
-                           linx_c_setret_uimm5(hw2));
+                           linx_c_setret_uimm5(hw2), 2);
                        if (decoded) {
                            trace_linx_insn_exec(pc, insn_val, len,
                                                 "c-bstart-call-setret");
