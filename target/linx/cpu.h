@@ -21,7 +21,7 @@
 #error "LinxISA does not support user mode emulation"
 #endif
 
-/* Canonical v0.56 test-finisher MMIO contract. */
+/* Canonical v0.57 test-finisher MMIO contract. */
 #define LINX_VIRT_FINISHER_ADDR UINT64_C(0x10009000)
 #define LINX_VIRT_FINISHER_FAIL UINT64_C(0x3333)
 #define LINX_VIRT_FINISHER_PASS UINT64_C(0x5555)
@@ -449,6 +449,7 @@ typedef struct CPUArchState {
     /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
     uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
     uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
+    uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];

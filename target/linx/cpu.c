@@ -3993,6 +3993,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->tile_acc_src1 = 0;
         memset(env->tile_reg, 0, sizeof(env->tile_reg));
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
+        memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
         return true;
@@ -4266,6 +4267,8 @@ static const VMStateDescription vmstate_linx_cpu = {
                                  LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_bytes, LinxCPU,
                                LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 12),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
+                              LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 13),
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),

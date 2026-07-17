@@ -2507,15 +2507,106 @@ static bool trans_bstart_tmov(DisasContext *ctx, arg_bstart_tmov *a)
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 2);
 }
 
+static bool trans_bstart_tprefetch(DisasContext *ctx, arg_bstart_tprefetch *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 3);
+}
+
+static bool trans_bstart_mgather(DisasContext *ctx, arg_bstart_mgather *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 4);
+}
+
+static bool trans_bstart_mscatter(DisasContext *ctx, arg_bstart_mscatter *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 5);
+}
+
+static bool trans_bstart_mgather_mask(DisasContext *ctx,
+                                      arg_bstart_mgather_mask *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 6);
+}
+
+static bool trans_bstart_mscatter_mask(DisasContext *ctx,
+                                       arg_bstart_mscatter_mask *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 7);
+}
+
+static bool trans_bstart_mgather_cas(DisasContext *ctx,
+                                     arg_bstart_mgather_cas *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 8);
+}
+
 static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 0);
+}
+
+static bool trans_bstart_tmatmul_bias(DisasContext *ctx,
+                                      arg_bstart_tmatmul_bias *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 1);
 }
 
 static bool trans_bstart_tmatmul_acc(DisasContext *ctx,
                                      arg_bstart_tmatmul_acc *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 2);
+}
+
+static bool trans_bstart_tmatmulmx(DisasContext *ctx,
+                                   arg_bstart_tmatmulmx *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 4);
+}
+
+static bool trans_bstart_tmatmulmx_bias(DisasContext *ctx,
+                                        arg_bstart_tmatmulmx_bias *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 5);
+}
+
+static bool trans_bstart_tmatmulmx_acc(DisasContext *ctx,
+                                       arg_bstart_tmatmulmx_acc *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 6);
+}
+
+static bool trans_bstart_tgemv(DisasContext *ctx, arg_bstart_tgemv *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 16);
+}
+
+static bool trans_bstart_tgemv_bias(DisasContext *ctx,
+                                    arg_bstart_tgemv_bias *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 17);
+}
+
+static bool trans_bstart_tgemv_acc(DisasContext *ctx,
+                                   arg_bstart_tgemv_acc *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 18);
+}
+
+static bool trans_bstart_tgemvmx(DisasContext *ctx, arg_bstart_tgemvmx *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 20);
+}
+
+static bool trans_bstart_tgemvmx_bias(DisasContext *ctx,
+                                      arg_bstart_tgemvmx_bias *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 21);
+}
+
+static bool trans_bstart_tgemvmx_acc(DisasContext *ctx,
+                                     arg_bstart_tgemvmx_acc *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 22);
 }
 
 static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
@@ -2671,7 +2762,15 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, 0, size, true);
+    /*
+     * v0.57 source-only B.IOT forms use DstTile=111 and canonical imm4=0.
+     * They append ordered input bindings without allocating an output Tile.
+     * DstTile=111 with a nonzero size remains illegal when the descriptor is
+     * consumed because it cannot name an output hand.
+     */
+    const bool has_output = !(dst == 7u && size == 0u);
+    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, 0, size,
+                            has_output);
     return true;
 }
 
@@ -7904,6 +8003,61 @@ static bool trans_ld_add(DisasContext *ctx, arg_ld_add *a)
     TCGv_i64 old = tcg_temp_new_i64();
     gen_helper_linx_ld_add(old, tcg_env, addr, val);
     linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_casb(DisasContext *ctx, arg_casb *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
+    tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
+    gen_helper_linx_casb(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_cash(DisasContext *ctx, arg_cash *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
+    tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
+    gen_helper_linx_cash(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_casw(DisasContext *ctx, arg_casw *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+    TCGv_i32 cmp32 = tcg_temp_new_i32();
+    TCGv_i32 new32 = tcg_temp_new_i32();
+
+    tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
+    tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
+    gen_helper_linx_casw(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_casd(DisasContext *ctx, arg_casd *a)
+{
+    TCGv_i64 old = tcg_temp_new_i64();
+
+    gen_helper_linx_casd(old, tcg_env, linx_get_reg(a->SrcL),
+                         linx_get_reg(a->SrcR), linx_get_reg(a->SrcD));
+    linx_set_dest(a->RegDst, old);
+    return true;
+}
+
+static bool trans_dma(DisasContext *ctx, arg_dma *a)
+{
+    gen_helper_linx_dma(tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR));
     return true;
 }
 
