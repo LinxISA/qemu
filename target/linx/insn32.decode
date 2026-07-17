@@ -21,6 +21,8 @@
 %simm17 15:s17
 %simm22 7:s5 15:17
 %simm25 7:s25
+%fused_call_simm12 4:s12
+%fused_call_uimm5 22:5
 %uimm12 20:12
 %simm12_20_s12 20:s12
 %simm12_7_s5_25_7 7:s5 25:7
@@ -43,7 +45,7 @@
 %ModeHi 26:1
 %Mode 25:2
 
-# Canonical v0.56.5 control/data attribute fields
+# Canonical v0.57 control/data attribute fields
 %BA_DR 26:1
 %BA_aq 29:1
 %BA_atom 30:1
@@ -90,6 +92,9 @@
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
 bstart_split_cond   .... .... .... .... .... .... .010 0001 %simm25
+# Atomic 16+16 BSTART.CALL. Runtime fetch recognizes the complete word before
+# dispatch because the low halfword uses the compressed length prefix.
+start_call_32 0101 0... ..01 0110 .... .... .... 0010 simm12=%fused_call_simm12 uimm5=%fused_call_uimm5
 bstart_fall   .... .... .... .... .001 0000 0000 0001 %simm17
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
@@ -122,8 +127,30 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
 
 # Tile block headers (TMA/CUBE). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.
-bstart_tma     .... .00. .... 0001 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
-bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
+{
+  bstart_tload   .... .000 0000 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tstore  .... .000 0001 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmov    .... .000 0010 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tprefetch .... .000 0011 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mgather .... .000 0100 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mscatter .... .000 0101 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mgather_mask .... .000 0110 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mscatter_mask .... .000 0111 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mgather_cas .... .000 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmul .... .000 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmul_bias .... .000 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmul_acc .... .000 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmulmx .... .000 0100 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmulmx_bias .... .000 0101 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmulmx_acc .... .000 0110 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemv .... .001 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemv_bias .... .001 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemv_acc .... .001 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemvmx .... .001 0100 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemvmx_bias .... .001 0101 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgemvmx_acc .... .001 0110 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
+}
 
 # Tile block I/O dependency descriptors (multiple descriptors per block are legal).
 b_iot          .... .... .... .... .100 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=%IOTS1R src0=%IOTSrc0 src1=%IOTSrc1 imm4=%IOTImm4
@@ -170,8 +197,8 @@ acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
 
 # Atomics (minimal subset for toolchain intrinsics bring-up)
 # Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
-lr_w   0010 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
-lr_d   0011 ...0 0000 .... .000 .... .000 1011 %RegDst %SrcL far=%far aq=%aq rl=%rl
+lr_w   0010 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_d   0011 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
 sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
@@ -180,6 +207,13 @@ swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%
 
 lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+
+# v0.57 local compare-and-swap and DMA encodings.
+casb   .... .... .... .... .000 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
+cash   .... .... .... .... .001 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
+casw   .... .... .... .... .010 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
+casd   .... .... .... .... .011 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
+dma    0000 000. .... .... .111 0000 0000 1011 %SrcL %SrcR
 
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
@@ -478,8 +512,8 @@ dc_civa       0000 0000 0011 .... .110 0000 0010 1011 %SrcL
 dc_cva        0000 0000 0010 .... .110 0000 0010 1011 %SrcL
 dc_csw        0000 0000 0101 .... .110 0000 0010 1011 %SrcL
 dc_cisw       0000 0000 0110 .... .110 0000 0010 1011 %SrcL
-dc_isw        0000 0000 0111 .... .110 0000 0010 1011 %SrcL
-dc_zva        0000 0000 0100 .... .110 0000 0010 1011 %SrcL
+dc_isw        0000 0000 0100 .... .110 0000 0010 1011 %SrcL
+dc_zva        0000 0000 0111 .... .110 0000 0010 1011 %SrcL
 ebreak        0000 .... 0001 0000 0001 0000 0010 1011 %imm4
 lsrget        .... .... .... 0000 0011 .... .011 1011 %RegDst lsrid=%lsr_id
 

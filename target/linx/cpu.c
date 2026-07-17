@@ -3910,10 +3910,280 @@ static const TCGCPUOps linx_tcg_ops = {
     .do_interrupt = linx_cpu_do_interrupt,
 };
 
+static int linx_cpu_pre_save(void *opaque)
+{
+    LinxCPU *cpu = opaque;
+    CPULinxState *env = &cpu->env;
+
+    for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+        if (acr != (env->acr & 0xfu) &&
+            (env->acr_block_state[acr].tile_iot_valid ||
+             env->acr_block_state[acr].tile_iot_count)) {
+            return -EINVAL;
+        }
+    }
+    uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
+    uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
+    const uint16_t owner = 1u << (env->acr & 0xfu);
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        for (unsigned source = 0; source < 2; source++) {
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
+                expected_pin[env->tile_iot_src_phys[i][source]] = owner;
+            }
+        }
+        if (env->tile_iot_output_valid[i]) {
+            const unsigned tile = env->tile_iot_output_phys[i];
+            expected_reserved[tile / LINX_TILE_HAND_DEPTH] |=
+                1u << (tile % LINX_TILE_HAND_DEPTH);
+        }
+    }
+    if (memcmp(expected_reserved, env->tile_hand_reserved,
+               sizeof(expected_reserved)) != 0 ||
+        memcmp(expected_pin, env->tile_pin_owner,
+               sizeof(expected_pin)) != 0) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
+{
+    LinxCPU *cpu = opaque;
+    CPULinxState *env = &cpu->env;
+
+    if (version_id < 12) {
+        /* v11 carried no tile backing or allocator state. */
+        env->tile_func = 0;
+        env->tile_dtype = 0;
+        env->tile_iot_valid = 0;
+        env->tile_iot_flags = 0;
+        env->tile_iot_dst = 0;
+        env->tile_iot_grp = 0;
+        env->tile_iot_src0 = 0;
+        env->tile_iot_src1 = 0;
+        env->tile_iot_reg = 0;
+        env->tile_iot_size = 0;
+        env->tile_arg_format = 0;
+        env->tile_attr_raw = 0;
+        env->tile_attr_pad = 0;
+        env->tile_attr_dtype = 0;
+        env->tile_ior_count = 0;
+        memset(env->tile_ior_desc, 0, sizeof(env->tile_ior_desc));
+        env->vec_ri_count = 0;
+        memset(env->vec_ri_value, 0, sizeof(env->vec_ri_value));
+        env->tile_iot_count = 0;
+        memset(env->tile_iot_desc, 0, sizeof(env->tile_iot_desc));
+        memset(env->tile_iot_src_valid, 0,
+               sizeof(env->tile_iot_src_valid));
+        memset(env->tile_iot_src_phys, 0, sizeof(env->tile_iot_src_phys));
+        memset(env->tile_iot_output_valid, 0,
+               sizeof(env->tile_iot_output_valid));
+        memset(env->tile_iot_output_phys, 0,
+               sizeof(env->tile_iot_output_phys));
+        memset(env->tile_hand_live, 0, sizeof(env->tile_hand_live));
+        memset(env->tile_hand_reserved, 0,
+               sizeof(env->tile_hand_reserved));
+        memset(env->tile_hand_order, 0, sizeof(env->tile_hand_order));
+        memset(env->tile_hand_count, 0, sizeof(env->tile_hand_count));
+        memset(env->tile_pin_owner, 0, sizeof(env->tile_pin_owner));
+        env->tile_acc_carrier_valid = 0;
+        env->tile_acc_carrier = 0;
+        env->tile_acc_sources_valid = 0;
+        env->tile_acc_src0 = 0;
+        env->tile_acc_src1 = 0;
+        memset(env->tile_reg, 0, sizeof(env->tile_reg));
+        memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
+        memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
+        memset(env->tile_acc, 0, sizeof(env->tile_acc));
+        env->tile_acc_bytes = 0;
+        return true;
+    }
+
+    if (version_id == 12) {
+        bool nonempty_tile = false;
+        for (unsigned tile = 0;
+             tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+            nonempty_tile |= env->tile_reg_bytes[tile] != 0;
+        }
+        for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
+            nonempty_tile |= env->tile_hand_live[hand] != 0;
+        }
+        if (env->tile_iot_valid || env->tile_iot_count || nonempty_tile ||
+            env->tile_acc_bytes || env->tile_acc_carrier_valid ||
+            env->tile_acc_sources_valid) {
+            error_setg(errp,
+                       "linx: cannot migrate nonempty v12 tile state across "
+                       "the ordered-hand and 6-bit B.IOT transition");
+            return false;
+        }
+        memset(env->tile_iot_src_valid, 0,
+               sizeof(env->tile_iot_src_valid));
+        memset(env->tile_iot_src_phys, 0, sizeof(env->tile_iot_src_phys));
+        memset(env->tile_iot_output_valid, 0,
+               sizeof(env->tile_iot_output_valid));
+        memset(env->tile_iot_output_phys, 0,
+               sizeof(env->tile_iot_output_phys));
+        memset(env->tile_hand_reserved, 0,
+               sizeof(env->tile_hand_reserved));
+        memset(env->tile_hand_order, 0, sizeof(env->tile_hand_order));
+        memset(env->tile_hand_count, 0, sizeof(env->tile_hand_count));
+        memset(env->tile_pin_owner, 0, sizeof(env->tile_pin_owner));
+    }
+
+    if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
+        env->vec_ri_count > LINX_VEC_RI_MAX ||
+        env->tile_iot_count > LINX_TILE_MAX_IOT) {
+        error_setg(errp, "linx: invalid migrated tile descriptor counts");
+        return false;
+    }
+    if (env->tile_iot_valid > 1 || env->tile_acc_carrier_valid > 1 ||
+        env->tile_acc_sources_valid > 1 ||
+        (env->tile_acc_carrier_valid &&
+         env->tile_acc_carrier >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH) ||
+        (env->tile_acc_sources_valid &&
+         (env->tile_acc_src0 >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH ||
+          env->tile_acc_src1 >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH))) {
+        error_setg(errp, "linx: invalid migrated tile accumulator state");
+        return false;
+    }
+    if (env->tile_acc_bytes > LINX_TILE_MAX_BYTES ||
+        (env->tile_acc_bytes & 3u) != 0) {
+        error_setg(errp, "linx: invalid migrated tile accumulator footprint");
+        return false;
+    }
+    for (unsigned tile = 0;
+         tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+        const uint32_t bytes = env->tile_reg_bytes[tile];
+        const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+        const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+        if (bytes > LINX_TILE_MAX_BYTES || (bytes & 3u) != 0 ||
+            ((env->tile_hand_live[hand] & (1u << depth)) != 0 && bytes == 0)) {
+            error_setg(errp, "linx: invalid migrated tile %u state", tile);
+            return false;
+        }
+    }
+    for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
+        uint8_t seen = 0;
+        if (env->tile_hand_count[hand] > LINX_TILE_HAND_DEPTH ||
+            (env->tile_hand_live[hand] & env->tile_hand_reserved[hand]) != 0) {
+            error_setg(errp, "linx: invalid migrated tile hand %u state", hand);
+            return false;
+        }
+        for (unsigned rank = 0; rank < env->tile_hand_count[hand]; rank++) {
+            const unsigned tile = env->tile_hand_order[hand][rank];
+            const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+            if (tile / LINX_TILE_HAND_DEPTH != hand ||
+                (seen & (1u << depth)) != 0 ||
+                (env->tile_hand_live[hand] & (1u << depth)) == 0) {
+                error_setg(errp,
+                           "linx: invalid migrated tile hand %u order", hand);
+                return false;
+            }
+            seen |= 1u << depth;
+        }
+        if (seen != env->tile_hand_live[hand]) {
+            error_setg(errp,
+                       "linx: migrated tile hand %u order/live mismatch", hand);
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < LINX_TILE_MAX_IOT; i++) {
+        if (env->tile_iot_src_valid[i] > 3 ||
+            env->tile_iot_output_valid[i] > 1) {
+            error_setg(errp,
+                       "linx: invalid migrated tile binding %u flags", i);
+            return false;
+        }
+        if (i >= env->tile_iot_count &&
+            (env->tile_iot_src_valid[i] ||
+             env->tile_iot_output_valid[i])) {
+            error_setg(errp,
+                       "linx: migrated tile binding %u is outside count", i);
+            return false;
+        }
+        for (unsigned source = 0; source < 2; source++) {
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0 &&
+                env->tile_iot_src_phys[i][source] >=
+                    LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH) {
+                error_setg(errp,
+                           "linx: invalid migrated tile binding %u source",
+                           i);
+                return false;
+            }
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
+                const unsigned tile = env->tile_iot_src_phys[i][source];
+                const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+                const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+                if ((env->tile_hand_live[hand] & (1u << depth)) == 0 ||
+                    env->tile_reg_bytes[tile] == 0) {
+                    error_setg(errp,
+                               "linx: migrated tile binding %u source is not live",
+                               i);
+                    return false;
+                }
+            }
+        }
+        if (env->tile_iot_output_valid[i]) {
+            const unsigned tile = env->tile_iot_output_phys[i];
+            if (tile >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH ||
+                (env->tile_hand_reserved[tile / LINX_TILE_HAND_DEPTH] &
+                 (1u << (tile % LINX_TILE_HAND_DEPTH))) == 0) {
+                error_setg(errp,
+                           "linx: invalid migrated tile binding %u output",
+                           i);
+                return false;
+            }
+        }
+    }
+    uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
+    uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
+    const uint16_t owner = 1u << (env->acr & 0xfu);
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        for (unsigned source = 0; source < 2; source++) {
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
+                const unsigned tile = env->tile_iot_src_phys[i][source];
+                expected_pin[tile] = owner;
+            }
+        }
+        if (env->tile_iot_output_valid[i]) {
+            const unsigned tile = env->tile_iot_output_phys[i];
+            const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+            const uint8_t bit = 1u << (tile % LINX_TILE_HAND_DEPTH);
+            if (expected_reserved[hand] & bit) {
+                error_setg(errp,
+                           "linx: duplicate migrated tile output owner");
+                return false;
+            }
+            expected_reserved[hand] |= bit;
+        }
+    }
+    if (memcmp(expected_reserved, env->tile_hand_reserved,
+               sizeof(expected_reserved)) != 0 ||
+        memcmp(expected_pin, env->tile_pin_owner,
+               sizeof(expected_pin)) != 0) {
+        error_setg(errp,
+                   "linx: migrated tile reservation/pin ownership mismatch");
+        return false;
+    }
+    if (env->tile_acc_carrier_valid) {
+        const unsigned tile = env->tile_acc_carrier;
+        const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+        const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+        if ((env->tile_hand_live[hand] & (1u << depth)) == 0 ||
+            env->tile_reg_bytes[tile] == 0) {
+            error_setg(errp, "linx: migrated accumulator carrier is not live");
+            return false;
+        }
+    }
+    return true;
+}
+
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 11,
+    .version_id = 13,
     .minimum_version_id = 11,
+    .pre_save = linx_cpu_pre_save,
+    .post_load_errp = linx_cpu_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(env.pc, LinxCPU),
         VMSTATE_UINT32(env.cond, LinxCPU),
@@ -3944,6 +4214,64 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64_ARRAY(env.vtq, LinxCPU, LINX_VEC_QUEUE_DEPTH),
         VMSTATE_UINT64_ARRAY(env.lb, LinxCPU, 3),
         VMSTATE_UINT64_ARRAY(env.lc, LinxCPU, 3),
+        VMSTATE_UINT32_V(env.tile_func, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_dtype, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_valid, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_flags, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_dst, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_grp, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_src0, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_src1, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_reg, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_iot_size, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_arg_format, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_attr_raw, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_attr_pad, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_attr_dtype, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_ior_count, LinxCPU, 12),
+        VMSTATE_UINT64_ARRAY_V(env.tile_ior_desc, LinxCPU,
+                               LINX_TILE_MAX_IOR, 12),
+        VMSTATE_UINT32_V(env.vec_ri_count, LinxCPU, 12),
+        VMSTATE_UINT64_ARRAY_V(env.vec_ri_value, LinxCPU,
+                               LINX_VEC_RI_MAX, 12),
+        VMSTATE_UINT32_V(env.tile_iot_count, LinxCPU, 12),
+        VMSTATE_UINT64_ARRAY_V(env.tile_iot_desc, LinxCPU,
+                               LINX_TILE_MAX_IOT, 12),
+        VMSTATE_UINT8_ARRAY_V(env.tile_iot_src_valid, LinxCPU,
+                              LINX_TILE_MAX_IOT, 13),
+        VMSTATE_UINT8_2DARRAY_V(env.tile_iot_src_phys, LinxCPU,
+                                LINX_TILE_MAX_IOT, 2, 13),
+        VMSTATE_UINT8_ARRAY_V(env.tile_iot_output_valid, LinxCPU,
+                              LINX_TILE_MAX_IOT, 13),
+        VMSTATE_UINT8_ARRAY_V(env.tile_iot_output_phys, LinxCPU,
+                              LINX_TILE_MAX_IOT, 13),
+        VMSTATE_UINT8_ARRAY_V(env.tile_hand_live, LinxCPU,
+                              LINX_TILE_HAND_COUNT, 12),
+        VMSTATE_UINT8_ARRAY_V(env.tile_hand_reserved, LinxCPU,
+                              LINX_TILE_HAND_COUNT, 13),
+        VMSTATE_UINT8_2DARRAY_V(env.tile_hand_order, LinxCPU,
+                                LINX_TILE_HAND_COUNT,
+                                LINX_TILE_HAND_DEPTH, 13),
+        VMSTATE_UINT8_ARRAY_V(env.tile_hand_count, LinxCPU,
+                              LINX_TILE_HAND_COUNT, 13),
+        VMSTATE_UINT16_ARRAY_V(env.tile_pin_owner, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH,
+                               13),
+        VMSTATE_UINT8_V(env.tile_acc_carrier_valid, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_carrier, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_sources_valid, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_src0, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_src1, LinxCPU, 12),
+        VMSTATE_UINT32_2DARRAY_V(env.tile_reg, LinxCPU,
+                                 LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH,
+                                 LINX_TILE_MAX_WORDS, 12),
+        VMSTATE_UINT32_ARRAY_V(env.tile_reg_bytes, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 12),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
+                              LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 13),
+        VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
+                               LINX_TILE_MAX_WORDS, 12),
+        VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),
         VMSTATE_UINT64(env.insn_pc_next, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
         VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),

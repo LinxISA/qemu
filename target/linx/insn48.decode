@@ -29,6 +29,7 @@
 %simm22_6_s10_36_12 6:s10 36:12
 %simm22_6_s10_23_5_41_7 6:s10 23:5 41:7
 %shamt_43_5 43:5
+%shamt_41_7 41:7
 %shamt_23_5 23:5
 %immr 4:6
 %imms 10:6
@@ -42,6 +43,8 @@
 %r 42:1
 %s 43:1
 %h 43:1
+%fused_call_simm25 7:s25
+%fused_call_uimm5 38:5
 
 # HL.LUI | hl.lui imm, ->{t, u, Rd} (load upper immediate, 32-bit)
 hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
@@ -114,6 +117,9 @@ hl_remw     0000 0000 0000 0000 0000 000. .... .... .110 .... .101 0111 .... .00
 hl_remuw    0000 0000 0000 0000 0000 000. .... .... .111 .... .101 0111 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR
 
 # HL.BSTART.STD variants (29-bit PC-relative)
+# Atomic 32+16 HL.BSTART.CALL. The top 16 zeroes are decodetree padding; the
+# architectural instruction remains 48 bits.
+start_call_48 0000 0000 0000 0000 0101 0... ..01 0110 .... .... .... .... .... .... .001 0001 simm25=%fused_call_simm25 uimm5=%fused_call_uimm5
 hl_bstart_std_fall   0000 0000 0000 0000 .... .... .... .... .001 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 hl_bstart_std_direct 0000 0000 0000 0000 .... .... .... .... .010 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
 hl_bstart_std_cond   0000 0000 0000 0000 .... .... .... .... .011 0000 0000 0001 .... .... .... 1110 simm=%simm_4_s12_31_17
@@ -261,8 +267,8 @@ hl_sdi_upr   0000 0000 0000 0000 .... .... .... .... .111 .... .101 1001 .... ..
 
 # Remaining HL utility / control forms
 hl_bfi       0000 0000 0000 0000 0000 000. .... .... .010 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %immr %imms
-hl_ccat      0000 0000 0000 0000 .... .00. .... .... .001 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
-hl_ccatw     0000 0000 0000 0000 .... .00. .... .... .010 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_43_5
+hl_ccat      0000 0000 0000 0000 .... .... .... .... .001 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_41_7
+hl_ccatw     0000 0000 0000 0000 .... .... .... .... .010 .... .101 1101 .... .000 0000 1110 %RegDst0 %RegDst1 %SrcL %SrcR shamt=%shamt_41_7
 hl_lis       0000 0000 0000 0000 .... .... .... .... .... .... .000 1101 .... .... .... 1110 %RegDst simm=%simm32
 hl_liu       0000 0000 0000 0000 .... .... .... .... .... .... .001 1101 .... .... .... 1110 %RegDst uimm=%imm32
 hl_miadd     0000 0000 0000 0000 .... .... .... .... .000 .... .100 1101 .... .... .... 1110 %RegDst %SrcL %SrcR %uimm19
@@ -279,7 +285,7 @@ hl_setc_gei  0000 0000 0000 0000 .... .... .... .... .101 .... .111 0101 .... ..
 hl_setc_ltui 0000 0000 0000 0000 .... .... .... .... .110 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
 hl_setc_geui 0000 0000 0000 0000 .... .... .... .... .111 .... .111 0101 .... .... .... 1110 %SrcL shamt=%shamt_23_5 uimm=%uimm24
 {
-  hl_prf     0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
+  hl_prf     0000 0000 0000 0000 .... .... .... .... .111 0000 0000 1001 .... .000 0000 1110 %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
   hl_prf_a   0000 0000 0000 0000 .... .... .... .... .111 .... .000 1001 .... .000 0001 1110 %RegDst %SrcL %SrcR %SrcRType model=%model shamt=%shamt_43_5
 }
 hl_prfi_u    0000 0000 0000 0000 .... .... .... .... .111 0000 0010 1001 .... .... ..00 1110 %SrcL model=%model simm=%simm17_6_s5_36_12
