@@ -3994,6 +3994,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg, 0, sizeof(env->tile_reg));
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
+        memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
         return true;
@@ -4028,6 +4029,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_hand_order, 0, sizeof(env->tile_hand_order));
         memset(env->tile_hand_count, 0, sizeof(env->tile_hand_count));
         memset(env->tile_pin_owner, 0, sizeof(env->tile_pin_owner));
+    }
+    if (version_id < 14) {
+        memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
     }
 
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
@@ -4180,7 +4184,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 13,
+    .version_id = 14,
     .minimum_version_id = 11,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4269,6 +4273,8 @@ static const VMStateDescription vmstate_linx_cpu = {
                                LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 12),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 13),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
+                              LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 14),
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),
