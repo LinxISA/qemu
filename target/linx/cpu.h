@@ -450,6 +450,7 @@ typedef struct CPUArchState {
     uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
     uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
     uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
+    uint8_t tile_reg_dtype[32]; /* canonical v0.57 producer DataType */
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
