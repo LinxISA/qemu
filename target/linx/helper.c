@@ -11149,6 +11149,13 @@ static inline uint32_t linx_tile_tepl_binary_word(CPULinxState *env,
         case 0x025u:
             out = a < b ? a : b;
             break;
+        case 0x030u:
+        case 0x032u:
+            if (b == 0.0f) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            }
+            out = a - floorf(a / b) * b;
+            break;
         default:
             return 0;
         }
@@ -11280,6 +11287,21 @@ static inline uint32_t linx_tile_tepl_binary_word(CPULinxState *env,
                    ? (uint32_t)(linx_tile_sign_extend(lhs, elem_bytes) >>
                                 (rhs & 31u))
                    : lhs >> (rhs & 31u);
+    case 0x030u:
+    case 0x032u:
+        if (rhs == 0u) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        }
+        if (linx_tile_dtype_is_signed(dtype)) {
+            const int64_t a = linx_tile_sign_extend(lhs, elem_bytes);
+            const int64_t b = linx_tile_sign_extend(rhs, elem_bytes);
+            int64_t rem = a % b;
+            if (rem != 0 && ((rem < 0) != (b < 0))) {
+                rem += b;
+            }
+            return (uint32_t)rem;
+        }
+        return lhs % rhs;
     default:
         return 0;
     }
@@ -11565,6 +11587,8 @@ static bool linx_tile_tepl_selector_executable(uint32_t op)
     case 0x02du: /* TABS */
     case 0x02eu: /* TNOT */
     case 0x02fu: /* TNEG */
+    case 0x030u: /* TREM */
+    case 0x032u: /* TREMS */
         return true;
     default:
         return false;
@@ -11616,6 +11640,11 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     const uint32_t dtype = env->tile_dtype & 0x1fu;
     if (op == 0x02fu && dtype != 17u && dtype != 18u && dtype != 1u &&
         dtype != 2u && dtype != 6u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if ((op == 0x030u || op == 0x032u) && dtype != 17u && dtype != 25u &&
+        dtype != 18u && dtype != 26u && dtype != 1u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
