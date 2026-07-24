@@ -11449,6 +11449,8 @@ static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
         case 0x02du:
             out = fabsf(input);
             break;
+        case 0x02fu:
+            return value ^ 0x80000000u;
         default:
             return 0;
         }
@@ -11474,6 +11476,11 @@ static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
         return value;
     case 0x02eu:
         return ~value;
+    case 0x02fu:
+        if ((dtype & 0x1fu) == 2u || (dtype & 0x1fu) == 6u) {
+            return value ^ 0x8000u;
+        }
+        return 0u - value;
     default:
         return 0;
     }
@@ -11557,6 +11564,7 @@ static bool linx_tile_tepl_selector_executable(uint32_t op)
     case 0x02bu: /* TCMP */
     case 0x02du: /* TABS */
     case 0x02eu: /* TNOT */
+    case 0x02fu: /* TNEG */
         return true;
     default:
         return false;
@@ -11605,6 +11613,12 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     }
 
     const uint32_t active = rows * cols;
+    const uint32_t dtype = env->tile_dtype & 0x1fu;
+    if (op == 0x02fu && dtype != 17u && dtype != 18u && dtype != 1u &&
+        dtype != 2u && dtype != 6u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
     const uint32_t physical_rows = (uint32_t)(bytes64 / elem_bytes) /
                                    physical_cols;
     if ((has_src0 &&
