@@ -11050,7 +11050,8 @@ static inline uint32_t linx_tile_scalar_as_dtype(uint64_t scalar,
     return (uint32_t)scalar;
 }
 
-static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
+static inline uint32_t linx_tile_tepl_binary_word(CPULinxState *env,
+                                                  uint32_t op, uint32_t dtype,
                                                   uint32_t lhs, uint32_t rhs)
 {
     const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
@@ -11089,6 +11090,76 @@ static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
             return 0;
         }
         return linx_tile_f32_as_word(out);
+    }
+    if ((dtype & 0x1fu) == 2u) {
+        const float16 a = make_float16((uint16_t)lhs);
+        const float16 b = make_float16((uint16_t)rhs);
+        float16 out;
+
+        switch (op) {
+        case 0x000u:
+        case 0x020u:
+            out = float16_add(a, b, &env->fp_status);
+            break;
+        case 0x001u:
+        case 0x021u:
+            out = float16_sub(a, b, &env->fp_status);
+            break;
+        case 0x002u:
+        case 0x022u:
+            out = float16_mul(a, b, &env->fp_status);
+            break;
+        case 0x003u:
+        case 0x023u:
+            out = float16_div(a, b, &env->fp_status);
+            break;
+        case 0x004u:
+        case 0x024u:
+            out = float16_max(a, b, &env->fp_status);
+            break;
+        case 0x005u:
+        case 0x025u:
+            out = float16_min(a, b, &env->fp_status);
+            break;
+        default:
+            return 0u;
+        }
+        return float16_val(out);
+    }
+    if ((dtype & 0x1fu) == 6u) {
+        const bfloat16 a = (bfloat16)(uint16_t)lhs;
+        const bfloat16 b = (bfloat16)(uint16_t)rhs;
+        bfloat16 out;
+
+        switch (op) {
+        case 0x000u:
+        case 0x020u:
+            out = bfloat16_add(a, b, &env->fp_status);
+            break;
+        case 0x001u:
+        case 0x021u:
+            out = bfloat16_sub(a, b, &env->fp_status);
+            break;
+        case 0x002u:
+        case 0x022u:
+            out = bfloat16_mul(a, b, &env->fp_status);
+            break;
+        case 0x003u:
+        case 0x023u:
+            out = bfloat16_div(a, b, &env->fp_status);
+            break;
+        case 0x004u:
+        case 0x024u:
+            out = bfloat16_max(a, b, &env->fp_status);
+            break;
+        case 0x005u:
+        case 0x025u:
+            out = bfloat16_min(a, b, &env->fp_status);
+            break;
+        default:
+            return 0u;
+        }
+        return out;
     }
 
     switch (op) {
@@ -11578,10 +11649,10 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                 }
                 if (op == 0x014u) {
                     result = linx_tile_tepl_binary_word(
-                        0x000u, env->tile_dtype, result, value);
+                        env, 0x000u, env->tile_dtype, result, value);
                 } else {
                     result = linx_tile_tepl_binary_word(
-                        op == 0x012u ? 0x004u : 0x005u,
+                        env, op == 0x012u ? 0x004u : 0x005u,
                         env->tile_dtype, result, value);
                 }
             }
@@ -11609,10 +11680,10 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                                    &value);
                 if (op == 0x017u) {
                     result = linx_tile_tepl_binary_word(
-                        0x000u, env->tile_dtype, result, value);
+                        env, 0x000u, env->tile_dtype, result, value);
                 } else {
                     result = linx_tile_tepl_binary_word(
-                        op == 0x015u ? 0x004u : 0x005u,
+                        env, op == 0x015u ? 0x004u : 0x005u,
                         env->tile_dtype, result, value);
                 }
             }
@@ -11665,11 +11736,11 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             }
             if (has_src0 && has_src1) {
                 result = linx_tile_tepl_binary_word(
-                    op, env->tile_dtype, lhs, rhs);
+                    env, op, env->tile_dtype, lhs, rhs);
             } else if (has_src0 && scalar_mode &&
                        env->tile_arg_format == 1u) {
                 result = linx_tile_tepl_binary_word(
-                    op, env->tile_dtype, lhs, scalar_word);
+                    env, op, env->tile_dtype, lhs, scalar_word);
             } else if (has_src0) {
                 result = linx_tile_tepl_unary_word(
                     op, env->tile_dtype, lhs);
