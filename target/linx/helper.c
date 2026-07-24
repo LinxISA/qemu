@@ -12159,6 +12159,8 @@ static bool linx_tile_tepl_selector_executable(uint32_t op)
     case 0x047u: /* TCOLEXPANDMIN */
     case 0x048u: /* TCOLEXPANDEXPDIF */
     case 0x082u: /* TFILLPAD */
+    case 0x080u: /* TCI */
+    case 0x081u: /* TTRI */
     case 0x087u: /* TCONCAT */
     case 0x089u: /* TGATHERB */
     case 0x0c3u: /* TPARTADD */
@@ -12175,6 +12177,8 @@ static int linx_tile_tepl_source_arity(uint32_t op)
 {
     switch (op) {
     case 0x019u: /* TEXPANDS */
+    case 0x080u: /* TCI */
+    case 0x081u: /* TTRI */
         return 0;
     case 0x00bu: /* TRELU */
     case 0x00du: /* TCVT */
@@ -12339,6 +12343,17 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
+    if (op == 0x080u && dtype != 17u && dtype != 25u &&
+        dtype != 18u && dtype != 26u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if (op == 0x081u && dtype != 19u && dtype != 27u &&
+        dtype != 18u && dtype != 26u && dtype != 17u && dtype != 25u &&
+        dtype != 2u && dtype != 6u && dtype != 1u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
     if ((op >= 0x0c3u && op <= 0x0c6u) &&
         dtype != 19u && dtype != 27u && dtype != 18u && dtype != 26u &&
         dtype != 17u && dtype != 25u && dtype != 2u && dtype != 6u &&
@@ -12384,6 +12399,50 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             return;
         }
         return;
+    } else if (op == 0x080u) {
+        unsigned start_reg = 0;
+        unsigned descending_reg = 0;
+        if (!linx_tile_resolve_ior(env, 0, &start_reg) ||
+            !linx_tile_resolve_ior(env, 1, &descending_reg) ||
+            env->gpr[descending_reg] > 1u) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
+        const uint32_t start = linx_tile_scalar_as_dtype(
+            env->gpr[start_reg], dtype, elem_bytes);
+        const bool descending = env->gpr[descending_reg] != 0u;
+        for (uint32_t i = 0; i < cols; i++) {
+            const uint32_t value = descending ? start - i : start + i;
+            if (!linx_tile_set_elem(env, dst_tile, i, elem_bytes, value)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
+            }
+        }
+    } else if (op == 0x081u) {
+        unsigned diagonal_reg = 0;
+        unsigned orientation_reg = 0;
+        if (!linx_tile_resolve_ior(env, 0, &diagonal_reg) ||
+            !linx_tile_resolve_ior(env, 1, &orientation_reg) ||
+            env->gpr[orientation_reg] > 1u) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
+        const int64_t diagonal = (int32_t)env->gpr[diagonal_reg];
+        const bool upper = env->gpr[orientation_reg] != 0u;
+        const uint32_t one = linx_tile_tepl_one(dtype);
+        for (uint32_t r = 0; r < rows; r++) {
+            for (uint32_t c = 0; c < cols; c++) {
+                const int64_t boundary = (int64_t)r + diagonal;
+                const bool selected = upper ? (int64_t)c >= boundary
+                                            : (int64_t)c <= boundary;
+                if (!linx_tile_set_elem(env, dst_tile,
+                                        r * physical_cols + c,
+                                        elem_bytes, selected ? one : 0u)) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    return;
+                }
+            }
+        }
     } else if (op == 0x02cu || op == 0x034u) {
         if ((op == 0x034u &&
              (!scalar_mode || env->tile_arg_format != 1u)) ||
