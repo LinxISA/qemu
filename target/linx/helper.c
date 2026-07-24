@@ -11436,6 +11436,55 @@ static bool linx_tile_tepl_tcmp(CPULinxState *env, unsigned dst_tile,
     return true;
 }
 
+static bool linx_tile_tepl_tcmps(CPULinxState *env, unsigned dst_tile,
+                                 unsigned src_tile, uint32_t scalar,
+                                 uint32_t rows, uint32_t cols,
+                                 uint32_t physical_cols, uint32_t bytes)
+{
+    const uint32_t dtype = env->tile_reg_dtype[src_tile] & 0x1fu;
+    const unsigned elem_bytes = env->tile_reg_elem_bytes[src_tile];
+    const uint32_t mode = (env->tile_attr_raw >> 22) & 0x7u;
+    const uint32_t mask_words_per_row = (cols + 31u) / 32u;
+    const uint64_t mask_bytes =
+        (uint64_t)rows * mask_words_per_row * sizeof(uint32_t);
+
+    if ((env->tile_dtype & 0x1fu) != dtype || mode > 5u ||
+        mask_bytes > bytes ||
+        (uint64_t)rows * physical_cols * elem_bytes >
+            env->tile_reg_bytes[src_tile]) {
+        return false;
+    }
+
+    for (uint32_t r = 0; r < rows; r++) {
+        for (uint32_t c = 0; c < cols; c++) {
+            const uint32_t src_lane = r * physical_cols + c;
+            const uint32_t mask_word = r * mask_words_per_row + c / 32u;
+            uint32_t lhs = 0;
+            bool lane_result = false;
+
+            if (!linx_tile_get_elem(env, src_tile, src_lane, elem_bytes,
+                                    &lhs) ||
+                !linx_tile_tcmp_lane(env, dtype, lhs, scalar, mode,
+                                     &lane_result)) {
+                return false;
+            }
+            if (lane_result) {
+                uint32_t packed = ldl_le_p(
+                    (uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u);
+                packed |= 1u << (c & 31u);
+                stl_le_p((uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u,
+                         packed);
+            }
+        }
+    }
+
+    env->tile_reg_bytes[dst_tile] = bytes;
+    linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
+    linx_tile_set_dtype(env, dst_tile, 25u); /* packed predicate is U32 */
+    return linx_tile_set_shape(env, dst_tile, mask_words_per_row, rows,
+                               mask_words_per_row, rows);
+}
+
 static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
                                                  uint32_t value)
 {
@@ -11589,6 +11638,7 @@ static bool linx_tile_tepl_selector_executable(uint32_t op)
     case 0x02fu: /* TNEG */
     case 0x030u: /* TREM */
     case 0x032u: /* TREMS */
+    case 0x033u: /* TCMPS */
         return true;
     default:
         return false;
@@ -11648,6 +11698,11 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
+    if (op == 0x033u && dtype != 17u && dtype != 1u && dtype != 2u &&
+        dtype != 26u && dtype != 18u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
     const uint32_t physical_rows = (uint32_t)(bytes64 / elem_bytes) /
                                    physical_cols;
     if ((has_src0 &&
@@ -11666,6 +11721,16 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             !linx_tile_tepl_tcmp(env, dst_tile, src0_tile, src1_tile,
                                  rows, cols, physical_cols,
                                  (uint32_t)bytes64)) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
+        return;
+    } else if (op == 0x033u) {
+        if (!has_src0 || has_src1 || !scalar_mode ||
+            env->tile_arg_format != 1u ||
+            !linx_tile_tepl_tcmps(env, dst_tile, src0_tile, scalar_word,
+                                  rows, cols, physical_cols,
+                                  (uint32_t)bytes64)) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return;
         }
