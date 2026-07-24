@@ -394,13 +394,7 @@ typedef struct CPUArchState {
     uint32_t ebarg_stack_depth;
     uint64_t ebarg_stack[LINX_EBARG_STACK_DEPTH][LINX_SSR_EBARG_COUNT];
 
-    /*
-     * Tile block state (TAU bring-up).
-     *
-     * For now this models a minimal single-B.IOT descriptor per block. The
-     * implementation is intentionally small and is primarily used for PTO ISA
-     * bring-up (matmul demo).
-     */
+    /* Tile block header state and frozen multi-B.IOT queue bindings. */
     uint32_t tile_func;
     uint32_t tile_dtype;
     uint32_t tile_iot_valid;
