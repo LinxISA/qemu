@@ -9390,6 +9390,69 @@ static inline void linx_tile_set_dtype(CPULinxState *env, unsigned tile,
     }
 }
 
+static bool linx_tile_set_shape(CPULinxState *env, unsigned tile,
+                                uint32_t valid_cols, uint32_t valid_rows,
+                                uint32_t cols, uint32_t rows)
+{
+    if (tile >= 32u || valid_cols == 0u || valid_rows == 0u || cols == 0u ||
+        rows == 0u || valid_cols > cols || valid_rows > rows ||
+        valid_cols > UINT16_MAX || valid_rows > UINT16_MAX ||
+        cols > UINT16_MAX || rows > UINT16_MAX) {
+        return false;
+    }
+    env->tile_reg_valid_cols[tile] = valid_cols;
+    env->tile_reg_valid_rows[tile] = valid_rows;
+    env->tile_reg_cols[tile] = cols;
+    env->tile_reg_rows[tile] = rows;
+    return true;
+}
+
+static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
+                                      uint32_t bytes, unsigned elem_bytes)
+{
+    uint32_t valid_cols = (uint32_t)(env->lb[0] & 0xffffu);
+    uint32_t valid_rows = (uint32_t)(env->lb[1] & 0xffffu);
+    uint32_t cols = (uint32_t)(env->lb[2] & 0xffffu);
+
+    if (elem_bytes == 0u || bytes == 0u || bytes % elem_bytes != 0u) {
+        return false;
+    }
+    const uint32_t elems = bytes / elem_bytes;
+    if (valid_cols == 0u) {
+        valid_cols = elems;
+    }
+    if (valid_rows == 0u) {
+        valid_rows = 1u;
+    }
+    if (cols == 0u) {
+        cols = valid_cols;
+    }
+    if (cols == 0u || elems % cols != 0u) {
+        return false;
+    }
+    return linx_tile_set_shape(env, tile, valid_cols, valid_rows, cols,
+                               elems / cols);
+}
+
+static void linx_tile_copy_shape(CPULinxState *env, unsigned dst,
+                                 unsigned src)
+{
+    env->tile_reg_valid_cols[dst] = env->tile_reg_valid_cols[src];
+    env->tile_reg_valid_rows[dst] = env->tile_reg_valid_rows[src];
+    env->tile_reg_cols[dst] = env->tile_reg_cols[src];
+    env->tile_reg_rows[dst] = env->tile_reg_rows[src];
+}
+
+static bool linx_tile_shape_covers(const CPULinxState *env, unsigned tile,
+                                   uint32_t valid_cols, uint32_t valid_rows,
+                                   uint32_t cols, uint32_t rows)
+{
+    return tile < 32u && env->tile_reg_valid_cols[tile] >= valid_cols &&
+           env->tile_reg_valid_rows[tile] >= valid_rows &&
+           env->tile_reg_cols[tile] == cols &&
+           env->tile_reg_rows[tile] >= rows;
+}
+
 static inline uint32_t linx_tile_pad_value(uint32_t pad_mode, uint32_t dtype,
                                            unsigned elem_bytes, uint32_t seed)
 {
@@ -11344,6 +11407,10 @@ static bool linx_tile_tepl_tcmp(CPULinxState *env, unsigned dst_tile,
     env->tile_reg_bytes[dst_tile] = bytes;
     linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
     linx_tile_set_dtype(env, dst_tile, 25u); /* packed predicate is U32 */
+    if (!linx_tile_set_shape(env, dst_tile, mask_words_per_row, rows,
+                             mask_words_per_row, rows)) {
+        return false;
+    }
     return true;
 }
 
@@ -11538,6 +11605,17 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     }
 
     const uint32_t active = rows * cols;
+    const uint32_t physical_rows = (uint32_t)(bytes64 / elem_bytes) /
+                                   physical_cols;
+    if ((has_src0 &&
+         !linx_tile_shape_covers(env, src0_tile, cols, rows, physical_cols,
+                                 physical_rows)) ||
+        (has_src1 &&
+         !linx_tile_shape_covers(env, src1_tile, cols, rows, physical_cols,
+                                 physical_rows))) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
     memset(env->tile_reg[dst_tile], 0, LINX_TILE_MAX_BYTES);
 
     if (op == 0x02bu) {
@@ -11755,6 +11833,10 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
     linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+    if (!linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64,
+                                   elem_bytes)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
 }
 
 static inline unsigned linx_tile_offset_elem_bytes(const CPULinxState *env,
@@ -11925,6 +12007,10 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes;
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
     linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+    if (!linx_tile_set_shape(env, dst_tile, gm_inner, gm_outer,
+                             tr_inner, tr_outer)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
 }
 
 static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_reg,
@@ -11970,6 +12056,11 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_
     }
     if (!linx_tile_layout_shape_valid(fmt.src, tr_outer, tr_inner,
                                       elem_bytes)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    if (env->tile_reg_dtype[src_tile] != (dtype & 0x1fu) ||
+        env->tile_reg_elem_bytes[src_tile] != elem_bytes) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -12163,6 +12254,10 @@ static void linx_tile_mgather_common(CPULinxState *env, unsigned dst_tile,
     }
     env->tile_reg_bytes[dst_tile] = (uint32_t)(lane_count * elem_bytes);
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+    linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+    if (!linx_tile_set_shape(env, dst_tile, valid_col, valid_row, col, row)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
 }
 
 static void linx_tile_mscatter_common(CPULinxState *env, unsigned data_tile,
@@ -12258,6 +12353,10 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
     }
     env->tile_reg_bytes[dst_tile] = (uint32_t)(lane_count * elem_bytes);
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+    linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+    if (!linx_tile_set_shape(env, dst_tile, valid_col, valid_row, col, row)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
 }
 
 static void linx_tile_mamulb(CPULinxState *env, unsigned src_a, unsigned src_b,
@@ -12365,6 +12464,10 @@ static void linx_tile_acccvt(CPULinxState *env, unsigned dst_tile, unsigned size
     }
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
     linx_tile_set_elem_bytes(env, dst_tile, 4u);
+    linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+    if (!linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64, 4u)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
 }
 
 static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
@@ -12954,6 +13057,20 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         linx_tile_set_elem_bytes(env, dst_tile,
                                  linx_tile_dtype_elem_bytes(env->tile_dtype));
         linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+        if (!linx_tile_set_block_shape(
+                env, dst_tile, (uint32_t)bytes64,
+                linx_tile_dtype_elem_bytes(env->tile_dtype))) {
+            for (unsigned source = 0; source < 2; source++) {
+                if ((src_valid & (1u << source)) != 0 &&
+                    !src_was_pinned[source]) {
+                    env->tile_pin_owner[src_phys[source]] &= ~owner;
+                }
+            }
+            env->tile_hand_reserved[hand] &= ~(1u << depth);
+            env->tile_iot_output_valid[index] = 0;
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
     }
 
     env->tile_iot_desc[env->tile_iot_count++] = packed;
@@ -13151,6 +13268,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                                          env->tile_reg_elem_bytes[src_tile]);
                 linx_tile_set_dtype(env, dst_tile,
                                     env->tile_reg_dtype[src_tile]);
+                linx_tile_copy_shape(env, dst_tile, src_tile);
                 linx_tile_consume_bound_sources(env, live, i, &d,
                                                 order, count_by_hand,
                                                 &carrier_valid, &carrier);
@@ -13394,6 +13512,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                                          env->tile_reg_elem_bytes[src_tile]);
                 linx_tile_set_dtype(env, dst_tile,
                                     env->tile_reg_dtype[src_tile]);
+                linx_tile_copy_shape(env, dst_tile, src_tile);
                 linx_tile_consume_bound_sources(env, live, i, &d,
                                                 order, count_by_hand,
                                                 &carrier_valid, &carrier);
@@ -13903,6 +14022,11 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
             live[hand] &= ~(1u << depth);
             env->tile_reg_bytes[tile] = 0;
             env->tile_reg_elem_bytes[tile] = 0;
+            env->tile_reg_dtype[tile] = 0;
+            env->tile_reg_valid_cols[tile] = 0;
+            env->tile_reg_valid_rows[tile] = 0;
+            env->tile_reg_cols[tile] = 0;
+            env->tile_reg_rows[tile] = 0;
             continue;
         }
 

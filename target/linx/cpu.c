@@ -3995,6 +3995,12 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
+        memset(env->tile_reg_valid_cols, 0,
+               sizeof(env->tile_reg_valid_cols));
+        memset(env->tile_reg_valid_rows, 0,
+               sizeof(env->tile_reg_valid_rows));
+        memset(env->tile_reg_cols, 0, sizeof(env->tile_reg_cols));
+        memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
         return true;
@@ -4033,6 +4039,26 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     if (version_id < 14) {
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
     }
+    if (version_id < 15) {
+        bool nonempty_tile = false;
+
+        for (unsigned tile = 0;
+             tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+            nonempty_tile |= env->tile_reg_bytes[tile] != 0;
+        }
+        if (nonempty_tile) {
+            error_setg(errp,
+                       "linx: cannot migrate nonempty pre-v15 tile state "
+                       "without shape metadata");
+            return false;
+        }
+        memset(env->tile_reg_valid_cols, 0,
+               sizeof(env->tile_reg_valid_cols));
+        memset(env->tile_reg_valid_rows, 0,
+               sizeof(env->tile_reg_valid_rows));
+        memset(env->tile_reg_cols, 0, sizeof(env->tile_reg_cols));
+        memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
+    }
 
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4058,10 +4084,20 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     for (unsigned tile = 0;
          tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
         const uint32_t bytes = env->tile_reg_bytes[tile];
+        const uint32_t elem_bytes = env->tile_reg_elem_bytes[tile];
+        const uint32_t valid_cols = env->tile_reg_valid_cols[tile];
+        const uint32_t valid_rows = env->tile_reg_valid_rows[tile];
+        const uint32_t cols = env->tile_reg_cols[tile];
+        const uint32_t rows = env->tile_reg_rows[tile];
         const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
         const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
         if (bytes > LINX_TILE_MAX_BYTES || (bytes & 3u) != 0 ||
-            ((env->tile_hand_live[hand] & (1u << depth)) != 0 && bytes == 0)) {
+            ((env->tile_hand_live[hand] & (1u << depth)) != 0 && bytes == 0) ||
+            (bytes != 0 &&
+             (elem_bytes == 0 || valid_cols == 0 || valid_rows == 0 ||
+              cols == 0 || rows == 0 || valid_cols > cols ||
+              valid_rows > rows ||
+              (uint64_t)rows * cols * elem_bytes > bytes))) {
             error_setg(errp, "linx: invalid migrated tile %u state", tile);
             return false;
         }
@@ -4184,7 +4220,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 14,
+    .version_id = 15,
     .minimum_version_id = 11,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4275,6 +4311,14 @@ static const VMStateDescription vmstate_linx_cpu = {
                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 13),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 14),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_cols, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_rows, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_cols, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_rows, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),
