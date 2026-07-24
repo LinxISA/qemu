@@ -11053,6 +11053,8 @@ static inline uint32_t linx_tile_scalar_as_dtype(uint64_t scalar,
 static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
                                                   uint32_t lhs, uint32_t rhs)
 {
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+
     if ((dtype & 0x1fu) == 1u) {
         const float a = linx_tile_word_as_f32(lhs);
         const float b = linx_tile_word_as_f32(rhs);
@@ -11104,18 +11106,27 @@ static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
         if (rhs == 0u) {
             return 0u;
         }
-        return linx_tile_dtype_is_signed(dtype)
-                   ? (uint32_t)((int32_t)lhs / (int32_t)rhs)
-                   : lhs / rhs;
+        if (linx_tile_dtype_is_signed(dtype)) {
+            const int64_t a = linx_tile_sign_extend(lhs, elem_bytes);
+            const int64_t b = linx_tile_sign_extend(rhs, elem_bytes);
+            return b == 0 ? 0u : (uint32_t)(a / b);
+        }
+        return lhs / rhs;
     case 0x004u:
     case 0x024u:
         return linx_tile_dtype_is_signed(dtype)
-                   ? ((int32_t)lhs > (int32_t)rhs ? lhs : rhs)
+                   ? (linx_tile_sign_extend(lhs, elem_bytes) >
+                              linx_tile_sign_extend(rhs, elem_bytes)
+                          ? lhs
+                          : rhs)
                    : (lhs > rhs ? lhs : rhs);
     case 0x005u:
     case 0x025u:
         return linx_tile_dtype_is_signed(dtype)
-                   ? ((int32_t)lhs < (int32_t)rhs ? lhs : rhs)
+                   ? (linx_tile_sign_extend(lhs, elem_bytes) <
+                              linx_tile_sign_extend(rhs, elem_bytes)
+                          ? lhs
+                          : rhs)
                    : (lhs < rhs ? lhs : rhs);
     case 0x006u:
     case 0x026u:
@@ -11132,7 +11143,8 @@ static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
     case 0x00au:
     case 0x02au:
         return linx_tile_dtype_is_signed(dtype)
-                   ? (uint32_t)((int32_t)lhs >> (rhs & 31u))
+                   ? (uint32_t)(linx_tile_sign_extend(lhs, elem_bytes) >>
+                                (rhs & 31u))
                    : lhs >> (rhs & 31u);
     default:
         return 0;
@@ -11267,6 +11279,8 @@ static bool linx_tile_tepl_tcmp(CPULinxState *env, unsigned dst_tile,
 static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
                                                  uint32_t value)
 {
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+
     if ((dtype & 0x1fu) == 1u) {
         const float input = linx_tile_word_as_f32(value);
         float out = 0.0f;
@@ -11305,13 +11319,21 @@ static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
 
     switch (op) {
     case 0x00bu:
-        return (int32_t)value > 0 ? value : 0u;
+        return linx_tile_dtype_is_signed(dtype) &&
+                       linx_tile_sign_extend(value, elem_bytes) < 0
+                   ? 0u
+                   : value;
     case 0x00du:
     case 0x01cu:
         return value;
     case 0x02du:
-        return (uint32_t)((int32_t)value < 0 ? -(int32_t)value
-                                             : (int32_t)value);
+        if (linx_tile_dtype_is_signed(dtype)) {
+            const int64_t signed_value =
+                linx_tile_sign_extend(value, elem_bytes);
+            return (uint32_t)(signed_value < 0 ? -signed_value
+                                               : signed_value);
+        }
+        return value;
     case 0x02eu:
         return ~value;
     default:
