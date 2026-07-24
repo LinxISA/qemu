@@ -5,6 +5,9 @@ This QEMU tree contains:
 - A LinxISA CPU target (`target/linx/`)
 - A minimal LinxISA `virt` machine (`hw/linx/virt.c`)
 
+The current executable PTO Tile subset and its fail-closed boundaries are
+recorded in [`pto-v057-tile-support.md`](pto-v057-tile-support.md).
+
 ## Quick start (smoke test)
 
 Build/run a tiny freestanding `_start` that prints via the `virt` UART and powers
