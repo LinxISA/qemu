@@ -9049,6 +9049,8 @@ enum {
     LINX_CUBE_MAMULB = 0,
     LINX_CUBE_MAMULB_ACC = 2,
     LINX_CUBE_ACCCVT = 8,
+    LINX_CUBE_TGEMV = 16,
+    LINX_CUBE_TGEMV_ACC = 18,
 };
 
 enum {
@@ -14574,7 +14576,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
         break;
     case LINX_BLOCK_CUBE:
         switch (env->tile_func & 0x1f) {
-        case LINX_CUBE_MAMULB: {
+        case LINX_CUBE_MAMULB:
+        case LINX_CUBE_TGEMV: {
             LinxTileIOTDesc d;
             if (env->tile_iot_count) {
                 d = linx_tile_decode_iot(env->tile_iot_desc[0]);
@@ -14614,7 +14617,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
             acc_src1 = src1;
             break;
         }
-        case LINX_CUBE_MAMULB_ACC: {
+        case LINX_CUBE_MAMULB_ACC:
+        case LINX_CUBE_TGEMV_ACC: {
             LinxTileIOTDesc d;
             if (env->tile_iot_count) {
                 d = linx_tile_decode_iot(env->tile_iot_desc[0]);
