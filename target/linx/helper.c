@@ -11350,6 +11350,59 @@ static bool linx_tile_tepl_shape(const CPULinxState *env, unsigned elem_bytes,
 static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
                                   unsigned *addr_reg_out);
 
+static bool linx_tile_tepl_selector_executable(uint32_t op)
+{
+    switch (op) {
+    case 0x000u: /* TADD */
+    case 0x001u: /* TSUB */
+    case 0x002u: /* TMUL */
+    case 0x003u: /* TDIV */
+    case 0x004u: /* TMAX */
+    case 0x005u: /* TMIN */
+    case 0x006u: /* TAND */
+    case 0x007u: /* TOR */
+    case 0x008u: /* TXOR */
+    case 0x009u: /* TSHL */
+    case 0x00au: /* TSHR */
+    case 0x00bu: /* TRELU */
+    case 0x00du: /* TCVT */
+    case 0x00eu: /* TEXP */
+    case 0x00fu: /* TLOG */
+    case 0x010u: /* TSQRT */
+    case 0x011u: /* TRSQRT */
+    case 0x012u: /* TROWMAX */
+    case 0x013u: /* TROWMIN */
+    case 0x014u: /* TROWSUM */
+    case 0x015u: /* TCOLMAX */
+    case 0x016u: /* TCOLMIN */
+    case 0x017u: /* TCOLSUM */
+    case 0x018u: /* TRECIP */
+    case 0x019u: /* TEXPANDS */
+    case 0x01au: /* TGATHER */
+    case 0x01bu: /* TSCATTER */
+    case 0x01du: /* TTRANS */
+    case 0x01eu: /* TCOLEXPAND */
+    case 0x01fu: /* TROWEXPAND */
+    case 0x020u: /* TADDS */
+    case 0x021u: /* TSUBS */
+    case 0x022u: /* TMULS */
+    case 0x023u: /* TDIVS */
+    case 0x024u: /* TMAXS */
+    case 0x025u: /* TMINS */
+    case 0x026u: /* TANDS */
+    case 0x027u: /* TORS */
+    case 0x028u: /* TXORS */
+    case 0x029u: /* TSHLS */
+    case 0x02au: /* TSHRS */
+    case 0x02bu: /* TCMP */
+    case 0x02du: /* TABS */
+    case 0x02eu: /* TNOT */
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                            unsigned src0_tile, unsigned src1_tile,
                            bool has_src0, bool has_src1,
@@ -11379,7 +11432,8 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     uint32_t cols = 0;
     uint32_t physical_cols = 0;
 
-    if (dst_tile >= 32u || bytes64 == 0u ||
+    if (!linx_tile_tepl_selector_executable(op) || dst_tile >= 32u ||
+        bytes64 == 0u ||
         bytes64 > LINX_TILE_MAX_BYTES ||
         (elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u) ||
         (bytes64 % elem_bytes) != 0u ||
@@ -11570,57 +11624,6 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                 linx_tile_set_elem(env, dst_tile, r * physical_cols + c, elem_bytes,
                                    value);
             }
-        }
-    } else if (op == 0x0c0u) {
-        if (!has_src0) {
-            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            return;
-        }
-        memcpy(env->tile_reg[dst_tile], env->tile_reg[src0_tile],
-               (size_t)bytes64);
-        for (uint32_t r = 0; r < rows; r++) {
-            for (uint32_t i = 1; i < cols; i++) {
-                uint32_t key = 0;
-                linx_tile_get_elem(env, dst_tile, r * physical_cols + i, elem_bytes,
-                                   &key);
-                uint32_t j = i;
-                while (j > 0) {
-                    uint32_t prev = 0;
-                    linx_tile_get_elem(env, dst_tile, r * physical_cols + j - 1,
-                                       elem_bytes, &prev);
-                    const bool ordered =
-                        (env->tile_dtype & 0x1fu) == 1u
-                            ? linx_tile_word_as_f32(prev) <=
-                                  linx_tile_word_as_f32(key)
-                        : linx_tile_dtype_is_signed(env->tile_dtype)
-                            ? linx_tile_sign_extend(prev, elem_bytes) <=
-                                  linx_tile_sign_extend(key, elem_bytes)
-                            : prev <= key;
-                    if (ordered) {
-                        break;
-                    }
-                    linx_tile_set_elem(env, dst_tile, r * physical_cols + j, elem_bytes,
-                                       prev);
-                    j--;
-                }
-                linx_tile_set_elem(env, dst_tile, r * physical_cols + j, elem_bytes,
-                                   key);
-            }
-        }
-    } else if (op == 0x0c2u) {
-        if (!has_src0 || src0_elem_bytes == 0u) {
-            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            return;
-        }
-        const uint32_t bins = MIN(cols, active);
-        for (uint32_t i = 0; i < active; i++) {
-            const uint32_t lane = (i / cols) * physical_cols + (i % cols);
-            uint32_t value = 0;
-            uint32_t count = 0;
-            linx_tile_get_elem(env, src0_tile, lane, src0_elem_bytes, &value);
-            const uint32_t bin = value % MAX(1u, bins);
-            linx_tile_get_elem(env, dst_tile, bin, elem_bytes, &count);
-            linx_tile_set_elem(env, dst_tile, bin, elem_bytes, count + 1u);
         }
     } else {
         for (uint32_t i = 0; i < active; i++) {
