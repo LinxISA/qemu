@@ -11139,6 +11139,131 @@ static inline uint32_t linx_tile_tepl_binary_word(uint32_t op, uint32_t dtype,
     }
 }
 
+static bool linx_tile_tcmp_lane(CPULinxState *env, uint32_t dtype,
+                                uint32_t lhs, uint32_t rhs, uint32_t mode,
+                                bool *result)
+{
+    bool eq;
+    bool lt;
+    bool gt;
+
+    switch (dtype & 0x1fu) {
+    case 1u: { /* FP32 */
+        const float a = linx_tile_word_as_f32(lhs);
+        const float b = linx_tile_word_as_f32(rhs);
+        eq = a == b;
+        lt = a < b;
+        gt = a > b;
+        break;
+    }
+    case 2u: { /* FP16 */
+        const float16 a = make_float16((uint16_t)lhs);
+        const float16 b = make_float16((uint16_t)rhs);
+        eq = float16_eq_quiet(a, b, &env->fp_status);
+        lt = float16_lt_quiet(a, b, &env->fp_status);
+        gt = float16_lt_quiet(b, a, &env->fp_status);
+        break;
+    }
+    case 17u: /* INT32 */
+    case 18u: /* INT16 */
+    case 19u: /* INT8 */
+        eq = linx_tile_sign_extend(lhs, linx_tile_dtype_elem_bytes(dtype)) ==
+             linx_tile_sign_extend(rhs, linx_tile_dtype_elem_bytes(dtype));
+        lt = linx_tile_sign_extend(lhs, linx_tile_dtype_elem_bytes(dtype)) <
+             linx_tile_sign_extend(rhs, linx_tile_dtype_elem_bytes(dtype));
+        gt = linx_tile_sign_extend(lhs, linx_tile_dtype_elem_bytes(dtype)) >
+             linx_tile_sign_extend(rhs, linx_tile_dtype_elem_bytes(dtype));
+        break;
+    case 25u: /* UINT32 */
+    case 26u: /* UINT16 */
+    case 27u: /* UINT8 */
+        eq = lhs == rhs;
+        lt = lhs < rhs;
+        gt = lhs > rhs;
+        break;
+    default:
+        return false;
+    }
+
+    switch (mode) {
+    case 0u: /* EQ */
+        *result = eq;
+        return true;
+    case 1u: /* NE */
+        *result = !eq;
+        return true;
+    case 2u: /* LT */
+        *result = lt;
+        return true;
+    case 3u: /* LE */
+        *result = lt || eq;
+        return true;
+    case 4u: /* GT */
+        *result = gt;
+        return true;
+    case 5u: /* GE */
+        *result = gt || eq;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool linx_tile_tepl_tcmp(CPULinxState *env, unsigned dst_tile,
+                                unsigned src0_tile, unsigned src1_tile,
+                                uint32_t rows, uint32_t cols,
+                                uint32_t physical_cols, uint32_t bytes)
+{
+    const uint32_t dtype = env->tile_reg_dtype[src0_tile] & 0x1fu;
+    const unsigned elem_bytes = env->tile_reg_elem_bytes[src0_tile];
+    const uint32_t mode = (env->tile_attr_raw >> 22) & 0x7u;
+    const uint32_t mask_words_per_row = (cols + 31u) / 32u;
+    const uint64_t mask_bytes =
+        (uint64_t)rows * mask_words_per_row * sizeof(uint32_t);
+
+    if ((env->tile_dtype & 0x1fu) != dtype ||
+        env->tile_reg_dtype[src1_tile] != env->tile_reg_dtype[src0_tile] ||
+        env->tile_reg_elem_bytes[src1_tile] != elem_bytes || mode > 5u ||
+        mask_bytes > bytes ||
+        (uint64_t)rows * physical_cols * elem_bytes >
+            env->tile_reg_bytes[src0_tile] ||
+        (uint64_t)rows * physical_cols * elem_bytes >
+            env->tile_reg_bytes[src1_tile]) {
+        return false;
+    }
+
+    for (uint32_t r = 0; r < rows; r++) {
+        for (uint32_t c = 0; c < cols; c++) {
+            const uint32_t src_lane = r * physical_cols + c;
+            const uint32_t mask_word = r * mask_words_per_row + c / 32u;
+            uint32_t lhs = 0;
+            uint32_t rhs = 0;
+            bool lane_result = false;
+
+            if (!linx_tile_get_elem(env, src0_tile, src_lane, elem_bytes,
+                                    &lhs) ||
+                !linx_tile_get_elem(env, src1_tile, src_lane, elem_bytes,
+                                    &rhs) ||
+                !linx_tile_tcmp_lane(env, dtype, lhs, rhs, mode,
+                                     &lane_result)) {
+                return false;
+            }
+            if (lane_result) {
+                uint32_t packed = ldl_le_p(
+                    (uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u);
+                packed |= 1u << (c & 31u);
+                stl_le_p((uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u,
+                         packed);
+            }
+        }
+    }
+
+    env->tile_reg_bytes[dst_tile] = bytes;
+    linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
+    linx_tile_set_dtype(env, dst_tile, 25u); /* packed predicate is U32 */
+    return true;
+}
+
 static inline uint32_t linx_tile_tepl_unary_word(uint32_t op, uint32_t dtype,
                                                  uint32_t value)
 {
@@ -11268,7 +11393,16 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     const uint32_t active = rows * cols;
     memset(env->tile_reg[dst_tile], 0, LINX_TILE_MAX_BYTES);
 
-    if (op == 0x00du) {
+    if (op == 0x02bu) {
+        if (!has_src0 || !has_src1 ||
+            !linx_tile_tepl_tcmp(env, dst_tile, src0_tile, src1_tile,
+                                 rows, cols, physical_cols,
+                                 (uint32_t)bytes64)) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
+        return;
+    } else if (op == 0x00du) {
         if (!has_src0 || src0_elem_bytes == 0u) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return;
