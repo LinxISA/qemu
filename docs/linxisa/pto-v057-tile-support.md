@@ -22,10 +22,10 @@ exception before QEMU changes the destination Tile.
 | --- | ---: | ---: | ---: |
 | TMA | 6 | 6 | 0 |
 | CUBE | 8 | 5 | 3 |
-| TEPL | 97 | 84 | 13 |
-| Total | 111 | 95 | 16 |
+| TEPL | 97 | 86 | 11 |
+| Total | 111 | 97 | 14 |
 
-The `95/111` count means that at least one defined QEMU profile has an
+The `97/111` count means that at least one defined QEMU profile has an
 execution path. It is not a claim that every dtype, shape, layout, rounding
 mode, exception, or target-specific profile is complete.
 
@@ -77,7 +77,7 @@ must not be treated as complete fractal-layout or mixed-precision coverage.
 
 ## TEPL
 
-The executable whitelist contains these 84 operations:
+The executable whitelist contains these 86 operations:
 
 ```text
 TADD TSUB TMUL TDIV TMAX TMIN TAND TOR TXOR TSHL TSHR
@@ -94,7 +94,7 @@ TCOLEXPANDMAX TCOLEXPANDMIN TCOLEXPANDEXPDIF
 TRESHAPE TTRANS TGATHER TSCATTER
 TCI TTRI TFILLPAD TDEQUANT TEXTRACT TCONCAT TGATHERB
 TDEINTERLEAVE TINTERLEAVE
-TPARTADD TPARTMUL TPARTMAX TPARTMIN
+TPARTADD TPARTMUL TPARTMAX TPARTMIN TPARTARGMAX TPARTARGMIN
 ```
 
 Important profile limits include:
@@ -118,8 +118,12 @@ Important profile limits include:
   all Tiles have the same dtype and valid shape, and valid columns are even.
   The single-source `TDEINTERLEAVE` overload remains rejected because the
   current header profile cannot independently encode its wider source shape.
+- `TPARTARGMAX` and `TPARTARGMIN` support equal-shape FP32 value Tiles with
+  S32/U32 index Tiles. Both value and selected-index outputs are published;
+  ties select `src1` as specified. Mismatched-valid-region profiles remain
+  outside this implementation.
 
-The remaining 13 TEPL operations are intentionally fail-closed:
+The remaining 11 TEPL operations are intentionally fail-closed:
 
 | Operations | Missing contract or implementation |
 | --- | --- |
@@ -129,7 +133,6 @@ The remaining 13 TEPL operations are intentionally fail-closed:
 | `TSORT` | Sorted value/index compound or multi-output contract is not closed |
 | `TMRGSORT` | Variable source list and block-length/executed-count profile are not closed |
 | `THISTOGRAM` | Separate source type, destination type, and ByteId are not available in the canonical data-attribute decode |
-| `TPARTARGMAX`, `TPARTARGMIN` | Require two outputs and six visible Tile operands |
 | `TPUSH`, `TPOP`, `TALLOC`, `TFREE` | Pipe/control operations require a pipe-handle and side-effect ABI outside ordinary TEPL compute |
 
 In particular, `TQUANT` selector `0x083` is decoded but rejected by the
