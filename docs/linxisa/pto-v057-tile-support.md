@@ -148,10 +148,9 @@ QEMU submodule:
 ```text
 avs/qemu/tests/10_tile_tma.cpp
 avs/qemu/tests/10_tile_cube.cpp
-avs/qemu/tests/10_tile_cube_bias.S
-avs/qemu/tests/10_tile_cube_gemv.S
+avs/qemu/tests/10_tile_cube_asm.S
 avs/qemu/tests/10_tile_tepl.cpp
-avs/qemu/tests/10_tile_tepl_*.S
+avs/qemu/tests/10_tile_tepl_asm.S
 ```
 
 The focused gate is:
