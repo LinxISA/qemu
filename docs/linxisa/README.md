@@ -6,7 +6,7 @@ This QEMU tree contains:
 - A minimal LinxISA `virt` machine (`hw/linx/virt.c`)
 
 The current executable PTO Tile subset and its fail-closed boundaries are
-recorded in [`pto-v057-tile-support.md`](pto-v057-tile-support.md).
+recorded in [`pto-tile-support.md`](pto-tile-support.md).
 
 ## Quick start (smoke test)
 

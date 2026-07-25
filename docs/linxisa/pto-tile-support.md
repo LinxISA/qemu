@@ -1,12 +1,13 @@
-# LinxISA v0.57 PTO Tile support
+# PTO ISA v0.2 Tile support on LinxISA v0.57
 
 This document records the executable PTO Tile subset in the Linx QEMU target.
-The source catalog is the 111-operation v0.57 PTO map maintained by LinxISA:
-97 TEPL operations, 6 TMA operations, and 8 CUBE operations.
+The semantic target is PTO ISA v0.2. Its encoded operation identities are
+carried by the 111-operation LinxISA v0.57 PTO map: 97 TEPL operations, 6 TMA
+operations, and 8 CUBE operations.
 
 Support has three distinct levels:
 
-1. L1: the v0.57 selector or function has a unique decode identity.
+1. L1: the LinxISA v0.57 selector or function has a unique decode identity.
 2. L2: QEMU executes an operation that changes architectural Tile, ACC, or
    memory state.
 3. L3: a LinxISA AVS case executes the operation and checks exact values or
@@ -18,7 +19,7 @@ exception before QEMU changes the destination Tile.
 
 ## Summary
 
-| Family | v0.57 operations | Explicit execution paths | Fail-closed |
+| Family | PTO ISA v0.2 operations | Explicit execution paths | Fail-closed |
 | --- | ---: | ---: | ---: |
 | TMA | 6 | 6 | 0 |
 | CUBE | 8 | 5 | 3 |
