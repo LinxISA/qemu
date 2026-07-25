@@ -22,10 +22,10 @@ exception before QEMU changes the destination Tile.
 | --- | ---: | ---: | ---: |
 | TMA | 6 | 6 | 0 |
 | CUBE | 8 | 5 | 3 |
-| TEPL | 97 | 82 | 15 |
-| Total | 111 | 93 | 18 |
+| TEPL | 97 | 84 | 13 |
+| Total | 111 | 95 | 16 |
 
-The `93/111` count means that at least one defined QEMU profile has an
+The `95/111` count means that at least one defined QEMU profile has an
 execution path. It is not a claim that every dtype, shape, layout, rounding
 mode, exception, or target-specific profile is complete.
 
@@ -77,7 +77,7 @@ must not be treated as complete fractal-layout or mixed-precision coverage.
 
 ## TEPL
 
-The executable whitelist contains these 82 operations:
+The executable whitelist contains these 84 operations:
 
 ```text
 TADD TSUB TMUL TDIV TMAX TMIN TAND TOR TXOR TSHL TSHR
@@ -93,6 +93,7 @@ TCOLEXPANDADD TCOLEXPANDSUB TCOLEXPANDMUL TCOLEXPANDDIV
 TCOLEXPANDMAX TCOLEXPANDMIN TCOLEXPANDEXPDIF
 TRESHAPE TTRANS TGATHER TSCATTER
 TCI TTRI TFILLPAD TDEQUANT TEXTRACT TCONCAT TGATHERB
+TDEINTERLEAVE TINTERLEAVE
 TPARTADD TPARTMUL TPARTMAX TPARTMIN
 ```
 
@@ -112,15 +113,19 @@ Important profile limits include:
 - `TDEQUANT` supports S8/S16 source data, per-row FP32 scale and offset Tiles,
   and FP32 output using
   `dst[r,c] = (src[r,c] - offset[r]) * scale[r]`.
+- `TINTERLEAVE` and `TDEINTERLEAVE` support the canonical two-source,
+  two-output row-major form. Descriptor order is `dst1, dst0, src1, src0`;
+  all Tiles have the same dtype and valid shape, and valid columns are even.
+  The single-source `TDEINTERLEAVE` overload remains rejected because the
+  current header profile cannot independently encode its wider source shape.
 
-The remaining 15 TEPL operations are intentionally fail-closed:
+The remaining 13 TEPL operations are intentionally fail-closed:
 
 | Operations | Missing contract or implementation |
 | --- | --- |
 | `TAXPY`, `TINSERT` | Require reading and preserving an existing destination, while the current TEPL output is a fresh allocation |
 | `TQUANT` | INT8/MXFP8/MXFP4 profiles have different metadata, output counts, and packing contracts |
 | `TIMG2COL` | Convolution window, repeat, padding, and configuration state are not fully encoded by the current header path |
-| `TDEINTERLEAVE`, `TINTERLEAVE` | Require two Tile outputs; the current TEPL collector publishes one |
 | `TSORT` | Sorted value/index compound or multi-output contract is not closed |
 | `TMRGSORT` | Variable source list and block-length/executed-count profile are not closed |
 | `THISTOGRAM` | Separate source type, destination type, and ByteId are not available in the canonical data-attribute decode |
