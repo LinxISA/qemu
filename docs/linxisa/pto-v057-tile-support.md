@@ -21,11 +21,11 @@ exception before QEMU changes the destination Tile.
 | Family | v0.57 operations | Explicit execution paths | Fail-closed |
 | --- | ---: | ---: | ---: |
 | TMA | 6 | 6 | 0 |
-| CUBE | 8 | 4 | 4 |
+| CUBE | 8 | 5 | 3 |
 | TEPL | 97 | 82 | 15 |
-| Total | 111 | 92 | 19 |
+| Total | 111 | 93 | 18 |
 
-The `92/111` count means that at least one defined QEMU profile has an
+The `93/111` count means that at least one defined QEMU profile has an
 execution path. It is not a claim that every dtype, shape, layout, rounding
 mode, exception, or target-specific profile is complete.
 
@@ -49,6 +49,7 @@ The following operations have execution paths:
 | Operation | Function | Current QEMU profile |
 | --- | ---: | --- |
 | `TMATMUL` | 0 | S32 matrix multiply into the internal ACC |
+| `TMATMUL_BIAS` | 1 | S32 matrix multiply plus one-row, per-column S32 bias |
 | `TMATMUL_ACC` | 2 | Accumulate using the matching live source pair |
 | `TGEMV` | 16 | Uses the M/N/K path with `N=1` |
 | `TGEMV_ACC` | 18 | Accumulates into the existing TGEMV ACC |
@@ -56,10 +57,17 @@ The following operations have execution paths:
 Function 8 `ACCCVT` exports the internal ACC to a normal Tile. It is required
 by the execution pipeline but is not one of the eight workbook operations.
 
+`TMATMUL_BIAS` freezes exactly three sources in A, B, Bias order across one or
+more `B.IOT` descriptors. The Bias Tile must be a one-row S32 Tile and is
+broadcast by column. The current implementation intentionally rejects other
+dtypes rather than treating the word-backed compatibility path as packed S8 or
+floating-point CUBE execution.
+
 These CUBE operations remain fail-closed:
 
-- `TMATMUL_BIAS` and `TGEMV_BIAS`: the extra bias Tile binding, layout, dtype,
-  and fusion contract are not represented by the current collector.
+- `TGEMV_BIAS`: the latest PTO definition uses `M=1`, while the existing QEMU
+  TGEMV compatibility profile uses `N=1`; the direction contract must be
+  reconciled before adding bias.
 - `TMATMUL_MX` and `TGEMV_MX`: scale Tile roles, FP8/FP4 unpacking, and the
   target MX reconstruction profile are not implemented. QEMU does not ignore
   scale operands and report a normal matmul as MX support.
@@ -132,6 +140,7 @@ QEMU submodule:
 ```text
 avs/qemu/tests/10_tile_tma.cpp
 avs/qemu/tests/10_tile_cube.cpp
+avs/qemu/tests/10_tile_cube_bias.S
 avs/qemu/tests/10_tile_cube_gemv.S
 avs/qemu/tests/10_tile_tepl.cpp
 avs/qemu/tests/10_tile_tepl_*.S
@@ -149,7 +158,8 @@ including packed comparisons and selections, signed narrow lanes, FP16/BF16
 arithmetic, persistent rectangular shape metadata, reductions, expand
 operations, fill padding, partial operations, reshape/concat/gather-by-byte,
 sequence/triangular generation, extraction, dequantization, and TGEMV with
-ACC accumulation.
+ACC accumulation. AVS ID `0x000A0026` checks exact `TMATMUL_BIAS` results and
+the two-descriptor A/B/Bias operand order.
 
 Negative expected-trap coverage is not currently a reliable L3 gate because
 the standalone AVS illegal-instruction recovery harness can re-enter the test
