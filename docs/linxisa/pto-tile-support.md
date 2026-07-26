@@ -1,9 +1,12 @@
-# PTO ISA v0.2 Tile support on LinxISA v0.57
+# PTO Tile support on LinxISA v0.57
 
 This document records the executable PTO Tile subset in the Linx QEMU target.
-The semantic target is PTO ISA v0.2. Its encoded operation identities are
-carried by the 111-operation LinxISA v0.57 PTO map: 97 TEPL operations, 6 TMA
-operations, and 8 CUBE operations.
+PTO ISA v0.1 is the previous semantic baseline and PTO ISA v0.2 is the current
+adaptation target. Operations unchanged by v0.2 retain their v0.1 behavior.
+The current target's encoded operation identities are carried by the
+111-operation LinxISA v0.57 PTO map: 97 TEPL operations, 6 TMA operations, and
+8 CUBE operations. These counts describe the complete v0.2 target set, not the
+number of operations newly introduced in v0.2.
 
 Support has three distinct levels:
 
@@ -19,7 +22,7 @@ exception before QEMU changes the destination Tile.
 
 ## Summary
 
-| Family | PTO ISA v0.2 operations | Explicit execution paths | Fail-closed |
+| Family | PTO ISA v0.2 target operations | Explicit execution paths | Fail-closed |
 | --- | ---: | ---: | ---: |
 | TMA | 6 | 6 | 0 |
 | CUBE | 8 | 5 | 3 |
