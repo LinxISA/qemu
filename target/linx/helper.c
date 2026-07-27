@@ -13125,8 +13125,17 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                         env->tile_dtype, result, value);
                 }
             }
-            linx_tile_set_elem(env, dst_tile, r * physical_cols, elem_bytes, result);
+            /* Row reductions produce a contiguous one-dimensional vector. */
+            linx_tile_set_elem(env, dst_tile, r, elem_bytes, result);
         }
+        env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
+        linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+        linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+        if (!linx_tile_set_shape(env, dst_tile, 1u, rows, 1u,
+                                 (uint32_t)(bytes64 / elem_bytes))) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        }
+        return;
     } else if (op == 0x015u || op == 0x016u || op == 0x017u) {
         if (!has_src0) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -13158,6 +13167,15 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             }
             linx_tile_set_elem(env, dst_tile, c, elem_bytes, result);
         }
+        env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
+        linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+        linx_tile_set_dtype(env, dst_tile, env->tile_dtype);
+        if (!linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
+                                 (uint32_t)(bytes64 /
+                                            (cols * elem_bytes)))) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        }
+        return;
     } else if (op == 0x01du) {
         if (!has_src0) {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
