@@ -16,9 +16,11 @@ Support has three distinct levels:
 3. L3: a LinxISA AVS case executes the operation and checks exact values or
    side effects.
 
-A shared `BSTART.TEPL` decode does not imply support for every TEPL selector.
-Selectors outside the executable whitelist raise an illegal-instruction
-exception before QEMU changes the destination Tile.
+A shared `BSTART.TEPL` decode does not imply support for every TEPL selector or
+dtype profile. QEMU validates the selector/dtype tuple when binding `B.IOT`,
+before source pinning, output reservation, or destination backing-store
+clearing. Unsupported tuples raise an illegal-instruction exception without
+changing the Tile queue or destination Tile.
 
 ## Summary
 
@@ -105,6 +107,10 @@ Important profile limits include:
 
 - Common elementwise paths support 1-, 2-, and 4-byte elements. Implemented
   FP16 and BF16 arithmetic uses QEMU softfloat.
+- `TEXP`, `TLOG`, `TSQRT`, `TRSQRT`, and `TRECIP` currently have an FP32-only
+  QEMU profile. FP16 and BF16 forms are rejected rather than writing zero.
+- FP8/FPL8 profiles are not implemented by the generic arithmetic path and
+  are rejected rather than being interpreted as integers of the same width.
 - `TCMP` and `TCMPS` produce a row-packed U32 predicate mask. `TSEL` and
   `TSELS` consume that mask.
 - Reduction, expand, layout, and partial-operation paths implement the current
@@ -170,9 +176,12 @@ arithmetic, persistent rectangular shape metadata, reductions, expand
 operations, fill padding, partial operations, reshape/concat/gather-by-byte,
 sequence/triangular generation, extraction, dequantization, and TGEMV with
 ACC accumulation. AVS ID `0x000A0026` checks exact `TMATMUL_BIAS` results and
-the two-descriptor A/B/Bias operand order.
+the two-descriptor A/B/Bias operand order. AVS IDs `0x000A0029` and
+`0x000A002A` check that FP16 `TEXP` and BF16 `TLOG` trap, then resume and store
+the surviving input queue head; all 1024 lanes must match the original source,
+which proves that the rejected output was not reserved or published.
 
-Negative expected-trap coverage is not currently a reliable L3 gate because
-the standalone AVS illegal-instruction recovery harness can re-enter the test
-instead of returning to the expected continuation. This limitation does not
-change the fail-closed implementation policy.
+The representative TEPL negative checks use the stable same-ACR trap-return
+path inside the normal Tile suite. The separate cross-ACR standalone
+expected-trap harness remains unsuitable as general negative L3 evidence
+because that lane can re-enter its test entry.

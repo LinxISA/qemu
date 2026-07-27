@@ -12473,6 +12473,156 @@ static bool linx_tile_tepl_selector_executable(uint32_t op)
     }
 }
 
+#define LINX_TILE_DTYPE_MASK(dtype) (UINT32_C(1) << (dtype))
+
+static bool linx_tile_tepl_dtype_supported(uint32_t op, uint32_t dtype)
+{
+    const uint32_t dt = dtype & 0x1fu;
+    const uint32_t bit = LINX_TILE_DTYPE_MASK(dt);
+    const uint32_t fp32 = LINX_TILE_DTYPE_MASK(1u);
+    const uint32_t fp16 = LINX_TILE_DTYPE_MASK(2u);
+    const uint32_t bf16 = LINX_TILE_DTYPE_MASK(6u);
+    const uint32_t s32 = LINX_TILE_DTYPE_MASK(17u);
+    const uint32_t s16 = LINX_TILE_DTYPE_MASK(18u);
+    const uint32_t s8 = LINX_TILE_DTYPE_MASK(19u);
+    const uint32_t u32 = LINX_TILE_DTYPE_MASK(25u);
+    const uint32_t u16 = LINX_TILE_DTYPE_MASK(26u);
+    const uint32_t u8 = LINX_TILE_DTYPE_MASK(27u);
+    const uint32_t integers = s32 | s16 | s8 | u32 | u16 | u8;
+    const uint32_t standard = fp32 | fp16 | bf16 | integers;
+    uint32_t supported = 0u;
+
+    switch (op) {
+    case 0x000u: /* TADD */
+    case 0x001u: /* TSUB */
+    case 0x002u: /* TMUL */
+    case 0x003u: /* TDIV */
+    case 0x004u: /* TMAX */
+    case 0x005u: /* TMIN */
+    case 0x012u: /* TROWMAX */
+    case 0x013u: /* TROWMIN */
+    case 0x014u: /* TROWSUM */
+    case 0x015u: /* TCOLMAX */
+    case 0x016u: /* TCOLMIN */
+    case 0x017u: /* TCOLSUM */
+    case 0x019u: /* TEXPANDS */
+    case 0x020u: /* TADDS */
+    case 0x021u: /* TSUBS */
+    case 0x022u: /* TMULS */
+    case 0x023u: /* TDIVS */
+    case 0x024u: /* TMAXS */
+    case 0x025u: /* TMINS */
+        supported = standard;
+        break;
+    case 0x006u: /* TAND */
+    case 0x007u: /* TOR */
+    case 0x008u: /* TXOR */
+    case 0x009u: /* TSHL */
+    case 0x00au: /* TSHR */
+    case 0x026u: /* TANDS */
+    case 0x027u: /* TORS */
+    case 0x028u: /* TXORS */
+    case 0x029u: /* TSHLS */
+    case 0x02au: /* TSHRS */
+    case 0x02eu: /* TNOT */
+        supported = integers;
+        break;
+    case 0x00bu: /* TRELU */
+        supported = fp32 | s32 | s16 | s8;
+        break;
+    case 0x00du: /* TCVT */
+    case 0x01au: /* TGATHER */
+    case 0x01bu: /* TSCATTER */
+    case 0x01cu: /* TRESHAPE */
+    case 0x01du: /* TTRANS */
+    case 0x01eu: /* TCOLEXPAND */
+    case 0x01fu: /* TROWEXPAND */
+    case 0x081u: /* TTRI */
+    case 0x082u: /* TFILLPAD */
+    case 0x085u: /* TEXTRACT */
+    case 0x087u: /* TCONCAT */
+    case 0x089u: /* TGATHERB */
+    case 0x08au: /* TDEINTERLEAVE */
+    case 0x08bu: /* TINTERLEAVE */
+    case 0x0c3u: /* TPARTADD */
+    case 0x0c4u: /* TPARTMUL */
+    case 0x0c5u: /* TPARTMAX */
+    case 0x0c6u: /* TPARTMIN */
+        supported = standard;
+        break;
+    case 0x00eu: /* TEXP */
+    case 0x00fu: /* TLOG */
+    case 0x010u: /* TSQRT */
+    case 0x011u: /* TRSQRT */
+    case 0x018u: /* TRECIP */
+        supported = fp32;
+        break;
+    case 0x02bu: /* TCMP */
+        supported = fp32 | fp16 | integers;
+        break;
+    case 0x02cu: /* TSEL */
+    case 0x034u: /* TSELS */
+        supported = integers;
+        break;
+    case 0x02du: /* TABS */
+        supported = fp32 | s32 | s16 | s8;
+        break;
+    case 0x02fu: /* TNEG */
+        supported = fp32 | fp16 | bf16 | s32 | s16;
+        break;
+    case 0x030u: /* TREM */
+    case 0x032u: /* TREMS */
+        supported = fp32 | s32 | s16 | u32 | u16;
+        break;
+    case 0x033u: /* TCMPS */
+        supported = fp32 | fp16 | s32 | s16 | u16;
+        break;
+    case 0x035u: /* TROWPROD */
+        supported = fp32 | fp16 | s32 | s16;
+        break;
+    case 0x036u: /* TROWARGMAX */
+    case 0x037u: /* TROWARGMIN */
+        supported = fp32 | fp16;
+        break;
+    case 0x038u: /* TCOLPROD */
+        supported = fp32 | fp16 | bf16 | s32 | s16 | u32 | u16;
+        break;
+    case 0x039u: /* TCOLARGMAX */
+    case 0x03au: /* TCOLARGMIN */
+        supported = fp32 | fp16 | integers;
+        break;
+    case 0x03bu: /* TROWEXPANDADD */
+    case 0x03cu: /* TROWEXPANDSUB */
+    case 0x03du: /* TROWEXPANDMUL */
+    case 0x03eu: /* TROWEXPANDDIV */
+    case 0x03fu: /* TROWEXPANDMAX */
+    case 0x040u: /* TROWEXPANDMIN */
+    case 0x041u: /* TROWEXPANDEXPDIF */
+    case 0x042u: /* TCOLEXPANDADD */
+    case 0x043u: /* TCOLEXPANDSUB */
+    case 0x044u: /* TCOLEXPANDMUL */
+    case 0x045u: /* TCOLEXPANDDIV */
+    case 0x046u: /* TCOLEXPANDMAX */
+    case 0x047u: /* TCOLEXPANDMIN */
+    case 0x048u: /* TCOLEXPANDEXPDIF */
+        supported = fp32 | fp16;
+        break;
+    case 0x080u: /* TCI */
+        supported = s32 | s16 | u32 | u16;
+        break;
+    case 0x084u: /* TDEQUANT */
+    case 0x0c7u: /* TPARTARGMAX */
+    case 0x0c8u: /* TPARTARGMIN */
+        supported = fp32;
+        break;
+    default:
+        return false;
+    }
+    return (supported & bit) != 0u;
+}
+
+#undef LINX_TILE_DTYPE_MASK
+
 static int linx_tile_tepl_source_arity(uint32_t op)
 {
     switch (op) {
@@ -12580,6 +12730,7 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     uint32_t physical_cols = 0;
 
     if (!linx_tile_tepl_selector_executable(op) ||
+        !linx_tile_tepl_dtype_supported(op, env->tile_dtype) ||
         source_count != (unsigned)linx_tile_tepl_source_arity(op) ||
         dst_tile >= 32u ||
         bytes64 == 0u ||
@@ -14351,6 +14502,19 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         (env->blocktype == LINX_BLOCK_CUBE &&
          (env->tile_func & 0x1f) == LINX_CUBE_ACCCVT) ||
         env->blocktype == LINX_BLOCK_TEPL;
+
+    /*
+     * B.IOT binding reserves the destination and clears its backing storage.
+     * Reject unsupported TEPL selector/dtype profiles before any descriptor,
+     * pin, queue, or Tile state is changed.
+     */
+    if (env->blocktype == LINX_BLOCK_TEPL &&
+        (!linx_tile_tepl_selector_executable(env->tile_func & 0x3ffu) ||
+         !linx_tile_tepl_dtype_supported(env->tile_func & 0x3ffu,
+                                         env->tile_dtype))) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
 
     if (desc.has_size && env->tile_iot_count > 0) {
         const unsigned prev_idx = env->tile_iot_count - 1;
