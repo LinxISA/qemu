@@ -2383,36 +2383,10 @@ static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_tile_dtype, dtype);
 
-    switch (op) {
-    case 33u:  /* TLOAD */
-        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
-        tcg_gen_movi_i32(cpu_tile_func, 0);
-        break;
-    case 65u:  /* TSTORE */
-        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA */
-        tcg_gen_movi_i32(cpu_tile_func, 1);
-        break;
-    case 66u:  /* MAMULB.ACC */
-        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
-        tcg_gen_movi_i32(cpu_tile_func, 2);
-        break;
-    case 163u: /* PAR conversion helper in sampled streams */
-        tcg_gen_movi_i32(cpu_blocktype, 2); /* TMA-like */
-        tcg_gen_movi_i32(cpu_tile_func, 31); /* dedicated compatibility slot */
-        break;
-    case 258u: /* ACCCVT */
-        tcg_gen_movi_i32(cpu_blocktype, 6); /* CUBE */
-        tcg_gen_movi_i32(cpu_tile_func, 8);
-        break;
-    default:
-        /*
-         * Canonical v0.4 TEPL path:
-         * route packed PAR TileOp10 forms to TEPL block execution.
-         */
-        tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
-        tcg_gen_movi_i32(cpu_tile_func, op & 0x3ff);
-        break;
-    }
+    /* TMA and CUBE have distinct v0.57 decoders; all TileOp10 values here
+     * retain their canonical TEPL identity. */
+    tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
+    tcg_gen_movi_i32(cpu_tile_func, op & 0x3ff);
 
     /* Canonical v0.4 baseline keeps these tile blocks coupled in QEMU. */
     ctx->decoupled_header = false;

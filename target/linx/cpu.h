@@ -394,13 +394,7 @@ typedef struct CPUArchState {
     uint32_t ebarg_stack_depth;
     uint64_t ebarg_stack[LINX_EBARG_STACK_DEPTH][LINX_SSR_EBARG_COUNT];
 
-    /*
-     * Tile block state (TAU bring-up).
-     *
-     * For now this models a minimal single-B.IOT descriptor per block. The
-     * implementation is intentionally small and is primarily used for PTO ISA
-     * bring-up (matmul demo).
-     */
+    /* Tile block header state and frozen multi-B.IOT queue bindings. */
     uint32_t tile_func;
     uint32_t tile_dtype;
     uint32_t tile_iot_valid;
@@ -451,6 +445,10 @@ typedef struct CPUArchState {
     uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
     uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
     uint8_t tile_reg_dtype[32]; /* canonical v0.57 producer DataType */
+    uint16_t tile_reg_valid_cols[32]; /* LB0 valid columns/elements */
+    uint16_t tile_reg_valid_rows[32]; /* LB1 valid rows */
+    uint16_t tile_reg_cols[32]; /* LB2 physical row stride in elements */
+    uint16_t tile_reg_rows[32]; /* physical rows derived from the footprint */
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
