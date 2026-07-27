@@ -97,6 +97,7 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 /* Canonical AVS/system test finisher MMIO */
 #define LINX_TEST_FINISHER_SIZE 0x4
+#define LINX_CROSS_MODEL_DUMP_MAX (16 * MiB)
 
 /* Linx virt-uart MMIO register layout (offsets from LINX_UART_BASE). */
 #define LINX_UART_DATA_REG 0x0
@@ -183,6 +184,7 @@ typedef struct LinxUARTState {
     MemoryRegion finisher_mmio;
     QemuMutex lock;
     LinxCPU *cpu;
+    bool *cross_model_dump_pending;
 
     CharFrontend chr;
 
@@ -213,6 +215,10 @@ static void linx_finish_guest(LinxUARTState *s, uint64_t value)
                       "Linx: ignored invalid finisher value 0x%" PRIx64 "\n",
                       value);
         return;
+    }
+
+    if (s->cross_model_dump_pending) {
+        *s->cross_model_dump_pending = true;
     }
 
     if (s->cpu) {
@@ -454,6 +460,12 @@ typedef struct LinxVirtMachineState {
     bool dfx_memwatch_stop;
     MemoryRegion dfx_memwatch;
     uint8_t *dfx_ram_ptr;
+
+    char *cross_model_dump;
+    uint64_t cross_model_address;
+    uint32_t cross_model_size;
+    bool cross_model_dump_pending;
+    Notifier cross_model_shutdown_notifier;
 } LinxVirtMachineState;
 
 static hwaddr linx_align_up(hwaddr v, hwaddr align)
@@ -3387,6 +3399,48 @@ static void linx_virt_set_dfx_memwatch_stop(Object *obj, bool value,
     s->dfx_memwatch_stop = value;
 }
 
+static char *linx_virt_get_cross_model_dump(Object *obj, Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->cross_model_dump);
+}
+
+static void linx_virt_set_cross_model_dump(Object *obj, const char *value,
+                                           Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    g_free(s->cross_model_dump);
+    s->cross_model_dump = g_strdup(value);
+}
+
+static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
+{
+    LinxVirtMachineState *s = container_of(notifier, LinxVirtMachineState,
+                                           cross_model_shutdown_notifier);
+    g_autofree char *tmp_path = NULL;
+    g_autoptr(GError) err = NULL;
+    ShutdownCause cause = *(ShutdownCause *)opaque;
+
+    if (!s->cross_model_dump_pending || !s->cross_model_dump ||
+        cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN) {
+        return;
+    }
+
+    tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
+    if (!g_file_set_contents(tmp_path,
+                             (const char *)s->dfx_ram_ptr +
+                                 s->cross_model_address,
+                             s->cross_model_size, &err) ||
+        g_rename(tmp_path, s->cross_model_dump) != 0) {
+        error_report("linx virt: cannot write cross-model dump '%s': %s",
+                     s->cross_model_dump,
+                     err ? err->message : strerror(errno));
+        unlink(tmp_path);
+    }
+}
+
 static void linx_virt_instance_init(Object *obj)
 {
     LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
@@ -3395,6 +3449,10 @@ static void linx_virt_instance_init(Object *obj)
     s->dfx_memwatch_len = 0;
     s->dfx_memwatch_stop = false;
     s->dfx_ram_ptr = NULL;
+    s->cross_model_dump = NULL;
+    s->cross_model_address = 0;
+    s->cross_model_size = 0;
+    s->cross_model_dump_pending = false;
 
     object_property_add_uint64_ptr(obj, "dfx-memwatch-addr",
                                    &s->dfx_memwatch_addr,
@@ -3413,6 +3471,24 @@ static void linx_virt_instance_init(Object *obj)
                              linx_virt_set_dfx_memwatch_stop);
     object_property_set_description(obj, "dfx-memwatch-stop",
                                     "Stop VM (RUN_STATE_DEBUG) on memwatch write");
+
+    object_property_add_str(obj, "cross-model-dump",
+                            linx_virt_get_cross_model_dump,
+                            linx_virt_set_cross_model_dump);
+    object_property_set_description(obj, "cross-model-dump",
+                                    "Write a guest RAM range after test-finisher shutdown");
+
+    object_property_add_uint64_ptr(obj, "cross-model-address",
+                                   &s->cross_model_address,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "cross-model-address",
+                                    "Physical start address of the cross-model result");
+
+    object_property_add_uint32_ptr(obj, "cross-model-size",
+                                   &s->cross_model_size,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "cross-model-size",
+                                    "Size in bytes of the cross-model result");
 }
 
 static void linx_virt_init(MachineState *machine)
@@ -3450,6 +3526,25 @@ static void linx_virt_init(MachineState *machine)
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
     s->dfx_ram_ptr = memory_region_get_ram_ptr(machine->ram);
 
+    if ((s->cross_model_dump != NULL) != (s->cross_model_size != 0)) {
+        error_report("linx virt: cross-model-dump and cross-model-size must be specified together");
+        exit(1);
+    }
+    if (s->cross_model_dump) {
+        uint64_t end = s->cross_model_address + s->cross_model_size;
+        if (s->cross_model_size == 0 ||
+            s->cross_model_size > LINX_CROSS_MODEL_DUMP_MAX ||
+            end < s->cross_model_address || end > machine->ram_size) {
+            error_report("linx virt: invalid cross-model RAM range: "
+                         "addr=0x%" PRIx64 " size=%u ram=0x%" PRIx64,
+                         s->cross_model_address, s->cross_model_size,
+                         (uint64_t)machine->ram_size);
+            exit(1);
+        }
+        s->cross_model_shutdown_notifier.notify = linx_cross_model_shutdown;
+        qemu_register_shutdown_notifier(&s->cross_model_shutdown_notifier);
+    }
+
     if (s->dfx_memwatch_len) {
         hwaddr end = (hwaddr)s->dfx_memwatch_addr +
                      (hwaddr)s->dfx_memwatch_len;
@@ -3476,6 +3571,7 @@ static void linx_virt_init(MachineState *machine)
     s->cpu = LINX_CPU(cpu_create(machine->cpu_type));
 
     /* Initialize UART */
+    s->uart.cross_model_dump_pending = &s->cross_model_dump_pending;
     linx_uart_init(&s->uart, s->cpu);
 
     /*
