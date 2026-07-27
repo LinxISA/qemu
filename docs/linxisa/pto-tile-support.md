@@ -106,7 +106,9 @@ TPARTADD TPARTMUL TPARTMAX TPARTMIN TPARTARGMAX TPARTARGMIN
 Important profile limits include:
 
 - Common elementwise paths support 1-, 2-, and 4-byte elements. Implemented
-  FP16 and BF16 arithmetic uses QEMU softfloat.
+  FP16 and BF16 arithmetic and TCVT encoding use QEMU softfloat. TCVT checks
+  both the queued source dtype and destination dtype before source pinning or
+  output reservation.
 - `TEXP`, `TLOG`, `TSQRT`, `TRSQRT`, and `TRECIP` currently have an FP32-only
   QEMU profile. FP16 and BF16 forms are rejected rather than writing zero.
 - FP8/FPL8 profiles are not implemented by the generic arithmetic path and
@@ -132,6 +134,10 @@ Important profile limits include:
   S32/U32 index Tiles. Both value and selected-index outputs are published;
   ties select `src1` as specified. Mismatched-valid-region profiles remain
   outside this implementation.
+- VMState version 15 adds the Tile shape metadata required to restore this
+  execution model. A pre-v15 stream with nonempty Tile state is deliberately
+  rejected because its missing shapes cannot be reconstructed; pre-v15 empty
+  Tile state remains loadable.
 
 The remaining 11 TEPL operations are intentionally fail-closed:
 

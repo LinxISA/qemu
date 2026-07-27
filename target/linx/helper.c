@@ -11060,11 +11060,24 @@ static inline int32_t linx_tile_sign_extend(uint32_t value,
     return (int32_t)value;
 }
 
-static inline float linx_tile_value_as_f32(uint32_t value, uint32_t dtype,
+static inline float linx_tile_value_as_f32(CPULinxState *env, uint32_t value,
+                                           uint32_t dtype,
                                            unsigned elem_bytes)
 {
-    if ((dtype & 0x1fu) == 1u && elem_bytes == 4u) {
+    const uint32_t type = dtype & 0x1fu;
+
+    if (type == 1u && elem_bytes == 4u) {
         return linx_tile_word_as_f32(value);
+    }
+    if (type == 2u && elem_bytes == 2u) {
+        const float32 converted = float16_to_float32(
+            make_float16((uint16_t)value), true, &env->fp_status);
+        return linx_tile_word_as_f32(float32_val(converted));
+    }
+    if (type == 6u && elem_bytes == 2u) {
+        const float32 converted = bfloat16_to_float32(
+            (bfloat16)(uint16_t)value, &env->fp_status);
+        return linx_tile_word_as_f32(float32_val(converted));
     }
     if (linx_tile_dtype_is_signed(dtype)) {
         return (float)linx_tile_sign_extend(value, elem_bytes);
@@ -11072,11 +11085,23 @@ static inline float linx_tile_value_as_f32(uint32_t value, uint32_t dtype,
     return (float)value;
 }
 
-static inline uint32_t linx_tile_f32_as_dtype(float value, uint32_t dtype,
+static inline uint32_t linx_tile_f32_as_dtype(CPULinxState *env, float value,
+                                              uint32_t dtype,
                                               unsigned elem_bytes)
 {
-    if ((dtype & 0x1fu) == 1u && elem_bytes == 4u) {
+    const uint32_t type = dtype & 0x1fu;
+
+    if (type == 1u && elem_bytes == 4u) {
         return linx_tile_f32_as_word(value);
+    }
+    if (type == 2u && elem_bytes == 2u) {
+        return float16_val(float32_to_float16(
+            make_float32(linx_tile_f32_as_word(value)), true,
+            &env->fp_status));
+    }
+    if (type == 6u && elem_bytes == 2u) {
+        return (uint16_t)float32_to_bfloat16(
+            make_float32(linx_tile_f32_as_word(value)), &env->fp_status);
     }
     if (linx_tile_dtype_is_signed(dtype)) {
         if (elem_bytes == 1u) {
@@ -12731,6 +12756,9 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
 
     if (!linx_tile_tepl_selector_executable(op) ||
         !linx_tile_tepl_dtype_supported(op, env->tile_dtype) ||
+        (op == 0x00du &&
+         (!has_src0 ||
+          !linx_tile_tepl_dtype_supported(op, src0_dtype))) ||
         source_count != (unsigned)linx_tile_tepl_source_arity(op) ||
         dst_tile >= 32u ||
         bytes64 == 0u ||
@@ -13002,10 +13030,11 @@ static void linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             uint32_t value = 0;
             linx_tile_get_elem(env, src0_tile, lane, src0_elem_bytes, &value);
             const float converted =
-                linx_tile_value_as_f32(value, src0_dtype, src0_elem_bytes);
+                linx_tile_value_as_f32(env, value, src0_dtype,
+                                       src0_elem_bytes);
             linx_tile_set_elem(
                 env, dst_tile, lane, elem_bytes,
-                linx_tile_f32_as_dtype(converted, env->tile_dtype,
+                linx_tile_f32_as_dtype(env, converted, env->tile_dtype,
                                        elem_bytes));
         }
     } else if (op == 0x019u && scalar_mode) {
@@ -14559,6 +14588,16 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
             return;
         }
         src_valid |= 2u;
+    }
+
+    /* TCVT legality also depends on the queued source dtype. */
+    if (env->blocktype == LINX_BLOCK_TEPL &&
+        (env->tile_func & 0x3ffu) == 0x00du &&
+        (((src_valid & 1u) == 0u) ||
+         !linx_tile_tepl_dtype_supported(
+             0x00du, env->tile_reg_dtype[src_phys[0]]))) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
     }
 
     const uint16_t owner = 1u << (env->acr & 0xfu);
