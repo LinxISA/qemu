@@ -14301,13 +14301,16 @@ static bool linx_tile_preflight_tma(
     uint8_t *planned_carrier_valid, uint8_t *planned_carrier)
 {
     const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
+    const uint32_t func = env->tile_func & 0x1f;
     unsigned addr_reg;
 
-    if (!linx_tile_get_base_reg(env, &addr_reg)) {
+    /* TMOV is a Tile-to-Tile operation and has no GM address operand. */
+    if (func != LINX_TMA_TMOV &&
+        !linx_tile_get_base_reg(env, &addr_reg)) {
         return false;
     }
 
-    switch (env->tile_func & 0x1f) {
+    switch (func) {
     case LINX_TMA_MGATHER:
     case LINX_TMA_MGATHER_MASK:
     case LINX_TMA_MSCATTER:
@@ -14331,8 +14334,14 @@ static bool linx_tile_preflight_tma(
         }
         for (unsigned i = 0; i < env->tile_iot_count; i++) {
             const LinxTileIOTDesc d = linx_tile_get_iot_desc(env, i);
-            const unsigned size_code = d.has_size ? d.size & 0x1f
-                                                  : env->tile_iot_size & 0x1f;
+            unsigned size_code = d.has_size ? d.size & 0x1f
+                                            : env->tile_iot_size & 0x1f;
+            if (!produces_output && !d.has_size && source_count > 0u) {
+                const uint32_t bytes = env->tile_reg_bytes[sources[0]];
+                if (bytes >= 16u && (bytes & (bytes - 1u)) == 0u) {
+                    size_code = (unsigned)__builtin_ctz(bytes) - 4u;
+                }
+            }
             if (!linx_tile_size_code_valid(size_code)) {
                 return false;
             }
@@ -15078,6 +15087,13 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                 if (env->tile_iot_output_valid[i]) {
                     output_index = i;
                     output_tile = env->tile_iot_output_phys[i];
+                }
+            }
+            if ((func == LINX_TMA_MSCATTER ||
+                 func == LINX_TMA_MSCATTER_MASK) && source_count > 0u) {
+                const uint32_t bytes = env->tile_reg_bytes[sources[0]];
+                if (bytes >= 16u && (bytes & (bytes - 1u)) == 0u) {
+                    size_code = (unsigned)__builtin_ctz(bytes) - 4u;
                 }
             }
 
