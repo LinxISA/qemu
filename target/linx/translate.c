@@ -2699,12 +2699,18 @@ static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
     return true;
 }
 
-static bool trans_c_b_dim(DisasContext *ctx, arg_c_b_dim *a)
+static bool trans_c_b_ios(DisasContext *ctx, arg_c_b_ios *a)
 {
-    if (a->loopnest > 2u) {
-        return linx_illegal(ctx);
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
-    return trans_b_dim_common(ctx, a->reg, 0, a->loopnest);
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
+                                LINX_BLOCKFMT_FAMILY_IOT);
+    }
+    gen_helper_linx_tile_append_shared_binder(
+        tcg_env, tcg_constant_i32(a->shared & 0xffu));
+    return true;
 }
 
 static bool trans_b_dim_lb0(DisasContext *ctx, arg_b_dim_lb0 *a)

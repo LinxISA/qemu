@@ -192,6 +192,11 @@ typedef enum LinxTemplateKind {
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
+#define LINX_TILE_MAX_SHARED_BINDERS 2u
+#define LINX_IOT_S0V (1u << 0)
+#define LINX_IOT_S1V (1u << 1)
+#define LINX_IOT_S0R (1u << 2)
+#define LINX_IOT_S1R (1u << 3)
 #define LINX_TILE_HAND_COUNT 4u
 #define LINX_TILE_HAND_DEPTH 8u
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
@@ -300,6 +305,8 @@ typedef struct LinxAcrBlockState {
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
+    uint32_t tile_shared_binder_count;
+    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
@@ -427,6 +434,8 @@ typedef struct CPUArchState {
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
+    uint32_t tile_shared_binder_count;
+    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
@@ -849,6 +858,10 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->vec_ri_value[i] = env->vec_ri_value[i];
     }
     s->tile_iot_count = env->tile_iot_count;
+    s->tile_shared_binder_count = env->tile_shared_binder_count;
+    for (i = 0; i < LINX_TILE_MAX_SHARED_BINDERS; i++) {
+        s->tile_shared_binder[i] = env->tile_shared_binder[i];
+    }
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         s->tile_iot_desc[i] = env->tile_iot_desc[i];
         s->tile_iot_src_valid[i] = env->tile_iot_src_valid[i];
@@ -974,6 +987,10 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->vec_ri_value[i] = s->vec_ri_value[i];
     }
     env->tile_iot_count = s->tile_iot_count;
+    env->tile_shared_binder_count = s->tile_shared_binder_count;
+    for (i = 0; i < LINX_TILE_MAX_SHARED_BINDERS; i++) {
+        env->tile_shared_binder[i] = s->tile_shared_binder[i];
+    }
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         env->tile_iot_desc[i] = s->tile_iot_desc[i];
         env->tile_iot_src_valid[i] = s->tile_iot_src_valid[i];

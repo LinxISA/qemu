@@ -15820,6 +15820,8 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
     env->tile_ior_count = 0;
     env->vec_ri_count = 0;
     env->tile_iot_count = 0;
+    env->tile_shared_binder_count = 0;
+    memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
     memset(env->tile_iot_desc, 0, sizeof(env->tile_iot_desc));
     memset(env->tile_iot_src_valid, 0, sizeof(env->tile_iot_src_valid));
     memset(env->tile_iot_src_phys, 0, sizeof(env->tile_iot_src_phys));
@@ -15848,6 +15850,18 @@ void HELPER(linx_tile_append_ior)(CPULinxState *env, uint64_t packed)
         return;
     }
     env->tile_ior_desc[env->tile_ior_count++] = packed;
+}
+
+void HELPER(linx_tile_append_shared_binder)(CPULinxState *env, uint32_t shared)
+{
+    if (env->tile_shared_binder_count >= LINX_TILE_MAX_SHARED_BINDERS ||
+        (env->tile_shared_binder_count != 0u &&
+         env->tile_shared_binder[0] == (shared & 0xffu)) ||
+        env->tile_iot_count != 0u || env->tile_ior_count != 0u) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    env->tile_shared_binder[env->tile_shared_binder_count++] = shared & 0xffu;
 }
 
 void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
@@ -17094,6 +17108,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
     env->tile_ior_count = 0;
+    env->tile_shared_binder_count = 0;
+    memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
     linx_tile_unpin_bindings(env);
     env->tile_iot_count = 0;
     memset(env->tile_iot_desc, 0, sizeof(env->tile_iot_desc));
