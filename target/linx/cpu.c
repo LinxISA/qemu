@@ -3777,6 +3777,7 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
     env->gpr[LINX_REG_A0] = cpu->boot_a0;
     env->gpr[LINX_REG_A1] = cpu->boot_a1;
     env->gpr[LINX_REG_A2] = cpu->boot_a2;
+    env->pe_id = cpu->boot_pe_id;
     env->fcsr = 0;
     env->acr = 0;
     set_float_exception_flags(0, &env->fp_status);

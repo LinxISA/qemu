@@ -188,6 +188,7 @@ typedef enum LinxTemplateKind {
 } LinxTemplateKind;
 
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */
+#define LINX_SSR_PEID 0x802u   /* DavinciOO v5 read-only PE identifier */
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
@@ -673,6 +674,9 @@ typedef struct CPUArchState {
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
 
+    /* Machine-assigned Core4 PE identity. This survives architectural reset. */
+    uint32_t pe_id;
+
     /* Loader-provided B.TEXT body extent metadata. Not reset-cleared. */
     uint32_t body_range_count;
     LinxBodyRange *body_ranges;
@@ -1002,6 +1006,7 @@ struct ArchCPU {
     uint64_t boot_a0;
     uint64_t boot_a1;
     uint64_t boot_a2;
+    uint32_t boot_pe_id;
 
     /* Optional bring-up DFX: insert a CPU watchpoint on realize(). */
     uint64_t dfx_watch_addr;

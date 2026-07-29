@@ -6957,6 +6957,9 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
     uint64_t value;
 
     switch (idx) {
+    case LINX_SSR_PEID:
+        value = env->pe_id;
+        break;
     case LINX_SSR_CYCLE:
         /* Bring-up: model CYCLE as the dynamic instruction counter. */
         value = env->insn_count;
@@ -7127,6 +7130,9 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
     }
 
     switch (idx) {
+    case LINX_SSR_PEID:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
     case LINX_SSR_CYCLE:
     case LINX_SSR_TIME:
         /* Read-only for now. Ignore writes. */

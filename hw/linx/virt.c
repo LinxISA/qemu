@@ -443,7 +443,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(LinxVirtMachineState, LINX_VIRT_MACHINE)
 typedef struct LinxVirtMachineState {
     MachineState parent_obj;
 
-    LinxCPU *cpu;
+    LinxCPU *cpu[4];
+    unsigned pe_count;
 
     hwaddr entry;
     bool entry_valid;
@@ -3209,10 +3210,6 @@ static bool linx_load_elf(const char *filename,
 static void linx_virt_reset(void *opaque)
 {
     LinxVirtMachineState *s = opaque;
-    CPULinxState *env = &s->cpu->env;
-    CPUState *cs = CPU(s->cpu);
-
-    cpu_reset(cs);
 
     if (!s->entry_valid) {
         error_report("linx virt: invalid entry point");
@@ -3225,13 +3222,19 @@ static void linx_virt_reset(void *opaque)
     // qemu_log_mask(LOG_TRACE, "linx virt: entry=0x%" HWADDR_PRIx " sp=0x%" HWADDR_PRIx "\n",
     //               s->entry, s->initial_sp);
 
-    env->pc = s->entry;
-    env->gpr[LINX_REG_SP] = s->initial_sp;
-    env->gpr[LINX_REG_RA] = s->exit_trampoline;
-    env->gpr[LINX_REG_ZERO] = 0;
-    env->gpr[LINX_REG_A0] = 0;  /* hart id */
-    env->gpr[LINX_REG_A1] = s->fdt_addr; /* DTB/FDT physical address */
-    env->gpr[LINX_REG_A2] = 0;
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        CPULinxState *env = &s->cpu[pe]->env;
+
+        cpu_reset(CPU(s->cpu[pe]));
+        env->pc = s->entry;
+        env->gpr[LINX_REG_SP] = s->initial_sp - pe * 0x10000;
+        env->gpr[LINX_REG_RA] = s->exit_trampoline;
+        env->gpr[LINX_REG_ZERO] = 0;
+        env->gpr[LINX_REG_A0] = pe;
+        env->gpr[LINX_REG_A1] = s->fdt_addr;
+        env->gpr[LINX_REG_A2] = 0;
+        env->pe_id = pe;
+    }
 }
 
 static uint32_t linx_memwatch_pack_attrs(MemTxAttrs attrs)
@@ -3507,6 +3510,12 @@ static void linx_virt_init(MachineState *machine)
     int ret;
     const hwaddr fdt_gap = 0x10000;
 
+    if (machine->smp.cpus != 1 && machine->smp.cpus != 4) {
+        error_report("linx virt: DavinciOO supports either 1 PE or Core4 (-smp 4)");
+        exit(1);
+    }
+    s->pe_count = machine->smp.cpus;
+
     hwaddr load_base = 0x10000;
     hwaddr tramp;
     hwaddr sp;
@@ -3568,11 +3577,14 @@ static void linx_virt_init(MachineState *machine)
                                         s->dfx_memwatch_stop ? 1 : 0);
     }
 
-    s->cpu = LINX_CPU(cpu_create(machine->cpu_type));
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        s->cpu[pe] = LINX_CPU(cpu_create(machine->cpu_type));
+        s->cpu[pe]->boot_pe_id = pe;
+    }
 
     /* Initialize UART */
     s->uart.cross_model_dump_pending = &s->cross_model_dump_pending;
-    linx_uart_init(&s->uart, s->cpu);
+    linx_uart_init(&s->uart, s->cpu[0]);
 
     /*
      * Provide one virtio-mmio transport for bring-up disk boot experiments.
@@ -3594,7 +3606,7 @@ static void linx_virt_init(MachineState *machine)
 
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, base);
-        s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu, irq);
+        s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu[0], irq);
         sysbus_connect_irq(sbd, 0, s->virtio_irq[i]);
         if (linx_virtio_mmio_debug_enabled()) {
             fprintf(stderr,
@@ -3606,10 +3618,23 @@ static void linx_virt_init(MachineState *machine)
     }
 
     ram = s->dfx_ram_ptr;
-    if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
-                       &s->cpu->env,
-                       load_base, &entry, &image_end, &error_fatal)) {
-        exit(1);
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        hwaddr pe_entry = 0;
+        hwaddr pe_image_end = 0;
+
+        if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
+                           &s->cpu[pe]->env, load_base, &pe_entry,
+                           &pe_image_end, &error_fatal)) {
+            exit(1);
+        }
+        if (pe == 0) {
+            entry = pe_entry;
+            image_end = pe_image_end;
+        } else if (pe_entry != entry || pe_image_end != image_end) {
+            error_report("linx virt: inconsistent Core4 ELF metadata for PE%u",
+                         pe);
+            exit(1);
+        }
     }
 
     trace_linx_virt_loaded_elf(entry, image_end);
@@ -3710,12 +3735,14 @@ static void linx_virt_init(MachineState *machine)
     s->exit_trampoline = tramp;
     s->fdt_addr = fdt_addr;
 
-    s->cpu->boot_pc = entry;
-    s->cpu->boot_sp = sp;
-    s->cpu->boot_ra = tramp;
-    s->cpu->boot_a0 = 0;
-    s->cpu->boot_a1 = fdt_addr;
-    s->cpu->boot_a2 = 0;
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        s->cpu[pe]->boot_pc = entry;
+        s->cpu[pe]->boot_sp = sp - pe * 0x10000;
+        s->cpu[pe]->boot_ra = tramp;
+        s->cpu[pe]->boot_a0 = pe;
+        s->cpu[pe]->boot_a1 = fdt_addr;
+        s->cpu[pe]->boot_a2 = 0;
+    }
 
     qemu_register_reset(linx_virt_reset, s);
 }
@@ -3728,7 +3755,7 @@ static void linx_virt_machine_class_init(ObjectClass *oc, const void *data)
     mc->init = linx_virt_init;
     mc->default_cpu_type = TYPE_LINX_CPU_LINX;
     mc->default_cpus = 1;
-    mc->max_cpus = 1;
+    mc->max_cpus = 4;
     mc->default_ram_id = "linx.virt.ram";
     mc->default_ram_size = 128 * MiB;
 }
