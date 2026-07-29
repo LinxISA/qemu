@@ -445,6 +445,7 @@ typedef struct LinxVirtMachineState {
 
     LinxCPU *cpu[4];
     unsigned pe_count;
+    LinxCore4State core4;
 
     hwaddr entry;
     bool entry_valid;
@@ -3515,6 +3516,7 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
     s->pe_count = machine->smp.cpus;
+    qemu_mutex_init(&s->core4.lock);
 
     hwaddr load_base = 0x10000;
     hwaddr tramp;
@@ -3580,6 +3582,7 @@ static void linx_virt_init(MachineState *machine)
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         s->cpu[pe] = LINX_CPU(cpu_create(machine->cpu_type));
         s->cpu[pe]->boot_pe_id = pe;
+        s->cpu[pe]->core4 = &s->core4;
     }
 
     /* Initialize UART */

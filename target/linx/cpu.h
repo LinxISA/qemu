@@ -16,6 +16,7 @@
 #include "exec/mmu-access-type.h"
 #include "fpu/softfloat.h"
 #include "hw/core/resettable.h"
+#include "qemu/thread.h"
 
 #ifdef CONFIG_USER_ONLY
 #error "LinxISA does not support user mode emulation"
@@ -26,6 +27,24 @@
 #define LINX_VIRT_FINISHER_FAIL UINT64_C(0x3333)
 #define LINX_VIRT_FINISHER_PASS UINT64_C(0x5555)
 #define LINX_VIRT_FINISHER_RESET UINT64_C(0x7777)
+
+#define LINX_CORE4_PE_COUNT 4
+#define LINX_SHARED_TILE_COUNT 256
+#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)
+
+typedef struct LinxSharedTileVersion {
+    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
+    uint32_t bytes;
+    uint32_t dtype;
+    uint64_t producer_bpc;
+    uint8_t defined_mask;
+    uint8_t ready;
+} LinxSharedTileVersion;
+
+typedef struct LinxCore4State {
+    QemuMutex lock;
+    LinxSharedTileVersion shared_tile[LINX_SHARED_TILE_COUNT];
+} LinxCore4State;
 
 /* Exception types
  * Note: We start from 1, not 0, because exception_index = 0 would
@@ -1024,6 +1043,9 @@ struct ArchCPU {
     uint64_t boot_a1;
     uint64_t boot_a2;
     uint32_t boot_pe_id;
+
+    /* Machine-owned functional state shared by all four DavinciOO PEs. */
+    LinxCore4State *core4;
 
     /* Optional bring-up DFX: insert a CPU watchpoint on realize(). */
     uint64_t dfx_watch_addr;
