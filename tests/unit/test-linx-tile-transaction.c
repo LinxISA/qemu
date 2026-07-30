@@ -27,6 +27,10 @@ typedef struct VisibleCPUTileState {
     uint8_t acc_src1;
     uint32_t acc[LINX_TILE_MAX_WORDS];
     uint32_t acc_bytes;
+    uint8_t acc_dtype;
+    uint8_t acc_valid;
+    uint16_t acc_cols;
+    uint16_t acc_rows;
     uint32_t tile[32][LINX_TILE_MAX_WORDS];
     uint32_t tile_capacity[32];
     uint32_t tile_bytes[32];
@@ -58,6 +62,10 @@ static void capture_cpu_visible_state(const CPULinxState *env,
     visible->acc_src1 = env->tile_acc_src1;
     memcpy(visible->acc, env->tile_acc, sizeof(visible->acc));
     visible->acc_bytes = env->tile_acc_bytes;
+    visible->acc_dtype = env->tile_acc_dtype;
+    visible->acc_valid = env->tile_acc_valid;
+    visible->acc_cols = env->tile_acc_cols;
+    visible->acc_rows = env->tile_acc_rows;
     memcpy(visible->tile, env->tile_reg, sizeof(visible->tile));
     memcpy(visible->tile_capacity, env->tile_reg_capacity,
            sizeof(visible->tile_capacity));
@@ -93,6 +101,10 @@ static CPULinxState *new_atomicity_env(void)
     env->tile_acc_src0 = 0u;
     env->tile_acc_src1 = 1u;
     env->tile_acc_bytes = 128u;
+    env->tile_acc_dtype = 16u;
+    env->tile_acc_valid = 1u;
+    env->tile_acc_cols = 4u;
+    env->tile_acc_rows = 2u;
     env->tile_acc[0] = 0xacc0571u;
     env->tile_reg_capacity[3] = 128u;
     env->tile_reg_bytes[3] = 128u;

@@ -2,7 +2,7 @@
   "schema_version": 2,
   "release": "0.57.1",
   "profile_id": "pto-hardware-numeric-0.57.1-ieee-v1",
-  "status": "normative-truth-complete-qemu-non-s32-cube-unimplemented",
+  "status": "implementation-conformance-proven",
   "truth_identity": {
     "pto_spec_commit": "0141ec89ff1e222adfe1df55610f414ca0c8c086",
     "hardware_profile_sha256": "becfbefcc7a31408e5e5293802493f833f68a2fccebb3f9e8008d8b9f4e7658c",
@@ -22,14 +22,21 @@
     "numeric_vector_cases": 75
   },
   "qemu_implementation_gap": {
-    "currently_executable_cube_profile": "S32 ordinary matrix only",
-    "missing": [
-      "the other 23 ordinary DataType rows",
-      "all 8 ordered MX operand pairs and E8M0 scale-before-FMA behavior",
-      "typed physical ACC and logical bias behavior",
-      "ACCCVT rounding/publication evidence for every accepted destination type",
-      "execution of all 75 canonical hardware numeric vector cases"
-    ],
-    "conformance_claim": "unproven"
+    "currently_executable_cube_profile": "all 24 ordinary rows and all 8 ordered MX operand pairs",
+    "missing": [],
+    "conformance_claim": "proven",
+    "implementation_conformance": "proven",
+    "evidence": {
+      "canonical_contract_vectors_executed": 75,
+      "vector_executor": "tests/linxisa/test_v0571_hardware_numeric_vectors.py",
+      "shared_numeric_helpers": "target/linx/tile_numeric_057.h",
+      "production_core": "target/linx/tile_cube_057.c",
+      "production_native_test": "tests/unit/test-linx-tile-cube-numeric.c",
+      "production_native_subtests": 9,
+      "production_ordinary_type_rows": 24,
+      "production_mx_ordered_operand_pairs": 8,
+      "transaction_subtests": 9,
+      "external_pto_ctests": 11
+    }
   }
 }

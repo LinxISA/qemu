@@ -308,6 +308,10 @@ typedef struct LinxAcrBlockState {
     /* CUBE ACC is implicit architectural state and follows its ACR. */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
     uint32_t tile_acc_bytes;
+    uint8_t tile_acc_dtype;
+    uint8_t tile_acc_valid;
+    uint16_t tile_acc_cols;
+    uint16_t tile_acc_rows;
 } LinxAcrBlockState;
 
 typedef struct LinxCosimRange {
@@ -461,6 +465,10 @@ typedef struct CPUArchState {
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
     uint32_t tile_acc_bytes;
+    uint8_t tile_acc_dtype;
+    uint8_t tile_acc_valid;
+    uint16_t tile_acc_cols;
+    uint16_t tile_acc_rows;
 
     /* Current block start marker address (BPC) for trap reporting. */
     uint64_t bpc;
@@ -847,6 +855,10 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     }
     memcpy(s->tile_acc, env->tile_acc, sizeof(s->tile_acc));
     s->tile_acc_bytes = env->tile_acc_bytes;
+    s->tile_acc_dtype = env->tile_acc_dtype;
+    s->tile_acc_valid = env->tile_acc_valid;
+    s->tile_acc_cols = env->tile_acc_cols;
+    s->tile_acc_rows = env->tile_acc_rows;
 }
 
 static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
@@ -968,6 +980,10 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     }
     memcpy(env->tile_acc, s->tile_acc, sizeof(env->tile_acc));
     env->tile_acc_bytes = s->tile_acc_bytes;
+    env->tile_acc_dtype = s->tile_acc_dtype;
+    env->tile_acc_valid = s->tile_acc_valid;
+    env->tile_acc_cols = s->tile_acc_cols;
+    env->tile_acc_rows = s->tile_acc_rows;
 }
 
 /*

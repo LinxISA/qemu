@@ -4004,6 +4004,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
+        env->tile_acc_dtype = 0;
+        env->tile_acc_valid = 0;
+        env->tile_acc_cols = 0;
+        env->tile_acc_rows = 0;
         return true;
     }
 
@@ -4060,6 +4064,18 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_cols, 0, sizeof(env->tile_reg_cols));
         memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
     }
+    if (version_id < 17) {
+        if (env->tile_acc_bytes != 0) {
+            error_setg(errp,
+                       "linx: cannot migrate nonempty pre-v17 CUBE ACC "
+                       "without numeric type and shape metadata");
+            return false;
+        }
+        env->tile_acc_dtype = 0;
+        env->tile_acc_valid = 0;
+        env->tile_acc_cols = 0;
+        env->tile_acc_rows = 0;
+    }
 
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4078,7 +4094,14 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         return false;
     }
     if (env->tile_acc_bytes > LINX_TILE_MAX_BYTES ||
-        (env->tile_acc_bytes & 3u) != 0) {
+        (env->tile_acc_bytes & 3u) != 0 || env->tile_acc_valid > 1u ||
+        (!env->tile_acc_valid && (env->tile_acc_bytes != 0u ||
+                                  env->tile_acc_cols != 0u ||
+                                  env->tile_acc_rows != 0u)) ||
+        (env->tile_acc_valid &&
+         ((env->tile_acc_dtype != 0u && env->tile_acc_dtype != 1u &&
+           env->tile_acc_dtype != 16u && env->tile_acc_dtype != 24u) ||
+          env->tile_acc_cols == 0u || env->tile_acc_rows == 0u))) {
         error_setg(errp, "linx: invalid migrated tile accumulator footprint");
         return false;
     }
@@ -4212,7 +4235,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 16,
+    .version_id = 17,
     .minimum_version_id = 11,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4316,6 +4339,10 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_dtype, LinxCPU, 17),
+        VMSTATE_UINT8_V(env.tile_acc_valid, LinxCPU, 17),
+        VMSTATE_UINT16_V(env.tile_acc_cols, LinxCPU, 17),
+        VMSTATE_UINT16_V(env.tile_acc_rows, LinxCPU, 17),
         VMSTATE_UINT64(env.insn_pc_next, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
         VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),
