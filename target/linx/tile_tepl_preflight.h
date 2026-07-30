@@ -122,7 +122,8 @@ static inline bool linx_tile_tepl_pre_publish_legal(
     const bool expand = impl == 0x01eu || impl == 0x01fu ||
                         (impl >= 0x03bu && impl <= 0x048u);
     const bool partial = impl >= 0x0c3u && impl <= 0x0c6u;
-    const bool custom_shape = impl == 0x01cu || impl == 0x087u ||
+    const bool custom_shape = impl == 0x00du || impl == 0x01cu ||
+                              impl == 0x087u ||
                               impl == 0x089u || impl == 0x085u ||
                               impl == 0x084u ||
                               (impl >= 0x102u && impl <= 0x10bu);
@@ -163,6 +164,12 @@ static inline bool linx_tile_tepl_pre_publish_legal(
                linx_tile_tepl_preflight_resolve_ior(env, 0u, &scale_reg) &&
                linx_tile_tepl_preflight_resolve_ior(env, 1u, &zero_reg) &&
                env->gpr[scale_reg] != 0u;
+    }
+    if (impl == 0x00du) { /* TCVT */
+        return has_src0 && !has_src1 && src0 < 32u &&
+               env->tile_reg_valid_cols[src0] >= valid_cols &&
+               env->tile_reg_valid_rows[src0] >= valid_rows &&
+               env->tile_reg_cols[src0] == cols;
     }
     if (impl == 0x030u) { /* TREM */
         return has_src1 && linx_tile_tepl_remainder_tile_divisors_legal(

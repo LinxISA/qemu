@@ -275,6 +275,27 @@ static void test_tepl_missing_tquant_scale_is_atomic(void)
     g_free(env);
 }
 
+static void test_tepl_tcvt_accepts_different_carrier_rows(void)
+{
+    CPULinxState *env = new_atomicity_env();
+    const unsigned sources[1] = { 0u };
+
+    env->tile_reg_bytes[0] = 4096u;
+    env->tile_reg_elem_bytes[0] = 4u;
+    env->tile_reg_dtype[0] = 1u;
+    env->tile_reg_valid_cols[0] = 32u;
+    env->tile_reg_valid_rows[0] = 32u;
+    env->tile_reg_cols[0] = 32u;
+    env->tile_reg_rows[0] = 32u;
+
+    g_assert_true(linx_tile_tepl_pre_publish_legal(
+        env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
+    env->tile_reg_valid_rows[0] = 31u;
+    g_assert_false(linx_tile_tepl_pre_publish_legal(
+        env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
+    g_free(env);
+}
+
 static void test_tepl_zero_tquant_scale_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
@@ -378,6 +399,8 @@ int main(int argc, char **argv)
                     test_tepl_invalid_shape_is_atomic);
     g_test_add_func("/linx/tile-transaction/tepl-missing-tquant-scale",
                     test_tepl_missing_tquant_scale_is_atomic);
+    g_test_add_func("/linx/tile-transaction/tepl-tcvt-carrier-shape",
+                    test_tepl_tcvt_accepts_different_carrier_rows);
     g_test_add_func("/linx/tile-transaction/tepl-zero-tquant-scale",
                     test_tepl_zero_tquant_scale_is_atomic);
     g_test_add_func("/linx/tile-transaction/tepl-trem-zero-tile-divisor",
