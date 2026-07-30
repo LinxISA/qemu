@@ -29,7 +29,6 @@ def main() -> None:
         "bstart_mscatter",
         "bstart_mgather_mask",
         "bstart_mscatter_mask",
-        "bstart_mgather_cas",
         "casb",
         "cash",
         "casw",
@@ -45,7 +44,6 @@ def main() -> None:
         "bstart_mscatter": "0x511181",
         "bstart_mgather_mask": "0x611181",
         "bstart_mscatter_mask": "0x711181",
-        "bstart_mgather_cas": "0x811181",
         "casb": "0x1b",
         "cash": "0x101b",
         "casw": "0x201b",
@@ -57,14 +55,11 @@ def main() -> None:
         require(meta, f".match=UINT64_C({match})", TARGET / "linx_opcode_meta_gen.h")
 
     require(translate, "trans_bstart_tprefetch", TARGET / "translate.c")
-    require(translate, "trans_bstart_mgather_cas", TARGET / "translate.c")
     require(translate, "trans_casb", TARGET / "translate.c")
     require(translate, "trans_dma", TARGET / "translate.c")
 
     require(helper, "LINX_TMA_TPREFETCH = 3", TARGET / "helper.c")
-    require(helper, "LINX_TMA_MGATHER_CAS = 8", TARGET / "helper.c")
     require(helper, "linx_tile_prefetch", TARGET / "helper.c")
-    require(helper, "linx_tile_mgather_cas", TARGET / "helper.c")
     require(helper, "linx_tile_collect_sources", TARGET / "helper.c")
     require(helper, "linx_tile_set_elem_bytes", TARGET / "helper.c")
     require(cpu_h, "tile_reg_elem_bytes", TARGET / "cpu.h")

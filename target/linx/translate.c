@@ -2364,7 +2364,9 @@ static bool trans_bstart_fixp(DisasContext *ctx, arg_bstart_fixp *a)
 
 static bool trans_bstart_tepl(DisasContext *ctx, arg_bstart_tepl *a)
 {
-    return trans_bstart_tile_common(ctx, a->dtype, a->op & 0x3ffu);
+    return trans_bstart_tile_common(ctx, a->dtype,
+                                   ((a->mode & 0x3u) << 5) |
+                                       (a->func & 0x1fu));
 }
 
 static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
@@ -2383,8 +2385,7 @@ static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_tile_dtype, dtype);
 
-    /* TMA and CUBE have distinct v0.57 decoders; all TileOp10 values here
-     * retain their canonical TEPL identity. */
+    /* TMA and CUBE use distinct decoders; TEPL stores Mode:Function. */
     tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
     tcg_gen_movi_i32(cpu_tile_func, op & 0x3ff);
 
@@ -2463,6 +2464,10 @@ static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
 
 static bool trans_bstart_cube(DisasContext *ctx, arg_bstart_cube *a)
 {
+    /* Function 8 is removed in the latest v0.2 CUBE profile. */
+    if (a->func == 8u) {
+        return linx_illegal(ctx);
+    }
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, a->func);
 }
 
@@ -2506,12 +2511,6 @@ static bool trans_bstart_mscatter_mask(DisasContext *ctx,
                                        arg_bstart_mscatter_mask *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 7);
-}
-
-static bool trans_bstart_mgather_cas(DisasContext *ctx,
-                                     arg_bstart_mgather_cas *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 8);
 }
 
 static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)
@@ -2724,9 +2723,9 @@ static bool trans_b_arg_dn2zn(DisasContext *ctx, arg_b_arg_dn2zn *a)
     return linx_trans_b_arg_alias(ctx, 4u);
 }
 
-static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
-                             uint32_t last, uint32_t src0, uint32_t src1,
-                             uint32_t size)
+static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
+                             uint32_t last, uint32_t pe_mask,
+                             uint32_t src0, uint32_t src1, uint32_t tsize)
 {
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
@@ -2736,31 +2735,24 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    /*
-     * v0.57 source-only B.IOT forms use DstTile=111 and canonical imm4=0.
-     * They append ordered input bindings without allocating an output Tile.
-     * DstTile=111 with a nonzero size remains illegal when the descriptor is
-     * consumed because it cannot name an output hand.
-     */
-    const bool has_output = !(dst == 7u && size == 0u);
-    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, 0, size,
-                            has_output);
+    /* Partial PE masks require the Core4 producer-placeholder model. */
+    if (pe_mask != 0xfu || func < 4u || func > 6u || tsize > 7u) {
+        return linx_illegal(ctx);
+    }
+    const uint32_t flags = func == 4u ? 0u
+                           : func == 5u ? (1u << 1)
+                                       : (1u << 0) | (1u << 1);
+    /* v5 TSize names a complete Core4 Tile; this PE owns one quarter. */
+    const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
+    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
+                            local_size_code, tsize != 0u);
     return true;
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
-    const uint32_t form = ((uint32_t)ctx->cur_insn_raw >> 12) & 0x7u;
-    uint32_t flags;
-    if (form == 4u) {
-        flags = ((a->s0r & 1u) << 2) | ((a->s1r & 1u) << 3);
-    } else if (form == 5u) {
-        flags = (1u << 1) | ((a->s0r & 1u) << 2);
-    } else {
-        flags = (1u << 0) | (1u << 1);
-    }
-    return linx_trans_b_iot(ctx, flags, a->dst, a->l, a->src0, a->src1,
-                            a->imm4);
+    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->pe_mask,
+                            a->src0, a->src1, a->tsize);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)
@@ -2845,18 +2837,21 @@ static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
     if (ctx->brtype == 0) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
     }
+    if (a->layout != 0u || a->cmode > 5u) {
+        return linx_illegal(ctx);
+    }
     const uint32_t packed =
-        ((uint32_t)(a->layout & 0x1fu) << 2) |
         ((uint32_t)(a->dtype & 0x1fu) << 7) |
-        ((uint32_t)(a->pad & 0x1fu) << 12) |
+        ((uint32_t)(a->pad & 0x3u) << 12) |
         ((uint32_t)(a->cmode & 0x7u) << 22) |
+        ((uint32_t)(a->c & 0x1u) << 21) |
         ((uint32_t)(a->rmode & 0x7u) << 25) |
         ((uint32_t)(a->sat & 0x1u) << 28);
     const uint32_t control_mask = 0x003c0003u;
     tcg_gen_andi_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, control_mask);
     tcg_gen_ori_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, packed);
     tcg_gen_movi_i32(cpu_tile_attr_dtype, a->dtype & 0x1fu);
-    tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x1fu);
+    tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x3u);
     return true;
 }
 

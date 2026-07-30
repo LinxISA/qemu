@@ -45,19 +45,20 @@
 %ModeHi 26:1
 %Mode 25:2
 
-# Canonical v0.57 control/data attribute fields
+# DavinciOO PTO ISA v0.2/v5 control and data attribute fields
 %BA_DR 26:1
 %BA_aq 29:1
 %BA_atom 30:1
 %BA_far 27:1
 %BA_rl 28:1
 %BA_trap 31:1
-%BA_CMode 25:3
+%BA_CMode 29:3
+%BA_C 25:1
 %BA_DataLayout 7:5
 %BA_DataType 20:5
-%BA_PadValue 15:5
-%BA_RMode 28:3
-%BA_Sat 31:1
+%BA_PadValue 27:2
+%BA_RMode 15:3
+%BA_Sat 26:1
 
 # Block hint (B.HINT) fields
 %HINT_L_UL 16:1
@@ -81,13 +82,12 @@
 %S0R 30:1
 %S1V 29:1
 %S0V 28:1
-%IOTDstTile 22:3
-%IOTL 29:1
-%IOTS0R 30:1
-%IOTS1R 31:1
-%IOTSrc0 15:1 7:5
-%IOTSrc1 16:6
-%IOTImm4 25:4
+%IOTV5Src1 26:6
+%IOTV5Src0 20:6
+%IOTV5Last 19:1
+%IOTV5PeMask 15:4
+%IOTV5TSize 9:3
+%IOTV5Dst 7:2
 
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
@@ -111,7 +111,7 @@ bstart_fp_icall   0000 0000 0000 0000 0110 0001 0000 0001
 bstart_fp_ret     0000 0000 0000 0000 0111 0001 0000 0001
 bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
 bstart_fixp       .... .00. .... 0011 1001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
-bstart_tepl       .... .01. .... .... .001 0001 1000 0001 dtype=%TileDataType op=%TileOp10
+bstart_tepl       .... .... .... 0001 1001 0001 1000 0001 dtype=%TileDataType mode=%Mode func=%TileFunc
 bstop         0000 0000 0000 0000 0000 0000 0000 0001
 
 # Vector block headers (VPAR/VSEQ). These are fall-through blocks that commit at
@@ -136,7 +136,6 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
   bstart_mscatter .... .000 0101 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mgather_mask .... .000 0110 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mscatter_mask .... .000 0111 0001 0001 0001 1000 0001 dtype=%TileDataType
-  bstart_mgather_cas .... .000 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul .... .000 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_bias .... .000 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_acc .... .000 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
@@ -153,9 +152,9 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
 }
 
 # Tile block I/O dependency descriptors (multiple descriptors per block are legal).
-b_iot          .... .... .... .... .100 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=%IOTS1R src0=%IOTSrc0 src1=%IOTSrc1 imm4=%IOTImm4
-b_iot          0... .... ..00 0000 .101 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=0 src0=%IOTSrc0 src1=0 imm4=%IOTImm4
-b_iot          00.. .... ..00 0000 0110 0000 0001 0011 dst=%IOTDstTile l=%IOTL s0r=0 s1r=0 src0=0 src1=0 imm4=%IOTImm4
+b_iot          .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=4
+b_iot          0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=5
+b_iot          0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=6
 
 # Decoupled-body pointer (decoupled block headers).
 b_text         .... .... .... .... .... .... .000 0011 %simm25
@@ -173,7 +172,7 @@ b_arg_dn2zn    0001 1000 0000 0010 0010 0100 0010 0011
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_catr         .... ..00 0000 0000 0000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap
-b_datr         .... .... .... .... .001 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat
+b_datr         .... .... .... 00.. .001 .... .010 0011 cmode=%BA_CMode c=%BA_C layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat
 
 # Block hints; treated as no-ops in bring-up.
 b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp

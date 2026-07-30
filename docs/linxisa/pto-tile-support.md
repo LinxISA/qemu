@@ -1,16 +1,13 @@
-# PTO Tile support on LinxISA v0.57
+# DavinciOO PTO ISA v0.2 Tile support
 
-This document records the executable PTO Tile subset in the Linx QEMU target.
-PTO ISA v0.1 is the previous semantic baseline and PTO ISA v0.2 is the current
-adaptation target. Operations unchanged by v0.2 retain their v0.1 behavior.
-The current target's encoded operation identities are carried by the
-111-operation LinxISA v0.57 PTO map: 97 TEPL operations, 6 TMA operations, and
-8 CUBE operations. These counts describe the complete v0.2 target set, not the
-number of operations newly introduced in v0.2.
+This document records the executable Local Tile subset in Linx QEMU. The
+normative baseline is DavinciOO `origin/codex/update-intrinsic-docs` at
+`3b4fe5e6`; earlier v0.2 drafts are not compatibility profiles. Selector
+collisions are decoded only with their latest identity.
 
 Support has three distinct levels:
 
-1. L1: the LinxISA v0.57 selector or function has a unique decode identity.
+1. L1: the latest PTO ISA v0.2 selector or function has a unique identity.
 2. L2: QEMU executes an operation that changes architectural Tile, ACC, or
    memory state.
 3. L3: a LinxISA AVS case executes the operation and checks exact values or
@@ -26,14 +23,18 @@ changing the Tile queue or destination Tile.
 
 | Family | PTO ISA v0.2 target operations | Explicit execution paths | Fail-closed |
 | --- | ---: | ---: | ---: |
-| TMA | 6 | 6 | 0 |
-| CUBE | 8 | 5 | 3 |
-| TEPL | 97 | 86 | 11 |
-| Total | 111 | 97 | 14 |
+| TMA | Local functions 0-7 | 8 | Shared functions 8-13 |
+| CUBE | Local non-FIXP functions | 5 | MX, Shared, and FIXP variants |
+| TEPL | 98 | 81 | 17 |
 
-The `97/111` count means that at least one defined QEMU profile has an
-execution path. It is not a claim that every dtype, shape, layout, rounding
-mode, exception, or target-specific profile is complete.
+These counts mean that at least one Local QEMU profile has an execution path.
+They do not claim complete dtype, shape, layout, SharedTile, Group MMA, or FIXP
+coverage.
+
+The current QEMU Tile state is a single-PE Local model. It executes v5
+`B.IOT.PE_MASK=1111`, which is the unambiguous all-participant Local form.
+Partial nonzero masks require per-PE identity and masked producer placeholders;
+they are rejected until the Core4 model is integrated.
 
 ## TMA
 
@@ -43,7 +44,7 @@ The six workbook operations have execution paths:
 TLOAD TSTORE TMOV TPREFETCH MGATHER MSCATTER
 ```
 
-`TPREFETCH` follows the v0.57 destination-free contract: it performs TLOAD-like
+`TPREFETCH` follows the latest destination-free contract: it performs TLOAD-like
 address and shape validation without allocating or publishing a Tile output.
 QEMU also implements supplemental masked and CAS gather/scatter functions that
 are not included in the six-operation workbook count.
@@ -60,8 +61,9 @@ The following operations have execution paths:
 | `TGEMV` | 16 | Uses the M/N/K path with `N=1` |
 | `TGEMV_ACC` | 18 | Accumulates into the existing TGEMV ACC |
 
-Function 8 `ACCCVT` exports the internal ACC to a normal Tile. It is required
-by the execution pipeline but is not one of the eight workbook operations.
+Legacy Function 8 `ACCCVT` is removed in the latest profile and is rejected at
+decode. A replacement ACC export contract is required before QEMU can expose
+the internal ACC as a normal Tile.
 
 `TMATMUL_BIAS` freezes exactly three sources in A, B, Bias order across one or
 more `B.IOT` descriptors. The Bias Tile must be a one-row S32 Tile and is
@@ -83,7 +85,7 @@ must not be treated as complete fractal-layout or mixed-precision coverage.
 
 ## TEPL
 
-The executable whitelist contains these 86 operations:
+The executable whitelist contains these 81 operations:
 
 ```text
 TADD TSUB TMUL TDIV TMAX TMIN TAND TOR TXOR TSHL TSHR
@@ -97,10 +99,9 @@ TROWEXPANDADD TROWEXPANDSUB TROWEXPANDMUL TROWEXPANDDIV
 TROWEXPANDMAX TROWEXPANDMIN TROWEXPANDEXPDIF
 TCOLEXPANDADD TCOLEXPANDSUB TCOLEXPANDMUL TCOLEXPANDDIV
 TCOLEXPANDMAX TCOLEXPANDMIN TCOLEXPANDEXPDIF
-TRESHAPE TTRANS TGATHER TSCATTER
+TTRANS TGATHER TSCATTER
 TCI TTRI TFILLPAD TDEQUANT TEXTRACT TCONCAT TGATHERB
-TDEINTERLEAVE TINTERLEAVE
-TPARTADD TPARTMUL TPARTMAX TPARTMIN TPARTARGMAX TPARTARGMIN
+TPARTADD TPARTMUL TPARTMAX TPARTMIN
 ```
 
 Important profile limits include:
@@ -109,8 +110,8 @@ Important profile limits include:
   FP16 and BF16 arithmetic and TCVT encoding use QEMU softfloat. TCVT checks
   both the queued source dtype and destination dtype before source pinning or
   output reservation.
-- `TEXP`, `TLOG`, `TSQRT`, `TRSQRT`, and `TRECIP` currently have an FP32-only
-  QEMU profile. FP16 and BF16 forms are rejected rather than writing zero.
+- `TEXP`, `TLOG`, `TSQRT`, `TRSQRT`, `TRECIP`, and `TABS` implement the
+  documented FP32 and FP16 profiles. BF16 forms remain rejected.
 - FP8/FPL8 profiles are not implemented by the generic arithmetic path and
   are rejected rather than being interpreted as integers of the same width.
 - `TCMP` and `TCMPS` produce a row-packed U32 predicate mask. `TSEL` and
@@ -119,39 +120,29 @@ Important profile limits include:
   row-major CPU profile; they do not claim every target fractal layout.
 - `TFILLPAD` supports the documented Zero/Max/Min subset for the supported
   row-major Vec dtypes.
-- `TRESHAPE` is an equal-byte-count bitwise reshape. `TCONCAT` supports the
-  basic two-source column concatenation form.
+- `TCONCAT` supports the basic two-source column concatenation form.
 - `TEXTRACT` supports the plain same-dtype bounded-window form.
 - `TDEQUANT` supports S8/S16 source data, per-row FP32 scale and offset Tiles,
   and FP32 output using
   `dst[r,c] = (src[r,c] - offset[r]) * scale[r]`.
-- `TINTERLEAVE` and `TDEINTERLEAVE` support the canonical two-source,
-  two-output row-major form. Descriptor order is `dst1, dst0, src1, src0`;
-  all Tiles have the same dtype and valid shape, and valid columns are even.
-  The single-source `TDEINTERLEAVE` overload remains rejected because the
-  current header profile cannot independently encode its wider source shape.
-- `TPARTARGMAX` and `TPARTARGMIN` support equal-shape FP32 value Tiles with
-  S32/U32 index Tiles. Both value and selected-index outputs are published;
-  ties select `src1` as specified. Mismatched-valid-region profiles remain
-  outside this implementation.
 - VMState version 15 adds the Tile shape metadata required to restore this
   execution model. A pre-v15 stream with nonempty Tile state is deliberately
   rejected because its missing shapes cannot be reconstructed; pre-v15 empty
   Tile state remains loadable.
 
-The remaining 11 TEPL operations are intentionally fail-closed:
+The remaining 17 TEPL operations are intentionally fail-closed:
 
 | Operations | Missing contract or implementation |
 | --- | --- |
-| `TAXPY`, `TINSERT` | Require reading and preserving an existing destination, while the current TEPL output is a fresh allocation |
+| `TPRELU`, `TADDC`, `TSUBC`, `TFMA`, `TADDSC`, `TSUBSC`, `TAXPY`, `TINSERT` | Operand counts or existing-destination contracts are not implemented |
+| `TFMOD`, `TFMODS`, `TLRELU` | Latest arithmetic semantics do not have a QEMU execution path yet |
 | `TQUANT` | INT8/MXFP8/MXFP4 profiles have different metadata, output counts, and packing contracts |
 | `TIMG2COL` | Convolution window, repeat, padding, and configuration state are not fully encoded by the current header path |
-| `TSORT` | Sorted value/index compound or multi-output contract is not closed |
+| `TSORT32` | Sorted value/index compound or multi-output contract is not closed |
 | `TMRGSORT` | Variable source list and block-length/executed-count profile are not closed |
-| `THISTOGRAM` | Separate source type, destination type, and ByteId are not available in the canonical data-attribute decode |
-| `TPUSH`, `TPOP`, `TALLOC`, `TFREE` | Pipe/control operations require a pipe-handle and side-effect ABI outside ordinary TEPL compute |
+| `THISTOGRAM`, `TRANDOM` | Byte selection and random key/counter profiles are not implemented |
 
-In particular, `TQUANT` selector `0x083` is decoded but rejected by the
+In particular, `TQUANT` selector `0x6a` is rejected by the
 executable-selector gate. The operation must remain rejected until the chosen
 quantization profile uniquely defines the visible inputs, outputs, metadata,
 and packed representation.
@@ -169,23 +160,34 @@ avs/qemu/tests/10_tile_tepl.cpp
 avs/qemu/tests/10_tile_tepl_asm.S
 ```
 
-The focused gate is:
+The intended focused L3 gate is:
 
 ```bash
 QEMU=/path/to/qemu-system-linx64 \
   python3 avs/qemu/run_tests.py --suite tile --timeout 40
 ```
 
-The Tile suite provides exact-value coverage for the implemented batches,
+The existing Tile suite provides exact-value coverage for the earlier v0.2
+draft,
 including packed comparisons and selections, signed narrow lanes, FP16/BF16
 arithmetic, persistent rectangular shape metadata, reductions, expand
-operations, fill padding, partial operations, reshape/concat/gather-by-byte,
+operations, fill padding, partial operations, concat/gather-by-byte,
 sequence/triangular generation, extraction, dequantization, and TGEMV with
 ACC accumulation. AVS ID `0x000A0026` checks exact `TMATMUL_BIAS` results and
 the two-descriptor A/B/Bias operand order. AVS IDs `0x000A0029` and
-`0x000A002A` check that FP16 `TEXP` and BF16 `TLOG` trap, then resume and store
+`0x000A002A` checked that FP16 `TEXP` and BF16 `TLOG` trapped, then resumed and stored
 the surviving input queue head; all 1024 lanes must match the original source,
-which proves that the rejected output was not reserved or published.
+which proved that the rejected output was not reserved or published on that
+draft. The suite still emits the obsolete `B.IOT` layout and must be migrated
+before it can serve as L3 evidence for the latest baseline.
+
+The QEMU-local gates for the latest encoding are:
+
+```bash
+python3 tests/linxisa/test_v02_tepl_contract.py
+python3 tests/linxisa/test_v02_local_b_iot.py
+ninja -C build qemu-system-linx64
+```
 
 The representative TEPL negative checks use the stable same-ACR trap-return
 path inside the normal Tile suite. The separate cross-ACR standalone
