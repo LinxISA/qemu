@@ -42,6 +42,7 @@ enum {
     LINX_EXCP_HW_BREAKPOINT = 8, /* Hardware breakpoint */
     LINX_EXCP_HW_WATCHPOINT = 9, /* Hardware watchpoint */
     LINX_EXCP_EXEC_STATE_CHECK = 10, /* ACR_ENTER target/state invalid */
+    LINX_EXCP_TILE_FAULT = 11, /* Precise Tile legality/allocation fault */
 };
 
 /*
@@ -223,7 +224,9 @@ typedef enum LinxTemplateKind {
 #define LINX_EBARG_STACK_DEPTH 8u
 
 /* Bring-up tile backing store limits (TAU). */
-#define LINX_TILE_MAX_BYTES (64u * 1024u) /* must cover >=16KB bring-up */
+#define LINX_TILE_CELL_BYTES 128u
+#define LINX_TILE_PE_CAPACITY_BYTES (256u * 1024u)
+#define LINX_TILE_MAX_BYTES (64u * 1024u)
 #define LINX_TILE_MAX_WORDS (LINX_TILE_MAX_BYTES / 4u)
 
 /*
@@ -301,6 +304,10 @@ typedef struct LinxAcrBlockState {
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
     uint8_t tile_iot_output_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_output_phys[LINX_TILE_MAX_IOT];
+
+    /* CUBE ACC is implicit architectural state and follows its ACR. */
+    uint32_t tile_acc[LINX_TILE_MAX_WORDS];
+    uint32_t tile_acc_bytes;
 } LinxAcrBlockState;
 
 typedef struct LinxCosimRange {
@@ -442,6 +449,7 @@ typedef struct CPUArchState {
 
     /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
     uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
+    uint32_t tile_reg_capacity[32]; /* architectural allocation capacity */
     uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
     uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
     uint8_t tile_reg_dtype[32]; /* canonical v0.57 producer DataType */
@@ -837,6 +845,8 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->tile_iot_output_valid[i] = env->tile_iot_output_valid[i];
         s->tile_iot_output_phys[i] = env->tile_iot_output_phys[i];
     }
+    memcpy(s->tile_acc, env->tile_acc, sizeof(s->tile_acc));
+    s->tile_acc_bytes = env->tile_acc_bytes;
 }
 
 static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
@@ -956,6 +966,8 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->tile_iot_output_valid[i] = s->tile_iot_output_valid[i];
         env->tile_iot_output_phys[i] = s->tile_iot_output_phys[i];
     }
+    memcpy(env->tile_acc, s->tile_acc, sizeof(env->tile_acc));
+    env->tile_acc_bytes = s->tile_acc_bytes;
 }
 
 /*

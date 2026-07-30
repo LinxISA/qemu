@@ -1,5 +1,12 @@
 
 testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
+linx_tile_test_target = declare_dependency(
+  include_directories: include_directories('../../target/linx'),
+  compile_args: [
+    '-DCOMPILING_PER_TARGET',
+    '-DCONFIG_TARGET="linx64-softmmu-config-target.h"',
+  ],
+)
 
 tests = {
   'check-block-qdict': [],
@@ -48,6 +55,7 @@ tests = {
   'test-qapi-util': [],
   'test-interval-tree': [],
   'test-fifo': [],
+  'test-linx-tile-transaction': [linx_tile_test_target],
 }
 
 if have_system or have_tools
