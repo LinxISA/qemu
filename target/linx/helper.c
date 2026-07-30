@@ -14263,6 +14263,45 @@ static bool linx_tile_collect_cube_sources(
     return size_count == 1u && linx_tile_size_code_valid(*size_code_out);
 }
 
+static bool linx_tile_indexed_tma_size(
+    const CPULinxState *env, uint32_t func,
+    const unsigned sources[LINX_TILE_MAX_IOT * 2], unsigned source_count,
+    unsigned *size_code_out)
+{
+    bool explicit_size = false;
+    unsigned size_code = env->tile_iot_size & 0x1fu;
+
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        const LinxTileIOTDesc d = linx_tile_decode_iot(env->tile_iot_desc[i]);
+        if (!d.has_size) {
+            continue;
+        }
+        if (explicit_size && size_code != (d.size & 0x1fu)) {
+            return false;
+        }
+        explicit_size = true;
+        size_code = d.size & 0x1fu;
+    }
+
+    if (!explicit_size &&
+        (func == LINX_TMA_MSCATTER || func == LINX_TMA_MSCATTER_MASK)) {
+        if (source_count == 0u) {
+            return false;
+        }
+        const uint32_t bytes = env->tile_reg_bytes[sources[0]];
+        if (bytes < 16u || (bytes & (bytes - 1u)) != 0u) {
+            return false;
+        }
+        size_code = (unsigned)__builtin_ctz(bytes) - 4u;
+    }
+
+    if (!linx_tile_size_code_valid(size_code)) {
+        return false;
+    }
+    *size_code_out = size_code;
+    return true;
+}
+
 static bool linx_tile_transfer_preflight(const CPULinxState *env,
                                          unsigned size_code,
                                          LinxTMATransferDir dir)
@@ -14332,19 +14371,13 @@ static bool linx_tile_preflight_tma(
             source_count < required_sources) {
             return false;
         }
+        unsigned size_code;
+        if (!linx_tile_indexed_tma_size(env, func, sources, source_count,
+                                        &size_code)) {
+            return false;
+        }
         for (unsigned i = 0; i < env->tile_iot_count; i++) {
             const LinxTileIOTDesc d = linx_tile_get_iot_desc(env, i);
-            unsigned size_code = d.has_size ? d.size & 0x1f
-                                            : env->tile_iot_size & 0x1f;
-            if (!produces_output && !d.has_size && source_count > 0u) {
-                const uint32_t bytes = env->tile_reg_bytes[sources[0]];
-                if (bytes >= 16u && (bytes & (bytes - 1u)) == 0u) {
-                    size_code = (unsigned)__builtin_ctz(bytes) - 4u;
-                }
-            }
-            if (!linx_tile_size_code_valid(size_code)) {
-                return false;
-            }
             if (env->tile_iot_output_valid[i]) {
                 output_seen = true;
                 linx_tile_publish_output(planned_live,
@@ -15071,7 +15104,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
             unsigned output_index = UINT_MAX;
             unsigned output_tile = 0;
             unsigned addr_reg = 0;
-            unsigned size_code = env->tile_iot_size & 0x1f;
+            unsigned size_code;
             const uint32_t func = env->tile_func & 0x1f;
 
             if (!linx_tile_get_base_reg(env, &addr_reg) ||
@@ -15080,21 +15113,15 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                 break;
             }
             for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                LinxTileIOTDesc d = linx_tile_decode_iot(env->tile_iot_desc[i]);
-                if (d.has_size) {
-                    size_code = d.size & 0x1f;
-                }
                 if (env->tile_iot_output_valid[i]) {
                     output_index = i;
                     output_tile = env->tile_iot_output_phys[i];
                 }
             }
-            if ((func == LINX_TMA_MSCATTER ||
-                 func == LINX_TMA_MSCATTER_MASK) && source_count > 0u) {
-                const uint32_t bytes = env->tile_reg_bytes[sources[0]];
-                if (bytes >= 16u && (bytes & (bytes - 1u)) == 0u) {
-                    size_code = (unsigned)__builtin_ctz(bytes) - 4u;
-                }
+            if (!linx_tile_indexed_tma_size(env, func, sources, source_count,
+                                            &size_code)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                break;
             }
 
             switch (func) {
