@@ -35,7 +35,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-/* Optional compatibility addend configured from $LINX_CALLFRAME_SIZE. */
+/* Fixed zero; frame templates must not depend on host environment state. */
 extern uint64_t linx_callframe_size;
 
 static uint64_t linx_bstart_cache_stat_resets;
@@ -3956,20 +3956,34 @@ static bool linx_fret_stk_trace_matches(CPULinxState *env, uint64_t pc,
     return true;
 }
 
-static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
-                                     uint64_t next_pc, uint64_t old_sp,
-                                     uint64_t new_sp, uint64_t stacksize,
-                                     uint64_t restore_base, int begin,
-                                     int end,
-                                     const uint32_t regs[LINX_GPR_COUNT],
-                                     const uint64_t addrs[LINX_GPR_COUNT],
-                                     const uint64_t values[LINX_GPR_COUNT],
-                                     int count)
+typedef struct LinxFretStkTraceObservation {
+    bool emitted;
+    uint64_t slot_zero_addr;
+    uint64_t slot_zero_value;
+    uint64_t retained_target;
+    int slot_zero_loads;
+    int restore_loads;
+    uint64_t host_verify_loads;
+} LinxFretStkTraceObservation;
+
+static LinxFretStkTraceObservation
+linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
+                         uint64_t next_pc, uint64_t old_sp,
+                         uint64_t new_sp, uint64_t stacksize,
+                         uint64_t restore_base, int begin, int end,
+                         const uint32_t regs[LINX_GPR_COUNT],
+                         const uint64_t addrs[LINX_GPR_COUNT],
+                         const uint64_t values[LINX_GPR_COUNT], int count,
+                         bool trace_enabled,
+                         int restore_host_loads,
+                         int restore_fallback_loads,
+                         uint64_t host_verify_loads)
 {
+    LinxFretStkTraceObservation observation = { 0 };
     uint64_t restored_ra = env->gpr[LINX_REG_RA];
 
-    if (!linx_fret_stk_trace_enabled_fast()) {
-        return;
+    if (!trace_enabled) {
+        return observation;
     }
     for (int i = 0; i < count; i++) {
         if (regs[i] == LINX_REG_RA) {
@@ -3978,7 +3992,19 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
         }
     }
     if (!linx_fret_stk_trace_matches(env, cur_pc, restored_ra)) {
-        return;
+        return observation;
+    }
+
+    observation.emitted = true;
+    observation.slot_zero_addr = new_sp - restore_base - 8;
+    observation.retained_target = restored_ra;
+    observation.restore_loads = restore_host_loads + restore_fallback_loads;
+    observation.host_verify_loads = host_verify_loads;
+    for (int i = 0; i < count; i++) {
+        if (addrs[i] == observation.slot_zero_addr) {
+            observation.slot_zero_loads++;
+            observation.slot_zero_value = values[i];
+        }
     }
 
     fprintf(stderr,
@@ -3988,6 +4014,13 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
             " stacksize=%" PRIu64 " callframe=%" PRIu64
             " restore_base=%" PRIu64
             " begin=%s end=%s restore_count=%d"
+            " restore_host_loads=%d restore_fallback_loads=%d"
+            " host_verify_loads=%" PRIu64
+            " executed_restore_loads=%d physical_restore_reads=%" PRIu64
+            " slot0_addr=0x%" PRIx64 " slot0_value=0x%" PRIx64
+            " slot0_loads=%d slot0_physical_reads=%d"
+            " slot0_physical_reads_proven=%d"
+            " retained_target=0x%" PRIx64
             " incoming_ra=0x%" PRIx64 " restored_ra=0x%" PRIx64
             " envpc=0x%" PRIx64 " bpc=0x%" PRIx64
             " tpc=0x%" PRIx64 " cstate=0x%" PRIx64
@@ -3996,7 +4029,17 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
             linx_callframe_size, restore_base,
             (begin >= 0 && begin < LINX_GPR_COUNT) ? linx_gpr_names[begin] : "?",
             (end >= 0 && end < LINX_GPR_COUNT) ? linx_gpr_names[end] : "?",
-            count, env->gpr[LINX_REG_RA], restored_ra, env->pc, env->bpc,
+            count, restore_host_loads, restore_fallback_loads,
+            observation.host_verify_loads, observation.restore_loads,
+            (uint64_t)observation.restore_loads +
+                observation.host_verify_loads,
+            observation.slot_zero_addr, observation.slot_zero_value,
+            observation.slot_zero_loads,
+            observation.host_verify_loads == 0 ?
+                observation.slot_zero_loads : -1,
+            observation.host_verify_loads == 0,
+            observation.retained_target, env->gpr[LINX_REG_RA], restored_ra,
+            env->pc, env->bpc,
             env->body_tpc, env->ssr[0x20], env->brtype, env->tgt);
 
     for (int i = 0; i < count; i++) {
@@ -4022,6 +4065,37 @@ static void linx_fret_stk_trace_emit(CPULinxState *env, uint64_t cur_pc,
                                     linx_fret_stk_trace_dump_words,
                                     "  fret_sp", 8);
     }
+    fflush(stderr);
+    return observation;
+}
+
+static void
+linx_fret_stk_trace_publish(CPULinxState *env, uint64_t cur_pc,
+                            const LinxFretStkTraceObservation *observation)
+{
+    if (!observation->emitted) {
+        return;
+    }
+
+    fprintf(stderr,
+            "LINX_FRET_STK_PUBLISH count=%" PRIu64
+            " pc=0x%" PRIx64
+            " slot0_addr=0x%" PRIx64 " slot0_value=0x%" PRIx64
+            " slot0_loads=%d additional_slot0_loads=0"
+            " slot0_physical_reads=%d slot0_physical_reads_proven=%d"
+            " additional_slot0_physical_reads=0"
+            " executed_restore_loads=%d host_verify_loads=%" PRIu64
+            " retained_target=0x%" PRIx64
+            " committed_r10=0x%" PRIx64
+            " published_target=0x%" PRIx64 "\n",
+            env->insn_count, cur_pc, observation->slot_zero_addr,
+            observation->slot_zero_value, observation->slot_zero_loads,
+            observation->host_verify_loads == 0 ?
+                observation->slot_zero_loads : -1,
+            observation->host_verify_loads == 0,
+            observation->restore_loads, observation->host_verify_loads,
+            observation->retained_target,
+            env->gpr[LINX_REG_RA], env->pc);
     fflush(stderr);
 }
 
@@ -9601,6 +9675,7 @@ static inline uint64_t linx_frame_loadq_cached_or_fallback(CPULinxState *env,
                                                            uint64_t addr,
                                                            int mmu_idx,
                                                            bool use_cached_host,
+                                                           bool verify_host_value,
                                                            int *host_loads,
                                                            int *fallback_loads)
 {
@@ -9615,7 +9690,8 @@ static inline uint64_t linx_frame_loadq_cached_or_fallback(CPULinxState *env,
             if (host_loads) {
                 (*host_loads)++;
             }
-            if (unlikely(linx_frame_restore_host_verify_enabled_p())) {
+            if (verify_host_value &&
+                unlikely(linx_frame_restore_host_verify_enabled_p())) {
                 const uint64_t fallback_value =
                     cpu_ldq_le_mmuidx_ra(env, (abi_ptr)addr, mmu_idx, GETPC());
 
@@ -9666,6 +9742,7 @@ static bool linx_frame_restore_prepare_page_fast(CPULinxState *env,
                                                  uint32_t regs[LINX_GPR_COUNT],
                                                  uint64_t addrs[LINX_GPR_COUNT],
                                                  uint64_t values[LINX_GPR_COUNT],
+                                                 bool verify_host_value,
                                                  int *host_loads,
                                                  int *fallback_loads,
                                                  int *count_out)
@@ -9676,7 +9753,7 @@ static bool linx_frame_restore_prepare_page_fast(CPULinxState *env,
     int n = 0;
 
     if (!linx_frame_page_fast_shape(begin, end, stacksize, count) ||
-        linx_frame_restore_host_verify_enabled_p()) {
+        (verify_host_value && linx_frame_restore_host_verify_enabled_p())) {
         return false;
     }
 
@@ -9727,6 +9804,7 @@ static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
                                       uint32_t regs[LINX_GPR_COUNT],
                                       uint64_t addrs[LINX_GPR_COUNT],
                                       uint64_t values[LINX_GPR_COUNT],
+                                      bool verify_host_value,
                                       int *host_loads,
                                       int *fallback_loads)
 {
@@ -9751,6 +9829,7 @@ static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
     if (linx_frame_restore_prepare_page_fast(env, stacksize, new_sp,
                                              restore_base, begin, end,
                                              regs, addrs, values,
+                                             verify_host_value,
                                              host_loads, fallback_loads, &n)) {
         return n;
     }
@@ -9764,6 +9843,7 @@ static int linx_frame_restore_prepare(CPULinxState *env, uint64_t stacksize,
             values[n] =
                 linx_frame_loadq_cached_or_fallback(env, addr, mmu_idx,
                                                     use_cached_host,
+                                                    verify_host_value,
                                                     host_loads,
                                                     fallback_loads);
             n++;
@@ -9965,6 +10045,7 @@ static bool linx_template_fret_stk_single_reg_fast(CPULinxState *env,
     const uint64_t value =
         linx_frame_loadq_cached_or_fallback(env, addr, mmu_idx,
                                             use_cached_host,
+                                            false,
                                             &restore_host_loads,
                                             &restore_fallback_loads);
 
@@ -10056,7 +10137,7 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
                                       bool chain)
 {
     CPUState *cs = env_cpu(env);
-    const uint64_t adj = stacksize + linx_callframe_size;
+    const uint64_t adj = stacksize;
     const int begin = (int)reg_begin;
     const int end = (int)reg_end;
     const int count = (stacksize > 0) ? linx_fentry_reg_count(begin, end) : 0;
@@ -10216,8 +10297,8 @@ static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
                                      bool chain)
 {
     CPUState *cs = env_cpu(env);
-    const uint64_t adj = stacksize + linx_callframe_size;
-    const uint64_t restore_base = linx_callframe_size;
+    const uint64_t adj = stacksize;
+    const uint64_t restore_base = 0;
     const int begin = (int)reg_begin;
     const int end = (int)reg_end;
     const uint64_t old_sp = env->gpr[LINX_REG_SP];
@@ -10232,6 +10313,7 @@ static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values,
+                                   true,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
     linx_frame_shape_hot_record(env, LINX_TEMPLATE_FEXIT, reg_begin, reg_end,
@@ -10280,8 +10362,8 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
                                         bool chain)
 {
     CPUState *cs = env_cpu(env);
-    const uint64_t adj = stacksize + linx_callframe_size;
-    const uint64_t restore_base = linx_callframe_size;
+    const uint64_t adj = stacksize;
+    const uint64_t restore_base = 0;
     const int begin = (int)reg_begin;
     const int end = (int)reg_end;
     const uint64_t old_sp = env->gpr[LINX_REG_SP];
@@ -10301,11 +10383,18 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
     uint64_t values[LINX_GPR_COUNT];
     int restore_host_loads = 0;
     int restore_fallback_loads = 0;
+    const bool trace_enabled = linx_fret_stk_trace_enabled_fast();
+    const uint64_t host_verify_loads_before = trace_enabled ?
+        linx_frame_stat_restore_host_verify_loads : 0;
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values,
+                                   false,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    const uint64_t host_verify_loads = trace_enabled ?
+        linx_frame_stat_restore_host_verify_loads - host_verify_loads_before :
+        0;
     linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_STK, reg_begin,
                                 reg_end, stacksize, restore_count);
 
@@ -10316,9 +10405,14 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
         linx_frame_stat_restore_fallback_loads += restore_fallback_loads;
     }
 
-    linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp, stacksize,
-                             restore_base, begin, end, regs, addrs, values,
-                             restore_count);
+    const LinxFretStkTraceObservation trace_observation =
+        linx_fret_stk_trace_emit(env, cur_pc, next_pc, old_sp, new_sp,
+                                 stacksize, restore_base, begin, end, regs,
+                                 addrs, values, restore_count,
+                                 trace_enabled,
+                                 restore_host_loads,
+                                 restore_fallback_loads,
+                                 host_verify_loads);
 
     if (adj) {
         env->gpr[LINX_REG_SP] = new_sp;
@@ -10343,6 +10437,7 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
     }
     linx_template_clear(env);
     env->pc = ra;
+    linx_fret_stk_trace_publish(env, cur_pc, &trace_observation);
     linx_template_commit_or_chain(env, cs, env->pc, chain);
 }
 
@@ -10371,8 +10466,8 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
                                        bool chain)
 {
     CPUState *cs = env_cpu(env);
-    const uint64_t adj = stacksize + linx_callframe_size;
-    const uint64_t restore_base = linx_callframe_size;
+    const uint64_t adj = stacksize;
+    const uint64_t restore_base = 0;
     const int begin = (int)reg_begin;
     const int end = (int)reg_end;
     const uint64_t retRa = env->gpr[LINX_REG_RA];
@@ -10387,6 +10482,7 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
     const int restore_count =
         linx_frame_restore_prepare(env, stacksize, new_sp, restore_base,
                                    begin, end, regs, addrs, values,
+                                   true,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
     linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_RA, reg_begin, reg_end,

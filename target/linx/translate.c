@@ -434,14 +434,9 @@ static void linx_emit_tile_iot_desc(DisasContext *ctx, uint32_t flags,
 }
 
 /*
- * Optional compatibility addend for frame templates.
- *
- * Default LinxISA template semantics use stacksize directly for SP adjust:
- *   f.entry:   sp -= stacksize
- *   f.exit/f.ret.*: sp += stacksize
- *
- * Set LINX_CALLFRAME_SIZE to a non-zero multiple of 8 only when running older
- * binaries that relied on an additional fixed outgoing-call frame.
+ * Frame-template semantics use only the encoded stack size.  Keep this value
+ * fixed so external environment state cannot alter guest-visible SP or slot
+ * addresses.
  */
 uint64_t linx_callframe_size = 0;
 
@@ -9274,7 +9269,6 @@ void linx_translate_code(CPUState *cs, TranslationBlock *tb,
 void linx_translate_init(void)
 {
     int i;
-    const char *callframe = getenv("LINX_CALLFRAME_SIZE");
     const char *commit_trace = getenv("LINX_COMMIT_TRACE");
     const char *minst_trace = getenv("LINX_MINST_TRACE");
     const char *cosim_enable = getenv("LINX_COSIM_ENABLE");
@@ -9460,16 +9454,4 @@ void linx_translate_init(void)
         cpu_trace_traparg0 = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, trace_traparg0), "trace_traparg0");
     }
 
-    if (callframe && callframe[0]) {
-        char *endp = NULL;
-        uint64_t v;
-
-        errno = 0;
-        v = strtoull(callframe, &endp, 0);
-        if (errno == 0 && endp && endp != callframe && *endp == '\0') {
-            if ((v & 7u) == 0) {
-                linx_callframe_size = v;
-            }
-        }
-    }
 }
