@@ -2,6 +2,7 @@
 
 #include "qemu/osdep.h"
 #include "target/linx/cpu.h"
+#include "target/linx/tile_isa_057.h"
 #include "target/linx/tile_tepl_preflight.h"
 #include "target/linx/tile_transaction.h"
 
@@ -203,6 +204,40 @@ static void test_valid_transaction_applies_once(void)
     g_assert_cmphex(state.tile_head[3], ==, 0x5710571u);
 }
 
+static void test_tstore_size_comes_from_source_footprint(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    LinxTileIOTDesc desc = linx_tile_decode_iot(UINT64_C(0x00028000));
+    unsigned tile = 0u;
+    unsigned size_code = 0u;
+
+    env->tile_iot_src_valid[0] = 1u;
+    env->tile_iot_src_phys[0][0] = 3u;
+    for (unsigned expected = 3u; expected <= 9u; expected++) {
+        const uint32_t bytes = UINT32_C(1) << (expected + 4u);
+
+        env->tile_reg_bytes[3] = bytes;
+        g_assert_true(linx_tile_tstore_resolve_binding(
+            &desc, env->tile_iot_src_valid[0], env->tile_iot_src_phys[0],
+            env->tile_reg_bytes, &tile, &size_code));
+        g_assert_cmpuint(tile, ==, 3u);
+        g_assert_cmpuint(size_code, ==, expected);
+    }
+    const uint32_t invalid_bytes[] = { 0u, 64u, 96u, 16384u };
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid_bytes); i++) {
+        env->tile_reg_bytes[3] = invalid_bytes[i];
+        g_assert_false(linx_tile_tstore_resolve_binding(
+            &desc, env->tile_iot_src_valid[0], env->tile_iot_src_phys[0],
+            env->tile_reg_bytes, &tile, &size_code));
+    }
+    desc.has_size = true;
+    env->tile_reg_bytes[3] = 4096u;
+    g_assert_false(linx_tile_tstore_resolve_binding(
+        &desc, env->tile_iot_src_valid[0], env->tile_iot_src_phys[0],
+        env->tile_reg_bytes, &tile, &size_code));
+    g_free(env);
+}
+
 static void test_tepl_invalid_shape_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
@@ -337,6 +372,8 @@ int main(int argc, char **argv)
                     test_allocation_failure_is_atomic);
     g_test_add_func("/linx/tile-transaction/valid",
                     test_valid_transaction_applies_once);
+    g_test_add_func("/linx/tile-transaction/tstore-source-footprint",
+                    test_tstore_size_comes_from_source_footprint);
     g_test_add_func("/linx/tile-transaction/tepl-invalid-shape",
                     test_tepl_invalid_shape_is_atomic);
     g_test_add_func("/linx/tile-transaction/tepl-missing-tquant-scale",

@@ -9147,49 +9147,6 @@ enum {
     LINX_CUBE_TGEMV_MX_ACC = 22,
 };
 
-enum {
-    LINX_IOT_S0V = 1u << 0,
-    LINX_IOT_S1V = 1u << 1,
-    LINX_IOT_S0R = 1u << 2,
-    LINX_IOT_S1R = 1u << 3,
-};
-
-enum {
-    LINX_TILE_IOT_SRC0_SHIFT = 0,
-    LINX_TILE_IOT_SRC1_SHIFT = 6,
-    LINX_TILE_IOT_DST_SHIFT = 12,
-    LINX_TILE_IOT_LAST_SHIFT = 15,
-    LINX_TILE_IOT_FLAGS_SHIFT = 16,
-    LINX_TILE_IOT_REG_SHIFT = 20,
-    LINX_TILE_IOT_SIZE_SHIFT = 25,
-    LINX_TILE_IOT_HAS_SIZE_SHIFT = 30,
-};
-
-typedef struct LinxTileIOTDesc {
-    uint32_t src0;
-    uint32_t src1;
-    uint32_t dst;
-    uint32_t last;
-    uint32_t flags;
-    uint32_t reg;
-    uint32_t size;
-    bool has_size;
-} LinxTileIOTDesc;
-
-static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
-{
-    LinxTileIOTDesc d;
-    d.src0 = (packed >> LINX_TILE_IOT_SRC0_SHIFT) & 0x3fu;
-    d.src1 = (packed >> LINX_TILE_IOT_SRC1_SHIFT) & 0x3fu;
-    d.dst = (packed >> LINX_TILE_IOT_DST_SHIFT) & 0x7u;
-    d.last = (packed >> LINX_TILE_IOT_LAST_SHIFT) & 0x1u;
-    d.flags = (packed >> LINX_TILE_IOT_FLAGS_SHIFT) & 0xfu;
-    d.reg = (packed >> LINX_TILE_IOT_REG_SHIFT) & 0x1fu;
-    d.size = (packed >> LINX_TILE_IOT_SIZE_SHIFT) & 0x1fu;
-    d.has_size = ((packed >> LINX_TILE_IOT_HAS_SIZE_SHIFT) & 0x1u) != 0;
-    return d;
-}
-
 static bool linx_tile_output_hand(const LinxTileIOTDesc *desc,
                                   unsigned *hand_out)
 {
@@ -15652,14 +15609,8 @@ static bool linx_tile_collect_cube_sources(
             return false;
         }
     }
-    const uint32_t bytes = env->tile_reg_bytes[sources[0]];
-    for (unsigned size = 3u; size <= 9u; size++) {
-        if (bytes == (1u << (size + 4u))) {
-            *size_code_out = size;
-            return true;
-        }
-    }
-    return false;
+    return linx_tile_size_code_from_bytes(
+        env->tile_reg_bytes[sources[0]], size_code_out);
 }
 
 static bool linx_tile_transfer_preflight(const CPULinxState *env,
@@ -15760,8 +15711,8 @@ static bool linx_tile_preflight_tma(
 
     for (unsigned i = 0; i < count; i++) {
         const LinxTileIOTDesc d = linx_tile_get_iot_desc(env, i);
-        const unsigned size_code = d.has_size ? d.size & 0x1f
-                                              : env->tile_iot_size & 0x1f;
+        unsigned size_code = d.has_size ? d.size & 0x1f
+                                        : env->tile_iot_size & 0x1f;
         unsigned tile;
 
         switch (env->tile_func & 0x1f) {
@@ -15774,25 +15725,12 @@ static bool linx_tile_preflight_tma(
             linx_tile_publish_output(planned_live, tile);
             break;
         case LINX_TMA_TSTORE: {
-            const bool src0_present = (d.flags & LINX_IOT_S0V) == 0;
-            const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
-            if (!linx_tile_transfer_preflight(env, size_code,
+            if (!linx_tile_tstore_resolve_binding(
+                    &d, env->tile_iot_src_valid[i],
+                    env->tile_iot_src_phys[i], env->tile_reg_bytes,
+                    &tile, &size_code) ||
+                !linx_tile_transfer_preflight(env, size_code,
                                               LINX_TMA_TR_TO_GM)) {
-                return false;
-            }
-            if (src0_present) {
-                if (!linx_tile_get_bound_source(env, i, 0, &tile)) {
-                    return false;
-                }
-            } else if (src1_present) {
-                if (!linx_tile_get_bound_source(env, i, 1, &tile)) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            const uint64_t bytes = 1ull << (size_code + 4u);
-            if (env->tile_reg_bytes[tile] < bytes) {
                 return false;
             }
             linx_tile_consume_bound_sources(env, planned_live, i, &d,
@@ -16819,27 +16757,14 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
-                const bool src0_present = (d.flags & LINX_IOT_S0V) == 0;
-                const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
                 unsigned src_tile = 0;
-                if (src0_present) {
-                    if (!linx_tile_get_bound_source(env, i, 0, &src_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else if (src1_present) {
-                    if (!linx_tile_get_bound_source(env, i, 1, &src_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else {
+                unsigned size_code;
+                if (!linx_tile_tstore_resolve_binding(
+                        &d, env->tile_iot_src_valid[i],
+                        env->tile_iot_src_phys[i], env->tile_reg_bytes,
+                        &src_tile, &size_code)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
-                }
-                const unsigned size_code = d.has_size ? (d.size & 0x1f)
-                                                      : (env->tile_iot_size & 0x1f);
-                if (!linx_tile_size_code_valid(size_code)) {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 }
                 /*
                  * TMA's Normal-memory domain permits one TSTORE operation to

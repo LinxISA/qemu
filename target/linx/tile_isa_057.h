@@ -7,6 +7,89 @@
 #ifndef TARGET_LINX_TILE_ISA_057_H
 #define TARGET_LINX_TILE_ISA_057_H
 
+enum {
+    LINX_IOT_S0V = 1u << 0,
+    LINX_IOT_S1V = 1u << 1,
+    LINX_IOT_S0R = 1u << 2,
+    LINX_IOT_S1R = 1u << 3,
+};
+
+enum {
+    LINX_TILE_IOT_SRC0_SHIFT = 0,
+    LINX_TILE_IOT_SRC1_SHIFT = 6,
+    LINX_TILE_IOT_DST_SHIFT = 12,
+    LINX_TILE_IOT_LAST_SHIFT = 15,
+    LINX_TILE_IOT_FLAGS_SHIFT = 16,
+    LINX_TILE_IOT_REG_SHIFT = 20,
+    LINX_TILE_IOT_SIZE_SHIFT = 25,
+    LINX_TILE_IOT_HAS_SIZE_SHIFT = 30,
+};
+
+typedef struct LinxTileIOTDesc {
+    uint32_t src0;
+    uint32_t src1;
+    uint32_t dst;
+    uint32_t last;
+    uint32_t flags;
+    uint32_t reg;
+    uint32_t size;
+    bool has_size;
+} LinxTileIOTDesc;
+
+static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
+{
+    LinxTileIOTDesc d;
+
+    d.src0 = (packed >> LINX_TILE_IOT_SRC0_SHIFT) & 0x3fu;
+    d.src1 = (packed >> LINX_TILE_IOT_SRC1_SHIFT) & 0x3fu;
+    d.dst = (packed >> LINX_TILE_IOT_DST_SHIFT) & 0x7u;
+    d.last = (packed >> LINX_TILE_IOT_LAST_SHIFT) & 0x1u;
+    d.flags = (packed >> LINX_TILE_IOT_FLAGS_SHIFT) & 0xfu;
+    d.reg = (packed >> LINX_TILE_IOT_REG_SHIFT) & 0x1fu;
+    d.size = (packed >> LINX_TILE_IOT_SIZE_SHIFT) & 0x1fu;
+    d.has_size = ((packed >> LINX_TILE_IOT_HAS_SIZE_SHIFT) & 0x1u) != 0;
+    return d;
+}
+
+/* Source-only operations recover the encoded allocation size from the Tile. */
+static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
+                                                  unsigned *size_code)
+{
+    for (unsigned size = 3u; size <= 9u; size++) {
+        if (bytes == (UINT32_C(1) << (size + 4u))) {
+            *size_code = size;
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool linx_tile_tstore_resolve_binding(
+    const LinxTileIOTDesc *desc, uint8_t bound_sources,
+    const uint8_t bound_tiles[2], const uint32_t tile_bytes[32],
+    unsigned *tile, unsigned *size_code)
+{
+    unsigned source;
+
+    /* PTO ISA 0.57.1 TSTORE has a source operand but no destination size. */
+    if (desc->has_size) {
+        return false;
+    }
+    if ((desc->flags & LINX_IOT_S0V) == 0u) {
+        source = 0u;
+    } else if ((desc->flags & LINX_IOT_S1V) == 0u) {
+        source = 1u;
+    } else {
+        return false;
+    }
+    if ((bound_sources & (1u << source)) == 0u) {
+        return false;
+    }
+    *tile = bound_tiles[source];
+    return *tile < 32u &&
+           linx_tile_size_code_from_bytes(tile_bytes[*tile], size_code);
+}
+
 static inline bool linx_tile_data_type_accepted(uint32_t data_type)
 {
     return data_type < 32u &&
