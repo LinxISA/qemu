@@ -13708,11 +13708,8 @@ static bool linx_tile_tepl64_core(CPULinxState *env, unsigned dst_tile,
                                   uint32_t cols, uint32_t physical_cols,
                                   uint32_t bytes)
 {
-    const bool scalar_mode =
-        (env->tile_arg_format == 1u || env->tile_arg_format == 2u);
     unsigned scalar_reg = 0;
-    const bool has_scalar = scalar_mode &&
-                            linx_tile_resolve_ior(env, 0, &scalar_reg);
+    const bool has_scalar = linx_tile_resolve_ior(env, 0, &scalar_reg);
     const uint64_t scalar = has_scalar ? env->gpr[scalar_reg] : 0u;
     const unsigned src0 = source_count > 0u ? sources[0] : 0u;
     const unsigned src1 = source_count > 1u ? sources[1] : 0u;
@@ -13808,7 +13805,7 @@ static bool linx_tile_tepl64_core(CPULinxState *env, unsigned dst_tile,
                     env, op, dtype, lhs, rhs, &result)) {
                 return false;
             }
-        } else if (has_scalar && env->tile_arg_format == 1u) {
+        } else if (has_scalar) {
             if (!linx_tile_tepl_binary_qword_checked(
                     env, op, dtype, lhs, scalar, &result)) {
                 return false;
@@ -13886,9 +13883,7 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     const uint32_t src0_dtype = has_src0 ? env->tile_reg_dtype[src0_tile] : 0u;
     const uint32_t src1_dtype = has_src1 ? env->tile_reg_dtype[src1_tile] : 0u;
     unsigned scalar_reg = 0;
-    const bool scalar_mode =
-        (env->tile_arg_format == 1u || env->tile_arg_format == 2u) &&
-        linx_tile_resolve_ior(env, 0, &scalar_reg);
+    const bool scalar_mode = linx_tile_resolve_ior(env, 0, &scalar_reg);
     const uint32_t scalar_word =
         scalar_mode ? linx_tile_scalar_as_dtype(env->gpr[scalar_reg],
                                                 operation_dtype, elem_bytes)
@@ -14282,7 +14277,7 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             }
         }
     } else if (op == 0x02cu || op == 0x034u) {
-        if ((op == 0x034u && (!scalar_mode || env->tile_arg_format != 1u)) ||
+        if ((op == 0x034u && !scalar_mode) ||
             !linx_tile_tepl_select(env, dst_tile, mask_tile, src0_tile,
                                    src1_tile, op == 0x034u, scalar_word, rows,
                                    cols, physical_cols)) {
@@ -14290,7 +14285,6 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         }
     } else if (op == 0x033u) {
         if (!has_src0 || has_src1 || !scalar_mode ||
-            env->tile_arg_format != 1u ||
             !linx_tile_tepl_tcmps(env, dst_tile, src0_tile, scalar_word, rows,
                                   cols, physical_cols, (uint32_t)bytes64)) {
             return false;
@@ -14531,7 +14525,7 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                         env, op, operation_dtype, lhs, rhs, &result)) {
                     return false;
                 }
-            } else if (has_src0 && scalar_mode && env->tile_arg_format == 1u) {
+            } else if (has_src0 && scalar_mode) {
                 if (!linx_tile_tepl_binary_word_checked(
                         env, op, operation_dtype, lhs, scalar_word,
                         &result)) {

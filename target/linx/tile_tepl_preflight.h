@@ -179,8 +179,7 @@ static inline bool linx_tile_tepl_pre_publish_legal(
     if (impl == 0x032u) { /* TREMS */
         unsigned scalar_reg;
 
-        return env->tile_arg_format == 1u &&
-               linx_tile_tepl_preflight_resolve_ior(
+        return linx_tile_tepl_preflight_resolve_ior(
                    env, 0u, &scalar_reg) &&
                linx_tile_tepl_remainder_divisor_nonzero(
                    dtype, elem_bytes, env->gpr[scalar_reg]);

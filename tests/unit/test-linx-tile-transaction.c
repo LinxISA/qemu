@@ -366,7 +366,8 @@ static void test_tepl_trems_zero_scalar_is_atomic(void)
     env->tile_reg_valid_rows[0] = 2u;
     env->tile_reg_cols[0] = 4u;
     env->tile_reg_rows[0] = 2u;
-    env->tile_arg_format = 1u;
+    /* PTO ISA 0.57.1 scalar operands come directly from B.IOR. */
+    env->tile_arg_format = 0u;
     env->tile_ior_count = 1u;
     env->tile_ior_desc[0] = 2u << 10;
     env->gpr[2] = 0u;
