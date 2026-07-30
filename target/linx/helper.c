@@ -7851,7 +7851,7 @@ uint64_t HELPER(linx_lr_w)(CPULinxState *env, uint64_t addr)
 {
     uint32_t v = cpu_ldl_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UL), GETPC());
     linx_lr_set(env, addr, 4);
-    return (uint64_t)v;
+    return (uint64_t)(int64_t)(int32_t)v;
 }
 
 uint64_t HELPER(linx_lr_b)(CPULinxState *env, uint64_t addr)
