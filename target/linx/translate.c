@@ -2730,9 +2730,9 @@ static bool trans_b_dim_lb2(DisasContext *ctx, arg_b_dim_lb2 *a)
     return trans_b_dim_common(ctx, a->reg, a->uimm, 2);
 }
 
-static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
-                             uint32_t last, uint32_t src0, uint32_t src1,
-                             uint32_t size, bool has_output)
+static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
+                             uint32_t last, uint32_t pe_mask,
+                             uint32_t src0, uint32_t src1, uint32_t tsize)
 {
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
@@ -2742,28 +2742,23 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t flags, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    if (has_output && (dst > 3u || size < 3u || size > 9u)) {
+    if (pe_mask == 0u || func < 4u || func > 6u || tsize > 7u) {
         return linx_illegal(ctx);
     }
-    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, 0, size,
-                            has_output);
+    const uint32_t flags = func == 4u ? 0u
+                           : func == 5u ? LINX_IOT_S1V
+                                       : LINX_IOT_S0V | LINX_IOT_S1V;
+    /* TSize describes Core4; a Local Tile occupies one PE quarter. */
+    const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
+    linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
+                            local_size_code, tsize != 0u);
     return true;
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
-    const uint32_t form = ((uint32_t)ctx->cur_insn_raw >> 12) & 0x7u;
-    const bool has_output = form == 6u || a->imm4 != 0u || a->dst != 0u;
-    uint32_t flags;
-    if (form == 4u) {
-        flags = ((a->s0r & 1u) << 2) | ((a->s1r & 1u) << 3);
-    } else if (form == 5u) {
-        flags = (1u << 1) | ((a->s0r & 1u) << 2);
-    } else {
-        flags = (1u << 0) | (1u << 1);
-    }
-    return linx_trans_b_iot(ctx, flags, a->dst, a->l, a->src0, a->src1,
-                            a->imm4, has_output);
+    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->pe_mask,
+                            a->src0, a->src1, a->tsize);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)
