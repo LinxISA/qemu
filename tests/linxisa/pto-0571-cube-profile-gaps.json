@@ -4,7 +4,7 @@
   "profile_id": "pto-hardware-numeric-0.57.1-ieee-v1",
   "status": "implementation-conformance-proven",
   "truth_identity": {
-    "pto_spec_commit": "0141ec89ff1e222adfe1df55610f414ca0c8c086",
+    "pto_spec_commit": "2f3f605e289b09d56ef5a9ba39fc80b52948a5f5",
     "hardware_profile_sha256": "becfbefcc7a31408e5e5293802493f833f68a2fccebb3f9e8008d8b9f4e7658c",
     "numeric_vectors_sha256": "b9f908deb9cfec412388e95f4532563cf4e462032b43d15996f0f7b4b93b4ec9"
   },
