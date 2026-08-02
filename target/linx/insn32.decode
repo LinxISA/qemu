@@ -44,20 +44,22 @@
 %succ_imm 20:4
 %ModeHi 26:1
 %Mode 25:2
+%XBRaw 15:17
 
 # Canonical v0.57 control/data attribute fields
 %BA_DR 26:1
-%BA_aq 29:1
-%BA_atom 30:1
-%BA_far 27:1
-%BA_rl 28:1
-%BA_trap 31:1
-%BA_CMode 25:3
+%BA_aq 16:1
+%BA_atom 17:1
+%BA_far 18:1
+%BA_rl 15:1
+%BA_trap 19:1
+%BA_CMode 29:3
 %BA_DataLayout 7:5
 %BA_DataType 20:5
-%BA_PadValue 15:5
-%BA_RMode 28:3
-%BA_Sat 31:1
+%BA_PadValue 27:2
+%BA_RMode 15:3
+%BA_Sat 26:1
+%BA_Canonicalize 25:1
 
 # Block hint (B.HINT) fields
 %HINT_L_UL 16:1
@@ -69,7 +71,6 @@
 # Tile block fields
 %TileDataType 27:5
 %TileFunc 20:5
-%TileOp10 15:10
 %TileDst 25:3
 %TileSrc0 15:5
 %TileSrc1 20:5
@@ -81,13 +82,13 @@
 %S0R 30:1
 %S1V 29:1
 %S0V 28:1
-%IOTDstTile 22:3
-%IOTL 29:1
-%IOTS0R 30:1
-%IOTS1R 31:1
-%IOTSrc0 15:1 7:5
-%IOTSrc1 16:6
-%IOTImm4 25:4
+%IOTDstTile 7:3
+%IOTL 19:1
+%IOTS0R 10:1
+%IOTS1R 11:1
+%IOTSrc0 20:6
+%IOTSrc1 26:6
+%IOTImm4 15:4
 
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
@@ -110,20 +111,121 @@ bstart_fp_ind     0000 0000 0000 0000 0101 0001 0000 0001
 bstart_fp_icall   0000 0000 0000 0000 0110 0001 0000 0001
 bstart_fp_ret     0000 0000 0000 0000 0111 0001 0000 0001
 bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
-bstart_fixp       .... .00. .... 0011 1001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
-bstart_tepl       .... .01. .... .... .001 0001 1000 0001 dtype=%TileDataType op=%TileOp10
+# PTO ISA 0.57.1 direct TEPL headers (generated from locked catalog).
+{
+  bstart_tadd                 .... .000 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsub                 .... .000 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmul                 .... .000 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmax                 .... .000 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmin                 .... .000 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tand                 .... .000 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tor                  .... .000 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_txor                 .... .000 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tshl                 .... .000 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tshr                 .... .000 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcmp                 .... .000 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsel                 .... .001 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tabs                 .... .000 1111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tnot                 .... .001 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tneg                 .... .001 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trelu                .... .001 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tprelu               .... .000 1110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tdiv                 .... .000 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trem                 .... .000 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsqrt                .... .001 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tlog                 .... .001 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trecip               .... .001 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_texp                 .... .001 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trsqrt               .... .001 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tadds                .... .010 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_taxpy                .... .010 1111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsubs                .... .010 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmuls                .... .010 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tdivs                .... .010 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmins                .... .010 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmaxs                .... .010 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trems                .... .010 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tands                .... .010 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tors                 .... .010 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_txors                .... .010 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcmps                .... .010 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsels                .... .011 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tshls                .... .010 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tshrs                .... .010 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowsum              .... .100 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowprod             .... .100 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowmax              .... .100 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowmin              .... .100 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowargmax           .... .100 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowargmin           .... .100 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolsum              .... .101 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolprod             .... .101 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolmax              .... .101 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolmin              .... .101 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolargmax           .... .101 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolargmin           .... .101 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpand           .... .100 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandadd        .... .100 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandsub        .... .100 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandmul        .... .100 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpanddiv        .... .100 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandmax        .... .100 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandmin        .... .100 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_trowexpandexpdif     .... .100 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpand           .... .101 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandadd        .... .101 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandsub        .... .101 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandmul        .... .101 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpanddiv        .... .101 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandmax        .... .101 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandmin        .... .101 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcolexpandexpdif     .... .101 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_texpands             .... .011 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tci                  .... .110 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_ttri                 .... .110 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tfillpad             .... .110 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tcvt                 .... .001 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tquant               .... .110 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tdequant             .... .110 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_textract             .... .110 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tinsert              .... .110 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgather              .... .110 1111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tscatter             .... .111 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tconcat              .... .110 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_ttrans               .... .110 1110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_timg2col             .... .110 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tgatherb             .... .110 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tdeinterleave        .... .111 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tinterleave          .... .111 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_treshape             .... .111 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tsort                .... .110 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmrgsort             .... .110 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_thistogram           .... .110 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpush                .... .111 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpop                 .... .111 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_talloc               .... .111 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tfree                .... .111 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartadd             .... .111 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartmul             .... .111 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartmax             .... .111 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartmin             .... .111 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartargmax          .... .111 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tpartargmin          .... .111 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
+  # Canonical selector form retained for decoders that do not use aliases.
+  bstart_tepl               ..... .. ..... 00011 001 00011 000 000 1 dtype=%TileDataType mode=%Mode function=%TileFunc
+}
 bstop         0000 0000 0000 0000 0000 0000 0000 0001
 
 # Vector block headers (VPAR/VSEQ). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.
-bstart_vpar 0000 0.00 0000 0010 0001 0001 1000 0001 mode=%ModeHi
-bstart_vseq 0000 0.00 0000 0010 1001 0001 1000 0001 mode=%ModeHi
+bstart_vpar 0000 0..0 0000 0010 0001 0001 1000 0001 mode=%Mode
+bstart_vseq 0000 0..0 0000 0010 1001 0001 1000 0001 mode=%Mode
 
 # Vector block headers for memory operations (MSEQ/MPAR).
 # MSEQ: sequential vector execution with memory access
-bstart_mseq 0000 0.00 0000 0000 1001 0001 1000 0001 mode=%ModeHi
+bstart_mseq 0000 0..0 0000 0000 1001 0001 1000 0001 mode=%Mode
 # MPAR: parallel vector execution with memory access
-bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
+bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 
 # Tile block headers (TMA/CUBE). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.
@@ -137,6 +239,7 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
   bstart_mgather_mask .... .000 0110 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mscatter_mask .... .000 0111 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mgather_cas .... .000 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_acccvt .... .000 1000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul .... .000 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_bias .... .000 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_acc .... .000 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
@@ -149,13 +252,16 @@ bstart_mpar 0000 0.00 0000 0000 0001 0001 1000 0001 mode=%ModeHi
   bstart_tgemvmx .... .001 0100 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tgemvmx_bias .... .001 0101 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tgemvmx_acc .... .001 0110 0011 0001 0001 1000 0001 dtype=%TileDataType
-  bstart_cube    .... .00. .... 0011 0001 0001 1000 0001 dtype=%TileDataType func=%TileFunc
 }
 
 # Tile block I/O dependency descriptors (multiple descriptors per block are legal).
-b_iot          .... .... .... .... .100 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=%IOTS1R src0=%IOTSrc0 src1=%IOTSrc1 imm4=%IOTImm4
-b_iot          0... .... ..00 0000 .101 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=0 src0=%IOTSrc0 src1=0 imm4=%IOTImm4
-b_iot          00.. .... ..00 0000 0110 0000 0001 0011 dst=%IOTDstTile l=%IOTL s0r=0 s1r=0 src0=0 src1=0 imm4=%IOTImm4
+{
+  b_iot        0000 00.. .... .000 0101 0.00 0001 0011 dst=0 l=%IOTL s0r=%IOTS0R s1r=0 src0=%IOTSrc0 src1=0 imm4=0
+  b_iot        .... .... .... .000 0100 ..00 0001 0011 dst=0 l=%IOTL s0r=%IOTS0R s1r=%IOTS1R src0=%IOTSrc0 src1=%IOTSrc1 imm4=0
+  b_iot        0000 00.. .... .... .101 0... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=0 src0=%IOTSrc0 src1=0 imm4=%IOTImm4
+  b_iot        .... .... .... .... .100 .... .001 0011 dst=%IOTDstTile l=%IOTL s0r=%IOTS0R s1r=%IOTS1R src0=%IOTSrc0 src1=%IOTSrc1 imm4=%IOTImm4
+  b_iot        0000 0000 0000 .... .110 00.. .001 0011 dst=%IOTDstTile l=%IOTL s0r=0 s1r=0 src0=0 src1=0 imm4=%IOTImm4
+}
 
 # Decoupled-body pointer (decoupled block headers).
 b_text         .... .... .... .... .... .... .000 0011 %simm25
@@ -164,16 +270,10 @@ b_text         .... .... .... .... .... .... .000 0011 %simm25
 b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 
 # Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
-b_arg          0000 0000 0000 0000 0011 .... .100 0011 format=%TileFormat
-b_arg_norm     0000 0000 0000 1111 1010 0000 0010 0011
-b_arg_nz2dn    0000 0010 0000 1111 1010 1110 0010 0011
-b_arg_nd2zn    0001 1000 0000 0010 0010 0001 1010 0011
-b_arg_dn2nz    0001 1000 0000 0000 1010 0100 1010 0011
-b_arg_dn2zn    0001 1000 0000 0010 0010 0100 0010 0011
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
-b_catr         .... ..00 0000 0000 0000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap
-b_datr         .... .... .... .... .001 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat
+b_catr         0000 0.00 0000 .... .000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap
+b_datr         .... .... .... 00.. .001 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat canonicalize=%BA_Canonicalize
 
 # Block hints; treated as no-ops in bring-up.
 b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp
@@ -491,6 +591,10 @@ j             .... .... .... .... .000 .... .011 0111 %simm22
 jr            .... .... .... .... .110 .... .010 0111 %SrcL %SrcZero simm12=%simm12_7_s5_25_7
 b_z           .... .... .... .... .001 .... .011 0111 %simm22
 b_nz          .... .... .... .... .010 .... .011 0111 %simm22
+
+# Architecturally reserved X-block encoding.  The locked catalog classifies
+# this form as illegal, but keeping the exact decode makes that fault precise.
+xb            .... .... .... .... .110 1111 1000 0001 raw=%XBRaw
 
 # Extra mul/div reachability
 mulu          0000 000. .... .... .001 .... .100 0111 %RegDst %SrcL %SrcR

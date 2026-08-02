@@ -26,7 +26,13 @@ c_bstop         0000 0000 0000 0000
 # C.BSTART.STD: BrType=0 aliases c_bstop, so spell out only the non-zero forms.
 c_bstart_direct .... .... .... 0010 %simm12
 c_bstart_cond   .... .... .... 0100 %simm12
-c_bstart_fp     00.. .000 1000 0000 %BrType
+c_bstart_fp     0000 1000 1000 0000
+c_bstart_fp     0001 0000 1000 0000
+c_bstart_fp     0001 1000 1000 0000
+c_bstart_fp     0010 0000 1000 0000
+c_bstart_fp     0010 1000 1000 0000
+c_bstart_fp     0011 0000 1000 0000
+c_bstart_fp     0011 1000 1000 0000
 c_bstart_std_fall   0000 1000 0000 0000
 c_bstart_std_direct 0001 0000 0000 0000
 c_bstart_std_cond   0001 1000 0000 0000
@@ -50,13 +56,17 @@ c_setc_ne       .... .... ..11 0110 %SrcL %SrcR
 
 # Register moves / ALU
 # C.MOVR and C.MOVI have different opcodes ([5:0])
-# C.SETRET uses a dedicated compact encoding.
+# C.SETRET is a constrained C.MOVI encoding.  Spell the overlap explicitly so
+# decodetree selects the architectural alias first.
 c_movr          .... .... ..00 0110 %RegDst %SrcL
 c_add           .... .... ..00 1000 %SrcL %SrcR
 c_sub           .... .... ..01 1000 %SrcL %SrcR
 c_and           .... .... ..10 1000 %SrcL %SrcR
 c_or            .... .... ..11 1000 %SrcL %SrcR
-c_movi          .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
+{
+  c_setret      0101 0... ..01 0110 uimm=%uimm5
+  c_movi        .... .... ..01 0110 %RegDst simm5=%simm5_6_s5
+}
 
 # Loads / stores (stack and small offsets)
 c_lwi           .... .... ..00 1010 %SrcL simm5=%simm5_11_s5

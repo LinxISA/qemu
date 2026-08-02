@@ -2146,6 +2146,14 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         }
         return;
 
+    case LINX_EXCP_TILE_FAULT:
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_BLOCK_TRAP,
+                               true,  /* argv: fault address/TPC */
+                               false, /* fault */
+                               (env->in_body != 0));
+        return;
+
     case LINX_EXCP_ILLEGAL_INST:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
@@ -3924,19 +3932,6 @@ static int linx_cpu_pre_save(void *opaque)
     }
     uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
     uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
-    const uint16_t owner = 1u << (env->acr & 0xfu);
-    for (unsigned i = 0; i < env->tile_iot_count; i++) {
-        for (unsigned source = 0; source < 2; source++) {
-            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
-                expected_pin[env->tile_iot_src_phys[i][source]] = owner;
-            }
-        }
-        if (env->tile_iot_output_valid[i]) {
-            const unsigned tile = env->tile_iot_output_phys[i];
-            expected_reserved[tile / LINX_TILE_HAND_DEPTH] |=
-                1u << (tile % LINX_TILE_HAND_DEPTH);
-        }
-    }
     if (memcmp(expected_reserved, env->tile_hand_reserved,
                sizeof(expected_reserved)) != 0 ||
         memcmp(expected_pin, env->tile_pin_owner,
@@ -3950,6 +3945,11 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 {
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
+
+    if (version_id >= 12 && version_id < 16) {
+        memcpy(env->tile_reg_capacity, env->tile_reg_bytes,
+               sizeof(env->tile_reg_capacity));
+    }
 
     if (version_id < 12) {
         /* v11 carried no tile backing or allocator state. */
@@ -3992,6 +3992,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->tile_acc_src0 = 0;
         env->tile_acc_src1 = 0;
         memset(env->tile_reg, 0, sizeof(env->tile_reg));
+        memset(env->tile_reg_capacity, 0, sizeof(env->tile_reg_capacity));
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
@@ -4003,6 +4004,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
+        env->tile_acc_dtype = 0;
+        env->tile_acc_valid = 0;
+        env->tile_acc_cols = 0;
+        env->tile_acc_rows = 0;
         return true;
     }
 
@@ -4059,6 +4064,18 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_cols, 0, sizeof(env->tile_reg_cols));
         memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
     }
+    if (version_id < 17) {
+        if (env->tile_acc_bytes != 0) {
+            error_setg(errp,
+                       "linx: cannot migrate nonempty pre-v17 CUBE ACC "
+                       "without numeric type and shape metadata");
+            return false;
+        }
+        env->tile_acc_dtype = 0;
+        env->tile_acc_valid = 0;
+        env->tile_acc_cols = 0;
+        env->tile_acc_rows = 0;
+    }
 
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4077,13 +4094,22 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         return false;
     }
     if (env->tile_acc_bytes > LINX_TILE_MAX_BYTES ||
-        (env->tile_acc_bytes & 3u) != 0) {
+        (env->tile_acc_bytes & 3u) != 0 || env->tile_acc_valid > 1u ||
+        (!env->tile_acc_valid && (env->tile_acc_bytes != 0u ||
+                                  env->tile_acc_cols != 0u ||
+                                  env->tile_acc_rows != 0u)) ||
+        (env->tile_acc_valid &&
+         ((env->tile_acc_dtype != 0u && env->tile_acc_dtype != 1u &&
+           env->tile_acc_dtype != 16u && env->tile_acc_dtype != 24u) ||
+          env->tile_acc_cols == 0u || env->tile_acc_rows == 0u))) {
         error_setg(errp, "linx: invalid migrated tile accumulator footprint");
         return false;
     }
+    uint64_t tile_capacity_in_use = 0;
     for (unsigned tile = 0;
          tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
         const uint32_t bytes = env->tile_reg_bytes[tile];
+        const uint32_t capacity = env->tile_reg_capacity[tile];
         const uint32_t elem_bytes = env->tile_reg_elem_bytes[tile];
         const uint32_t valid_cols = env->tile_reg_valid_cols[tile];
         const uint32_t valid_rows = env->tile_reg_valid_rows[tile];
@@ -4091,7 +4117,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         const uint32_t rows = env->tile_reg_rows[tile];
         const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
         const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+        tile_capacity_in_use += capacity;
         if (bytes > LINX_TILE_MAX_BYTES || (bytes & 3u) != 0 ||
+            capacity > LINX_TILE_PE_CAPACITY_BYTES ||
             ((env->tile_hand_live[hand] & (1u << depth)) != 0 && bytes == 0) ||
             (bytes != 0 &&
              (elem_bytes == 0 || valid_cols == 0 || valid_rows == 0 ||
@@ -4101,6 +4129,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
             error_setg(errp, "linx: invalid migrated tile %u state", tile);
             return false;
         }
+    }
+    if (tile_capacity_in_use > LINX_TILE_PE_CAPACITY_BYTES) {
+        error_setg(errp, "linx: migrated tile capacity exceeds PE limit");
+        return false;
     }
     for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
         uint8_t seen = 0;
@@ -4127,6 +4159,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
             return false;
         }
     }
+    uint32_t planned_output_seen = 0;
     for (unsigned i = 0; i < LINX_TILE_MAX_IOT; i++) {
         if (env->tile_iot_src_valid[i] > 3 ||
             env->tile_iot_output_valid[i] > 1) {
@@ -4166,37 +4199,19 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         if (env->tile_iot_output_valid[i]) {
             const unsigned tile = env->tile_iot_output_phys[i];
             if (tile >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH ||
-                (env->tile_hand_reserved[tile / LINX_TILE_HAND_DEPTH] &
-                 (1u << (tile % LINX_TILE_HAND_DEPTH))) == 0) {
+                (planned_output_seen & (1u << tile)) != 0 ||
+                (env->tile_hand_live[tile / LINX_TILE_HAND_DEPTH] &
+                 (1u << (tile % LINX_TILE_HAND_DEPTH))) != 0) {
                 error_setg(errp,
                            "linx: invalid migrated tile binding %u output",
                            i);
                 return false;
             }
+            planned_output_seen |= 1u << tile;
         }
     }
     uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
     uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
-    const uint16_t owner = 1u << (env->acr & 0xfu);
-    for (unsigned i = 0; i < env->tile_iot_count; i++) {
-        for (unsigned source = 0; source < 2; source++) {
-            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
-                const unsigned tile = env->tile_iot_src_phys[i][source];
-                expected_pin[tile] = owner;
-            }
-        }
-        if (env->tile_iot_output_valid[i]) {
-            const unsigned tile = env->tile_iot_output_phys[i];
-            const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
-            const uint8_t bit = 1u << (tile % LINX_TILE_HAND_DEPTH);
-            if (expected_reserved[hand] & bit) {
-                error_setg(errp,
-                           "linx: duplicate migrated tile output owner");
-                return false;
-            }
-            expected_reserved[hand] |= bit;
-        }
-    }
     if (memcmp(expected_reserved, env->tile_hand_reserved,
                sizeof(expected_reserved)) != 0 ||
         memcmp(expected_pin, env->tile_pin_owner,
@@ -4220,7 +4235,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 15,
+    .version_id = 17,
     .minimum_version_id = 11,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4305,6 +4320,8 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_2DARRAY_V(env.tile_reg, LinxCPU,
                                  LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH,
                                  LINX_TILE_MAX_WORDS, 12),
+        VMSTATE_UINT32_ARRAY_V(env.tile_reg_capacity, LinxCPU,
+                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 16),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_bytes, LinxCPU,
                                LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 12),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
@@ -4322,6 +4339,10 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),
+        VMSTATE_UINT8_V(env.tile_acc_dtype, LinxCPU, 17),
+        VMSTATE_UINT8_V(env.tile_acc_valid, LinxCPU, 17),
+        VMSTATE_UINT16_V(env.tile_acc_cols, LinxCPU, 17),
+        VMSTATE_UINT16_V(env.tile_acc_rows, LinxCPU, 17),
         VMSTATE_UINT64(env.insn_pc_next, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
         VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),

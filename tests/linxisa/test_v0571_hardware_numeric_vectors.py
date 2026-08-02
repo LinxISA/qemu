@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Execute all 75 canonical 0.57.1 hardware numeric vectors in shared C."""
+
+import ctypes
+import json
+import math
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+VECTORS = ROOT / "tests/linxisa/pto-isa-0571-hardware-numeric-vectors.json"
+DTYPE = {
+    "FP64": 0, "FP32": 1, "TF32": 2, "HF32": 3, "FP16": 4,
+    "BF16": 5, "HiF8": 6, "E4M3": 7, "E5M2": 8, "E3M2": 9,
+    "E2M3": 10, "E2M1X2": 11, "E1M2X2": 12, "E8M0": 13,
+    "HiF4X2": 14, "S64": 16, "S32": 17, "S16": 18, "S8": 19,
+    "S4X2": 20, "U64": 24, "U32": 25, "U16": 26, "U8": 27,
+    "U4X2": 28,
+}
+RMODE = {"RNE": 1, "RTZ": 2, "RDN": 3, "RUP": 4,
+         "RNA": 5, "RTO": 6, "RHB": 7}
+
+WRAPPER = r'''
+#include <math.h>
+#include <stdint.h>
+#include "tile_numeric_057.h"
+
+uint64_t v_nan(unsigned d) { return linx_tile_numeric_canonical_nan(d); }
+int v_ordinary(unsigned d) { return linx_tile_numeric_ordinary(d); }
+unsigned v_acc_dtype(unsigned d) { return linx_tile_numeric_acc_dtype(d); }
+int v_mx_pair(unsigned a, unsigned b) { return linx_tile_numeric_mx_pair(a, b); }
+double v_decode(unsigned d, uint64_t r, unsigned l) {
+    return linx_tile_numeric_decode(d, r, l);
+}
+int64_t v_round(double x, unsigned m) {
+    return linx_tile_numeric_round_s64(x, m);
+}
+int v_compare(double a, double b, unsigned mode) {
+    return linx_tile_numeric_compare(a, b, mode);
+}
+uint64_t v_invalid(unsigned d) {
+    return linx_tile_numeric_float_to_integer(d, NAN, 1, false);
+}
+int64_t v_sat_int(double x, unsigned d) {
+    uint64_t raw = linx_tile_numeric_float_to_integer(d, x, 1, true);
+    if (d == 19) return (int8_t)raw; if (d == 17) return (int32_t)raw;
+    return raw;
+}
+uint32_t v_sat_fp16(double x) {
+    return linx_tile_numeric_encode_saturated(4, x);
+}
+uint32_t v_f32_op(double a, double b, unsigned op) {
+    return linx_tile_numeric_f32_binary(a, b, op);
+}
+void v_matmul_2x2(const float *a, const float *b, float *out) {
+    for (unsigned i = 0; i < 2; i++) {
+        for (unsigned j = 0; j < 2; j++) {
+            float acc = 0;
+            for (unsigned k = 0; k < 2; k++) acc += a[i * 2 + k] * b[k * 2 + j];
+            out[i * 2 + j] = acc;
+        }
+    }
+}
+float v_bias_acc(float dot, float bias, float prior, unsigned flags) {
+    float acc = (flags & 1) ? prior : 0;
+    acc += dot;
+    if (flags & 2) acc += bias;
+    return acc;
+}
+float v_mx33(unsigned bias, unsigned prior) {
+    float acc = prior;
+    for (unsigned k = 0; k < 33; k++) {
+        uint8_t sa = k < 32 ? 0x7f : 0x80;
+        uint8_t sb = k < 32 ? 0x7f : 0x81;
+        float a = (float)linx_tile_numeric_decode(7, 0x38, 0);
+        float b = (float)linx_tile_numeric_decode(8, 0x3c, 0);
+        a *= (float)linx_tile_numeric_decode(13, sa, 0);
+        b *= (float)linx_tile_numeric_decode(13, sb, 0);
+        acc += a * b;
+    }
+    return acc + bias;
+}
+int v_argmax(const double *v, unsigned n) {
+    return linx_tile_numeric_argmax(v, n);
+}
+double v_reduce(const double *v, unsigned n, unsigned op) {
+    return linx_tile_numeric_reduce(v, n, op);
+}
+void v_sort(const double *v, unsigned *idx, unsigned n, unsigned desc) {
+    linx_tile_numeric_sort_indices(v, idx, n, desc);
+}
+'''
+
+
+def number(text):
+    if text in ("qNaN", "canonical-qNaN") or text.startswith("qNaN#"):
+        return math.nan
+    if text in ("+infinity",):
+        return math.inf
+    if text == "-infinity":
+        return -math.inf
+    if text == "NaN":
+        return math.nan
+    if text == "+0":
+        return 0.0
+    if text == "-0":
+        return -0.0
+    if "^" in text:
+        base, exp = text.split("^")
+        return float(base) ** int(exp)
+    return float(text)
+
+
+class HardwareNumericVectors(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix="linx-numeric-0571-")
+        source = Path(cls.tmp.name) / "vectors.c"
+        library = Path(cls.tmp.name) / "vectors.so"
+        source.write_text(WRAPPER, encoding="utf-8")
+        subprocess.run([
+            "cc", "-std=c11", "-shared", "-fPIC", "-O2",
+            "-I", str(ROOT / "target/linx"), str(source), "-lm", "-o", str(library)
+        ], check=True)
+        cls.lib = ctypes.CDLL(str(library))
+        cls.lib.v_nan.restype = ctypes.c_uint64
+        cls.lib.v_decode.argtypes = [ctypes.c_uint, ctypes.c_uint64, ctypes.c_uint]
+        cls.lib.v_decode.restype = ctypes.c_double
+        cls.lib.v_round.argtypes = [ctypes.c_double, ctypes.c_uint]
+        cls.lib.v_round.restype = ctypes.c_int64
+        cls.lib.v_compare.argtypes = [ctypes.c_double, ctypes.c_double, ctypes.c_uint]
+        cls.lib.v_invalid.restype = ctypes.c_uint64
+        cls.lib.v_sat_int.argtypes = [ctypes.c_double, ctypes.c_uint]
+        cls.lib.v_sat_int.restype = ctypes.c_int64
+        cls.lib.v_sat_fp16.argtypes = [ctypes.c_double]
+        cls.lib.v_sat_fp16.restype = ctypes.c_uint32
+        cls.lib.v_f32_op.argtypes = [ctypes.c_double, ctypes.c_double, ctypes.c_uint]
+        cls.lib.v_f32_op.restype = ctypes.c_uint32
+        cls.lib.v_bias_acc.argtypes = [ctypes.c_float, ctypes.c_float,
+                                       ctypes.c_float, ctypes.c_uint]
+        cls.lib.v_bias_acc.restype = ctypes.c_float
+        cls.lib.v_mx33.argtypes = [ctypes.c_uint, ctypes.c_uint]
+        cls.lib.v_mx33.restype = ctypes.c_float
+        cls.lib.v_reduce.restype = ctypes.c_double
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_all_75_canonical_vectors_execute(self):
+        groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
+        executed = 0
+
+        for v in groups["canonical_nan"]:
+            self.assertEqual(self.lib.v_nan(DTYPE[v["data_type"]]), int(v["expected"], 16)); executed += 1
+        for v in groups["comparison"]:
+            mode = ["EQ", "NE", "LT", "GT", "LE", "GE"].index(v["mode"])
+            self.assertEqual(self.lib.v_compare(number(v["inputs"][0]), number(v["inputs"][1]), mode), v["expected"]); executed += 1
+        for v in groups["invalid_float_to_integer"]:
+            expected = int(v.get("expected_raw", v.get("expected_lane_raw")), 16)
+            self.assertEqual(self.lib.v_invalid(DTYPE[v["destination"]]), expected); executed += 1
+        for v in groups["low_precision_encoding"]:
+            got = self.lib.v_decode(DTYPE[v["data_type"]], int(v["raw"], 16), 0)
+            expected = number(v["expected"])
+            self.assertTrue(math.isnan(got) if math.isnan(expected) else got == expected); executed += 1
+
+        for v in groups["matrix"]:
+            if v["id"] == "fp32-matmul-2x2":
+                A = (ctypes.c_float * 4)(*[float(x) for row in v["left"] for x in row])
+                B = (ctypes.c_float * 4)(*[float(x) for row in v["right"] for x in row])
+                out = (ctypes.c_float * 4)(); self.lib.v_matmul_2x2(A, B, out)
+                self.assertEqual(list(out), [float(x) for row in v["expected"] for x in row])
+            elif v["id"] == "fp32-matmul-bias":
+                self.assertEqual([self.lib.v_bias_acc(float(d), float(b), 0, 2)
+                                  for d, b in zip(v["dot_products"], v["bias"])],
+                                 [float(x) for x in v["expected_acc"]])
+            elif v["id"] == "fp32-matmul-acc":
+                self.assertEqual([self.lib.v_bias_acc(float(d), 0, float(p), 1)
+                                  for d, p in zip(v["dot_products"], v["prior_acc"])],
+                                 [float(x) for x in v["expected_acc"]])
+            elif v["id"] == "mx-e8m0-scale":
+                self.assertEqual(float(v["base"]) * self.lib.v_decode(13, int(v["e8m0"], 16), 0), float(v["expected"]))
+            else:
+                self.assertEqual(self.lib.v_mx33(0, 0), float(v["expected_acc"]))
+                self.assertEqual(self.lib.v_mx33(2, 0), float(v["expected_acc_with_bias_2"]))
+                self.assertEqual(self.lib.v_mx33(0, 3), float(v["expected_acc_with_prior_3"]))
+            executed += 1
+
+        for v in groups["packed_lane_order"]:
+            raw = int(v["raw_byte"], 16); dtype = DTYPE[v["data_type"]]
+            self.assertEqual([self.lib.v_decode(dtype, raw, i) for i in range(2)],
+                             [number(x) for x in v["expected_logical_lanes"]]); executed += 1
+        for v in groups["reduction"]:
+            vals = (ctypes.c_double * len(v["inputs"]))(*[number(x) for x in v["inputs"]])
+            if v["operation"] == "ARGMAX": got = self.lib.v_argmax(vals, len(vals)); expected = v["expected_index"]
+            elif v["operation"] == "MIN": got = self.lib.v_reduce(vals, len(vals), 0); expected = number(v["expected"])
+            elif v["operation"] == "SUM": got = self.lib.v_reduce(vals, len(vals), 1); expected = math.nan
+            else: got = self.lib.v_f32_op(vals[0], vals[1], 3); expected = 0
+            self.assertTrue(math.isnan(got) if isinstance(expected, float) and math.isnan(expected) else got == expected); executed += 1
+        for v in groups["rounding"]:
+            self.assertEqual(self.lib.v_round(float(v["input"]), RMODE[v["mode"]]), int(v["expected"])); executed += 1
+        for v in groups["saturation"]:
+            expected = int(v["expected"], 16) if v["expected"].startswith("0x") else int(v["expected"])
+            got = self.lib.v_sat_fp16(number(v["input"])) if v["destination"] == "FP16" else self.lib.v_sat_int(number(v["input"]), DTYPE[v["destination"]])
+            self.assertEqual(got, expected); executed += 1
+        for v in groups["signed_zero"]:
+            op = {"multiply": 0, "add": 1, "minimum": 2, "maximum": 3}[v["operation"]]
+            self.assertEqual(self.lib.v_f32_op(number(v["inputs"][0]), number(v["inputs"][1]), op), int(v["expected"], 16)); executed += 1
+        for v in groups["sort"]:
+            vals = (ctypes.c_double * 32)(*[number(x) for x in v["input_values"]]); out = (ctypes.c_uint * 32)()
+            self.lib.v_sort(vals, out, 32, 0); self.assertEqual(list(out), v["ascending_expected_original_indices"])
+            self.lib.v_sort(vals, out, 32, 1); self.assertEqual(list(out), v["descending_expected_original_indices"]); executed += 1
+
+        self.assertEqual(executed, 75)
+
+    def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):
+        ordinary = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14,
+                    16, 17, 18, 19, 20, 24, 25, 26, 27, 28]
+        self.assertEqual([d for d in range(32) if self.lib.v_ordinary(d)], ordinary)
+        expected_acc = ([0] + [1] * 13 + [16] * 5 + [24] * 5)
+        self.assertEqual([self.lib.v_acc_dtype(d) for d in ordinary], expected_acc)
+        mx = [(7, 7), (7, 8), (8, 7), (8, 8),
+              (11, 11), (11, 14), (14, 11), (14, 14)]
+        self.assertEqual([(a, b) for a in range(32) for b in range(32)
+                          if self.lib.v_mx_pair(a, b)], mx)
+
+
+if __name__ == "__main__":
+    unittest.main()
