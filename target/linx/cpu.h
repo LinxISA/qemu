@@ -43,7 +43,19 @@ typedef struct LinxSharedTileVersion {
 
 typedef struct LinxCore4State {
     QemuMutex lock;
+    QemuCond collective_cond;
+    LinxCPU *cpu[LINX_CORE4_PE_COUNT];
     LinxSharedTileVersion shared_tile[LINX_SHARED_TILE_COUNT];
+    uint64_t collective_bpc;
+    uint32_t collective_func;
+    uint32_t collective_dtype;
+    uint32_t collective_shared_id;
+    uint32_t collective_m;
+    uint32_t collective_n;
+    uint32_t collective_k;
+    uint8_t collective_arrived;
+    uint8_t collective_src[LINX_CORE4_PE_COUNT];
+    uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
 /* Exception types
@@ -212,10 +224,6 @@ typedef enum LinxTemplateKind {
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
 #define LINX_TILE_MAX_SHARED_BINDERS 2u
-#define LINX_IOT_S0V (1u << 0)
-#define LINX_IOT_S1V (1u << 1)
-#define LINX_IOT_S0R (1u << 2)
-#define LINX_IOT_S1R (1u << 3)
 #define LINX_TILE_HAND_COUNT 4u
 #define LINX_TILE_HAND_DEPTH 8u
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)

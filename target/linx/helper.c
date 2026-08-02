@@ -15274,6 +15274,24 @@ static uint64_t linx_tile_get_stride_bytes(const CPULinxState *env)
     return src0 < LINX_GPR_COUNT ? env->gpr[src0] : 0;
 }
 
+static bool linx_tile_get_shared_tload_size(const CPULinxState *env,
+                                            unsigned *size_code_out)
+{
+    if (env->tile_ior_count != 1u) {
+        return false;
+    }
+    const uint64_t desc = env->tile_ior_desc[0];
+    const unsigned reg_dst = desc & 0x1fu;
+    const unsigned size_class = reg_dst >> 2;
+
+    if ((reg_dst & 0x3u) != 0u || size_class == 0u || size_class > 7u) {
+        return false;
+    }
+    /* Shared class 1 is 512 B; TMA uses log2(bytes)-4 internally. */
+    *size_code_out = size_class + 4u;
+    return true;
+}
+
 static LinxTileIOTDesc linx_tile_get_iot_desc(const CPULinxState *env,
                                               unsigned index)
 {
@@ -15654,7 +15672,29 @@ static bool linx_tile_preflight_tma(
     uint8_t *planned_carrier_valid, uint8_t *planned_carrier)
 {
     const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
+    const uint32_t func = env->tile_func & 0x1fu;
     unsigned addr_reg;
+
+    if (func == LINX_TMA_TLOAD && env->tile_shared_binder_count != 0u) {
+        LinxCPU *cpu = env_archcpu(env);
+        unsigned size_code;
+        const uint32_t dtype = linx_tile_effective_dtype(env);
+
+        return cpu->core4 != NULL && env->pe_id < LINX_CORE4_PE_COUNT &&
+               env->tile_shared_binder_count == 1u &&
+               env->tile_iot_count == 0u && env->tile_iot_valid == 1u &&
+               linx_tile_get_base_reg(env, &addr_reg) &&
+               linx_tile_get_shared_tload_size(env, &size_code) &&
+               (((dtype == 19u) && size_code == 5u &&
+                 env->lb[0] == 32u && env->lb[1] == 16u &&
+                 env->lb[2] == 32u) ||
+                ((dtype == 1u) && size_code == 8u &&
+                 env->lb[0] == 32u && env->lb[1] == 32u &&
+                 env->lb[2] == 32u)) &&
+               linx_tile_get_stride_bytes(env) == 0u &&
+               linx_tile_transfer_preflight(env, size_code,
+                                             LINX_TMA_GM_TO_TR);
+    }
 
     if (!linx_tile_get_base_reg(env, &addr_reg)) {
         return false;
@@ -16161,6 +16201,52 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
         env, sources[required - 1u], with_scale ? 1u : env->tile_dtype);
 }
 
+static bool linx_tile_group_cube_profile(CPULinxState *env,
+                                         unsigned *src_a_out)
+{
+    LinxCPU *cpu = env_archcpu(env);
+    const uint32_t func = env->tile_func & 0x1fu;
+    const uint32_t dtype = linx_tile_effective_dtype(env);
+    LinxTileIOTDesc desc;
+    unsigned src_a;
+    bool valid;
+
+    if (cpu->core4 == NULL || env->pe_id >= LINX_CORE4_PE_COUNT ||
+        env->blocktype != LINX_BLOCK_CUBE ||
+        (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
+        dtype != 1u || env->tile_shared_binder_count != 1u ||
+        env->tile_iot_count != 1u || env->lb[0] != 8u ||
+        env->lb[1] != 32u || env->lb[2] != 32u ||
+        env->tile_iot_src_valid[0] != 1u ||
+        env->tile_iot_output_valid[0] != 0u ||
+        !linx_tile_get_bound_source(env, 0u, 0u, &src_a)) {
+        return false;
+    }
+    desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+    if (desc.last == 0u || desc.has_size ||
+        (desc.flags & (LINX_IOT_S0V | LINX_IOT_S1V)) != LINX_IOT_S1V ||
+        env->tile_reg_dtype[src_a] != dtype ||
+        env->tile_reg_elem_bytes[src_a] != 4u ||
+        env->tile_reg_bytes[src_a] != 8u * 32u * 4u ||
+        (func == LINX_CUBE_TMATMUL_ACC &&
+         (!env->tile_acc_valid || env->tile_acc_dtype != LINX_TILE_ACC_FP32 ||
+          env->tile_acc_rows != 8u || env->tile_acc_cols != 32u ||
+          env->tile_acc_bytes < 8u * 32u * 4u))) {
+        return false;
+    }
+
+    LinxSharedTileVersion *shared =
+        &cpu->core4->shared_tile[env->tile_shared_binder[0]];
+    qemu_mutex_lock(&cpu->core4->lock);
+    valid = shared->ready && shared->defined_mask == 0xfu &&
+            shared->dtype == dtype && shared->bytes == 32u * 32u * 4u;
+    qemu_mutex_unlock(&cpu->core4->lock);
+    if (valid) {
+        *src_a_out = src_a;
+    }
+    return valid;
+}
+
 typedef struct LinxTileRegSnapshot {
     unsigned tile;
     uint32_t data[LINX_TILE_MAX_WORDS];
@@ -16397,7 +16483,135 @@ static bool linx_tile_apply_materialization(void *opaque)
         ctx->acc_src0, ctx->acc_src1);
 }
 
-void HELPER(linx_tile_commit)(CPULinxState *env)
+static void linx_tile_group_reset_block(CPULinxState *env)
+{
+    linx_tile_unpin_bindings(env);
+    env->tile_iot_valid = 0u;
+    env->tile_arg_format = 0u;
+    env->tile_attr_raw = 0u;
+    env->tile_attr_pad = 0u;
+    env->tile_attr_dtype = 0u;
+    env->tile_ior_count = 0u;
+    env->tile_shared_binder_count = 0u;
+    memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
+    env->tile_iot_count = 0u;
+    memset(env->tile_iot_desc, 0, sizeof(env->tile_iot_desc));
+    memset(env->tile_iot_src_valid, 0, sizeof(env->tile_iot_src_valid));
+    memset(env->tile_iot_src_phys, 0, sizeof(env->tile_iot_src_phys));
+    memset(env->tile_iot_output_valid, 0, sizeof(env->tile_iot_output_valid));
+    memset(env->tile_iot_output_phys, 0, sizeof(env->tile_iot_output_phys));
+}
+
+static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
+{
+    LinxCPU *cpu = env_archcpu(env);
+    LinxCore4State *core4 = cpu->core4;
+    unsigned src_a;
+
+    if (!linx_tile_group_cube_profile(env, &src_a)) {
+        return false;
+    }
+    const unsigned pe = env->pe_id;
+    const uint8_t bit = 1u << pe;
+    const uint32_t func = env->tile_func & 0x1fu;
+    const unsigned shared_id = env->tile_shared_binder[0];
+    qemu_mutex_lock(&core4->lock);
+    bool valid = true;
+    if (core4->collective_arrived == 0u) {
+        core4->collective_bpc = env->bpc;
+        core4->collective_func = func;
+        core4->collective_dtype = 1u;
+        core4->collective_shared_id = shared_id;
+        core4->collective_m = 8u;
+        core4->collective_n = 32u;
+        core4->collective_k = 32u;
+    } else {
+        valid = core4->collective_bpc == env->bpc &&
+                core4->collective_func == func &&
+                core4->collective_dtype == 1u &&
+                core4->collective_shared_id == shared_id &&
+                core4->collective_m == 8u && core4->collective_n == 32u &&
+                core4->collective_k == 32u &&
+                (core4->collective_arrived & bit) == 0u;
+    }
+    if (!valid) {
+        core4->collective_arrived = 0u;
+        qemu_cond_broadcast(&core4->collective_cond);
+        qemu_mutex_unlock(&core4->lock);
+        return false;
+    }
+
+    core4->collective_arrived |= bit;
+    core4->collective_src[pe] = src_a;
+    core4->collective_resume_pc[pe] = resume_pc;
+    if (core4->collective_arrived != 0xfu) {
+        CPUState *cs = env_cpu(env);
+        env->pc = resume_pc;
+        cs->halted = 1;
+        cs->exception_index = EXCP_HLT;
+        qemu_mutex_unlock(&core4->lock);
+        cpu_loop_exit(cs);
+    }
+
+    LinxSharedTileVersion *shared = &core4->shared_tile[shared_id];
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        CPULinxState *peer = &core4->cpu[i]->env;
+        unsigned size_code;
+        valid = linx_tile_size_code_from_bytes(
+                    peer->tile_reg_bytes[core4->collective_src[i]],
+                    &size_code) &&
+                linx_tile_cube_compute_shared_b_057(
+                    peer, core4->collective_src[i], shared->data,
+                    shared->bytes, shared->dtype, size_code,
+                    func == LINX_CUBE_TMATMUL_ACC);
+        if (!valid) {
+            break;
+        }
+    }
+    if (!valid) {
+        core4->collective_arrived = 0u;
+        qemu_cond_broadcast(&core4->collective_cond);
+        qemu_mutex_unlock(&core4->lock);
+        return false;
+    }
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        CPULinxState *peer = &core4->cpu[i]->env;
+        uint8_t live[LINX_TILE_HAND_COUNT];
+        uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
+        uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
+        uint8_t carrier_valid = peer->tile_acc_carrier_valid;
+        uint8_t carrier = peer->tile_acc_carrier;
+        memcpy(live, peer->tile_hand_live, sizeof(live));
+        memcpy(order, peer->tile_hand_order, sizeof(order));
+        memcpy(count_by_hand, peer->tile_hand_count, sizeof(count_by_hand));
+        const LinxTileIOTDesc desc =
+            linx_tile_decode_iot(peer->tile_iot_desc[0]);
+        linx_tile_consume_bound_sources(peer, live, 0u, &desc, order,
+                                        count_by_hand, &carrier_valid,
+                                        &carrier);
+        memcpy(peer->tile_hand_live, live, sizeof(live));
+        memcpy(peer->tile_hand_order, order, sizeof(order));
+        memcpy(peer->tile_hand_count, count_by_hand, sizeof(count_by_hand));
+        peer->tile_acc_carrier_valid = carrier_valid;
+        peer->tile_acc_carrier = carrier;
+        linx_tile_group_reset_block(peer);
+    }
+    core4->collective_arrived = 0u;
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        if (i == pe) {
+            continue;
+        }
+        CPUState *waiting = CPU(core4->cpu[i]);
+        core4->cpu[i]->env.pc = core4->collective_resume_pc[i];
+        waiting->halted = 0;
+        waiting->exception_index = -1;
+        qemu_cpu_kick(waiting);
+    }
+    qemu_mutex_unlock(&core4->lock);
+    return true;
+}
+
+void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
 {
     uint8_t live[LINX_TILE_HAND_COUNT];
     uint8_t reserved[LINX_TILE_HAND_COUNT];
@@ -16416,7 +16630,21 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
     };
     LinxTileTxnFault txn_fault;
 
-    if (env->tile_iot_count == 0 && env->tile_iot_valid == 0) {
+    const bool shared_tload = env->blocktype == LINX_BLOCK_TMA &&
+                              (env->tile_func & 0x1fu) == LINX_TMA_TLOAD &&
+                              env->tile_shared_binder_count == 1u;
+    const bool group_mma = env->blocktype == LINX_BLOCK_CUBE &&
+                           env->tile_shared_binder_count == 1u;
+
+    if (group_mma) {
+        if (!linx_tile_group_mma_commit(env, resume_pc)) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        }
+        return;
+    }
+
+    if (env->tile_iot_count == 0 && env->tile_iot_valid == 0 &&
+        !shared_tload) {
         return;
     }
     memcpy(live, env->tile_hand_live, sizeof(live));
@@ -16610,6 +16838,36 @@ void HELPER(linx_tile_commit)(CPULinxState *env)
     case LINX_BLOCK_TMA:
         switch (env->tile_func & 0x1f) {
         case LINX_TMA_TLOAD: {
+            if (shared_tload) {
+                unsigned addr_reg;
+                unsigned size_code;
+                LinxCPU *cpu = env_archcpu(env);
+                if (!linx_tile_get_base_reg(env, &addr_reg) ||
+                    !linx_tile_get_shared_tload_size(env, &size_code) ||
+                    cpu->core4 == NULL) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    break;
+                }
+                const size_t bytes = UINT64_C(1) << (size_code + 4u);
+                g_autofree uint8_t *staged = g_malloc(bytes);
+                const uint64_t base = env->gpr[addr_reg];
+                for (size_t i = 0; i < bytes; i++) {
+                    staged[i] = cpu_ldub_data(env, (abi_ptr)(base + i));
+                }
+                LinxSharedTileVersion *shared =
+                    &cpu->core4->shared_tile[env->tile_shared_binder[0]];
+                qemu_mutex_lock(&cpu->core4->lock);
+                memcpy(shared->data, staged, bytes);
+                memset(shared->data + bytes, 0,
+                       LINX_SHARED_TILE_MAX_BYTES - bytes);
+                shared->bytes = bytes;
+                shared->dtype = linx_tile_effective_dtype(env);
+                shared->producer_bpc = env->bpc;
+                shared->defined_mask = 0xfu;
+                shared->ready = 1u;
+                qemu_mutex_unlock(&cpu->core4->lock);
+                break;
+            }
             const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
             for (unsigned i = 0; i < count; i++) {
                 LinxTileIOTDesc d;

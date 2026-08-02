@@ -1548,7 +1548,7 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
         TCGLabel *no_tile_commit = gen_new_label();
         tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_tile_iot_valid, 0,
                             no_tile_commit);
-        gen_helper_linx_tile_commit(tcg_env);
+        gen_helper_linx_tile_commit(tcg_env, tcg_constant_i64(fallthrough));
         gen_set_label(no_tile_commit);
     }
 
@@ -2710,6 +2710,8 @@ static bool trans_c_b_ios(DisasContext *ctx, arg_c_b_ios *a)
     }
     gen_helper_linx_tile_append_shared_binder(
         tcg_env, tcg_constant_i32(a->shared & 0xffu));
+    /* Shared TLOAD has no B.IOT, so the binder itself keeps commit pending. */
+    tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
     return true;
 }
 

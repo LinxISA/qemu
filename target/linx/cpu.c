@@ -3896,7 +3896,7 @@ static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
 
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
-    .mttcg_supported = false,
+    .mttcg_supported = true,
 
     .initialize = linx_translate_init,
     .translate_code = linx_translate_code,

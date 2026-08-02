@@ -3517,6 +3517,7 @@ static void linx_virt_init(MachineState *machine)
     }
     s->pe_count = machine->smp.cpus;
     qemu_mutex_init(&s->core4.lock);
+    qemu_cond_init(&s->core4.collective_cond);
 
     hwaddr load_base = 0x10000;
     hwaddr tramp;
@@ -3583,6 +3584,7 @@ static void linx_virt_init(MachineState *machine)
         s->cpu[pe] = LINX_CPU(cpu_create(machine->cpu_type));
         s->cpu[pe]->boot_pe_id = pe;
         s->cpu[pe]->core4 = &s->core4;
+        s->core4.cpu[pe] = s->cpu[pe];
     }
 
     /* Initialize UART */
