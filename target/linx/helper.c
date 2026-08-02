@@ -9163,7 +9163,7 @@ static bool linx_tile_output_hand(const LinxTileIOTDesc *desc,
     return false;
 }
 
-static bool linx_tile_reserve_output(const uint8_t live[LINX_TILE_HAND_COUNT],
+static bool linx_tile_reserve_output(const uint16_t live[LINX_TILE_HAND_COUNT],
                                      const LinxTileIOTDesc *desc,
                                      unsigned *tile_out)
 {
@@ -9173,7 +9173,7 @@ static bool linx_tile_reserve_output(const uint8_t live[LINX_TILE_HAND_COUNT],
         return false;
     }
     for (unsigned depth = 0; depth < LINX_TILE_HAND_DEPTH; depth++) {
-        if ((live[hand] & (1u << depth)) == 0) {
+        if ((live[hand] & LINX_TILE_HAND_BIT(depth)) == 0) {
             *tile_out = hand * LINX_TILE_HAND_DEPTH + depth;
             return true;
         }
@@ -9181,14 +9181,14 @@ static bool linx_tile_reserve_output(const uint8_t live[LINX_TILE_HAND_COUNT],
     return false;
 }
 
-static void linx_tile_publish_output(uint8_t live[LINX_TILE_HAND_COUNT],
+static void linx_tile_publish_output(uint16_t live[LINX_TILE_HAND_COUNT],
                                      unsigned tile)
 {
     const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
     const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
 
     if (hand < LINX_TILE_HAND_COUNT) {
-        live[hand] |= 1u << depth;
+        live[hand] |= LINX_TILE_HAND_BIT(depth);
     }
 }
 
@@ -9235,7 +9235,7 @@ static void linx_tile_remove_order_state(
 }
 
 static bool linx_tile_resolve_source(const CPULinxState *env,
-                                     const uint8_t live[LINX_TILE_HAND_COUNT],
+                                     const uint16_t live[LINX_TILE_HAND_COUNT],
                                      unsigned encoded,
                                      unsigned *tile_out)
 {
@@ -9243,7 +9243,6 @@ static bool linx_tile_resolve_source(const CPULinxState *env,
     const unsigned rank = encoded & 0xfu;
     unsigned tile;
 
-    /* The 4x8 bring-up model rejects architectural ranks #9..#16. */
     if (rank >= LINX_TILE_HAND_DEPTH || rank >= env->tile_hand_count[hand]) {
         return false;
     }
@@ -9251,7 +9250,7 @@ static bool linx_tile_resolve_source(const CPULinxState *env,
     const unsigned physical_hand = tile / LINX_TILE_HAND_DEPTH;
     const unsigned physical_depth = tile % LINX_TILE_HAND_DEPTH;
     if (physical_hand != hand ||
-        (live[hand] & (1u << physical_depth)) == 0 ||
+        (live[hand] & LINX_TILE_HAND_BIT(physical_depth)) == 0 ||
         env->tile_reg_bytes[tile] == 0) {
         return false;
     }
@@ -9282,7 +9281,7 @@ static void linx_tile_invalidate_acc_sources_on_output(
     }
 }
 
-static void linx_tile_release_source(uint8_t live[LINX_TILE_HAND_COUNT],
+static void linx_tile_release_source(uint16_t live[LINX_TILE_HAND_COUNT],
                                      uint8_t order[LINX_TILE_HAND_COUNT]
                                                   [LINX_TILE_HAND_DEPTH],
                                      uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
@@ -9296,7 +9295,7 @@ static void linx_tile_release_source(uint8_t live[LINX_TILE_HAND_COUNT],
     if (reuse || hand >= LINX_TILE_HAND_COUNT) {
         return;
     }
-    live[hand] &= ~(1u << depth);
+    live[hand] &= ~LINX_TILE_HAND_BIT(depth);
     if (order) {
         linx_tile_remove_order_state(order, count_by_hand, tile);
     }
@@ -9470,7 +9469,7 @@ static inline unsigned linx_tile_dtype_elem_bytes(uint32_t dtype)
 static inline void linx_tile_set_elem_bytes(CPULinxState *env, unsigned tile,
                                             unsigned elem_bytes)
 {
-    if (tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH &&
+    if (tile < LINX_TILE_SLOT_COUNT &&
         (elem_bytes == 1u || elem_bytes == 2u ||
          elem_bytes == 4u || elem_bytes == 8u)) {
         env->tile_reg_elem_bytes[tile] = (uint8_t)elem_bytes;
@@ -9480,7 +9479,7 @@ static inline void linx_tile_set_elem_bytes(CPULinxState *env, unsigned tile,
 static inline void linx_tile_set_dtype(CPULinxState *env, unsigned tile,
                                        uint32_t dtype)
 {
-    if (tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH) {
+    if (tile < LINX_TILE_SLOT_COUNT) {
         env->tile_reg_dtype[tile] = dtype & 0x1fu;
     }
 }
@@ -9489,7 +9488,7 @@ static bool linx_tile_set_shape(CPULinxState *env, unsigned tile,
                                 uint32_t valid_cols, uint32_t valid_rows,
                                 uint32_t cols, uint32_t rows)
 {
-    if (tile >= 32u || cols == 0u || rows == 0u ||
+    if (tile >= LINX_TILE_SLOT_COUNT || cols == 0u || rows == 0u ||
         valid_cols > cols || valid_rows > rows ||
         valid_cols > UINT16_MAX || valid_rows > UINT16_MAX ||
         cols > UINT16_MAX || rows > UINT16_MAX) {
@@ -13906,7 +13905,8 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
          (!has_src0 ||
           !linx_tile_tepl_impl_dtype_supported(impl_op, src0_dtype))) ||
         source_count != (unsigned)linx_tile_tepl_impl_source_arity(impl_op) ||
-        dst_tile >= 32u || bytes64 == 0u || bytes64 > LINX_TILE_MAX_BYTES ||
+        dst_tile >= LINX_TILE_SLOT_COUNT || bytes64 == 0u ||
+        bytes64 > LINX_TILE_MAX_BYTES ||
         (elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u &&
          elem_bytes != 8u) ||
         (bytes64 % elem_bytes) != 0u ||
@@ -14204,7 +14204,7 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         const uint32_t alloc_dtype = env->gpr[arg_reg[5]] & 0x1fu;
         const uint64_t impl_layout = env->gpr[arg_reg[6]];
         uint64_t in_use = 0;
-        for (unsigned tile = 0; tile < 32u; tile++) {
+        for (unsigned tile = 0; tile < LINX_TILE_SLOT_COUNT; tile++) {
             if (tile != dst_tile)
                 in_use += env->tile_reg_capacity[tile];
         }
@@ -14666,7 +14666,7 @@ static bool linx_tile_resolve_transfer_shape(const CPULinxState *env,
 static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_reg,
                            unsigned size_code, uint64_t stride_bytes)
 {
-    if (dst_tile >= 32 || addr_reg >= LINX_GPR_COUNT) {
+    if (dst_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -14756,7 +14756,7 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
 static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_reg,
                             unsigned size_code, uint64_t stride_bytes)
 {
-    if (src_tile >= 32 || addr_reg >= LINX_GPR_COUNT) {
+    if (src_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -14847,7 +14847,8 @@ static bool linx_tile_sparse_shape(const CPULinxState *env, unsigned dst_tile,
     uint32_t valid_col = (uint32_t)(env->lb[0] & 0xffffffffu);
     uint32_t valid_row = (uint32_t)(env->lb[1] & 0xffffffffu);
 
-    if (dst_tile >= 32 || bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
+    if (dst_tile >= LINX_TILE_SLOT_COUNT || bytes64 == 0 ||
+        bytes64 > LINX_TILE_MAX_BYTES ||
         elem_bytes == 0 || (bytes64 % elem_bytes) != 0) {
         return false;
     }
@@ -15112,7 +15113,7 @@ static bool linx_tile_cube_operand_legal(const CPULinxState *env,
     unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
     uint64_t row_bytes;
 
-    if (tile >= 32u || elem_bytes == 0u ||
+    if (tile >= LINX_TILE_SLOT_COUNT || elem_bytes == 0u ||
         env->tile_reg_dtype[tile] != (dtype & 31u) ||
         env->tile_reg_elem_bytes[tile] != elem_bytes ||
         env->tile_reg_valid_rows[tile] < rows ||
@@ -15335,8 +15336,8 @@ static bool linx_tile_get_bound_output(const CPULinxState *env,
 }
 
 static bool linx_tile_complete_bound_output(CPULinxState *env,
-                                            uint8_t live[LINX_TILE_HAND_COUNT],
-                                            uint8_t reserved[LINX_TILE_HAND_COUNT],
+                                            uint16_t live[LINX_TILE_HAND_COUNT],
+                                            uint16_t reserved[LINX_TILE_HAND_COUNT],
                                             uint8_t order[LINX_TILE_HAND_COUNT]
                                                          [LINX_TILE_HAND_DEPTH],
                                             uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
@@ -15349,13 +15350,13 @@ static bool linx_tile_complete_bound_output(CPULinxState *env,
     }
     const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
     const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
-    reserved[hand] &= ~(1u << depth);
+    reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
     linx_tile_publish_output(live, tile);
     return linx_tile_publish_order_state(order, count_by_hand, tile);
 }
 
 static void linx_tile_consume_bound_sources(
-    CPULinxState *env, uint8_t live[LINX_TILE_HAND_COUNT], unsigned index,
+    CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT], unsigned index,
     const LinxTileIOTDesc *desc,
     uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
@@ -15668,7 +15669,7 @@ static bool linx_tile_transfer_preflight(const CPULinxState *env,
 }
 
 static bool linx_tile_preflight_tma(
-    CPULinxState *env, uint8_t planned_live[LINX_TILE_HAND_COUNT],
+    CPULinxState *env, uint16_t planned_live[LINX_TILE_HAND_COUNT],
     uint8_t *planned_carrier_valid, uint8_t *planned_carrier)
 {
     const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
@@ -15850,7 +15851,7 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
             const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
             const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
             if (hand < LINX_TILE_HAND_COUNT) {
-                env->tile_hand_reserved[hand] &= ~(1u << depth);
+                env->tile_hand_reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
             }
         }
     }
@@ -16010,7 +16011,7 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
     env->tile_iot_output_valid[index] = 0;
 
     if (desc.has_size && (vector_block || tile_output)) {
-        uint8_t occupied[LINX_TILE_HAND_COUNT];
+        uint16_t occupied[LINX_TILE_HAND_COUNT];
         unsigned dst_tile;
         const uint64_t bytes64 = desc.has_size && desc.size < 60u
                                  ? (1ull << (desc.size + 4u)) : 0;
@@ -16023,14 +16024,14 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
             if (env->tile_iot_output_valid[planned]) {
                 const unsigned tile = env->tile_iot_output_phys[planned];
                 occupied[tile / LINX_TILE_HAND_DEPTH] |=
-                    1u << (tile % LINX_TILE_HAND_DEPTH);
+                    LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
             }
         }
         for (unsigned tile = 0;
-             tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+             tile < LINX_TILE_SLOT_COUNT; tile++) {
             if (env->tile_pin_owner[tile]) {
                 occupied[tile / LINX_TILE_HAND_DEPTH] |=
-                    1u << (tile % LINX_TILE_HAND_DEPTH);
+                    LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
             }
         }
         if (bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
@@ -16102,13 +16103,13 @@ static bool linx_tile_cube_primary_legal(const CPULinxState *env,
                     func == LINX_CUBE_TMATMUL_MX_ACC ||
                     func == LINX_CUBE_TGEMV_MX_ACC;
     const uint32_t left =
-        src_a < 32u ? env->tile_reg_dtype[src_a] : UINT32_MAX;
+        src_a < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_a] : UINT32_MAX;
     const uint32_t right =
-        src_b < 32u ? env->tile_reg_dtype[src_b] : UINT32_MAX;
+        src_b < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_b] : UINT32_MAX;
     const uint8_t acc_dtype = mx ? LINX_TILE_ACC_FP32 :
         linx_tile_numeric_acc_dtype(env->tile_dtype);
 
-    if (src_a >= 32u || src_b >= 32u ||
+    if (src_a >= LINX_TILE_SLOT_COUNT || src_b >= LINX_TILE_SLOT_COUNT ||
         (mx ? ((env->tile_dtype & 31u) != 1u ||
                !linx_tile_numeric_mx_pair(left, right)) :
               (!linx_tile_numeric_ordinary(env->tile_dtype) ||
@@ -16292,7 +16293,7 @@ static void linx_tile_restore_reg(CPULinxState *env,
 }
 
 static bool linx_tile_materialize_planned_outputs(
-    CPULinxState *env, uint8_t reserved[LINX_TILE_HAND_COUNT],
+    CPULinxState *env, uint16_t reserved[LINX_TILE_HAND_COUNT],
     uint8_t *acc_sources_valid, uint8_t acc_src0, uint8_t acc_src1);
 
 /*
@@ -16317,7 +16318,7 @@ static bool linx_tile_preflight_tepl(CPULinxState *env)
     unsigned output_count = 0;
     unsigned special_sources[4] = { 0 };
     LinxTileRegSnapshot *snapshots;
-    uint8_t reserved[LINX_TILE_HAND_COUNT];
+    uint16_t reserved[LINX_TILE_HAND_COUNT];
     uint8_t acc_sources_valid = env->tile_acc_sources_valid;
     bool legal;
 
@@ -16413,7 +16414,7 @@ static bool linx_tile_preflight_talloc(const CPULinxState *env,
         !linx_tile_data_type_accepted(dtype)) {
         return false;
     }
-    for (unsigned tile = 0; tile < 32u; tile++) {
+    for (unsigned tile = 0; tile < LINX_TILE_SLOT_COUNT; tile++) {
         in_use += env->tile_reg_capacity[tile];
     }
     if (in_use + capacity > LINX_TILE_PE_CAPACITY_BYTES) {
@@ -16424,7 +16425,7 @@ static bool linx_tile_preflight_talloc(const CPULinxState *env,
 }
 
 static bool linx_tile_materialize_planned_outputs(
-    CPULinxState *env, uint8_t reserved[LINX_TILE_HAND_COUNT],
+    CPULinxState *env, uint16_t reserved[LINX_TILE_HAND_COUNT],
     uint8_t *acc_sources_valid, uint8_t acc_src0, uint8_t acc_src1)
 {
     for (unsigned i = 0; i < env->tile_iot_count; i++) {
@@ -16444,7 +16445,7 @@ static bool linx_tile_materialize_planned_outputs(
                               (tepl_op == 0x02fu || tepl_op == 0x063u);
         const unsigned prior = in_place ? env->tile_hand_order[hand][0] : 0u;
 
-        reserved[hand] |= 1u << depth;
+        reserved[hand] |= LINX_TILE_HAND_BIT(depth);
         linx_tile_invalidate_acc_sources_on_output(
             dst_tile, acc_sources_valid, acc_src0, acc_src1);
         memset(env->tile_reg[dst_tile], 0, sizeof(env->tile_reg[dst_tile]));
@@ -16468,7 +16469,7 @@ static bool linx_tile_materialize_planned_outputs(
 
 typedef struct LinxTileMaterializeCtx {
     CPULinxState *env;
-    uint8_t *reserved;
+    uint16_t *reserved;
     uint8_t *acc_sources_valid;
     uint8_t acc_src0;
     uint8_t acc_src1;
@@ -16576,7 +16577,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     }
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
-        uint8_t live[LINX_TILE_HAND_COUNT];
+        uint16_t live[LINX_TILE_HAND_COUNT];
         uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
         uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
         uint8_t carrier_valid = peer->tile_acc_carrier_valid;
@@ -16613,8 +16614,8 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
 
 void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
 {
-    uint8_t live[LINX_TILE_HAND_COUNT];
-    uint8_t reserved[LINX_TILE_HAND_COUNT];
+    uint16_t live[LINX_TILE_HAND_COUNT];
+    uint16_t reserved[LINX_TILE_HAND_COUNT];
     uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
     uint8_t carrier_valid = env->tile_acc_carrier_valid;
@@ -16653,7 +16654,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     memcpy(count_by_hand, env->tile_hand_count, sizeof(count_by_hand));
 
     if (env->blocktype == LINX_BLOCK_TMA) {
-        uint8_t planned_live[LINX_TILE_HAND_COUNT];
+        uint16_t planned_live[LINX_TILE_HAND_COUNT];
         uint8_t planned_carrier_valid = carrier_valid;
         uint8_t planned_carrier = carrier;
         memcpy(planned_live, live, sizeof(planned_live));
@@ -16963,7 +16964,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                                                       : (env->tile_iot_size & 0x1f);
                 const uint64_t bytes64 = (size_code < 60u) ? (1ull << (size_code + 4u)) : 0ull;
                 if (bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
-                    src_tile >= 32 || dst_tile >= 32 ||
+                    src_tile >= LINX_TILE_SLOT_COUNT ||
+                    dst_tile >= LINX_TILE_SLOT_COUNT ||
                     env->tile_reg_bytes[src_tile] < bytes64) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
@@ -17649,8 +17651,8 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
 
 static void linx_tile_commit_vector_bindings(CPULinxState *env)
 {
-    uint8_t live[LINX_TILE_HAND_COUNT];
-    uint8_t reserved[LINX_TILE_HAND_COUNT];
+    uint16_t live[LINX_TILE_HAND_COUNT];
+    uint16_t reserved[LINX_TILE_HAND_COUNT];
     uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
 
@@ -17688,7 +17690,7 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
         const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
         const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
 
-        reserved[hand] &= ~(1u << depth);
+        reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
 
         /*
          * Source-less MSEQ/MPAR outputs back block-local LTAR scratch such as
@@ -17698,7 +17700,7 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
          * header retry forever.
          */
         if (env->tile_iot_src_valid[i] == 0) {
-            live[hand] &= ~(1u << depth);
+            live[hand] &= ~LINX_TILE_HAND_BIT(depth);
             env->tile_reg_bytes[tile] = 0;
             env->tile_reg_capacity[tile] = 0;
             env->tile_reg_elem_bytes[tile] = 0;
@@ -19293,7 +19295,7 @@ static bool linx_vec_resolve_local_tile(CPULinxState *env, uint32_t base_code,
         }
         return false;
     }
-    if (tile >= 32) {
+    if (tile >= LINX_TILE_SLOT_COUNT) {
         if (linx_debug_local_enabled_p()) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "Linx local: tile out of range code=0x%x idx=%u tile=%u body_tpc=0x%" PRIx64 "\n",
@@ -19308,7 +19310,8 @@ static bool linx_vec_resolve_local_tile(CPULinxState *env, uint32_t base_code,
 static bool linx_vec_local_ensure_store_bytes(CPULinxState *env, unsigned tile,
                                               uint64_t off, uint32_t size)
 {
-    if (tile >= 32 || size == 0 || off > UINT64_MAX - size) {
+    if (tile >= LINX_TILE_SLOT_COUNT || size == 0 ||
+        off > UINT64_MAX - size) {
         return false;
     }
 

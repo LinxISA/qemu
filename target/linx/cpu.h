@@ -225,7 +225,9 @@ typedef enum LinxTemplateKind {
 #define LINX_TILE_MAX_IOT 32u
 #define LINX_TILE_MAX_SHARED_BINDERS 2u
 #define LINX_TILE_HAND_COUNT 4u
-#define LINX_TILE_HAND_DEPTH 8u
+#define LINX_TILE_HAND_DEPTH 16u
+#define LINX_TILE_SLOT_COUNT (LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH)
+#define LINX_TILE_HAND_BIT(depth) ((uint16_t)(1u << (depth)))
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
 /*
  * v0.3 SIMT bring-up: LLVM autovec may reference VT indices up to VT#31 in
@@ -470,34 +472,34 @@ typedef struct CPUArchState {
     uint8_t tile_iot_output_phys[LINX_TILE_MAX_IOT];
 
     /*
-     * Shared 4x8 tile backing and allocation state for the current bring-up
-     * model.  These fields are deliberately not ACR-switched: tile_reg[] is
+     * Shared 4x16 tile backing and allocation state for the current model.
+     * These fields are deliberately not ACR-switched: tile_reg[] is
      * shared as well, so restoring per-ACR liveness would describe stale or
      * overwritten global backing.
      */
-    uint8_t tile_hand_live[LINX_TILE_HAND_COUNT];
-    uint8_t tile_hand_reserved[LINX_TILE_HAND_COUNT];
+    uint16_t tile_hand_live[LINX_TILE_HAND_COUNT];
+    uint16_t tile_hand_reserved[LINX_TILE_HAND_COUNT];
     /* Per-hand architectural rank (index 0 is #1/newest) -> physical tile. */
     uint8_t tile_hand_order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
     uint8_t tile_hand_count[LINX_TILE_HAND_COUNT];
     /* ACR owner bits pin header-frozen physical sources across ACR switches. */
-    uint16_t tile_pin_owner[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH];
+    uint16_t tile_pin_owner[LINX_TILE_SLOT_COUNT];
     uint8_t tile_acc_carrier_valid;
     uint8_t tile_acc_carrier;
     uint8_t tile_acc_sources_valid;
     uint8_t tile_acc_src0;
     uint8_t tile_acc_src1;
 
-    /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
-    uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
-    uint32_t tile_reg_capacity[32]; /* architectural allocation capacity */
-    uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
-    uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
-    uint8_t tile_reg_dtype[32]; /* canonical v0.57 producer DataType */
-    uint16_t tile_reg_valid_cols[32]; /* LB0 valid columns/elements */
-    uint16_t tile_reg_valid_rows[32]; /* LB1 valid rows */
-    uint16_t tile_reg_cols[32]; /* LB2 physical row stride in elements */
-    uint16_t tile_reg_rows[32]; /* physical rows derived from the footprint */
+    /* Emulated tile backing store: 4 hands x 16 depth = 64 tiles. */
+    uint32_t tile_reg[LINX_TILE_SLOT_COUNT][LINX_TILE_MAX_WORDS];
+    uint32_t tile_reg_capacity[LINX_TILE_SLOT_COUNT];
+    uint32_t tile_reg_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_valid_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_valid_rows[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_rows[LINX_TILE_SLOT_COUNT];
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
@@ -927,7 +929,7 @@ static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
         if (s->tile_iot_output_valid[i]) {
             const unsigned tile = s->tile_iot_output_phys[i];
             env->tile_hand_reserved[tile / LINX_TILE_HAND_DEPTH] &=
-                ~(1u << (tile % LINX_TILE_HAND_DEPTH));
+                ~LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
         }
     }
     memset(s, 0, sizeof(*s));
