@@ -13848,6 +13848,123 @@ static inline uint32_t linx_tile_effective_dtype(const CPULinxState *env)
     return env->tile_dtype & 0x1fu;
 }
 
+static bool linx_tile_tepl_compare_select_source_valid(
+    const CPULinxState *env, unsigned tile, uint32_t dtype,
+    unsigned elem_bytes, uint32_t rows, uint32_t cols,
+    uint32_t physical_cols, uint64_t bytes)
+{
+    const uint32_t physical_rows =
+        (uint32_t)(bytes / elem_bytes) / physical_cols;
+
+    return tile < LINX_TILE_SLOT_COUNT &&
+           env->tile_reg_dtype[tile] == dtype &&
+           env->tile_reg_elem_bytes[tile] == elem_bytes &&
+           env->tile_reg_valid_cols[tile] == cols &&
+           env->tile_reg_valid_rows[tile] == rows &&
+           env->tile_reg_cols[tile] == physical_cols &&
+           env->tile_reg_rows[tile] >= physical_rows &&
+           env->tile_reg_bytes[tile] >= bytes;
+}
+
+static bool linx_tile_tepl_compare_select_profile_valid(
+    const CPULinxState *env, const LinxTileIOTDesc *desc, uint8_t src_valid,
+    const unsigned src_phys[2])
+{
+    const uint32_t selector = env->tile_func & 0x7fu;
+    if (selector != 0x0du && selector != 0x2du &&
+        selector != 0x1au && selector != 0x3au) {
+        return true;
+    }
+
+    const uint32_t dtype = linx_tile_effective_dtype(env);
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+    uint64_t bytes = desc->has_size && desc->size < 60u
+                         ? (1ull << (desc->size + 4u))
+                         : 0ull;
+    uint32_t rows = 0;
+    uint32_t cols = 0;
+    uint32_t physical_cols = 0;
+    const bool compare = selector == 0x0du || selector == 0x2du;
+    const bool tcmp_dtype = dtype == 1u || dtype == 4u || dtype == 17u ||
+                            dtype == 18u || dtype == 19u || dtype == 25u ||
+                            dtype == 26u || dtype == 27u;
+    const bool tcmps_dtype = dtype == 1u || dtype == 4u || dtype == 17u ||
+                             dtype == 18u || dtype == 26u;
+    const bool select_dtype = dtype == 17u || dtype == 18u || dtype == 19u ||
+                              dtype == 25u || dtype == 26u || dtype == 27u;
+
+    if (selector == 0x1au && env->tile_iot_count == 0u &&
+        bytes == 0u && src_valid == 3u) {
+        bytes = env->tile_reg_bytes[src_phys[1]];
+    }
+    if ((selector == 0x0du && !tcmp_dtype) ||
+        (selector == 0x2du && !tcmps_dtype) ||
+        ((selector == 0x1au || selector == 0x3au) && !select_dtype) ||
+        elem_bytes == 0u ||
+        (compare && ((env->tile_attr_dtype & 0x100u) == 0u ||
+                     ((env->tile_attr_raw >> 22) & 0x7u) > 5u)) ||
+        bytes == 0u || bytes > LINX_TILE_MAX_BYTES ||
+        bytes % elem_bytes != 0u ||
+        !linx_tile_tepl_shape(env, elem_bytes,
+                              (uint32_t)(bytes / elem_bytes), &rows, &cols,
+                              &physical_cols) ||
+        (bytes / elem_bytes) % physical_cols != 0u) {
+        return false;
+    }
+
+    if (selector == 0x0du) {
+        return env->tile_iot_count == 0u && src_valid == 3u &&
+               desc->flags == 0u &&
+               linx_tile_tepl_compare_select_source_valid(
+                   env, src_phys[0], dtype, elem_bytes, rows, cols,
+                   physical_cols, bytes) &&
+               linx_tile_tepl_compare_select_source_valid(
+                   env, src_phys[1], dtype, elem_bytes, rows, cols,
+                   physical_cols, bytes);
+    }
+    if (selector == 0x2du) {
+        return env->tile_iot_count == 0u && src_valid == 1u &&
+               desc->flags == LINX_IOT_S1V &&
+               linx_tile_tepl_compare_select_source_valid(
+                   env, src_phys[0], dtype, elem_bytes, rows, cols,
+                   physical_cols, bytes);
+    }
+
+    const uint32_t mask_words = (cols + 31u) / 32u;
+    const uint64_t mask_bytes = (uint64_t)rows * mask_words * 4u;
+    const unsigned mask_tile = env->tile_iot_count == 0u
+                                   ? src_phys[0]
+                                   : env->tile_iot_src_phys[0][0];
+    const bool mask_valid = mask_tile < LINX_TILE_SLOT_COUNT &&
+        (env->tile_reg_dtype[mask_tile] & 0x1fu) == 25u &&
+        env->tile_reg_elem_bytes[mask_tile] == 4u &&
+        env->tile_reg_valid_cols[mask_tile] >= mask_words &&
+        env->tile_reg_valid_rows[mask_tile] >= rows &&
+        env->tile_reg_cols[mask_tile] >= mask_words &&
+        env->tile_reg_rows[mask_tile] >= rows &&
+        env->tile_reg_bytes[mask_tile] >= mask_bytes;
+
+    if (selector == 0x3au) {
+        return env->tile_iot_count == 0u && src_valid == 3u &&
+               desc->flags == 0u && mask_valid &&
+               linx_tile_tepl_compare_select_source_valid(
+                   env, src_phys[1], dtype, elem_bytes, rows, cols,
+                   physical_cols, bytes);
+    }
+    if (env->tile_iot_count == 0u) {
+        return !desc->has_size && !desc->last && src_valid == 3u &&
+               desc->flags == 0u && mask_valid &&
+               linx_tile_tepl_compare_select_source_valid(
+                   env, src_phys[1], dtype, elem_bytes, rows, cols,
+                   physical_cols, bytes);
+    }
+    return env->tile_iot_count == 1u && src_valid == 1u &&
+           desc->flags == LINX_IOT_S1V &&
+           linx_tile_tepl_compare_select_source_valid(
+               env, src_phys[0], dtype, elem_bytes, rows, cols,
+               physical_cols, bytes);
+}
+
 static int linx_tile_tepl_source_arity(uint32_t selector)
 {
     const uint32_t impl = linx_tile_tepl_impl_selector(selector);
@@ -13889,7 +14006,10 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     const uint32_t src0_dtype = has_src0 ? env->tile_reg_dtype[src0_tile] : 0u;
     const uint32_t src1_dtype = has_src1 ? env->tile_reg_dtype[src1_tile] : 0u;
     unsigned scalar_reg = 0;
-    const bool scalar_mode = linx_tile_resolve_ior(env, 0, &scalar_reg);
+    const bool scalar_compare_select = impl_op == 0x033u || impl_op == 0x034u;
+    const bool scalar_mode =
+        (!scalar_compare_select || env->tile_ior_count == 1u) &&
+        linx_tile_resolve_ior(env, 0, &scalar_reg);
     const uint32_t scalar_word =
         scalar_mode ? linx_tile_scalar_as_dtype(env->gpr[scalar_reg],
                                                 operation_dtype, elem_bytes)
@@ -15994,6 +16114,13 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         (((src_valid & 1u) == 0u) ||
          !linx_tile_tepl_dtype_supported(
              0x01bu, env->tile_reg_dtype[src_phys[0]]))) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    if (env->blocktype == LINX_BLOCK_TEPL &&
+        !linx_tile_tepl_compare_select_profile_valid(env, &desc, src_valid,
+                                                     src_phys)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
