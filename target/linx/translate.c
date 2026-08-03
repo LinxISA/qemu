@@ -2560,12 +2560,6 @@ static bool trans_bstart_mscatter_mask(DisasContext *ctx,
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 7);
 }
 
-static bool trans_bstart_mgather_cas(DisasContext *ctx,
-                                     arg_bstart_mgather_cas *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 8);
-}
-
 static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 0);
