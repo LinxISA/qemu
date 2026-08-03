@@ -194,6 +194,34 @@ static void test_ordinary_bias_and_acc(void)
     g_free(env);
 }
 
+static void test_upper_physical_slots(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    float left = 2.0f;
+    float right = 3.0f;
+    float result;
+
+    env->lb[0] = env->lb[1] = env->lb[2] = 1;
+    env->tile_dtype = 1;
+    set_tile(env, 32, 1, 1, 1, &left, sizeof(left));
+    set_tile(env, 47, 1, 1, 1, &right, sizeof(right));
+    g_assert_true(linx_tile_cube_compute_057(env, 32, 47, 0, 0, 0, 0,
+                                             false, false, false));
+    memcpy(&result, env->tile_acc, sizeof(result));
+    g_assert_cmpfloat(result, ==, 6.0f);
+
+    env->tile_reg_capacity[48] = 16;
+    g_assert_true(linx_tile_acccvt_057(env, 48, 0));
+    memcpy(&result, env->tile_reg[48], sizeof(result));
+    g_assert_cmpfloat(result, ==, 6.0f);
+
+    env->tile_reg_capacity[63] = 16;
+    g_assert_true(linx_tile_acccvt_057(env, 63, 0));
+    memcpy(&result, env->tile_reg[63], sizeof(result));
+    g_assert_cmpfloat(result, ==, 6.0f);
+    g_free(env);
+}
+
 static void test_mx_crosses_k32(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -499,6 +527,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/cube/type-matrix", test_all_production_type_rows);
     g_test_add_func("/linx/cube/ordinary-bias-acc", test_ordinary_bias_and_acc);
+    g_test_add_func("/linx/cube/upper-physical-slots",
+                    test_upper_physical_slots);
     g_test_add_func("/linx/cube/mx-k32", test_mx_crosses_k32);
     g_test_add_func("/linx/cube/acccvt-rounding",
                     test_acccvt_all_rounding_modes);

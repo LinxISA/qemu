@@ -20,6 +20,7 @@
 #include "system/device_tree.h"
 #include "system/memory.h"
 #include "system/reset.h"
+#include "system/tcg.h"
 #include "system/runstate.h"
 #include "elf.h"
 #include "chardev/char.h"
@@ -439,6 +440,8 @@ static void linx_virt_set_irq(void *opaque, int irq, int level)
 
 #define TYPE_LINX_VIRT_MACHINE MACHINE_TYPE_NAME("virt")
 OBJECT_DECLARE_SIMPLE_TYPE(LinxVirtMachineState, LINX_VIRT_MACHINE)
+
+#define LINX_VIRT_PE_STACK_SIZE 0x10000u
 
 typedef struct LinxVirtMachineState {
     MachineState parent_obj;
@@ -3223,12 +3226,14 @@ static void linx_virt_reset(void *opaque)
     // qemu_log_mask(LOG_TRACE, "linx virt: entry=0x%" HWADDR_PRIx " sp=0x%" HWADDR_PRIx "\n",
     //               s->entry, s->initial_sp);
 
+    linx_core4_reset(&s->core4);
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         CPULinxState *env = &s->cpu[pe]->env;
 
         cpu_reset(CPU(s->cpu[pe]));
         env->pc = s->entry;
-        env->gpr[LINX_REG_SP] = s->initial_sp - pe * 0x10000;
+        env->gpr[LINX_REG_SP] =
+            s->initial_sp - pe * LINX_VIRT_PE_STACK_SIZE;
         env->gpr[LINX_REG_RA] = s->exit_trampoline;
         env->gpr[LINX_REG_ZERO] = 0;
         env->gpr[LINX_REG_A0] = pe;
@@ -3515,7 +3520,18 @@ static void linx_virt_init(MachineState *machine)
         error_report("linx virt: DavinciOO supports either 1 PE or Core4 (-smp 4)");
         exit(1);
     }
+    if (machine->smp.cpus == 4 &&
+        machine->smp.threads != 1) {
+        error_report("linx virt: bounded Core4 requires one thread per PE");
+        exit(1);
+    }
     s->pe_count = machine->smp.cpus;
+    if (s->pe_count == LINX_CORE4_PE_COUNT &&
+        qemu_tcg_mttcg_enabled()) {
+        error_report("linx virt: bounded Core4 does not support MTTCG; "
+                     "use -accel tcg,thread=single");
+        exit(1);
+    }
     qemu_mutex_init(&s->core4.lock);
     qemu_cond_init(&s->core4.collective_cond);
 
@@ -3693,12 +3709,18 @@ static void linx_virt_init(MachineState *machine)
     }
 
     tramp = (machine->ram_size - 8) & ~0xfULL;
-    sp = (tramp - 0x10000) & ~0xfULL;
-    if (sp <= (hwaddr)fdt_size + fdt_gap) {
+    sp = (tramp - LINX_VIRT_PE_STACK_SIZE) & ~0xfULL;
+    if (sp < s->pe_count * LINX_VIRT_PE_STACK_SIZE) {
+        error_report("linx virt: PE stacks do not fit in RAM");
+        exit(1);
+    }
+    const hwaddr stack_bottom =
+        sp - s->pe_count * LINX_VIRT_PE_STACK_SIZE;
+    if (stack_bottom <= (hwaddr)fdt_size + fdt_gap) {
         error_report("linx virt: FDT does not fit in RAM");
         exit(1);
     }
-    fdt_addr = (sp - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
+    fdt_addr = (stack_bottom - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
     if (fdt_addr < cur || (size_t)fdt_addr + (size_t)fdt_size > machine->ram_size) {
         error_report("linx virt: FDT placement overlaps payload (fdt=0x%" HWADDR_PRIx
                      " payload_end=0x%" HWADDR_PRIx " size=0x%x)",
@@ -3718,9 +3740,10 @@ static void linx_virt_init(MachineState *machine)
 
     trace_linx_virt_fdt(fdt_addr, (uint32_t)fdt_size);
 
-    if (image_end > sp) {
+    if (image_end > stack_bottom) {
         error_report("linx virt: RAM too small (image_end=0x%" HWADDR_PRIx
-                     " sp=0x%" HWADDR_PRIx ")", image_end, sp);
+                     " stack_bottom=0x%" HWADDR_PRIx ")",
+                     image_end, stack_bottom);
         exit(1);
     }
 
@@ -3742,7 +3765,7 @@ static void linx_virt_init(MachineState *machine)
 
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         s->cpu[pe]->boot_pc = entry;
-        s->cpu[pe]->boot_sp = sp - pe * 0x10000;
+        s->cpu[pe]->boot_sp = sp - pe * LINX_VIRT_PE_STACK_SIZE;
         s->cpu[pe]->boot_ra = tramp;
         s->cpu[pe]->boot_a0 = pe;
         s->cpu[pe]->boot_a1 = fdt_addr;

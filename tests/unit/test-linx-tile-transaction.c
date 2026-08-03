@@ -16,8 +16,8 @@ typedef struct VisibleTileState {
 } VisibleTileState;
 
 typedef struct VisibleCPUTileState {
-    uint8_t hand_live[LINX_TILE_HAND_COUNT];
-    uint8_t hand_reserved[LINX_TILE_HAND_COUNT];
+    uint16_t hand_live[LINX_TILE_HAND_COUNT];
+    uint16_t hand_reserved[LINX_TILE_HAND_COUNT];
     uint8_t hand_order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
     uint8_t hand_count[LINX_TILE_HAND_COUNT];
     uint16_t pin_owner[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH];
@@ -32,15 +32,15 @@ typedef struct VisibleCPUTileState {
     uint8_t acc_valid;
     uint16_t acc_cols;
     uint16_t acc_rows;
-    uint32_t tile[32][LINX_TILE_MAX_WORDS];
-    uint32_t tile_capacity[32];
-    uint32_t tile_bytes[32];
-    uint8_t tile_elem_bytes[32];
-    uint8_t tile_dtype[32];
-    uint16_t tile_valid_cols[32];
-    uint16_t tile_valid_rows[32];
-    uint16_t tile_cols[32];
-    uint16_t tile_rows[32];
+    uint32_t tile[LINX_TILE_SLOT_COUNT][LINX_TILE_MAX_WORDS];
+    uint32_t tile_capacity[LINX_TILE_SLOT_COUNT];
+    uint32_t tile_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_elem_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_dtype[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_valid_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_valid_rows[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_rows[LINX_TILE_SLOT_COUNT];
 } VisibleCPUTileState;
 
 static void capture_cpu_visible_state(const CPULinxState *env,

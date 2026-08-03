@@ -58,6 +58,8 @@ typedef struct LinxCore4State {
     uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
+void linx_core4_reset(LinxCore4State *core4);
+
 /* Exception types
  * Note: We start from 1, not 0, because exception_index = 0 would
  * trigger do_interrupt via replay_exception() even when there's no exception.

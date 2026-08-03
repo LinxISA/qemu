@@ -66,7 +66,8 @@ static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
 
 static inline bool linx_tile_tstore_resolve_binding(
     const LinxTileIOTDesc *desc, uint8_t bound_sources,
-    const uint8_t bound_tiles[2], const uint32_t tile_bytes[32],
+    const uint8_t bound_tiles[2],
+    const uint32_t tile_bytes[LINX_TILE_SLOT_COUNT],
     unsigned *tile, unsigned *size_code)
 {
     unsigned source;
@@ -86,7 +87,7 @@ static inline bool linx_tile_tstore_resolve_binding(
         return false;
     }
     *tile = bound_tiles[source];
-    return *tile < 32u &&
+    return *tile < LINX_TILE_SLOT_COUNT &&
            linx_tile_size_code_from_bytes(tile_bytes[*tile], size_code);
 }
 

@@ -44,7 +44,8 @@ static inline bool linx_tile_tepl_preflight_shape_covers(
     const CPULinxState *env, unsigned tile, uint32_t valid_cols,
     uint32_t valid_rows, uint32_t cols, uint32_t rows)
 {
-    return tile < 32u && env->tile_reg_valid_cols[tile] >= valid_cols &&
+    return tile < LINX_TILE_SLOT_COUNT &&
+           env->tile_reg_valid_cols[tile] >= valid_cols &&
            env->tile_reg_valid_rows[tile] >= valid_rows &&
            env->tile_reg_cols[tile] == cols &&
            env->tile_reg_rows[tile] >= rows;
@@ -81,7 +82,8 @@ static inline bool linx_tile_tepl_remainder_tile_divisors_legal(
 {
     const uint8_t *data;
 
-    if (tile >= 32u || elem_bytes == 0u || elem_bytes > sizeof(uint64_t)) {
+    if (tile >= LINX_TILE_SLOT_COUNT || elem_bytes == 0u ||
+        elem_bytes > sizeof(uint64_t)) {
         return false;
     }
     data = (const uint8_t *)env->tile_reg[tile];
@@ -166,7 +168,7 @@ static inline bool linx_tile_tepl_pre_publish_legal(
                env->gpr[scale_reg] != 0u;
     }
     if (impl == 0x00du) { /* TCVT */
-        return has_src0 && !has_src1 && src0 < 32u &&
+        return has_src0 && !has_src1 && src0 < LINX_TILE_SLOT_COUNT &&
                env->tile_reg_valid_cols[src0] >= valid_cols &&
                env->tile_reg_valid_rows[src0] >= valid_rows &&
                env->tile_reg_cols[src0] == cols;

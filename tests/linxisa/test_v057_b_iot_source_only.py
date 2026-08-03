@@ -14,16 +14,18 @@ class V057BIOTSourceOnlyTest(unittest.TestCase):
     def test_source_only_forms_have_no_magic_destination(self) -> None:
         text = TRANSLATE.read_text(encoding="utf-8")
         self.assertIn(
-            "const bool has_output = form == 6u || a->imm4 != 0u || "
-            "a->dst != 0u;",
+            "const uint32_t flags = func == 4u ? 0u",
             text,
         )
+        self.assertIn("func == 5u ? LINX_IOT_S1V", text)
+        self.assertIn("LINX_IOT_S0V | LINX_IOT_S1V", text)
         self.assertNotIn("dst == 7u", text)
 
     def test_output_constraints_are_canonical(self) -> None:
         text = TRANSLATE.read_text(encoding="utf-8")
         self.assertIn(
-            "has_output && (dst > 3u || size < 3u || size > 9u)", text
+            "pe_mask == 0u || func < 4u || func > 6u || tsize > 7u",
+            text,
         )
 
     def test_source_only_descriptor_skips_tile_allocation(self) -> None:

@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parents[2]
 CPU_H = ROOT / "target/linx/cpu.h"
 CPU_C = ROOT / "target/linx/cpu.c"
 HELPER = ROOT / "target/linx/helper.c"
+CUBE = ROOT / "target/linx/tile_cube_057.c"
+TEPL_PREFLIGHT = ROOT / "target/linx/tile_tepl_preflight.h"
+TILE_ISA = ROOT / "target/linx/tile_isa_057.h"
 
 
 class V02TileHandDepthTest(unittest.TestCase):
@@ -18,6 +21,10 @@ class V02TileHandDepthTest(unittest.TestCase):
         cls.cpu_h = CPU_H.read_text(encoding="utf-8")
         cls.cpu_c = CPU_C.read_text(encoding="utf-8")
         cls.helper = HELPER.read_text(encoding="utf-8")
+        cls.production_tile_paths = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (HELPER, CUBE, TEPL_PREFLIGHT, TILE_ISA)
+        )
 
     def test_each_hand_has_sixteen_addressable_ranks(self) -> None:
         self.assertIn("#define LINX_TILE_HAND_DEPTH 16u", self.cpu_h)
@@ -62,7 +69,7 @@ class V02TileHandDepthTest(unittest.TestCase):
                 self.cpu_h,
                 rf"\b{field}\[LINX_TILE_SLOT_COUNT\]",
             )
-        tile_paths = self.helper[self.helper.index("static bool linx_tile_reserve_output") :]
+        tile_paths = self.production_tile_paths
         for stale_guard in (
             "tile >= 32u",
             "tile < 32u",
@@ -71,8 +78,16 @@ class V02TileHandDepthTest(unittest.TestCase):
             "src_a >= 32",
             "src_b >= 32",
             "bias >= 32",
+            "value_dst >= 32u",
+            "index_dst >= 32u",
         ):
             self.assertNotIn(stale_guard, tile_paths)
+
+    def test_representative_upper_slots_use_the_common_limit(self) -> None:
+        self.assertIn("tile >= LINX_TILE_SLOT_COUNT", self.production_tile_paths)
+        for slot in (32, 47, 48, 63):
+            self.assertLess(slot, 4 * 16)
+        self.assertNotIn("const uint32_t tile_bytes[32]", self.production_tile_paths)
 
     def test_seventeenth_output_is_rejected_without_mask_overflow(self) -> None:
         reserve = self.helper[

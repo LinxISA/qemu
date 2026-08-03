@@ -48,7 +48,7 @@ static bool cube_operand_legal(const CPULinxState *env, unsigned tile,
     unsigned elem_bytes = cube_dtype_bytes(dtype);
     uint64_t row_bytes, required;
 
-    if (tile >= 32u || elem_bytes == 0u ||
+    if (tile >= LINX_TILE_SLOT_COUNT || elem_bytes == 0u ||
         env->tile_reg_dtype[tile] != (dtype & 31u) ||
         env->tile_reg_elem_bytes[tile] != elem_bytes ||
         env->tile_reg_valid_rows[tile] < rows ||
@@ -74,7 +74,8 @@ static bool cube_read_raw(const CPULinxState *env, unsigned tile, unsigned row,
     unsigned stride = env->tile_reg_cols[tile];
     uint64_t lane, offset;
 
-    if (tile >= 32u || elem_bytes == 0u || row >= env->tile_reg_rows[tile] ||
+    if (tile >= LINX_TILE_SLOT_COUNT || elem_bytes == 0u ||
+        row >= env->tile_reg_rows[tile] ||
         column >= stride) {
         return false;
     }
@@ -178,10 +179,12 @@ static bool linx_tile_cube_compute_common_057(
     unsigned n = cube_dim(env->lb[1]);
     unsigned kdim = cube_dim(env->lb[2]);
     uint32_t left_dtype =
-        src_a < 32u ? env->tile_reg_dtype[src_a] & 31u : UINT32_MAX;
+        src_a < LINX_TILE_SLOT_COUNT
+            ? env->tile_reg_dtype[src_a] & 31u
+            : UINT32_MAX;
     uint32_t right_dtype = shared_b != NULL
                                ? shared_b_dtype & 31u
-                               : src_b < 32u
+                               : src_b < LINX_TILE_SLOT_COUNT
                                      ? env->tile_reg_dtype[src_b] & 31u
                                      : UINT32_MAX;
     uint8_t acc_dtype =
@@ -193,7 +196,8 @@ static bool linx_tile_cube_compute_common_057(
     float_status fp_status = {0};
     uint8_t *next;
 
-    if (src_a >= 32u || (shared_b == NULL && src_b >= 32u) ||
+    if (src_a >= LINX_TILE_SLOT_COUNT ||
+        (shared_b == NULL && src_b >= LINX_TILE_SLOT_COUNT) ||
         m > UINT16_MAX || n > UINT16_MAX ||
         acc_dtype == UINT8_MAX || allocated == 0u ||
         allocated > LINX_TILE_MAX_BYTES || required == 0u ||
@@ -421,7 +425,8 @@ bool linx_tile_acccvt_057(CPULinxState *env, unsigned dst_tile,
                        (dst_dtype >= 24u && dst_dtype <= 28u);
     uint8_t *next;
 
-    if (dst_tile >= 32u || !linx_tile_numeric_ordinary(dst_dtype) ||
+    if (dst_tile >= LINX_TILE_SLOT_COUNT ||
+        !linx_tile_numeric_ordinary(dst_dtype) ||
         !env->tile_acc_valid || elem_bytes == 0u || bytes == 0u ||
         bytes > LINX_TILE_MAX_BYTES || used > bytes ||
         env->tile_reg_capacity[dst_tile] < bytes || env->tile_acc_cols == 0u ||

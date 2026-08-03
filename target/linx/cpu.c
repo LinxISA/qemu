@@ -3896,7 +3896,8 @@ static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
 
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
-    .mttcg_supported = true,
+    /* Core4 collectives synchronously update peer architectural state. */
+    .mttcg_supported = false,
 
     .initialize = linx_translate_init,
     .translate_code = linx_translate_code,
@@ -3923,6 +3924,12 @@ static int linx_cpu_pre_save(void *opaque)
 {
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
+
+    /* Machine-owned Core4 Shared Tile/rendezvous state is not serialized. */
+    if ((cpu->core4 != NULL && cpu->core4->cpu[1] != NULL) ||
+        env->tile_shared_binder_count != 0u) {
+        return -EINVAL;
+    }
 
     for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
         if (acr != (env->acr & 0xfu) &&
