@@ -3762,6 +3762,40 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     }
 }
 
+void linx_core4_reset(LinxCore4State *core4)
+{
+    qemu_mutex_lock(&core4->lock);
+    memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
+    core4->collective_bpc = 0;
+    core4->collective_func = 0;
+    core4->collective_dtype = 0;
+    core4->collective_shared_id = 0;
+    core4->collective_m = 0;
+    core4->collective_n = 0;
+    core4->collective_k = 0;
+    core4->collective_arrived = 0;
+    memset(core4->collective_src, 0, sizeof(core4->collective_src));
+    memset(core4->collective_resume_pc, 0,
+           sizeof(core4->collective_resume_pc));
+    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+        if (core4->cpu[pe] == NULL) {
+            continue;
+        }
+        CPULinxState *env = &core4->cpu[pe]->env;
+
+        env->tile_shared_binder_count = 0;
+        memset(env->tile_shared_binder, 0,
+               sizeof(env->tile_shared_binder));
+        for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+            env->acr_block_state[acr].tile_shared_binder_count = 0;
+            memset(env->acr_block_state[acr].tile_shared_binder, 0,
+                   sizeof(env->acr_block_state[acr].tile_shared_binder));
+        }
+    }
+    qemu_cond_broadcast(&core4->collective_cond);
+    qemu_mutex_unlock(&core4->lock);
+}
+
 static void linx_cpu_reset_hold(Object *obj, ResetType type)
 {
     CPUState *cs = CPU(obj);
@@ -3920,6 +3954,46 @@ static const TCGCPUOps linx_tcg_ops = {
     .do_interrupt = linx_cpu_do_interrupt,
 };
 
+static bool linx_core4_cpu_binder_live(const LinxCPU *cpu)
+{
+    const CPULinxState *env = &cpu->env;
+
+    if (env->tile_shared_binder_count != 0u) {
+        return true;
+    }
+    for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+        if (env->acr_block_state[acr].tile_shared_binder_count != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool linx_core4_migration_state_live(LinxCore4State *core4)
+{
+    bool live = false;
+
+    qemu_mutex_lock(&core4->lock);
+    for (unsigned tile = 0; tile < LINX_SHARED_TILE_COUNT; tile++) {
+        const LinxSharedTileVersion *shared = &core4->shared_tile[tile];
+
+        if (shared->ready || shared->bytes || shared->dtype ||
+            shared->producer_bpc || shared->defined_mask) {
+            live = true;
+            break;
+        }
+    }
+    live |= core4->collective_arrived != 0u;
+    for (unsigned pe = 0; !live && pe < LINX_CORE4_PE_COUNT; pe++) {
+        if (core4->cpu[pe] != NULL &&
+            linx_core4_cpu_binder_live(core4->cpu[pe])) {
+            live = true;
+        }
+    }
+    qemu_mutex_unlock(&core4->lock);
+    return live;
+}
+
 static int linx_cpu_pre_save(void *opaque)
 {
     LinxCPU *cpu = opaque;
@@ -3944,6 +4018,10 @@ static int linx_cpu_pre_save(void *opaque)
                sizeof(expected_reserved)) != 0 ||
         memcmp(expected_pin, env->tile_pin_owner,
                sizeof(expected_pin)) != 0) {
+        return -EINVAL;
+    }
+    if (cpu->core4 != NULL &&
+        linx_core4_migration_state_live(cpu->core4)) {
         return -EINVAL;
     }
     return 0;

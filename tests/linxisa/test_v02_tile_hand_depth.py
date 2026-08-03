@@ -89,6 +89,83 @@ class V02TileHandDepthTest(unittest.TestCase):
             self.assertLess(slot, 4 * 16)
         self.assertNotIn("const uint32_t tile_bytes[32]", self.production_tile_paths)
 
+    def test_all_physical_tile_bounds_use_slot_count(self) -> None:
+        sources = {
+            "helper.c": self.helper,
+            "tile_cube_057.c": (
+                ROOT / "target/linx/tile_cube_057.c"
+            ).read_text(encoding="utf-8"),
+            "tile_tepl_preflight.h": (
+                ROOT / "target/linx/tile_tepl_preflight.h"
+            ).read_text(encoding="utf-8"),
+            "tile_isa_057.h": (
+                ROOT / "target/linx/tile_isa_057.h"
+            ).read_text(encoding="utf-8"),
+        }
+        stale_guards = (
+            "tile >= 32u",
+            "tile < 32u",
+            "src >= 32u",
+            "src0 < 32u",
+            "src_a < 32u",
+            "src_a >= 32u",
+            "src_b < 32u",
+            "src_b >= 32u",
+            "dst >= 32u",
+            "dst_tile >= 32u",
+            "value_dst >= 32u",
+            "index_dst >= 32u",
+            "source >= 32u",
+            "tile_bytes[32]",
+        )
+        for name, source in sources.items():
+            with self.subTest(source=name):
+                for stale_guard in stale_guards:
+                    self.assertNotIn(stale_guard, source)
+        self.assertIn(
+            "const uint32_t tile_bytes[LINX_TILE_SLOT_COUNT]",
+            sources["tile_isa_057.h"],
+        )
+
+    def test_vector_tbase_preserves_slot_sixty_three_for_local_access(
+        self,
+    ) -> None:
+        resolve = self.helper[
+            self.helper.index("static bool linx_vec_resolve_tile_base") :
+            self.helper.index("static void linx_tile_commit_vector_bindings")
+        ]
+        self.assertNotIn("*tile_out = inputs[base_idx] & 0x1f;", resolve)
+        self.assertNotIn("*tile_out = outputs[output] & 0x1f;", resolve)
+        self.assertEqual(resolve.count("tile >= LINX_TILE_SLOT_COUNT"), 2)
+        self.assertEqual(resolve.count("*tile_out = tile;"), 2)
+
+        read_reg_start = self.helper.index("static uint64_t linx_vec_read_reg")
+        tbase_start = self.helper.index(
+            "case LINX_VEC_REGCLASS_TBASE:", read_reg_start
+        )
+        read_tbase = self.helper[
+            tbase_start : self.helper.index("default:", tbase_start)
+        ]
+        self.assertIn("return (uint64_t)tile;", read_tbase)
+        self.assertNotIn("& 0x1f", read_tbase)
+
+        local_resolve = self.helper[
+            self.helper.index("static bool linx_vec_resolve_local_tile") :
+            self.helper.index("static bool linx_vec_local_ensure_store_bytes")
+        ]
+        self.assertIn("tile >= LINX_TILE_SLOT_COUNT", local_resolve)
+        self.assertIn("*tile_out = tile;", local_resolve)
+
+        local_access = self.helper[
+            self.helper.index("void HELPER(linx_v_sw_local)") :
+            self.helper.index("static unsigned linx_insn_len")
+        ]
+        self.assertEqual(
+            local_access.count("linx_vec_resolve_local_tile(env, srcL, &tile)"),
+            2,
+        )
+        self.assertIn("env->tile_reg[tile][word]", local_access)
+
     def test_seventeenth_output_is_rejected_without_mask_overflow(self) -> None:
         reserve = self.helper[
             self.helper.index("static bool linx_tile_reserve_output") :

@@ -3538,6 +3538,7 @@ static void linx_virt_init(MachineState *machine)
     hwaddr load_base = 0x10000;
     hwaddr tramp;
     hwaddr sp;
+    hwaddr stack_bottom;
 
     if (!machine->kernel_filename) {
         error_report("linx virt: missing -kernel <linxisa kernel image>");
@@ -3708,20 +3709,29 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
 
-    tramp = (machine->ram_size - 8) & ~0xfULL;
-    sp = (tramp - LINX_VIRT_PE_STACK_SIZE) & ~0xfULL;
-    if (sp < s->pe_count * LINX_VIRT_PE_STACK_SIZE) {
-        error_report("linx virt: PE stacks do not fit in RAM");
+    if (machine->ram_size < 8u) {
+        error_report("linx virt: RAM too small for bootstrap trampoline");
         exit(1);
     }
-    const hwaddr stack_bottom =
-        sp - s->pe_count * LINX_VIRT_PE_STACK_SIZE;
+    tramp = (machine->ram_size - 8u) & ~0xfULL;
+    if (tramp < LINX_VIRT_PE_STACK_SIZE) {
+        error_report("linx virt: RAM too small for bootstrap trampoline");
+        exit(1);
+    }
+    sp = (tramp - LINX_VIRT_PE_STACK_SIZE) & ~0xfULL;
+    if (s->pe_count > sp / LINX_VIRT_PE_STACK_SIZE) {
+        error_report("linx virt: RAM too small for %u bootstrap stacks",
+                     s->pe_count);
+        exit(1);
+    }
+    stack_bottom = sp - s->pe_count * LINX_VIRT_PE_STACK_SIZE;
     if (stack_bottom <= (hwaddr)fdt_size + fdt_gap) {
         error_report("linx virt: FDT does not fit in RAM");
         exit(1);
     }
     fdt_addr = (stack_bottom - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
-    if (fdt_addr < cur || (size_t)fdt_addr + (size_t)fdt_size > machine->ram_size) {
+    if (fdt_addr < cur ||
+        fdt_addr + (hwaddr)fdt_size > stack_bottom) {
         error_report("linx virt: FDT placement overlaps payload (fdt=0x%" HWADDR_PRIx
                      " payload_end=0x%" HWADDR_PRIx " size=0x%x)",
                      fdt_addr, cur, fdt_size);

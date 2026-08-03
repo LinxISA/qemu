@@ -16229,6 +16229,11 @@ static bool linx_tile_group_cube_profile(CPULinxState *env,
         !linx_tile_get_bound_source(env, 0u, 0u, &src_a)) {
         return false;
     }
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        if (cpu->core4->cpu[i] == NULL) {
+            return false;
+        }
+    }
     desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
     if (desc.last == 0u || desc.has_size || desc.reg != 0xfu ||
         (desc.flags & (LINX_IOT_S0V | LINX_IOT_S1V)) != LINX_IOT_S1V ||
@@ -16509,33 +16514,8 @@ static void linx_tile_group_reset_block(CPULinxState *env)
     memset(env->tile_iot_output_phys, 0, sizeof(env->tile_iot_output_phys));
 }
 
-static void linx_core4_abort_collective_locked(LinxCore4State *core4)
+static void linx_tile_group_clear_collective_locked(LinxCore4State *core4)
 {
-    const uint8_t arrived = core4->collective_arrived;
-
-    core4->collective_arrived = 0u;
-    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
-        LinxCPU *peer = core4->cpu[i];
-
-        if (peer == NULL || (arrived & (1u << i)) == 0u) {
-            continue;
-        }
-        peer->env.pc = core4->collective_resume_pc[i];
-        CPU(peer)->halted = 0;
-        CPU(peer)->exception_index = -1;
-        qemu_cpu_kick(CPU(peer));
-    }
-    qemu_cond_broadcast(&core4->collective_cond);
-}
-
-void linx_core4_reset(LinxCore4State *core4)
-{
-    if (core4 == NULL) {
-        return;
-    }
-    qemu_mutex_lock(&core4->lock);
-    linx_core4_abort_collective_locked(core4);
-    memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
     core4->collective_bpc = 0u;
     core4->collective_func = 0u;
     core4->collective_dtype = 0u;
@@ -16543,10 +16523,64 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_m = 0u;
     core4->collective_n = 0u;
     core4->collective_k = 0u;
+    core4->collective_arrived = 0u;
     memset(core4->collective_src, 0, sizeof(core4->collective_src));
     memset(core4->collective_resume_pc, 0,
            sizeof(core4->collective_resume_pc));
-    qemu_mutex_unlock(&core4->lock);
+}
+
+static void linx_tile_group_fail_locked(LinxCore4State *core4)
+{
+    const uint8_t arrived = core4->collective_arrived;
+
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        if ((core4->collective_arrived & (1u << i)) == 0u ||
+            core4->cpu[i] == NULL) {
+            continue;
+        }
+        CPUState *waiting = CPU(core4->cpu[i]);
+
+        linx_tile_group_reset_block(&core4->cpu[i]->env);
+        core4->cpu[i]->env.pc = core4->cpu[i]->env.bpc;
+        waiting->halted = 0;
+        waiting->exception_index = LINX_EXCP_ILLEGAL_INST;
+        qemu_cpu_kick(waiting);
+    }
+    linx_tile_group_clear_collective_locked(core4);
+    if (arrived != 0u) {
+        qemu_cond_broadcast(&core4->collective_cond);
+    }
+}
+
+typedef struct LinxTileAccSnapshot {
+    uint32_t data[LINX_TILE_MAX_WORDS];
+    uint32_t bytes;
+    uint8_t dtype;
+    uint8_t valid;
+    uint16_t cols;
+    uint16_t rows;
+} LinxTileAccSnapshot;
+
+static void linx_tile_snapshot_acc(const CPULinxState *env,
+                                   LinxTileAccSnapshot *snapshot)
+{
+    memcpy(snapshot->data, env->tile_acc, sizeof(snapshot->data));
+    snapshot->bytes = env->tile_acc_bytes;
+    snapshot->dtype = env->tile_acc_dtype;
+    snapshot->valid = env->tile_acc_valid;
+    snapshot->cols = env->tile_acc_cols;
+    snapshot->rows = env->tile_acc_rows;
+}
+
+static void linx_tile_restore_acc(CPULinxState *env,
+                                  const LinxTileAccSnapshot *snapshot)
+{
+    memcpy(env->tile_acc, snapshot->data, sizeof(snapshot->data));
+    env->tile_acc_bytes = snapshot->bytes;
+    env->tile_acc_dtype = snapshot->dtype;
+    env->tile_acc_valid = snapshot->valid;
+    env->tile_acc_cols = snapshot->cols;
+    env->tile_acc_rows = snapshot->rows;
 }
 
 static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
@@ -16558,9 +16592,13 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     if (!linx_tile_group_cube_profile(env, &src_a)) {
         if (core4 != NULL) {
             qemu_mutex_lock(&core4->lock);
-            linx_core4_abort_collective_locked(core4);
+            if (core4->collective_arrived != 0u) {
+                linx_tile_group_fail_locked(core4);
+            }
             qemu_mutex_unlock(&core4->lock);
         }
+        linx_tile_group_reset_block(env);
+        env->pc = env->bpc;
         return false;
     }
     const unsigned pe = env->pe_id;
@@ -16587,7 +16625,9 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
                 (core4->collective_arrived & bit) == 0u;
     }
     if (!valid) {
-        linx_core4_abort_collective_locked(core4);
+        linx_tile_group_fail_locked(core4);
+        linx_tile_group_reset_block(env);
+        env->pc = env->bpc;
         qemu_mutex_unlock(&core4->lock);
         return false;
     }
@@ -16605,6 +16645,11 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     }
 
     LinxSharedTileVersion *shared = &core4->shared_tile[shared_id];
+    LinxTileAccSnapshot *acc_snapshots =
+        g_new(LinxTileAccSnapshot, LINX_CORE4_PE_COUNT);
+    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        linx_tile_snapshot_acc(&core4->cpu[i]->env, &acc_snapshots[i]);
+    }
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
         unsigned size_code;
@@ -16620,10 +16665,15 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         }
     }
     if (!valid) {
-        linx_core4_abort_collective_locked(core4);
+        for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+            linx_tile_restore_acc(&core4->cpu[i]->env, &acc_snapshots[i]);
+        }
+        g_free(acc_snapshots);
+        linx_tile_group_fail_locked(core4);
         qemu_mutex_unlock(&core4->lock);
         return false;
     }
+    g_free(acc_snapshots);
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
         uint16_t live[LINX_TILE_HAND_COUNT];
@@ -16646,7 +16696,6 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         peer->tile_acc_carrier = carrier;
         linx_tile_group_reset_block(peer);
     }
-    core4->collective_arrived = 0u;
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         if (i == pe) {
             continue;
@@ -16657,6 +16706,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         waiting->exception_index = -1;
         qemu_cpu_kick(waiting);
     }
+    linx_tile_group_clear_collective_locked(core4);
     qemu_mutex_unlock(&core4->lock);
     return true;
 }
@@ -17682,7 +17732,11 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
 
     if (base_idx < 4) {
         if (base_idx < input_count) {
-            *tile_out = inputs[base_idx] & 0x1f;
+            const unsigned tile = inputs[base_idx];
+            if (tile >= LINX_TILE_SLOT_COUNT) {
+                return false;
+            }
+            *tile_out = tile;
             return true;
         }
         return false;
@@ -17690,7 +17744,11 @@ static bool linx_vec_resolve_tile_base(const CPULinxState *env, unsigned base_id
     if (base_idx >= 4 && base_idx < 6) { /* TO, TS/TO1 */
         const unsigned output = base_idx - 4u;
         if (output < output_count) {
-            *tile_out = outputs[output] & 0x1f;
+            const unsigned tile = outputs[output];
+            if (tile >= LINX_TILE_SLOT_COUNT) {
+                return false;
+            }
+            *tile_out = tile;
             return true;
         }
         return false;
@@ -17897,7 +17955,7 @@ static uint64_t linx_vec_read_reg(CPULinxState *env, uint32_t code)
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return 0;
         }
-        return (uint64_t)(tile & 0x1fu);
+        return (uint64_t)tile;
     }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
