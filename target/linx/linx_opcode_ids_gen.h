@@ -641,7 +641,7 @@ typedef enum LinxOpcodeId {
     LINX_OP_C_ADD = 635,
     LINX_OP_C_ADDI = 636,
     LINX_OP_C_AND = 637,
-    LINX_OP_C_B_DIM = 638,
+    LINX_OP_C_B_IOS = 638,
     LINX_OP_C_B_DIMI = 639,
     LINX_OP_C_EBREAK = 640,
     LINX_OP_C_LDI = 641,

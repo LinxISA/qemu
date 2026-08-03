@@ -16,7 +16,9 @@ def require(text: str, needle: str, path: Path) -> None:
 
 
 def main() -> None:
+    insn16 = (TARGET / "insn16.decode").read_text(encoding="utf-8")
     insn32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
+    ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
     meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
     helper = (TARGET / "helper.c").read_text(encoding="utf-8")
     translate = (TARGET / "translate.c").read_text(encoding="utf-8")
@@ -29,7 +31,6 @@ def main() -> None:
         "bstart_mscatter",
         "bstart_mgather_mask",
         "bstart_mscatter_mask",
-        "bstart_mgather_cas",
         "casb",
         "cash",
         "casw",
@@ -45,7 +46,6 @@ def main() -> None:
         "bstart_mscatter": "0x511181",
         "bstart_mgather_mask": "0x611181",
         "bstart_mscatter_mask": "0x711181",
-        "bstart_mgather_cas": "0x811181",
         "casb": "0x1b",
         "cash": "0x101b",
         "casw": "0x201b",
@@ -56,9 +56,31 @@ def main() -> None:
         require(meta, f'.mnemonic="{name}"', TARGET / "linx_opcode_meta_gen.h")
         require(meta, f".match=UINT64_C({match})", TARGET / "linx_opcode_meta_gen.h")
 
+    for text, path in (
+        (insn32, TARGET / "insn32.decode"),
+        (meta, TARGET / "linx_opcode_meta_gen.h"),
+        (translate, TARGET / "translate.c"),
+    ):
+        if "bstart_mgather_cas" in text:
+            raise AssertionError(f"{path}: reserved TLSU Function 8 remains exposed")
+
+    require(insn16, "c_b_ios", TARGET / "insn16.decode")
+    require(ids, "LINX_OP_C_B_IOS = 638", TARGET / "linx_opcode_ids_gen.h")
+    require(meta, '.mnemonic="c_b_ios"', TARGET / "linx_opcode_meta_gen.h")
+    require(
+        meta,
+        ".mask=UINT64_C(0xc03f), .match=UINT64_C(0xc03c)",
+        TARGET / "linx_opcode_meta_gen.h",
+    )
+    for match in ("0x3c", "0x403c", "0x803c"):
+        require(
+            meta,
+            ".mask=UINT64_C(0xc03f), "
+            f'.match=UINT64_C({match}), .mnemonic="c_b_dimi"',
+            TARGET / "linx_opcode_meta_gen.h",
+        )
+
     require(translate, "trans_bstart_tprefetch", TARGET / "translate.c")
-    if "trans_bstart_mgather_cas" in translate:
-        raise AssertionError("TLSU Function 8 is reserved by the active PTO ISA v0.2 table")
     require(translate, "trans_casb", TARGET / "translate.c")
     require(translate, "trans_dma", TARGET / "translate.c")
 
