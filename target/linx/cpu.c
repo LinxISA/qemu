@@ -3762,6 +3762,40 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
     }
 }
 
+void linx_core4_reset(LinxCore4State *core4)
+{
+    qemu_mutex_lock(&core4->lock);
+    memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
+    core4->collective_bpc = 0;
+    core4->collective_func = 0;
+    core4->collective_dtype = 0;
+    core4->collective_shared_id = 0;
+    core4->collective_m = 0;
+    core4->collective_n = 0;
+    core4->collective_k = 0;
+    core4->collective_arrived = 0;
+    memset(core4->collective_src, 0, sizeof(core4->collective_src));
+    memset(core4->collective_resume_pc, 0,
+           sizeof(core4->collective_resume_pc));
+    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+        if (core4->cpu[pe] == NULL) {
+            continue;
+        }
+        CPULinxState *env = &core4->cpu[pe]->env;
+
+        env->tile_shared_binder_count = 0;
+        memset(env->tile_shared_binder, 0,
+               sizeof(env->tile_shared_binder));
+        for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+            env->acr_block_state[acr].tile_shared_binder_count = 0;
+            memset(env->acr_block_state[acr].tile_shared_binder, 0,
+                   sizeof(env->acr_block_state[acr].tile_shared_binder));
+        }
+    }
+    qemu_cond_broadcast(&core4->collective_cond);
+    qemu_mutex_unlock(&core4->lock);
+}
+
 static void linx_cpu_reset_hold(Object *obj, ResetType type)
 {
     CPUState *cs = CPU(obj);
@@ -3777,6 +3811,7 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
     env->gpr[LINX_REG_A0] = cpu->boot_a0;
     env->gpr[LINX_REG_A1] = cpu->boot_a1;
     env->gpr[LINX_REG_A2] = cpu->boot_a2;
+    env->pe_id = cpu->boot_pe_id;
     env->fcsr = 0;
     env->acr = 0;
     set_float_exception_flags(0, &env->fp_status);
@@ -3895,6 +3930,7 @@ static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
 
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
+    /* Core4 collectives synchronously update peer architectural state. */
     .mttcg_supported = false,
 
     .initialize = linx_translate_init,
@@ -3918,10 +3954,56 @@ static const TCGCPUOps linx_tcg_ops = {
     .do_interrupt = linx_cpu_do_interrupt,
 };
 
+static bool linx_core4_cpu_binder_live(const LinxCPU *cpu)
+{
+    const CPULinxState *env = &cpu->env;
+
+    if (env->tile_shared_binder_count != 0u) {
+        return true;
+    }
+    for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+        if (env->acr_block_state[acr].tile_shared_binder_count != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool linx_core4_migration_state_live(LinxCore4State *core4)
+{
+    bool live = false;
+
+    qemu_mutex_lock(&core4->lock);
+    for (unsigned tile = 0; tile < LINX_SHARED_TILE_COUNT; tile++) {
+        const LinxSharedTileVersion *shared = &core4->shared_tile[tile];
+
+        if (shared->ready || shared->bytes || shared->dtype ||
+            shared->producer_bpc || shared->defined_mask) {
+            live = true;
+            break;
+        }
+    }
+    live |= core4->collective_arrived != 0u;
+    for (unsigned pe = 0; !live && pe < LINX_CORE4_PE_COUNT; pe++) {
+        if (core4->cpu[pe] != NULL &&
+            linx_core4_cpu_binder_live(core4->cpu[pe])) {
+            live = true;
+        }
+    }
+    qemu_mutex_unlock(&core4->lock);
+    return live;
+}
+
 static int linx_cpu_pre_save(void *opaque)
 {
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
+
+    /* Machine-owned Core4 Shared Tile/rendezvous state is not serialized. */
+    if ((cpu->core4 != NULL && cpu->core4->cpu[1] != NULL) ||
+        env->tile_shared_binder_count != 0u) {
+        return -EINVAL;
+    }
 
     for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
         if (acr != (env->acr & 0xfu) &&
@@ -3930,12 +4012,16 @@ static int linx_cpu_pre_save(void *opaque)
             return -EINVAL;
         }
     }
-    uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
-    uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
+    uint16_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
+    uint16_t expected_pin[LINX_TILE_SLOT_COUNT] = { 0 };
     if (memcmp(expected_reserved, env->tile_hand_reserved,
                sizeof(expected_reserved)) != 0 ||
         memcmp(expected_pin, env->tile_pin_owner,
                sizeof(expected_pin)) != 0) {
+        return -EINVAL;
+    }
+    if (cpu->core4 != NULL &&
+        linx_core4_migration_state_live(cpu->core4)) {
         return -EINVAL;
     }
     return 0;
@@ -4014,7 +4100,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     if (version_id == 12) {
         bool nonempty_tile = false;
         for (unsigned tile = 0;
-             tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+             tile < LINX_TILE_SLOT_COUNT; tile++) {
             nonempty_tile |= env->tile_reg_bytes[tile] != 0;
         }
         for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
@@ -4048,7 +4134,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         bool nonempty_tile = false;
 
         for (unsigned tile = 0;
-             tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+             tile < LINX_TILE_SLOT_COUNT; tile++) {
             nonempty_tile |= env->tile_reg_bytes[tile] != 0;
         }
         if (nonempty_tile) {
@@ -4086,10 +4172,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     if (env->tile_iot_valid > 1 || env->tile_acc_carrier_valid > 1 ||
         env->tile_acc_sources_valid > 1 ||
         (env->tile_acc_carrier_valid &&
-         env->tile_acc_carrier >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH) ||
+         env->tile_acc_carrier >= LINX_TILE_SLOT_COUNT) ||
         (env->tile_acc_sources_valid &&
-         (env->tile_acc_src0 >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH ||
-          env->tile_acc_src1 >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH))) {
+         (env->tile_acc_src0 >= LINX_TILE_SLOT_COUNT ||
+          env->tile_acc_src1 >= LINX_TILE_SLOT_COUNT))) {
         error_setg(errp, "linx: invalid migrated tile accumulator state");
         return false;
     }
@@ -4107,7 +4193,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     }
     uint64_t tile_capacity_in_use = 0;
     for (unsigned tile = 0;
-         tile < LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH; tile++) {
+         tile < LINX_TILE_SLOT_COUNT; tile++) {
         const uint32_t bytes = env->tile_reg_bytes[tile];
         const uint32_t capacity = env->tile_reg_capacity[tile];
         const uint32_t elem_bytes = env->tile_reg_elem_bytes[tile];
@@ -4120,7 +4206,8 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         tile_capacity_in_use += capacity;
         if (bytes > LINX_TILE_MAX_BYTES || (bytes & 3u) != 0 ||
             capacity > LINX_TILE_PE_CAPACITY_BYTES ||
-            ((env->tile_hand_live[hand] & (1u << depth)) != 0 && bytes == 0) ||
+            ((env->tile_hand_live[hand] & LINX_TILE_HAND_BIT(depth)) != 0 &&
+             bytes == 0) ||
             (bytes != 0 &&
              (elem_bytes == 0 || valid_cols == 0 || valid_rows == 0 ||
               cols == 0 || rows == 0 || valid_cols > cols ||
@@ -4135,7 +4222,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         return false;
     }
     for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
-        uint8_t seen = 0;
+        uint16_t seen = 0;
         if (env->tile_hand_count[hand] > LINX_TILE_HAND_DEPTH ||
             (env->tile_hand_live[hand] & env->tile_hand_reserved[hand]) != 0) {
             error_setg(errp, "linx: invalid migrated tile hand %u state", hand);
@@ -4145,13 +4232,13 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
             const unsigned tile = env->tile_hand_order[hand][rank];
             const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
             if (tile / LINX_TILE_HAND_DEPTH != hand ||
-                (seen & (1u << depth)) != 0 ||
-                (env->tile_hand_live[hand] & (1u << depth)) == 0) {
+                (seen & LINX_TILE_HAND_BIT(depth)) != 0 ||
+                (env->tile_hand_live[hand] & LINX_TILE_HAND_BIT(depth)) == 0) {
                 error_setg(errp,
                            "linx: invalid migrated tile hand %u order", hand);
                 return false;
             }
-            seen |= 1u << depth;
+            seen |= LINX_TILE_HAND_BIT(depth);
         }
         if (seen != env->tile_hand_live[hand]) {
             error_setg(errp,
@@ -4159,7 +4246,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
             return false;
         }
     }
-    uint32_t planned_output_seen = 0;
+    uint64_t planned_output_seen = 0;
     for (unsigned i = 0; i < LINX_TILE_MAX_IOT; i++) {
         if (env->tile_iot_src_valid[i] > 3 ||
             env->tile_iot_output_valid[i] > 1) {
@@ -4177,7 +4264,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         for (unsigned source = 0; source < 2; source++) {
             if ((env->tile_iot_src_valid[i] & (1u << source)) != 0 &&
                 env->tile_iot_src_phys[i][source] >=
-                    LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH) {
+                    LINX_TILE_SLOT_COUNT) {
                 error_setg(errp,
                            "linx: invalid migrated tile binding %u source",
                            i);
@@ -4187,7 +4274,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
                 const unsigned tile = env->tile_iot_src_phys[i][source];
                 const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
                 const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
-                if ((env->tile_hand_live[hand] & (1u << depth)) == 0 ||
+                if ((env->tile_hand_live[hand] & LINX_TILE_HAND_BIT(depth)) == 0 ||
                     env->tile_reg_bytes[tile] == 0) {
                     error_setg(errp,
                                "linx: migrated tile binding %u source is not live",
@@ -4198,20 +4285,20 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         }
         if (env->tile_iot_output_valid[i]) {
             const unsigned tile = env->tile_iot_output_phys[i];
-            if (tile >= LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH ||
-                (planned_output_seen & (1u << tile)) != 0 ||
+            if (tile >= LINX_TILE_SLOT_COUNT ||
+                (planned_output_seen & (UINT64_C(1) << tile)) != 0 ||
                 (env->tile_hand_live[tile / LINX_TILE_HAND_DEPTH] &
-                 (1u << (tile % LINX_TILE_HAND_DEPTH))) != 0) {
+                 LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH)) != 0) {
                 error_setg(errp,
                            "linx: invalid migrated tile binding %u output",
                            i);
                 return false;
             }
-            planned_output_seen |= 1u << tile;
+            planned_output_seen |= UINT64_C(1) << tile;
         }
     }
-    uint8_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
-    uint16_t expected_pin[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH] = { 0 };
+    uint16_t expected_reserved[LINX_TILE_HAND_COUNT] = { 0 };
+    uint16_t expected_pin[LINX_TILE_SLOT_COUNT] = { 0 };
     if (memcmp(expected_reserved, env->tile_hand_reserved,
                sizeof(expected_reserved)) != 0 ||
         memcmp(expected_pin, env->tile_pin_owner,
@@ -4224,7 +4311,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         const unsigned tile = env->tile_acc_carrier;
         const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
         const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
-        if ((env->tile_hand_live[hand] & (1u << depth)) == 0 ||
+        if ((env->tile_hand_live[hand] & LINX_TILE_HAND_BIT(depth)) == 0 ||
             env->tile_reg_bytes[tile] == 0) {
             error_setg(errp, "linx: migrated accumulator carrier is not live");
             return false;
@@ -4235,8 +4322,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 17,
-    .minimum_version_id = 11,
+    /* v18 expands each Tile hand from 8 to 16 ranks and widens its masks. */
+    .version_id = 18,
+    .minimum_version_id = 18,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
     .fields = (const VMStateField[]) {
@@ -4300,42 +4388,41 @@ static const VMStateDescription vmstate_linx_cpu = {
                               LINX_TILE_MAX_IOT, 13),
         VMSTATE_UINT8_ARRAY_V(env.tile_iot_output_phys, LinxCPU,
                               LINX_TILE_MAX_IOT, 13),
-        VMSTATE_UINT8_ARRAY_V(env.tile_hand_live, LinxCPU,
-                              LINX_TILE_HAND_COUNT, 12),
-        VMSTATE_UINT8_ARRAY_V(env.tile_hand_reserved, LinxCPU,
-                              LINX_TILE_HAND_COUNT, 13),
+        VMSTATE_UINT16_ARRAY_V(env.tile_hand_live, LinxCPU,
+                               LINX_TILE_HAND_COUNT, 18),
+        VMSTATE_UINT16_ARRAY_V(env.tile_hand_reserved, LinxCPU,
+                               LINX_TILE_HAND_COUNT, 18),
         VMSTATE_UINT8_2DARRAY_V(env.tile_hand_order, LinxCPU,
                                 LINX_TILE_HAND_COUNT,
                                 LINX_TILE_HAND_DEPTH, 13),
         VMSTATE_UINT8_ARRAY_V(env.tile_hand_count, LinxCPU,
                               LINX_TILE_HAND_COUNT, 13),
         VMSTATE_UINT16_ARRAY_V(env.tile_pin_owner, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH,
-                               13),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_V(env.tile_acc_carrier_valid, LinxCPU, 12),
         VMSTATE_UINT8_V(env.tile_acc_carrier, LinxCPU, 12),
         VMSTATE_UINT8_V(env.tile_acc_sources_valid, LinxCPU, 12),
         VMSTATE_UINT8_V(env.tile_acc_src0, LinxCPU, 12),
         VMSTATE_UINT8_V(env.tile_acc_src1, LinxCPU, 12),
         VMSTATE_UINT32_2DARRAY_V(env.tile_reg, LinxCPU,
-                                 LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH,
-                                 LINX_TILE_MAX_WORDS, 12),
+                                 LINX_TILE_SLOT_COUNT,
+                                 LINX_TILE_MAX_WORDS, 18),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_capacity, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 16),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_bytes, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 12),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
-                              LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 13),
+                              LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
-                              LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 14),
+                              LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_cols, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_rows, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_cols, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_rows, LinxCPU,
-                               LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH, 15),
+                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT32_ARRAY_V(env.tile_acc, LinxCPU,
                                LINX_TILE_MAX_WORDS, 12),
         VMSTATE_UINT32_V(env.tile_acc_bytes, LinxCPU, 12),

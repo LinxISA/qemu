@@ -16,6 +16,7 @@
 #include "exec/mmu-access-type.h"
 #include "fpu/softfloat.h"
 #include "hw/core/resettable.h"
+#include "qemu/thread.h"
 
 #ifdef CONFIG_USER_ONLY
 #error "LinxISA does not support user mode emulation"
@@ -26,6 +27,38 @@
 #define LINX_VIRT_FINISHER_FAIL UINT64_C(0x3333)
 #define LINX_VIRT_FINISHER_PASS UINT64_C(0x5555)
 #define LINX_VIRT_FINISHER_RESET UINT64_C(0x7777)
+
+#define LINX_CORE4_PE_COUNT 4
+#define LINX_SHARED_TILE_COUNT 256
+#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)
+
+typedef struct LinxSharedTileVersion {
+    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
+    uint32_t bytes;
+    uint32_t dtype;
+    uint64_t producer_bpc;
+    uint8_t defined_mask;
+    uint8_t ready;
+} LinxSharedTileVersion;
+
+typedef struct LinxCore4State {
+    QemuMutex lock;
+    QemuCond collective_cond;
+    LinxCPU *cpu[LINX_CORE4_PE_COUNT];
+    LinxSharedTileVersion shared_tile[LINX_SHARED_TILE_COUNT];
+    uint64_t collective_bpc;
+    uint32_t collective_func;
+    uint32_t collective_dtype;
+    uint32_t collective_shared_id;
+    uint32_t collective_m;
+    uint32_t collective_n;
+    uint32_t collective_k;
+    uint8_t collective_arrived;
+    uint8_t collective_src[LINX_CORE4_PE_COUNT];
+    uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
+} LinxCore4State;
+
+void linx_core4_reset(LinxCore4State *core4);
 
 /* Exception types
  * Note: We start from 1, not 0, because exception_index = 0 would
@@ -188,11 +221,15 @@ typedef enum LinxTemplateKind {
 } LinxTemplateKind;
 
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */
+#define LINX_SSR_PEID 0x802u   /* DavinciOO v5 read-only PE identifier */
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
+#define LINX_TILE_MAX_SHARED_BINDERS 2u
 #define LINX_TILE_HAND_COUNT 4u
-#define LINX_TILE_HAND_DEPTH 8u
+#define LINX_TILE_HAND_DEPTH 16u
+#define LINX_TILE_SLOT_COUNT (LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH)
+#define LINX_TILE_HAND_BIT(depth) ((uint16_t)(1u << (depth)))
 #define LINX_VEC_RI_MAX (LINX_TILE_MAX_IOR * 3u)
 /*
  * v0.3 SIMT bring-up: LLVM autovec may reference VT indices up to VT#31 in
@@ -299,6 +336,8 @@ typedef struct LinxAcrBlockState {
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
+    uint32_t tile_shared_binder_count;
+    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
@@ -426,6 +465,8 @@ typedef struct CPUArchState {
     uint32_t vec_ri_count;
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
+    uint32_t tile_shared_binder_count;
+    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
@@ -433,34 +474,34 @@ typedef struct CPUArchState {
     uint8_t tile_iot_output_phys[LINX_TILE_MAX_IOT];
 
     /*
-     * Shared 4x8 tile backing and allocation state for the current bring-up
-     * model.  These fields are deliberately not ACR-switched: tile_reg[] is
+     * Shared 4x16 tile backing and allocation state for the current model.
+     * These fields are deliberately not ACR-switched: tile_reg[] is
      * shared as well, so restoring per-ACR liveness would describe stale or
      * overwritten global backing.
      */
-    uint8_t tile_hand_live[LINX_TILE_HAND_COUNT];
-    uint8_t tile_hand_reserved[LINX_TILE_HAND_COUNT];
+    uint16_t tile_hand_live[LINX_TILE_HAND_COUNT];
+    uint16_t tile_hand_reserved[LINX_TILE_HAND_COUNT];
     /* Per-hand architectural rank (index 0 is #1/newest) -> physical tile. */
     uint8_t tile_hand_order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
     uint8_t tile_hand_count[LINX_TILE_HAND_COUNT];
     /* ACR owner bits pin header-frozen physical sources across ACR switches. */
-    uint16_t tile_pin_owner[LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH];
+    uint16_t tile_pin_owner[LINX_TILE_SLOT_COUNT];
     uint8_t tile_acc_carrier_valid;
     uint8_t tile_acc_carrier;
     uint8_t tile_acc_sources_valid;
     uint8_t tile_acc_src0;
     uint8_t tile_acc_src1;
 
-    /* Emulated tile backing store: 4 hands x 8 depth = 32 tiles. */
-    uint32_t tile_reg[32][LINX_TILE_MAX_WORDS];
-    uint32_t tile_reg_capacity[32]; /* architectural allocation capacity */
-    uint32_t tile_reg_bytes[32]; /* per-tile footprint in bytes */
-    uint8_t tile_reg_elem_bytes[32]; /* producer element width for sparse offsets */
-    uint8_t tile_reg_dtype[32]; /* canonical v0.57 producer DataType */
-    uint16_t tile_reg_valid_cols[32]; /* LB0 valid columns/elements */
-    uint16_t tile_reg_valid_rows[32]; /* LB1 valid rows */
-    uint16_t tile_reg_cols[32]; /* LB2 physical row stride in elements */
-    uint16_t tile_reg_rows[32]; /* physical rows derived from the footprint */
+    /* Emulated tile backing store: 4 hands x 16 depth = 64 tiles. */
+    uint32_t tile_reg[LINX_TILE_SLOT_COUNT][LINX_TILE_MAX_WORDS];
+    uint32_t tile_reg_capacity[LINX_TILE_SLOT_COUNT];
+    uint32_t tile_reg_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_valid_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_valid_rows[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_cols[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_rows[LINX_TILE_SLOT_COUNT];
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];
@@ -673,6 +714,9 @@ typedef struct CPUArchState {
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
 
+    /* Machine-assigned Core4 PE identity. This survives architectural reset. */
+    uint32_t pe_id;
+
     /* Loader-provided B.TEXT body extent metadata. Not reset-cleared. */
     uint32_t body_range_count;
     LinxBodyRange *body_ranges;
@@ -845,6 +889,10 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->vec_ri_value[i] = env->vec_ri_value[i];
     }
     s->tile_iot_count = env->tile_iot_count;
+    s->tile_shared_binder_count = env->tile_shared_binder_count;
+    for (i = 0; i < LINX_TILE_MAX_SHARED_BINDERS; i++) {
+        s->tile_shared_binder[i] = env->tile_shared_binder[i];
+    }
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         s->tile_iot_desc[i] = env->tile_iot_desc[i];
         s->tile_iot_src_valid[i] = env->tile_iot_src_valid[i];
@@ -883,7 +931,7 @@ static inline void linx_acr_reset_block_state_for_header(CPULinxState *env,
         if (s->tile_iot_output_valid[i]) {
             const unsigned tile = s->tile_iot_output_phys[i];
             env->tile_hand_reserved[tile / LINX_TILE_HAND_DEPTH] &=
-                ~(1u << (tile % LINX_TILE_HAND_DEPTH));
+                ~LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
         }
     }
     memset(s, 0, sizeof(*s));
@@ -970,6 +1018,10 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->vec_ri_value[i] = s->vec_ri_value[i];
     }
     env->tile_iot_count = s->tile_iot_count;
+    env->tile_shared_binder_count = s->tile_shared_binder_count;
+    for (i = 0; i < LINX_TILE_MAX_SHARED_BINDERS; i++) {
+        env->tile_shared_binder[i] = s->tile_shared_binder[i];
+    }
     for (i = 0; i < LINX_TILE_MAX_IOT; i++) {
         env->tile_iot_desc[i] = s->tile_iot_desc[i];
         env->tile_iot_src_valid[i] = s->tile_iot_src_valid[i];
@@ -1002,6 +1054,10 @@ struct ArchCPU {
     uint64_t boot_a0;
     uint64_t boot_a1;
     uint64_t boot_a2;
+    uint32_t boot_pe_id;
+
+    /* Machine-owned functional state shared by all four DavinciOO PEs. */
+    LinxCore4State *core4;
 
     /* Optional bring-up DFX: insert a CPU watchpoint on realize(). */
     uint64_t dfx_watch_addr;

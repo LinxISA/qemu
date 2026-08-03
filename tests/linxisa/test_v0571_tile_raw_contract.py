@@ -46,26 +46,23 @@ class V0571TileRawContractTest(unittest.TestCase):
         self.assertEqual(sum(mask.bit_count() for mask in masks), 98)
         self.assertEqual(128 - sum(mask.bit_count() for mask in masks), 30)
 
-    def test_b_iot_has_all_five_canonical_forms(self) -> None:
+    def test_b_iot_uses_latest_v02_forms(self) -> None:
         patterns = [line for line in self.decode.splitlines()
                     if line.lstrip().startswith("b_iot ")]
-        self.assertEqual(len(patterns), 5)
+        self.assertEqual(len(patterns), 3)
         for field in (
-            "%IOTDstTile 7:3",
-            "%IOTL 19:1",
-            "%IOTS0R 10:1",
-            "%IOTS1R 11:1",
-            "%IOTSrc0 20:6",
-            "%IOTSrc1 26:6",
-            "%IOTImm4 15:4",
+            "%IOTV5Src1 26:6",
+            "%IOTV5Src0 20:6",
+            "%IOTV5Last 19:1",
+            "%IOTV5PeMask 15:4",
+            "%IOTV5TSize 9:3",
+            "%IOTV5Dst 7:2",
         ):
             self.assertIn(field, self.decode)
         for mask, match in (
-            ("0xfc00787f", "0x5013"),
             ("0x707f", "0x4013"),
-            ("0xfc07fbff", "0x5013"),
-            ("0xfff07c7f", "0x6013"),
-            ("0x7f3ff", "0x4013"),
+            ("0xfc00707f", "0x5013"),
+            ("0xfff0707f", "0x6013"),
         ):
             self.assertIn(f".mask=UINT64_C({mask})", self.meta)
             self.assertIn(f".match=UINT64_C({match})", self.meta)

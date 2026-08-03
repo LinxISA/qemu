@@ -57,12 +57,12 @@ def main() -> None:
         require(meta, f".match=UINT64_C({match})", TARGET / "linx_opcode_meta_gen.h")
 
     require(translate, "trans_bstart_tprefetch", TARGET / "translate.c")
-    require(translate, "trans_bstart_mgather_cas", TARGET / "translate.c")
+    if "trans_bstart_mgather_cas" in translate:
+        raise AssertionError("TLSU Function 8 is reserved by the active PTO ISA v0.2 table")
     require(translate, "trans_casb", TARGET / "translate.c")
     require(translate, "trans_dma", TARGET / "translate.c")
 
     require(helper, "LINX_TMA_TPREFETCH = 3", TARGET / "helper.c")
-    require(helper, "LINX_TMA_MGATHER_CAS = 8", TARGET / "helper.c")
     require(helper, "linx_tile_prefetch", TARGET / "helper.c")
     require(helper, "linx_tile_mgather_cas", TARGET / "helper.c")
     require(helper, "linx_tile_collect_sources", TARGET / "helper.c")

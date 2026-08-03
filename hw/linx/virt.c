@@ -20,6 +20,7 @@
 #include "system/device_tree.h"
 #include "system/memory.h"
 #include "system/reset.h"
+#include "system/tcg.h"
 #include "system/runstate.h"
 #include "elf.h"
 #include "chardev/char.h"
@@ -97,6 +98,7 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 /* Canonical AVS/system test finisher MMIO */
 #define LINX_TEST_FINISHER_SIZE 0x4
+#define LINX_CROSS_MODEL_DUMP_MAX (16 * MiB)
 
 /* Linx virt-uart MMIO register layout (offsets from LINX_UART_BASE). */
 #define LINX_UART_DATA_REG 0x0
@@ -183,6 +185,7 @@ typedef struct LinxUARTState {
     MemoryRegion finisher_mmio;
     QemuMutex lock;
     LinxCPU *cpu;
+    bool *cross_model_dump_pending;
 
     CharFrontend chr;
 
@@ -213,6 +216,10 @@ static void linx_finish_guest(LinxUARTState *s, uint64_t value)
                       "Linx: ignored invalid finisher value 0x%" PRIx64 "\n",
                       value);
         return;
+    }
+
+    if (s->cross_model_dump_pending) {
+        *s->cross_model_dump_pending = true;
     }
 
     if (s->cpu) {
@@ -434,10 +441,14 @@ static void linx_virt_set_irq(void *opaque, int irq, int level)
 #define TYPE_LINX_VIRT_MACHINE MACHINE_TYPE_NAME("virt")
 OBJECT_DECLARE_SIMPLE_TYPE(LinxVirtMachineState, LINX_VIRT_MACHINE)
 
+#define LINX_VIRT_PE_STACK_SIZE 0x10000u
+
 typedef struct LinxVirtMachineState {
     MachineState parent_obj;
 
-    LinxCPU *cpu;
+    LinxCPU *cpu[4];
+    unsigned pe_count;
+    LinxCore4State core4;
 
     hwaddr entry;
     bool entry_valid;
@@ -454,6 +465,12 @@ typedef struct LinxVirtMachineState {
     bool dfx_memwatch_stop;
     MemoryRegion dfx_memwatch;
     uint8_t *dfx_ram_ptr;
+
+    char *cross_model_dump;
+    uint64_t cross_model_address;
+    uint32_t cross_model_size;
+    bool cross_model_dump_pending;
+    Notifier cross_model_shutdown_notifier;
 } LinxVirtMachineState;
 
 static hwaddr linx_align_up(hwaddr v, hwaddr align)
@@ -3197,10 +3214,6 @@ static bool linx_load_elf(const char *filename,
 static void linx_virt_reset(void *opaque)
 {
     LinxVirtMachineState *s = opaque;
-    CPULinxState *env = &s->cpu->env;
-    CPUState *cs = CPU(s->cpu);
-
-    cpu_reset(cs);
 
     if (!s->entry_valid) {
         error_report("linx virt: invalid entry point");
@@ -3213,13 +3226,21 @@ static void linx_virt_reset(void *opaque)
     // qemu_log_mask(LOG_TRACE, "linx virt: entry=0x%" HWADDR_PRIx " sp=0x%" HWADDR_PRIx "\n",
     //               s->entry, s->initial_sp);
 
-    env->pc = s->entry;
-    env->gpr[LINX_REG_SP] = s->initial_sp;
-    env->gpr[LINX_REG_RA] = s->exit_trampoline;
-    env->gpr[LINX_REG_ZERO] = 0;
-    env->gpr[LINX_REG_A0] = 0;  /* hart id */
-    env->gpr[LINX_REG_A1] = s->fdt_addr; /* DTB/FDT physical address */
-    env->gpr[LINX_REG_A2] = 0;
+    linx_core4_reset(&s->core4);
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        CPULinxState *env = &s->cpu[pe]->env;
+
+        cpu_reset(CPU(s->cpu[pe]));
+        env->pc = s->entry;
+        env->gpr[LINX_REG_SP] =
+            s->initial_sp - pe * LINX_VIRT_PE_STACK_SIZE;
+        env->gpr[LINX_REG_RA] = s->exit_trampoline;
+        env->gpr[LINX_REG_ZERO] = 0;
+        env->gpr[LINX_REG_A0] = pe;
+        env->gpr[LINX_REG_A1] = s->fdt_addr;
+        env->gpr[LINX_REG_A2] = 0;
+        env->pe_id = pe;
+    }
 }
 
 static uint32_t linx_memwatch_pack_attrs(MemTxAttrs attrs)
@@ -3387,6 +3408,48 @@ static void linx_virt_set_dfx_memwatch_stop(Object *obj, bool value,
     s->dfx_memwatch_stop = value;
 }
 
+static char *linx_virt_get_cross_model_dump(Object *obj, Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->cross_model_dump);
+}
+
+static void linx_virt_set_cross_model_dump(Object *obj, const char *value,
+                                           Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    g_free(s->cross_model_dump);
+    s->cross_model_dump = g_strdup(value);
+}
+
+static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
+{
+    LinxVirtMachineState *s = container_of(notifier, LinxVirtMachineState,
+                                           cross_model_shutdown_notifier);
+    g_autofree char *tmp_path = NULL;
+    g_autoptr(GError) err = NULL;
+    ShutdownCause cause = *(ShutdownCause *)opaque;
+
+    if (!s->cross_model_dump_pending || !s->cross_model_dump ||
+        cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN) {
+        return;
+    }
+
+    tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
+    if (!g_file_set_contents(tmp_path,
+                             (const char *)s->dfx_ram_ptr +
+                                 s->cross_model_address,
+                             s->cross_model_size, &err) ||
+        g_rename(tmp_path, s->cross_model_dump) != 0) {
+        error_report("linx virt: cannot write cross-model dump '%s': %s",
+                     s->cross_model_dump,
+                     err ? err->message : strerror(errno));
+        unlink(tmp_path);
+    }
+}
+
 static void linx_virt_instance_init(Object *obj)
 {
     LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
@@ -3395,6 +3458,10 @@ static void linx_virt_instance_init(Object *obj)
     s->dfx_memwatch_len = 0;
     s->dfx_memwatch_stop = false;
     s->dfx_ram_ptr = NULL;
+    s->cross_model_dump = NULL;
+    s->cross_model_address = 0;
+    s->cross_model_size = 0;
+    s->cross_model_dump_pending = false;
 
     object_property_add_uint64_ptr(obj, "dfx-memwatch-addr",
                                    &s->dfx_memwatch_addr,
@@ -3413,6 +3480,24 @@ static void linx_virt_instance_init(Object *obj)
                              linx_virt_set_dfx_memwatch_stop);
     object_property_set_description(obj, "dfx-memwatch-stop",
                                     "Stop VM (RUN_STATE_DEBUG) on memwatch write");
+
+    object_property_add_str(obj, "cross-model-dump",
+                            linx_virt_get_cross_model_dump,
+                            linx_virt_set_cross_model_dump);
+    object_property_set_description(obj, "cross-model-dump",
+                                    "Write a guest RAM range after test-finisher shutdown");
+
+    object_property_add_uint64_ptr(obj, "cross-model-address",
+                                   &s->cross_model_address,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "cross-model-address",
+                                    "Physical start address of the cross-model result");
+
+    object_property_add_uint32_ptr(obj, "cross-model-size",
+                                   &s->cross_model_size,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "cross-model-size",
+                                    "Size in bytes of the cross-model result");
 }
 
 static void linx_virt_init(MachineState *machine)
@@ -3431,9 +3516,29 @@ static void linx_virt_init(MachineState *machine)
     int ret;
     const hwaddr fdt_gap = 0x10000;
 
+    if (machine->smp.cpus != 1 && machine->smp.cpus != 4) {
+        error_report("linx virt: DavinciOO supports either 1 PE or Core4 (-smp 4)");
+        exit(1);
+    }
+    if (machine->smp.cpus == 4 &&
+        machine->smp.threads != 1) {
+        error_report("linx virt: bounded Core4 requires one thread per PE");
+        exit(1);
+    }
+    s->pe_count = machine->smp.cpus;
+    if (s->pe_count == LINX_CORE4_PE_COUNT &&
+        qemu_tcg_mttcg_enabled()) {
+        error_report("linx virt: bounded Core4 does not support MTTCG; "
+                     "use -accel tcg,thread=single");
+        exit(1);
+    }
+    qemu_mutex_init(&s->core4.lock);
+    qemu_cond_init(&s->core4.collective_cond);
+
     hwaddr load_base = 0x10000;
     hwaddr tramp;
     hwaddr sp;
+    hwaddr stack_bottom;
 
     if (!machine->kernel_filename) {
         error_report("linx virt: missing -kernel <linxisa kernel image>");
@@ -3449,6 +3554,25 @@ static void linx_virt_init(MachineState *machine)
 
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
     s->dfx_ram_ptr = memory_region_get_ram_ptr(machine->ram);
+
+    if ((s->cross_model_dump != NULL) != (s->cross_model_size != 0)) {
+        error_report("linx virt: cross-model-dump and cross-model-size must be specified together");
+        exit(1);
+    }
+    if (s->cross_model_dump) {
+        uint64_t end = s->cross_model_address + s->cross_model_size;
+        if (s->cross_model_size == 0 ||
+            s->cross_model_size > LINX_CROSS_MODEL_DUMP_MAX ||
+            end < s->cross_model_address || end > machine->ram_size) {
+            error_report("linx virt: invalid cross-model RAM range: "
+                         "addr=0x%" PRIx64 " size=%u ram=0x%" PRIx64,
+                         s->cross_model_address, s->cross_model_size,
+                         (uint64_t)machine->ram_size);
+            exit(1);
+        }
+        s->cross_model_shutdown_notifier.notify = linx_cross_model_shutdown;
+        qemu_register_shutdown_notifier(&s->cross_model_shutdown_notifier);
+    }
 
     if (s->dfx_memwatch_len) {
         hwaddr end = (hwaddr)s->dfx_memwatch_addr +
@@ -3473,10 +3597,16 @@ static void linx_virt_init(MachineState *machine)
                                         s->dfx_memwatch_stop ? 1 : 0);
     }
 
-    s->cpu = LINX_CPU(cpu_create(machine->cpu_type));
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        s->cpu[pe] = LINX_CPU(cpu_create(machine->cpu_type));
+        s->cpu[pe]->boot_pe_id = pe;
+        s->cpu[pe]->core4 = &s->core4;
+        s->core4.cpu[pe] = s->cpu[pe];
+    }
 
     /* Initialize UART */
-    linx_uart_init(&s->uart, s->cpu);
+    s->uart.cross_model_dump_pending = &s->cross_model_dump_pending;
+    linx_uart_init(&s->uart, s->cpu[0]);
 
     /*
      * Provide one virtio-mmio transport for bring-up disk boot experiments.
@@ -3498,7 +3628,7 @@ static void linx_virt_init(MachineState *machine)
 
         sysbus_realize_and_unref(sbd, &error_fatal);
         sysbus_mmio_map(sbd, 0, base);
-        s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu, irq);
+        s->virtio_irq[i] = qemu_allocate_irq(linx_virt_set_irq, s->cpu[0], irq);
         sysbus_connect_irq(sbd, 0, s->virtio_irq[i]);
         if (linx_virtio_mmio_debug_enabled()) {
             fprintf(stderr,
@@ -3510,10 +3640,23 @@ static void linx_virt_init(MachineState *machine)
     }
 
     ram = s->dfx_ram_ptr;
-    if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
-                       &s->cpu->env,
-                       load_base, &entry, &image_end, &error_fatal)) {
-        exit(1);
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        hwaddr pe_entry = 0;
+        hwaddr pe_image_end = 0;
+
+        if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
+                           &s->cpu[pe]->env, load_base, &pe_entry,
+                           &pe_image_end, &error_fatal)) {
+            exit(1);
+        }
+        if (pe == 0) {
+            entry = pe_entry;
+            image_end = pe_image_end;
+        } else if (pe_entry != entry || pe_image_end != image_end) {
+            error_report("linx virt: inconsistent Core4 ELF metadata for PE%u",
+                         pe);
+            exit(1);
+        }
     }
 
     trace_linx_virt_loaded_elf(entry, image_end);
@@ -3566,14 +3709,29 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
 
-    tramp = (machine->ram_size - 8) & ~0xfULL;
-    sp = (tramp - 0x10000) & ~0xfULL;
-    if (sp <= (hwaddr)fdt_size + fdt_gap) {
+    if (machine->ram_size < 8u) {
+        error_report("linx virt: RAM too small for bootstrap trampoline");
+        exit(1);
+    }
+    tramp = (machine->ram_size - 8u) & ~0xfULL;
+    if (tramp < LINX_VIRT_PE_STACK_SIZE) {
+        error_report("linx virt: RAM too small for bootstrap trampoline");
+        exit(1);
+    }
+    sp = (tramp - LINX_VIRT_PE_STACK_SIZE) & ~0xfULL;
+    if (s->pe_count > sp / LINX_VIRT_PE_STACK_SIZE) {
+        error_report("linx virt: RAM too small for %u bootstrap stacks",
+                     s->pe_count);
+        exit(1);
+    }
+    stack_bottom = sp - s->pe_count * LINX_VIRT_PE_STACK_SIZE;
+    if (stack_bottom <= (hwaddr)fdt_size + fdt_gap) {
         error_report("linx virt: FDT does not fit in RAM");
         exit(1);
     }
-    fdt_addr = (sp - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
-    if (fdt_addr < cur || (size_t)fdt_addr + (size_t)fdt_size > machine->ram_size) {
+    fdt_addr = (stack_bottom - (hwaddr)fdt_size - fdt_gap) & ~0xfULL;
+    if (fdt_addr < cur ||
+        fdt_addr + (hwaddr)fdt_size > stack_bottom) {
         error_report("linx virt: FDT placement overlaps payload (fdt=0x%" HWADDR_PRIx
                      " payload_end=0x%" HWADDR_PRIx " size=0x%x)",
                      fdt_addr, cur, fdt_size);
@@ -3592,9 +3750,10 @@ static void linx_virt_init(MachineState *machine)
 
     trace_linx_virt_fdt(fdt_addr, (uint32_t)fdt_size);
 
-    if (image_end > sp) {
+    if (image_end > stack_bottom) {
         error_report("linx virt: RAM too small (image_end=0x%" HWADDR_PRIx
-                     " sp=0x%" HWADDR_PRIx ")", image_end, sp);
+                     " stack_bottom=0x%" HWADDR_PRIx ")",
+                     image_end, stack_bottom);
         exit(1);
     }
 
@@ -3614,12 +3773,14 @@ static void linx_virt_init(MachineState *machine)
     s->exit_trampoline = tramp;
     s->fdt_addr = fdt_addr;
 
-    s->cpu->boot_pc = entry;
-    s->cpu->boot_sp = sp;
-    s->cpu->boot_ra = tramp;
-    s->cpu->boot_a0 = 0;
-    s->cpu->boot_a1 = fdt_addr;
-    s->cpu->boot_a2 = 0;
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        s->cpu[pe]->boot_pc = entry;
+        s->cpu[pe]->boot_sp = sp - pe * LINX_VIRT_PE_STACK_SIZE;
+        s->cpu[pe]->boot_ra = tramp;
+        s->cpu[pe]->boot_a0 = pe;
+        s->cpu[pe]->boot_a1 = fdt_addr;
+        s->cpu[pe]->boot_a2 = 0;
+    }
 
     qemu_register_reset(linx_virt_reset, s);
 }
@@ -3632,7 +3793,7 @@ static void linx_virt_machine_class_init(ObjectClass *oc, const void *data)
     mc->init = linx_virt_init;
     mc->default_cpu_type = TYPE_LINX_CPU_LINX;
     mc->default_cpus = 1;
-    mc->max_cpus = 1;
+    mc->max_cpus = 4;
     mc->default_ram_id = "linx.virt.ram";
     mc->default_ram_size = 128 * MiB;
 }
