@@ -56,13 +56,22 @@ def main() -> None:
         require(meta, f'.mnemonic="{name}"', TARGET / "linx_opcode_meta_gen.h")
         require(meta, f".match=UINT64_C({match})", TARGET / "linx_opcode_meta_gen.h")
 
+    for name in (
+        "bstart_tmov_l2s_insert",
+        "bstart_tmov_l2s_publish",
+        "bstart_tmov_s2l_broadcast",
+        "bstart_tmov_s2l_extract",
+    ):
+        require(insn32, name, TARGET / "insn32.decode")
+        require(translate, f"trans_{name}", TARGET / "translate.c")
+
     for text, path in (
         (insn32, TARGET / "insn32.decode"),
         (meta, TARGET / "linx_opcode_meta_gen.h"),
         (translate, TARGET / "translate.c"),
     ):
         if "bstart_mgather_cas" in text:
-            raise AssertionError(f"{path}: reserved TLSU Function 8 remains exposed")
+            raise AssertionError(f"{path}: stale TLSU Function 8 remains exposed")
 
     require(insn16, "c_b_ios", TARGET / "insn16.decode")
     require(ids, "LINX_OP_C_B_IOS = 638", TARGET / "linx_opcode_ids_gen.h")
@@ -85,10 +94,22 @@ def main() -> None:
     require(translate, "trans_dma", TARGET / "translate.c")
 
     require(helper, "LINX_TMA_TPREFETCH = 3", TARGET / "helper.c")
+    require(helper, "LINX_TMA_TMOV_L2S_INSERT = 8", TARGET / "helper.c")
+    require(helper, "LINX_TMA_TMOV_S2L_EXTRACT = 11", TARGET / "helper.c")
     require(helper, "linx_tile_prefetch", TARGET / "helper.c")
-    require(helper, "linx_tile_mgather_cas", TARGET / "helper.c")
+    require(helper, "linx_tile_shared_tmov_append_valid", TARGET / "helper.c")
     require(helper, "linx_tile_collect_sources", TARGET / "helper.c")
     require(helper, "linx_tile_set_elem_bytes", TARGET / "helper.c")
+    require(
+        helper,
+        "const unsigned base = src0 != 0u ? src0 : src1;",
+        TARGET / "helper.c",
+    )
+    require(
+        helper,
+        "return src0 != 0u && src1 < LINX_GPR_COUNT ? env->gpr[src1] : 0;",
+        TARGET / "helper.c",
+    )
     require(cpu_h, "tile_reg_elem_bytes", TARGET / "cpu.h")
     require(cpu_c, "VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes", TARGET / "cpu.c")
 

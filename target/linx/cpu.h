@@ -46,6 +46,8 @@ typedef struct LinxCore4State {
     QemuCond collective_cond;
     LinxCPU *cpu[LINX_CORE4_PE_COUNT];
     LinxSharedTileVersion shared_tile[LINX_SHARED_TILE_COUNT];
+    uint8_t publish_arrived[LINX_SHARED_TILE_COUNT];
+    uint32_t publish_generation[LINX_SHARED_TILE_COUNT];
     uint64_t collective_bpc;
     uint32_t collective_func;
     uint32_t collective_dtype;
@@ -54,9 +56,10 @@ typedef struct LinxCore4State {
     uint32_t collective_n;
     uint32_t collective_k;
     uint8_t collective_arrived;
+    uint8_t collective_success;
+    uint32_t collective_generation;
     uint8_t collective_src[LINX_CORE4_PE_COUNT];
     uint8_t collective_dst[LINX_CORE4_PE_COUNT];
-    uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
 void linx_core4_reset(LinxCore4State *core4);

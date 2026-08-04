@@ -3766,6 +3766,9 @@ void linx_core4_reset(LinxCore4State *core4)
 {
     qemu_mutex_lock(&core4->lock);
     memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
+    memset(core4->publish_arrived, 0, sizeof(core4->publish_arrived));
+    memset(core4->publish_generation, 0,
+           sizeof(core4->publish_generation));
     core4->collective_bpc = 0;
     core4->collective_func = 0;
     core4->collective_dtype = 0;
@@ -3774,10 +3777,10 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_n = 0;
     core4->collective_k = 0;
     core4->collective_arrived = 0;
+    core4->collective_success = 0;
+    core4->collective_generation = 0;
     memset(core4->collective_src, 0, sizeof(core4->collective_src));
     memset(core4->collective_dst, 0, sizeof(core4->collective_dst));
-    memset(core4->collective_resume_pc, 0,
-           sizeof(core4->collective_resume_pc));
     for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
         if (core4->cpu[pe] == NULL) {
             continue;
