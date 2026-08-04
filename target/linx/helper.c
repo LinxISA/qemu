@@ -15979,8 +15979,12 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
         }
     }
     env->tile_arg_format = 0;
+    env->tile_attr_raw = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_data_attr_valid = 0;
+    env->tile_fixp_attr = 0;
+    env->tile_fixp_attr_valid = 0;
     env->tile_ior_count = 0;
     env->vec_ri_count = 0;
     env->tile_iot_count = 0;
@@ -16005,6 +16009,17 @@ void HELPER(linx_tile_set_attr)(CPULinxState *env, uint32_t packed)
     env->tile_attr_raw = packed;
     env->tile_attr_dtype = 0x100u | ((packed >> 7) & 0x1fu);
     env->tile_attr_pad = (packed >> 12) & 0x1fu;
+    env->tile_data_attr_valid = 1u;
+}
+
+void HELPER(linx_tile_set_fixp_attr)(CPULinxState *env, uint32_t packed)
+{
+    if (env->tile_fixp_attr_valid) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    env->tile_fixp_attr = packed;
+    env->tile_fixp_attr_valid = 1u;
 }
 
 void HELPER(linx_tile_append_ior)(CPULinxState *env, uint64_t packed)
@@ -16630,6 +16645,9 @@ static void linx_tile_group_reset_block(CPULinxState *env)
     env->tile_attr_raw = 0u;
     env->tile_attr_pad = 0u;
     env->tile_attr_dtype = 0u;
+    env->tile_data_attr_valid = 0u;
+    env->tile_fixp_attr = 0u;
+    env->tile_fixp_attr_valid = 0u;
     env->tile_ior_count = 0u;
     env->tile_shared_binder_count = 0u;
     memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
@@ -17591,8 +17609,12 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     env->tile_iot_size = 0;
     env->tile_iot_grp = 0;
     env->tile_arg_format = 0;
+    env->tile_attr_raw = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_data_attr_valid = 0;
+    env->tile_fixp_attr = 0;
+    env->tile_fixp_attr_valid = 0;
     env->tile_ior_count = 0;
     env->tile_shared_binder_count = 0;
     memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
@@ -17970,6 +17992,9 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
     env->tile_attr_raw = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_data_attr_valid = 0;
+    env->tile_fixp_attr = 0;
+    env->tile_fixp_attr_valid = 0;
     env->tile_ior_count = 0;
     memset(env->tile_ior_desc, 0, sizeof(env->tile_ior_desc));
     env->vec_ri_count = 0;

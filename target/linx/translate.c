@@ -77,6 +77,7 @@ static TCGv_i32 cpu_tile_iot_size;
 static TCGv_i32 cpu_tile_attr_raw;
 static TCGv_i32 cpu_tile_attr_pad;
 static TCGv_i32 cpu_tile_attr_dtype;
+static TCGv_i32 cpu_tile_data_attr_valid;
 static TCGv_i64 cpu_lb[3];
 static TCGv_i64 cpu_pc;
 static TCGv_i64 cpu_insn_pc_next;
@@ -466,6 +467,7 @@ static inline void linx_tile_set_attr_const(uint32_t packed)
                    offsetof(CPULinxState, tile_attr_raw));
     tcg_gen_movi_i32(cpu_tile_attr_dtype, (packed >> 7) & 0x1fu);
     tcg_gen_movi_i32(cpu_tile_attr_pad, (packed >> 12) & 0x1fu);
+    tcg_gen_movi_i32(cpu_tile_data_attr_valid, 1);
 }
 
 static inline void linx_tile_reset_block_inline(void)
@@ -2595,6 +2597,12 @@ static bool trans_bstart_tmatmulmx_acc(DisasContext *ctx,
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 6);
 }
 
+static bool trans_bstart_tmatmul_fixp(DisasContext *ctx,
+                                      arg_bstart_tmatmul_fixp *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 9);
+}
+
 static bool trans_bstart_tgemv(DisasContext *ctx, arg_bstart_tgemv *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 16);
@@ -2855,6 +2863,27 @@ static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
     tcg_gen_ori_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, packed);
     tcg_gen_movi_i32(cpu_tile_attr_dtype, 0x100u | (a->dtype & 0x1fu));
     tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x3u);
+    tcg_gen_movi_i32(cpu_tile_data_attr_valid, 1);
+    return true;
+}
+
+static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
+{
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
+    }
+    const uint32_t packed =
+        ((a->pq & 0x3fu) << 26) |
+        ((a->relu & 0x7u) << 23) |
+        ((a->groupn & 0xfu) << 19) |
+        ((a->rowmax & 0x1u) << 18) |
+        ((a->groupmax & 0x1u) << 17) |
+        ((a->rowinit & 0x1u) << 16) |
+        ((a->maxabs & 0x1u) << 15);
+    gen_helper_linx_tile_set_fixp_attr(tcg_env, tcg_constant_i32(packed));
     return true;
 }
 
@@ -9527,6 +9556,9 @@ void linx_translate_init(void)
     cpu_tile_attr_raw = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_raw), "tile_attr_raw");
     cpu_tile_attr_pad = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_pad), "tile_attr_pad");
     cpu_tile_attr_dtype = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, tile_attr_dtype), "tile_attr_dtype");
+    cpu_tile_data_attr_valid = tcg_global_mem_new_i32(
+        tcg_env, offsetof(CPULinxState, tile_data_attr_valid),
+        "tile_data_attr_valid");
     cpu_lb[0] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[0]), "lb0");
     cpu_lb[1] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[1]), "lb1");
     cpu_lb[2] = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, lb[2]), "lb2");

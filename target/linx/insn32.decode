@@ -60,6 +60,13 @@
 %BA_RMode 15:3
 %BA_Sat 26:1
 %BA_Canonicalize 25:1
+%FP_PreQuantMode 26:6
+%FP_ReluMode 23:3
+%FP_GroupNCode 19:4
+%FP_RowMaxEn 18:1
+%FP_GroupMaxEn 17:1
+%FP_RowMaxInit 16:1
+%FP_MaxAbsEn 15:1
 
 # Block hint (B.HINT) fields
 %HINT_L_UL 16:1
@@ -244,6 +251,7 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
   bstart_tmatmulmx .... .000 0100 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmulmx_bias .... .000 0101 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmulmx_acc .... .000 0110 0011 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_tmatmul_fixp .... .000 1001 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tgemv .... .001 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tgemv_bias .... .001 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tgemv_acc .... .001 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
@@ -264,6 +272,7 @@ b_text         .... .... .... .... .... .... .000 0011 %simm25
 b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 
 # Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
+b_fpatr      .... .... .... .... .010 0000 0010 0011 pq=%FP_PreQuantMode relu=%FP_ReluMode groupn=%FP_GroupNCode rowmax=%FP_RowMaxEn groupmax=%FP_GroupMaxEn rowinit=%FP_RowMaxInit maxabs=%FP_MaxAbsEn
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_catr         0000 0.00 0000 .... .000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap

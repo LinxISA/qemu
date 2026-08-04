@@ -4053,6 +4053,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->tile_attr_raw = 0;
         env->tile_attr_pad = 0;
         env->tile_attr_dtype = 0;
+        env->tile_data_attr_valid = 0;
+        env->tile_fixp_attr = 0;
+        env->tile_fixp_attr_valid = 0;
         env->tile_ior_count = 0;
         memset(env->tile_ior_desc, 0, sizeof(env->tile_ior_desc));
         env->vec_ri_count = 0;
@@ -4371,6 +4374,9 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_V(env.tile_attr_raw, LinxCPU, 12),
         VMSTATE_UINT32_V(env.tile_attr_pad, LinxCPU, 12),
         VMSTATE_UINT32_V(env.tile_attr_dtype, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_data_attr_valid, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_fixp_attr, LinxCPU, 12),
+        VMSTATE_UINT32_V(env.tile_fixp_attr_valid, LinxCPU, 12),
         VMSTATE_UINT32_V(env.tile_ior_count, LinxCPU, 12),
         VMSTATE_UINT64_ARRAY_V(env.tile_ior_desc, LinxCPU,
                                LINX_TILE_MAX_IOR, 12),

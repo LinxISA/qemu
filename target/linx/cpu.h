@@ -331,6 +331,9 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
+    uint32_t tile_data_attr_valid;
+    uint32_t tile_fixp_attr;
+    uint32_t tile_fixp_attr_valid;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
@@ -460,6 +463,9 @@ typedef struct CPUArchState {
     uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
+    uint32_t tile_data_attr_valid;
+    uint32_t tile_fixp_attr;
+    uint32_t tile_fixp_attr_valid;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
@@ -880,6 +886,9 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->tile_attr_raw = env->tile_attr_raw;
     s->tile_attr_pad = env->tile_attr_pad;
     s->tile_attr_dtype = env->tile_attr_dtype;
+    s->tile_data_attr_valid = env->tile_data_attr_valid;
+    s->tile_fixp_attr = env->tile_fixp_attr;
+    s->tile_fixp_attr_valid = env->tile_fixp_attr_valid;
     s->tile_ior_count = env->tile_ior_count;
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         s->tile_ior_desc[i] = env->tile_ior_desc[i];
@@ -1009,6 +1018,9 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_attr_raw = s->tile_attr_raw;
     env->tile_attr_pad = s->tile_attr_pad;
     env->tile_attr_dtype = s->tile_attr_dtype;
+    env->tile_data_attr_valid = s->tile_data_attr_valid;
+    env->tile_fixp_attr = s->tile_fixp_attr;
+    env->tile_fixp_attr_valid = s->tile_fixp_attr_valid;
     env->tile_ior_count = s->tile_ior_count;
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         env->tile_ior_desc[i] = s->tile_ior_desc[i];
