@@ -84,10 +84,17 @@ class V02Core4SafetyContractTest(unittest.TestCase):
             virt_reset.index("cpu_reset"),
         )
 
-    def test_core4_migration_and_mttcg_are_fail_closed(self) -> None:
-        self.assertIn(".mttcg_supported = false", CPU)
-        self.assertIn("qemu_tcg_mttcg_enabled()", VIRT)
-        self.assertIn("use -accel tcg,thread=single", VIRT)
+    def test_core4_mttcg_is_locked_and_migration_is_fail_closed(self) -> None:
+        self.assertIn(".mttcg_supported = true", CPU)
+        self.assertNotIn("qemu_tcg_mttcg_enabled()", VIRT)
+        self.assertIn("QemuMutex lock", (ROOT / "target/linx/cpu.h").read_text(
+            encoding="utf-8"))
+        collective = HELPER[
+            HELPER.index("static bool linx_tile_group_mma_commit") :
+            HELPER.index("void HELPER(linx_tile_commit)")
+        ]
+        self.assertIn("qemu_mutex_lock(&core4->lock)", collective)
+        self.assertIn("qemu_mutex_unlock(&core4->lock)", collective)
         pre_save = CPU[
             CPU.index("static int linx_cpu_pre_save") :
             CPU.index("static bool linx_cpu_post_load")

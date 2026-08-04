@@ -3526,12 +3526,6 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
     s->pe_count = machine->smp.cpus;
-    if (s->pe_count == LINX_CORE4_PE_COUNT &&
-        qemu_tcg_mttcg_enabled()) {
-        error_report("linx virt: bounded Core4 does not support MTTCG; "
-                     "use -accel tcg,thread=single");
-        exit(1);
-    }
     qemu_mutex_init(&s->core4.lock);
     qemu_cond_init(&s->core4.collective_cond);
 

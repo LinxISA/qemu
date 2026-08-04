@@ -57,11 +57,20 @@ The following operations have execution paths:
 | `TMATMUL` | 0 | S32 matrix multiply into the internal ACC |
 | `TMATMUL_BIAS` | 1 | S32 matrix multiply plus one-row, per-column S32 bias |
 | `TMATMUL_ACC` | 2 | Accumulate using the matching live source pair |
+| `TMATMUL.FIXP` | 9 | Basic four-PE Shared-Right S8 x S8 -> S32 Local D profile |
 | `TGEMV` | 16 | Uses the M/N/K path with `N=1` |
 | `TGEMV_ACC` | 18 | Accumulates into the existing TGEMV ACC |
 
 Function 8 `ACCCVT` exports the internal ACC to a normal Tile. It is required
 by the execution pipeline but is not one of the eight workbook operations.
+
+Function 9 support is intentionally limited to the current DavinciOO basic
+Shared-Right profile: four PEs rendezvous with `PE_MASK=1111`, each supplies an
+8x16 NORM S8 A fragment, PE0 loads one 16x32 NORM S8 Shared Right Tile, and
+each PE receives an 8x32 S32 Local D Tile. `B.DATR` and one minimal `B.FPATR`
+are mandatory. The operation writes D directly and invalidates implicit ACC;
+quantization, ReLU, RowMax, GroupMax, alternate layouts, and other FIXP modes
+remain rejected.
 
 `TMATMUL_BIAS` freezes exactly three sources in A, B, Bias order across one or
 more `B.IOT` descriptors. The Bias Tile must be a one-row S32 Tile and is
@@ -191,3 +200,9 @@ The representative TEPL negative checks use the stable same-ACR trap-return
 path inside the normal Tile suite. The separate cross-ACR standalone
 expected-trap harness remains unsuitable as general negative L3 evidence
 because that lane can re-enter its test entry.
+
+The SuperScalarModel cross-model carrier
+`tests/cross_model/cases/v5_group_mma_smoke.json` validates the Function 9
+profile above with one current-encoding ELF. QEMU and gfrun must both match
+the independent S8-to-S32 matrix-product golden before this profile is
+reported as supported.

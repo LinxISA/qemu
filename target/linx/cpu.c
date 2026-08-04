@@ -3775,6 +3775,7 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_k = 0;
     core4->collective_arrived = 0;
     memset(core4->collective_src, 0, sizeof(core4->collective_src));
+    memset(core4->collective_dst, 0, sizeof(core4->collective_dst));
     memset(core4->collective_resume_pc, 0,
            sizeof(core4->collective_resume_pc));
     for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
@@ -3930,8 +3931,8 @@ static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
 
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
-    /* Core4 collectives synchronously update peer architectural state. */
-    .mttcg_supported = false,
+    /* Core4 Shared Tile and collective state is serialized by core4->lock. */
+    .mttcg_supported = true,
 
     .initialize = linx_translate_init,
     .translate_code = linx_translate_code,

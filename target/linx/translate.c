@@ -2813,6 +2813,8 @@ static bool trans_b_ior(DisasContext *ctx, arg_b_ior *a)
         ((uint64_t)(a->SrcR & 0x1f) << 10) |
         ((uint64_t)(a->SrcD & 0x1f) << 15);
     gen_helper_linx_tile_append_ior(tcg_env, tcg_constant_i64(desc));
+    gen_helper_linx_tile_commit_shared_ior(
+        tcg_env, tcg_constant_i64(ctx->base.pc_next));
     return true;
 }
 

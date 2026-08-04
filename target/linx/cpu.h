@@ -55,6 +55,7 @@ typedef struct LinxCore4State {
     uint32_t collective_k;
     uint8_t collective_arrived;
     uint8_t collective_src[LINX_CORE4_PE_COUNT];
+    uint8_t collective_dst[LINX_CORE4_PE_COUNT];
     uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
