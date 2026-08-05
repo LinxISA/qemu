@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generated-contract coverage for PTO ISA 0.57.1 tile execution."""
+"""Generated-contract coverage for DavinciOO ISA v0.3 tile execution."""
 
 import pathlib
 import re
@@ -68,18 +68,18 @@ class TileExecutionCoverage(unittest.TestCase):
             int(value)
             for value in re.findall(r"LINX_CUBE_[A-Z0-9_]+\s*=\s*(\d+)", enum_body)
         }
-        self.assertEqual({0, 1, 2, 4, 5, 6, 8, 16, 17, 18, 20, 21, 22}, accepted)
+        self.assertEqual({0, 1, 2, 4, 5, 6, 16, 17, 18, 20, 21, 22}, accepted)
         self.assertEqual(accepted, enum_values)
         for name in re.findall(r"(LINX_CUBE_[A-Z0-9_]+)\s*=", enum_body):
             self.assertRegex(HELPER, rf"case {name}:")
 
-    def test_implicit_acc_and_catalog_datr_guards_are_executable_contracts(self):
+    def test_explicit_matrix_destination_and_catalog_datr_guards_are_executable_contracts(self):
         collector = re.search(
-            r"linx_tile_collect_cube_sources\(.*?\n\}", HELPER, re.S
+            r"linx_tile_collect_matrix_bindings\(.*?\n\}", HELPER, re.S
         ).group(0)
-        self.assertIn("ACC is implicit", collector)
-        self.assertIn("if (d.has_size)", collector)
-        self.assertIn("return false", collector)
+        self.assertIn("tile_fixp_attr_valid", collector)
+        self.assertIn("output_count", collector)
+        self.assertIn("linx_tile_get_bound_output", collector)
         self.assertIn("linx_tile_datr_applicable", HELPER)
         self.assertIn("Generated from pto-spec", HEADER)
 

@@ -14,10 +14,8 @@
 #include <string.h>
 
 enum {
-    LINX_TILE_ACC_FP64 = 0,
     LINX_TILE_ACC_FP32 = 1,
-    LINX_TILE_ACC_S64 = 16,
-    LINX_TILE_ACC_U64 = 24,
+    LINX_TILE_ACC_S32 = 17,
 };
 
 static inline bool linx_tile_numeric_is_packed(uint32_t dtype)
@@ -37,17 +35,11 @@ static inline bool linx_tile_numeric_ordinary(uint32_t dtype)
 static inline uint8_t linx_tile_numeric_acc_dtype(uint32_t dtype)
 {
     dtype &= 31u;
-    if (dtype == 0u) {
-        return LINX_TILE_ACC_FP64;
-    }
-    if (dtype >= 1u && dtype <= 14u && dtype != 13u) {
+    if (dtype <= 14u && dtype != 13u) {
         return LINX_TILE_ACC_FP32;
     }
     if (dtype >= 16u && dtype <= 20u) {
-        return LINX_TILE_ACC_S64;
-    }
-    if (dtype >= 24u && dtype <= 28u) {
-        return LINX_TILE_ACC_U64;
+        return LINX_TILE_ACC_S32;
     }
     return UINT8_MAX;
 }

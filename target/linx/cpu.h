@@ -59,6 +59,7 @@ typedef struct LinxCore4State {
     uint8_t collective_success;
     uint32_t collective_generation;
     uint8_t collective_src[LINX_CORE4_PE_COUNT];
+    uint8_t collective_acc[LINX_CORE4_PE_COUNT];
     uint8_t collective_dst[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
@@ -229,7 +230,7 @@ typedef enum LinxTemplateKind {
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
 #define LINX_TILE_MAX_IOT 32u
-#define LINX_TILE_MAX_SHARED_BINDERS 2u
+#define LINX_TILE_MAX_SHARED_BINDERS 4u
 #define LINX_TILE_HAND_COUNT 4u
 #define LINX_TILE_HAND_DEPTH 16u
 #define LINX_TILE_SLOT_COUNT (LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH)

@@ -119,11 +119,11 @@ static inline bool linx_tile_tepl_selector_accepted(uint32_t selector)
            (function_masks[mode] & (UINT32_C(1) << function)) != 0;
 }
 
-/* CUBE functions outside this mask are reserved by PTO ISA 0.57.1. */
+/* CUBE functions outside this mask are reserved by DavinciOO ISA v0.3. */
 static inline bool linx_tile_cube_function_accepted(uint32_t function)
 {
     return function < 32u &&
-           (UINT32_C(0x00770177) & (UINT32_C(1) << function)) != 0;
+           (UINT32_C(0x00770077) & (UINT32_C(1) << function)) != 0;
 }
 
 enum {

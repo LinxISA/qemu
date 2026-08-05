@@ -2515,11 +2515,6 @@ static bool trans_bstart_vseq(DisasContext *ctx, arg_bstart_vseq *a)
     return trans_bstart_mseq(ctx, (arg_bstart_mseq *)a);
 }
 
-static bool trans_bstart_acccvt(DisasContext *ctx, arg_bstart_acccvt *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 8);
-}
-
 static bool trans_bstart_tload(DisasContext *ctx, arg_bstart_tload *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 0);
@@ -2619,18 +2614,6 @@ static bool trans_bstart_tmatmulmx_acc(DisasContext *ctx,
                                        arg_bstart_tmatmulmx_acc *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 6, 6);
-}
-
-static bool trans_bstart_tmatmul_fixp(DisasContext *ctx,
-                                      arg_bstart_tmatmul_fixp *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 9);
-}
-
-static bool trans_bstart_tmatmul_acc_fixp(
-    DisasContext *ctx, arg_bstart_tmatmul_acc_fixp *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 11);
 }
 
 static bool trans_bstart_tgemv(DisasContext *ctx, arg_bstart_tgemv *a)

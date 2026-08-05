@@ -82,17 +82,19 @@ class V0571TileRawContractTest(unittest.TestCase):
     def test_tma_31_compatibility_is_deleted(self) -> None:
         self.assertNotIn("TCVT_COMPAT", self.helper)
 
-    def test_cube_is_fail_closed_to_13_functions(self) -> None:
-        self.assertIn("UINT32_C(0x00770177)", self.table)
+    def test_cube_is_fail_closed_to_12_v03_functions(self) -> None:
+        self.assertIn("UINT32_C(0x00770077)", self.table)
         cube_names = (
             "tmatmul", "tmatmul_bias", "tmatmul_acc", "tmatmulmx",
             "tmatmulmx_bias", "tmatmulmx_acc", "tgemv", "tgemv_bias",
             "tgemv_acc", "tgemvmx", "tgemvmx_bias", "tgemvmx_acc",
-            "acccvt",
         )
         for name in cube_names:
             self.assertRegex(self.decode, rf"(?m)^\s*bstart_{name}\s")
             self.assertIn(f"trans_bstart_{name}", self.translate)
+        for removed in ("acccvt", "tmatmul_fixp", "tmatmul_acc_fixp"):
+            self.assertNotRegex(self.decode, rf"(?m)^\s*bstart_{removed}\s")
+            self.assertNotIn(f"trans_bstart_{removed}", self.translate)
 
 
 if __name__ == "__main__":

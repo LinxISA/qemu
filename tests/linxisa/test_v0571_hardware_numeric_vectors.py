@@ -216,11 +216,11 @@ class HardwareNumericVectors(unittest.TestCase):
 
         self.assertEqual(executed, 75)
 
-    def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):
+    def test_cube_type_matrix_uses_v03_s32_f32_acc_types(self):
         ordinary = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14,
                     16, 17, 18, 19, 20, 24, 25, 26, 27, 28]
         self.assertEqual([d for d in range(32) if self.lib.v_ordinary(d)], ordinary)
-        expected_acc = ([0] + [1] * 13 + [16] * 5 + [24] * 5)
+        expected_acc = [1] * 14 + [17] * 5 + [255] * 5
         self.assertEqual([self.lib.v_acc_dtype(d) for d in ordinary], expected_acc)
         mx = [(7, 7), (7, 8), (8, 7), (8, 8),
               (11, 11), (11, 14), (14, 11), (14, 14)]
