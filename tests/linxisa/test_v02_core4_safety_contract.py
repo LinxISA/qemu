@@ -68,6 +68,28 @@ class V02Core4SafetyContractTest(unittest.TestCase):
             preflight,
         )
 
+    def test_group_acc_reads_explicit_c_before_publishing_new_d(self) -> None:
+        profile = HELPER[
+            HELPER.index("static bool linx_tile_group_cube_profile") :
+            HELPER.index("typedef struct LinxTileRegSnapshot")
+        ]
+        self.assertIn("source_count != (func == LINX_CUBE_TMATMUL_ACC ? 2u : 1u)",
+                      profile)
+        self.assertIn("*src_c_out = sources[0]", profile)
+        self.assertIn("*src_a_out = sources[1]", profile)
+
+        commit = HELPER[
+            HELPER.index("static bool linx_tile_group_mma_commit") :
+            HELPER.index("void HELPER(linx_tile_commit)")
+        ]
+        copy_c = commit.index(
+            "memcpy(peer->tile_acc, peer->tile_reg[core4->collective_acc[i]]"
+        )
+        compute = commit.index("linx_tile_cube_compute_shared_b_057")
+        publish_d = commit.index("memcpy(peer->tile_reg[dst], peer->tile_acc")
+        self.assertLess(copy_c, compute)
+        self.assertLess(compute, publish_d)
+
     def test_collective_abort_wakes_arrived_pes(self) -> None:
         abort = HELPER[
             HELPER.index("static void linx_tile_group_fail_locked") :
