@@ -322,18 +322,7 @@ bool linx_tile_cube_compute_shared_b_057(
     uint32_t shared_b_bytes, uint32_t shared_b_dtype, unsigned size_code,
     bool accumulate)
 {
-    const uint32_t logical_m = env->lb[0];
-    uint32_t shard_m;
-    bool valid;
-
-    if (logical_m == 0u || logical_m % LINX_CORE4_PE_COUNT != 0u) {
-        return false;
-    }
-    shard_m = logical_m / LINX_CORE4_PE_COUNT;
-    env->lb[0] = shard_m;
-    valid = linx_tile_cube_compute_common_057(
+    return linx_tile_cube_compute_common_057(
         env, src_a, UINT_MAX, shared_b, shared_b_bytes, shared_b_dtype, 0u,
         0u, 0u, size_code, false, false, accumulate, 0u);
-    env->lb[0] = logical_m;
-    return valid;
 }

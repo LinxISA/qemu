@@ -22,6 +22,52 @@ class V02Core4SafetyContractTest(unittest.TestCase):
         for pe in range(4):
             self.assertIn(f"cpu->core4->cpu[{pe}] == NULL", profile)
 
+    def test_group_fp32_profile_uses_dynamic_pe_local_dimensions(self) -> None:
+        sizes = HELPER[
+            HELPER.index("static bool linx_tile_group_fp32_sizes") :
+            HELPER.index("typedef enum LinxTileLayout")
+        ]
+        self.assertIn("m * k * sizeof(uint32_t)", sizes)
+        self.assertIn("k * n * sizeof(uint32_t)", sizes)
+        self.assertIn("m * n * sizeof(uint32_t)", sizes)
+        self.assertIn("left > 8192u", sizes)
+        self.assertIn("right > 32768u", sizes)
+        self.assertIn("output > 8192u", sizes)
+
+        profile = HELPER[
+            HELPER.index("static bool linx_tile_group_cube_profile") :
+            HELPER.index("typedef struct LinxTileRegSnapshot")
+        ]
+        self.assertNotIn("env->lb[0] != 32u", profile)
+        self.assertIn("env->lb[0], env->lb[1]", profile)
+        self.assertIn("env->lb[0], env->lb[2]", profile)
+
+        commit = HELPER[
+            HELPER.index("static bool linx_tile_group_mma_commit") :
+            HELPER.index("void HELPER(linx_tile_commit)")
+        ]
+        self.assertIn("core4->collective_m = env->lb[0]", commit)
+        self.assertIn("core4->collective_n = env->lb[1]", commit)
+        self.assertIn("core4->collective_k = env->lb[2]", commit)
+        self.assertIn("output_bytes = m * n * sizeof(uint32_t)", commit)
+
+    def test_shared_fp32_tload_uses_encoded_dynamic_shape(self) -> None:
+        preflight = HELPER[
+            HELPER.index("static bool linx_tile_preflight_tma") :
+            HELPER.index("static bool linx_tile_preflight_cube")
+        ]
+        self.assertIn("env->lb[0] <= env->lb[2]", preflight)
+        self.assertIn(
+            "bytes == (uint64_t)env->lb[1] * env->lb[2] * sizeof(float)",
+            preflight,
+        )
+        self.assertIn("bytes <= LINX_SHARED_TILE_MAX_BYTES", preflight)
+        self.assertNotIn(
+            "dtype == 1u) && size_code == 8u &&\n"
+            "                 env->lb[0] == 32u",
+            preflight,
+        )
+
     def test_collective_abort_wakes_arrived_pes(self) -> None:
         abort = HELPER[
             HELPER.index("static void linx_tile_group_fail_locked") :
