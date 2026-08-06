@@ -7610,6 +7610,19 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     /* v0.2: ACRC traps are always reported as block-body traps. */
     src_cstate |= LINX_ECSTATE_BI_BIT;
 
+    /*
+     * SuperNPUBench's direct-boot runtime has no service ACR to receive its
+     * final syscall.  It uses x1=94 followed by ACRC SYS as the benchmark
+     * completion ABI, matching gfrun.  Keep this restricted to ACR0 so Linux
+     * user and supervisor service requests still take the architectural trap.
+     */
+    if (src_acr == 0 && request_type == LINX_SCT_SYS &&
+        env->gpr[LINX_REG_X1] == 94) {
+        qemu_system_shutdown_request_with_code(
+            SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 0);
+        cpu_loop_exit_noexc(cs);
+    }
+
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: SERVICE_REQUEST src_acr=%u req=%u bpc=0x%" PRIx64 " tpc=0x%" PRIx64
                   " pc_next=0x%" PRIx64 "\n",
