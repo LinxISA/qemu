@@ -2763,7 +2763,8 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
     const uint32_t flags = func == 4u ? 0u
                            : func == 5u ? LINX_IOT_S1V
                                        : LINX_IOT_S0V | LINX_IOT_S1V;
-    /* TSize describes Core4; a Local Tile occupies one PE quarter. */
+    /* TSize is the current PE's local Tile size. Cooperative aggregation is
+     * an internal group protocol and is not encoded in this operand. */
     const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
     linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
                             local_size_code, tsize != 0u);

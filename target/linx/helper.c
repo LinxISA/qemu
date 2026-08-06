@@ -15848,7 +15848,8 @@ static bool linx_tile_preflight_tma(
                     env->tile_iot_output_valid[0] && shared->ready &&
                     shared->defined_mask == 0xfu &&
                     (d.reg & (1u << env->pe_id)) != 0u &&
-                    shared->dtype == dtype && shared->bytes == local_bytes;
+                    shared->dtype == dtype &&
+                    shared->bytes == local_bytes * LINX_CORE4_PE_COUNT;
             break;
         case LINX_TMA_TMOV_S2L_EXTRACT:
             valid = env->tile_iot_src_valid[0] == 0u &&
@@ -17567,13 +17568,13 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 break;
             case LINX_TMA_TMOV_S2L_BROADCAST:
                 linx_tile_get_bound_output(env, 0, &tile);
-                memcpy(env->tile_reg[tile], shared->data, shared->bytes);
-                env->tile_reg_bytes[tile] = shared->bytes;
+                memcpy(env->tile_reg[tile], shared->data, local_bytes);
+                env->tile_reg_bytes[tile] = local_bytes;
                 linx_tile_set_elem_bytes(env, tile,
                                          linx_tile_dtype_elem_bytes(
                                              shared->dtype));
                 linx_tile_set_dtype(env, tile, shared->dtype);
-                linx_tile_set_block_shape(env, tile, shared->bytes,
+                linx_tile_set_block_shape(env, tile, local_bytes,
                                           env->tile_reg_elem_bytes[tile]);
                 break;
             case LINX_TMA_TMOV_S2L_EXTRACT:
