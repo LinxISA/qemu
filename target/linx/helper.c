@@ -13478,7 +13478,6 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x01du: /* TTRANS */
     case 0x01eu: /* TCOLEXPAND */
     case 0x01fu: /* TROWEXPAND */
-    case 0x081u: /* TTRI */
     case 0x082u: /* TFILLPAD */
     case 0x085u: /* TEXTRACT */
     case 0x087u: /* TCONCAT */
@@ -13490,6 +13489,9 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x0c5u: /* TPARTMAX */
     case 0x0c6u: /* TPARTMIN */
         supported = standard;
+        break;
+    case 0x081u: /* TTRI */
+        supported = fp32 | fp16 | bf16 | s32 | s16 | s8 | u32 | u16 | u8;
         break;
     case 0x00eu: /* TEXP */
     case 0x00fu: /* TLOG */
@@ -13550,7 +13552,7 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = fp32 | fp16;
         break;
     case 0x080u: /* TCI */
-        supported = s64 | s32 | s16 | u64 | u32 | u16;
+        supported = s32 | s16 | u32 | u16;
         break;
     case 0x084u: /* TDEQUANT */
     case 0x0c7u: /* TPARTARGMAX */
