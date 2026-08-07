@@ -103,14 +103,22 @@ static inline bool linx_tile_layout_accepted(uint32_t layout)
            (UINT32_C(0x5816035b) & (UINT32_C(1) << layout)) != 0;
 }
 
-/* BSTART.TEPL encodes a two-bit Mode followed by a five-bit Function. */
+/*
+ * BSTART.TEPL encodes a two-bit Mode followed by a five-bit Function.
+ * Masks are derived from pto-spec@a7f9aab spec/catalog/tile-operations.json
+ * (TEPL family). Selectors deleted from the v0.3 catalog (TPRELU, TAXPY,
+ * TGATHERB, TRESHAPE, TDEINTERLEAVE/TINTERLEAVE, TPUSH/TPOP/TALLOC/TFREE,
+ * TPARTARGMAX/TPARTARGMIN) are cleared so they fail closed as reserved.
+ * TFMA (mode 0 function 28) is active in the catalog but not yet adapted,
+ * so it intentionally remains unaccepted (fail-closed, UNVERIFIED).
+ */
 static inline bool linx_tile_tepl_selector_accepted(uint32_t selector)
 {
     static const uint32_t function_masks[4] = {
-        UINT32_C(0x0cffffdf),
-        UINT32_C(0x0c00bfdf),
+        UINT32_C(0x0cffbfdf),
+        UINT32_C(0x0c003fdf),
         UINT32_C(0x3fff3fff),
-        UINT32_C(0x3ffffdff),
+        UINT32_C(0x001ffdfd),
     };
     const uint32_t mode = selector >> 5;
     const uint32_t function = selector & 0x1fu;
@@ -147,14 +155,19 @@ static inline uint32_t linx_tile_datr_nonzero_fields(uint32_t packed)
            (((packed >> 22) & 7u) ? LINX_DATR_CMODE : 0u);
 }
 
-/* Generated from pto-spec spec/catalog/tile-operations.json. */
+/*
+ * Generated from pto-spec spec/catalog/tile-operations.json.
+ * TCVT (selector 0x1b) carries DstType/RMode/Sat in B.DATR and may also
+ * carry PadValue (TCVT.md); B.DATR.md defines PadValue 0..3, including
+ * Null, as legal, so the PAD_OR_BYTE_ID bit is enabled for TCVT.
+ */
 static inline uint32_t linx_tile_tepl_datr_allowed(uint32_t selector)
 {
     static const uint8_t allowed[128] = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x3f, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -176,7 +189,12 @@ static inline uint32_t linx_tile_datr_allowed(uint32_t blocktype,
 {
     switch (blocktype) {
     case 2u: /* TMA */
-        if (function == 6u) {
+        /*
+         * MGATHER (4) and MGATHER_MASK (6) may express PadValue in B.DATR
+         * (MGATHER.md: PadValue.Null is legal and may be omitted). MSCATTER
+         * (5/7) is a source-only store and keeps LAYOUT-only.
+         */
+        if (function == 6u || function == 4u) {
             return LINX_DATR_LAYOUT | LINX_DATR_PAD_OR_BYTE_ID;
         }
         return function == 3u ? 0u : LINX_DATR_LAYOUT;

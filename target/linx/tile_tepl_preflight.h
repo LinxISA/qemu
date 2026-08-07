@@ -174,17 +174,18 @@ static inline bool linx_tile_tepl_pre_publish_legal(
                env->tile_reg_cols[src0] == cols;
     }
     if (impl == 0x030u) { /* TREM */
-        return has_src1 && linx_tile_tepl_remainder_tile_divisors_legal(
-                               env, src1, dtype, elem_bytes, valid_cols,
-                               valid_rows, cols);
+        /*
+         * ISA TREM.md defines no divisor==0 trap and no data-content
+         * legality condition; only the structural source binding matters.
+         * A zero divisor is a data value, handled in the lane helper.
+         */
+        return has_src1;
     }
     if (impl == 0x032u) { /* TREMS */
         unsigned scalar_reg;
 
         return linx_tile_tepl_preflight_resolve_ior(
-                   env, 0u, &scalar_reg) &&
-               linx_tile_tepl_remainder_divisor_nonzero(
-                   dtype, elem_bytes, env->gpr[scalar_reg]);
+                   env, 0u, &scalar_reg);
     }
     return true;
 }

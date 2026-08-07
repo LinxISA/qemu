@@ -8305,6 +8305,11 @@ static uint64_t linx_fp_unop_fabs(CPULinxState *env, uint64_t a, uint32_t srctyp
         res = (uint64_t)(uint32_t)ra;
         break;
     }
+    case 2: { /* fh */
+        float16 ra = float16_abs(make_float16((uint16_t)a));
+        res = (uint64_t)(uint16_t)ra;
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8336,6 +8341,12 @@ static uint64_t linx_fp_binop_add(CPULinxState *env, uint64_t a, uint64_t b, uin
         res = (uint64_t)(uint32_t)ra;
         break;
     }
+    case 2: { /* fh */
+        float16 ra = float16_add(make_float16((uint16_t)a), make_float16((uint16_t)b),
+                                  &env->fp_status);
+        res = (uint64_t)(uint16_t)ra;
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8357,6 +8368,12 @@ static uint64_t linx_fp_binop_sub(CPULinxState *env, uint64_t a, uint64_t b, uin
     case 1: { /* fs */
         float32 ra = float32_sub((float32)(uint32_t)a, (float32)(uint32_t)b, &env->fp_status);
         res = (uint64_t)(uint32_t)ra;
+        break;
+    }
+    case 2: { /* fh */
+        float16 ra = float16_sub(make_float16((uint16_t)a), make_float16((uint16_t)b),
+                                  &env->fp_status);
+        res = (uint64_t)(uint16_t)ra;
         break;
     }
     default:
@@ -8382,6 +8399,12 @@ static uint64_t linx_fp_binop_mul(CPULinxState *env, uint64_t a, uint64_t b, uin
         res = (uint64_t)(uint32_t)ra;
         break;
     }
+    case 2: { /* fh */
+        float16 ra = float16_mul(make_float16((uint16_t)a), make_float16((uint16_t)b),
+                                  &env->fp_status);
+        res = (uint64_t)(uint16_t)ra;
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8405,6 +8428,12 @@ static uint64_t linx_fp_binop_div(CPULinxState *env, uint64_t a, uint64_t b, uin
         res = (uint64_t)(uint32_t)ra;
         break;
     }
+    case 2: { /* fh */
+        float16 ra = float16_div(make_float16((uint16_t)a), make_float16((uint16_t)b),
+                                  &env->fp_status);
+        res = (uint64_t)(uint16_t)ra;
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8425,6 +8454,9 @@ static uint64_t linx_fp_cmp_eq(CPULinxState *env, uint64_t a, uint64_t b, uint32
         break;
     case 1:
         ok = float32_eq((float32)(uint32_t)a, (float32)(uint32_t)b, &env->fp_status);
+        break;
+    case 2:
+        ok = float16_eq(make_float16((uint16_t)a), make_float16((uint16_t)b), &env->fp_status);
         break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -8449,6 +8481,9 @@ static uint64_t linx_fp_cmp_lt(CPULinxState *env, uint64_t a, uint64_t b, uint32
     case 1:
         ok = float32_lt((float32)(uint32_t)a, (float32)(uint32_t)b, &env->fp_status);
         break;
+    case 2:
+        ok = float16_lt(make_float16((uint16_t)a), make_float16((uint16_t)b), &env->fp_status);
+        break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8471,6 +8506,9 @@ static uint64_t linx_fp_cmp_ge(CPULinxState *env, uint64_t a, uint64_t b, uint32
         break;
     case 1:
         ok = float32_le((float32)(uint32_t)b, (float32)(uint32_t)a, &env->fp_status);
+        break;
+    case 2:
+        ok = float16_le(make_float16((uint16_t)b), make_float16((uint16_t)a), &env->fp_status);
         break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -8495,6 +8533,9 @@ static uint64_t linx_fp_fcvt(CPULinxState *env, uint64_t a, uint32_t dsttype, ui
         } else if ((dsttype & 0x1fu) == 1) {
             float32 v = float64_to_float32((float64)a, &env->fp_status);
             res = (uint64_t)(uint32_t)v;
+        } else if ((dsttype & 0x1fu) == 2u) {
+            float16 v = float64_to_float16((float64)a, true, &env->fp_status);
+            res = (uint64_t)(uint16_t)v;
         } else {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return 0;
@@ -8508,6 +8549,25 @@ static uint64_t linx_fp_fcvt(CPULinxState *env, uint64_t a, uint32_t dsttype, ui
         } else if ((dsttype & 0x1fu) == 0) {
             float64 v = float32_to_float64((float32)a32, &env->fp_status);
             res = (uint64_t)v;
+        } else if ((dsttype & 0x1fu) == 2u) {
+            float16 v = float32_to_float16((float32)a32, true, &env->fp_status);
+            res = (uint64_t)(uint16_t)v;
+        } else {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return 0;
+        }
+        break;
+    }
+    case 2: { /* src fh */
+        const float16 v = make_float16((uint16_t)a);
+        if ((dsttype & 0x1fu) == 2u) {
+            res = (uint64_t)(uint16_t)v;
+        } else if ((dsttype & 0x1fu) == 0u) {
+            float64 r = float16_to_float64(v, true, &env->fp_status);
+            res = (uint64_t)r;
+        } else if ((dsttype & 0x1fu) == 1u) {
+            float32 r = float16_to_float32(v, true, &env->fp_status);
+            res = (uint64_t)(uint32_t)r;
         } else {
             helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             return 0;
@@ -8613,6 +8673,17 @@ static uint64_t linx_fp_fcvti(CPULinxState *env, uint64_t a, uint32_t dsttype, u
         }
         break;
     }
+    case 2: {
+        const float16 v = make_float16((uint16_t)a);
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float16_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float16_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float16_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float16_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8656,6 +8727,17 @@ static uint64_t linx_fp_fcvti_round(CPULinxState *env, uint64_t a, uint32_t dstt
         } else {
             res = width > 32u ? float32_to_uint64(v, &env->fp_status)
                               : (uint64_t)float32_to_uint32(v, &env->fp_status);
+        }
+        break;
+    }
+    case 2: {
+        const float16 v = make_float16((uint16_t)a);
+        if (linx_int_type_is_signed(dsttype)) {
+            res = width > 32u ? (uint64_t)float16_to_int64(v, &env->fp_status)
+                              : (uint64_t)(int64_t)float16_to_int32(v, &env->fp_status);
+        } else {
+            res = width > 32u ? float16_to_uint64(v, &env->fp_status)
+                              : (uint64_t)float16_to_uint32(v, &env->fp_status);
         }
         break;
     }
@@ -8719,6 +8801,27 @@ static uint64_t linx_fp_fcvtz(CPULinxState *env, uint64_t a, uint32_t dsttype, u
         }
         break;
     }
+    case 2: { /* src fh */
+        float16 v = make_float16((uint16_t)a);
+        switch (dt) {
+        case 8: /* s64 */
+            res = (uint64_t)float16_to_int64_round_to_zero(v, &env->fp_status);
+            break;
+        case 9: /* s32 */
+            res = (uint64_t)(int64_t)float16_to_int32_round_to_zero(v, &env->fp_status);
+            break;
+        case 0: /* u64 */
+            res = float16_to_uint64_round_to_zero(v, &env->fp_status);
+            break;
+        case 1: /* u32 */
+            res = (uint64_t)float16_to_uint32_round_to_zero(v, &env->fp_status);
+            break;
+        default:
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return 0;
+        }
+        break;
+    }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -8744,33 +8847,49 @@ static uint64_t linx_fp_scvtf(CPULinxState *env, uint64_t a, uint32_t dsttype, u
     uint64_t res = 0;
     const unsigned dt = dsttype & 0x1fu;
 
-    if (dt != 0 && dt != 1) {
+    /*
+     * DstType (SCVTF.md): 0=FD, 1=FS, 2=FH. DstType 3=FB is reserved by
+     * this ISA snapshot until the FP8 format is defined, so it stays
+     * fail-closed (recorded UNVERIFIED).
+     */
+    if (dt > 2u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
     }
 
+    int64_t v;
     switch (srctype & 0x3u) {
     case 0: { /* sd */
-        int64_t v = (int64_t)a;
-        if (dt == 0) {
-            res = (uint64_t)int64_to_float64(v, &env->fp_status);
-        } else {
-            res = (uint64_t)(uint32_t)int64_to_float32(v, &env->fp_status);
-        }
+        v = (int64_t)a;
         break;
     }
     case 1: { /* sw */
-        int32_t v = (int32_t)a;
-        if (dt == 0) {
-            res = (uint64_t)int32_to_float64(v, &env->fp_status);
-        } else {
-            res = (uint64_t)(uint32_t)int32_to_float32(v, &env->fp_status);
-        }
+        v = (int32_t)a;
+        break;
+    }
+    case 2: { /* sh */
+        v = (int16_t)a;
+        break;
+    }
+    case 3: { /* sb */
+        v = (int8_t)a;
         break;
     }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
+    }
+
+    switch (dt) {
+    case 0:
+        res = (uint64_t)int64_to_float64(v, &env->fp_status);
+        break;
+    case 1:
+        res = (uint64_t)(uint32_t)int64_to_float32(v, &env->fp_status);
+        break;
+    default: /* FH */
+        res = (uint64_t)float16_val(int64_to_float16(v, &env->fp_status));
+        break;
     }
 
     linx_fp_sync_to_fcsr(env);
@@ -8828,33 +8947,48 @@ static uint64_t linx_fp_ucvtf(CPULinxState *env, uint64_t a, uint32_t dsttype, u
     uint64_t res = 0;
     const unsigned dt = dsttype & 0x1fu;
 
-    if (dt != 0 && dt != 1) {
+    /*
+     * DstType (UCVTF.md): 0=FD, 1=FS, 2=FH. DstType 3=FB stays fail-closed
+     * until the FP8 format is defined (recorded UNVERIFIED).
+     */
+    if (dt > 2u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
     }
 
+    uint64_t v;
     switch (srctype & 0x3u) {
     case 0: { /* ud */
-        uint64_t v = a;
-        if (dt == 0) {
-            res = (uint64_t)uint64_to_float64(v, &env->fp_status);
-        } else {
-            res = (uint64_t)(uint32_t)uint64_to_float32(v, &env->fp_status);
-        }
+        v = a;
         break;
     }
     case 1: { /* uw */
-        uint32_t v = (uint32_t)a;
-        if (dt == 0) {
-            res = (uint64_t)uint32_to_float64(v, &env->fp_status);
-        } else {
-            res = (uint64_t)(uint32_t)uint32_to_float32(v, &env->fp_status);
-        }
+        v = (uint32_t)a;
+        break;
+    }
+    case 2: { /* uh */
+        v = (uint16_t)a;
+        break;
+    }
+    case 3: { /* ub */
+        v = (uint8_t)a;
         break;
     }
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
+    }
+
+    switch (dt) {
+    case 0:
+        res = (uint64_t)uint64_to_float64(v, &env->fp_status);
+        break;
+    case 1:
+        res = (uint64_t)(uint32_t)uint64_to_float32(v, &env->fp_status);
+        break;
+    default: /* FH */
+        res = (uint64_t)float16_val(uint64_to_float16(v, &env->fp_status));
+        break;
     }
 
     linx_fp_sync_to_fcsr(env);
@@ -11536,10 +11670,11 @@ static bool linx_tile_tepl_binary_qword_checked(
     CPULinxState *env, uint32_t op, uint32_t dtype, uint64_t lhs,
     uint64_t rhs, uint64_t *result)
 {
-    if ((op == 0x030u || op == 0x032u) &&
-        !linx_tile_tepl_remainder_divisor_nonzero(dtype, 8u, rhs)) {
-        return false;
-    }
+    /*
+     * ISA TREM.md/TREMS.md do not define a divisor==0 trap; divisor data is
+     * not an encoding/descriptor legality condition.  The lane helper already
+     * handles a zero divisor without host fault, so no data gate here.
+     */
     *result = linx_tile_tepl_binary_qword(env, op, dtype, lhs, rhs);
     return true;
 }
@@ -11863,6 +11998,20 @@ static inline uint32_t linx_tile_tepl_binary_word(CPULinxState *env,
         case 0x025u:
             out = float16_min(a, b, &env->fp_status);
             break;
+        case 0x030u:
+        case 0x032u: {
+            const float32 af = float16_to_float32(a, true, &env->fp_status);
+            const float32 bf = float16_to_float32(b, true, &env->fp_status);
+            const float av = float32_val(af);
+            const float bv = float32_val(bf);
+            if (bv == 0.0f) {
+                return 0u;
+            }
+            const float rem = av - floorf(av / bv) * bv;
+            return (uint32_t)float16_val(float32_to_float16(
+                make_float32(linx_tile_f32_as_word(rem)), true,
+                &env->fp_status));
+        }
         default:
             return 0u;
         }
@@ -11983,12 +12132,7 @@ static bool linx_tile_tepl_binary_word_checked(
     CPULinxState *env, uint32_t op, uint32_t dtype, uint32_t lhs,
     uint32_t rhs, uint32_t *result)
 {
-    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
-
-    if ((op == 0x030u || op == 0x032u) &&
-        !linx_tile_tepl_remainder_divisor_nonzero(dtype, elem_bytes, rhs)) {
-        return false;
-    }
+    /* No ISA-defined divisor==0 trap for TREM/TREMS; lane helper is safe. */
     *result = linx_tile_tepl_binary_word(env, op, dtype, lhs, rhs);
     return true;
 }
@@ -12878,7 +13022,6 @@ static inline uint32_t linx_tile_tepl_unary_word(CPULinxState *env,
             out = input > 0.0f ? input : 0.0f;
             break;
         case 0x00du:
-        case 0x01cu:
             out = input;
             break;
         case 0x00eu:
@@ -12909,6 +13052,60 @@ static inline uint32_t linx_tile_tepl_unary_word(CPULinxState *env,
             dtype);
     }
 
+    if ((dtype & 0x1fu) == 4u) {
+        const float16 input = make_float16((uint16_t)value);
+        float out = 0.0f;
+
+        switch (op) {
+        case 0x00bu: /* TRELU */
+            return (value & 0x8000u) ? 0u : value;
+        case 0x00du:
+            return value;
+        case 0x00eu: { /* TEXP */
+            const float32 promoted =
+                float16_to_float32(input, true, &env->fp_status);
+            out = expf(float32_val(promoted));
+            break;
+        }
+        case 0x00fu: { /* TLOG */
+            const float32 promoted =
+                float16_to_float32(input, true, &env->fp_status);
+            const float v = float32_val(promoted);
+            out = v > 0.0f ? logf(v) : -INFINITY;
+            break;
+        }
+        case 0x010u: { /* TSQRT */
+            const float32 promoted =
+                float16_to_float32(input, true, &env->fp_status);
+            const float v = float32_val(promoted);
+            out = v >= 0.0f ? sqrtf(v) : NAN;
+            break;
+        }
+        case 0x011u: { /* TRSQRT */
+            const float32 promoted =
+                float16_to_float32(input, true, &env->fp_status);
+            const float v = float32_val(promoted);
+            out = v > 0.0f ? 1.0f / sqrtf(v) : 0.0f;
+            break;
+        }
+        case 0x018u: { /* TRECIP */
+            const float32 promoted =
+                float16_to_float32(input, true, &env->fp_status);
+            const float v = float32_val(promoted);
+            out = v == 0.0f ? 0.0f : 1.0f / v;
+            break;
+        }
+        case 0x02du: /* TABS */
+            return value & 0x7fffu;
+        case 0x02fu: /* TNEG */
+            return value ^ 0x8000u;
+        default:
+            return 0;
+        }
+        return (uint32_t)float16_val(float32_to_float16(
+            make_float32(linx_tile_f32_as_word(out)), true, &env->fp_status));
+    }
+
     switch (op) {
     case 0x00bu:
         return linx_tile_dtype_is_signed(dtype) &&
@@ -12916,7 +13113,6 @@ static inline uint32_t linx_tile_tepl_unary_word(CPULinxState *env,
                    ? 0u
                    : value;
     case 0x00du:
-    case 0x01cu:
         return value;
     case 0x02du:
         if (linx_tile_dtype_is_signed(dtype)) {
@@ -13194,7 +13390,6 @@ static uint32_t linx_tile_tepl_impl_selector(uint32_t selector)
     case 0x03bu: /* TEXPANDS */ return 0x019u;
     case 0x06fu: /* TGATHER */ return 0x01au;
     case 0x070u: /* TSCATTER */ return 0x01bu;
-    case 0x077u: /* TRESHAPE */ return 0x01cu;
     case 0x06eu: /* TTRANS */ return 0x01du;
     case 0x054u: /* TCOLEXPAND */ return 0x01eu;
     case 0x044u: /* TROWEXPAND */ return 0x01fu;
@@ -13244,27 +13439,16 @@ static uint32_t linx_tile_tepl_impl_selector(uint32_t selector)
     case 0x066u: /* TCI */ return 0x080u;
     case 0x067u: /* TTRI */ return 0x081u;
     case 0x060u: /* TCONCAT */ return 0x087u;
-    case 0x061u: /* TGATHERB */ return 0x089u;
-    case 0x078u: /* TDEINTERLEAVE */ return 0x08au;
-    case 0x079u: /* TINTERLEAVE */ return 0x08bu;
-    case 0x00eu: /* TPRELU */ return 0x100u;
-    case 0x02fu: /* TAXPY */ return 0x101u;
     case 0x06au: /* TQUANT */ return 0x102u;
     case 0x063u: /* TINSERT */ return 0x103u;
     case 0x064u: /* TIMG2COL */ return 0x104u;
     case 0x068u: /* THISTOGRAM */ return 0x105u;
     case 0x06cu: /* TSORT */ return 0x106u;
     case 0x06du: /* TMRGSORT */ return 0x107u;
-    case 0x07au: /* TPUSH */ return 0x108u;
-    case 0x07bu: /* TPOP */ return 0x109u;
-    case 0x07cu: /* TALLOC */ return 0x10au;
-    case 0x07du: /* TFREE */ return 0x10bu;
     case 0x071u: /* TPARTADD */ return 0x0c3u;
     case 0x072u: /* TPARTMUL */ return 0x0c4u;
     case 0x073u: /* TPARTMAX */ return 0x0c5u;
     case 0x074u: /* TPARTMIN */ return 0x0c6u;
-    case 0x075u: /* TPARTARGMAX */ return 0x0c7u;
-    case 0x076u: /* TPARTARGMIN */ return 0x0c8u;
     default: return UINT32_MAX;
     }
 }
@@ -13299,7 +13483,6 @@ static bool linx_tile_tepl_impl_selector_executable(uint32_t op)
     case 0x019u: /* TEXPANDS */
     case 0x01au: /* TGATHER */
     case 0x01bu: /* TSCATTER */
-    case 0x01cu: /* TRESHAPE */
     case 0x01du: /* TTRANS */
     case 0x01eu: /* TCOLEXPAND */
     case 0x01fu: /* TROWEXPAND */
@@ -13349,27 +13532,16 @@ static bool linx_tile_tepl_impl_selector_executable(uint32_t op)
     case 0x080u: /* TCI */
     case 0x081u: /* TTRI */
     case 0x087u: /* TCONCAT */
-    case 0x089u: /* TGATHERB */
-    case 0x08au: /* TDEINTERLEAVE */
-    case 0x08bu: /* TINTERLEAVE */
     case 0x0c3u: /* TPARTADD */
     case 0x0c4u: /* TPARTMUL */
     case 0x0c5u: /* TPARTMAX */
     case 0x0c6u: /* TPARTMIN */
-    case 0x0c7u: /* TPARTARGMAX */
-    case 0x0c8u: /* TPARTARGMIN */
-    case 0x100u: /* TPRELU */
-    case 0x101u: /* TAXPY */
     case 0x102u: /* TQUANT */
     case 0x103u: /* TINSERT */
     case 0x104u: /* TIMG2COL */
     case 0x105u: /* THISTOGRAM */
     case 0x106u: /* TSORT */
     case 0x107u: /* TMRGSORT */
-    case 0x108u: /* TPUSH */
-    case 0x109u: /* TPOP */
-    case 0x10au: /* TALLOC */
-    case 0x10bu: /* TFREE */
         return true;
     default:
         return false;
@@ -13377,10 +13549,12 @@ static bool linx_tile_tepl_impl_selector_executable(uint32_t op)
 }
 
 /*
- * Canonical executable selector inventory generated from pto-spec 0.57.1.
- * Keep the architectural selector and mnemonic together: the PTO conformance
- * gate consumes these case labels directly, while the final check below keeps
- * this inventory tied to the executable private implementation selector.
+ * Canonical executable selector inventory aligned with the pto-spec v0.3
+ * catalog (a7f9aab). Keep the architectural selector and mnemonic together:
+ * the PTO conformance gate consumes these case labels directly, while the
+ * final check below keeps this inventory tied to the executable private
+ * implementation selector. Selectors deleted from the v0.3 catalog are
+ * rejected by linx_tile_tepl_selector_accepted() and are not listed here.
  */
 static bool linx_tile_tepl_selector_executable(uint32_t selector)
 {
@@ -13401,7 +13575,6 @@ static bool linx_tile_tepl_selector_executable(uint32_t selector)
     case 0x010u: /* TNOT */
     case 0x011u: /* TNEG */
     case 0x017u: /* TRELU */
-    case 0x00eu: /* TPRELU */
     case 0x003u: /* TDIV */
     case 0x004u: /* TREM */
     case 0x015u: /* TSQRT */
@@ -13410,7 +13583,6 @@ static bool linx_tile_tepl_selector_executable(uint32_t selector)
     case 0x012u: /* TEXP */
     case 0x016u: /* TRSQRT */
     case 0x020u: /* TADDS */
-    case 0x02fu: /* TAXPY */
     case 0x021u: /* TSUBS */
     case 0x022u: /* TMULS */
     case 0x023u: /* TDIVS */
@@ -13466,23 +13638,13 @@ static bool linx_tile_tepl_selector_executable(uint32_t selector)
     case 0x060u: /* TCONCAT */
     case 0x06eu: /* TTRANS */
     case 0x064u: /* TIMG2COL */
-    case 0x061u: /* TGATHERB */
-    case 0x078u: /* TDEINTERLEAVE */
-    case 0x079u: /* TINTERLEAVE */
-    case 0x077u: /* TRESHAPE */
     case 0x06cu: /* TSORT */
     case 0x06du: /* TMRGSORT */
     case 0x068u: /* THISTOGRAM */
-    case 0x07au: /* TPUSH */
-    case 0x07bu: /* TPOP */
-    case 0x07cu: /* TALLOC */
-    case 0x07du: /* TFREE */
     case 0x071u: /* TPARTADD */
     case 0x072u: /* TPARTMUL */
     case 0x073u: /* TPARTMAX */
     case 0x074u: /* TPARTMIN */
-    case 0x075u: /* TPARTARGMAX */
-    case 0x076u: /* TPARTARGMIN */
         return linx_tile_tepl_impl_selector_executable(
             linx_tile_tepl_impl_selector(selector));
     default:
@@ -13550,21 +13712,17 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = integers;
         break;
     case 0x00bu: /* TRELU */
-        supported = fp64 | fp32 | s64 | s32 | s16 | s8;
+        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | s8;
         break;
     case 0x00du: /* TCVT */
     case 0x01au: /* TGATHER */
     case 0x01bu: /* TSCATTER */
-    case 0x01cu: /* TRESHAPE */
     case 0x01du: /* TTRANS */
     case 0x01eu: /* TCOLEXPAND */
     case 0x01fu: /* TROWEXPAND */
     case 0x082u: /* TFILLPAD */
     case 0x085u: /* TEXTRACT */
     case 0x087u: /* TCONCAT */
-    case 0x089u: /* TGATHERB */
-    case 0x08au: /* TDEINTERLEAVE */
-    case 0x08bu: /* TINTERLEAVE */
     case 0x0c3u: /* TPARTADD */
     case 0x0c4u: /* TPARTMUL */
     case 0x0c5u: /* TPARTMAX */
@@ -13579,7 +13737,7 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x010u: /* TSQRT */
     case 0x011u: /* TRSQRT */
     case 0x018u: /* TRECIP */
-        supported = fp64 | fp32;
+        supported = fp64 | fp32 | fp16;
         break;
     case 0x02bu: /* TCMP */
         supported = fp64 | fp32 | fp16 | integers;
@@ -13589,14 +13747,14 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = integers;
         break;
     case 0x02du: /* TABS */
-        supported = fp64 | fp32 | s64 | s32 | s16 | s8;
+        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | s8;
         break;
     case 0x02fu: /* TNEG */
         supported = fp64 | fp32 | fp16 | bf16 | s64 | s32 | s16;
         break;
     case 0x030u: /* TREM */
     case 0x032u: /* TREMS */
-        supported = fp64 | fp32 | s64 | s32 | s16 | u64 | u32 | u16;
+        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | u64 | u32 | u16;
         break;
     case 0x033u: /* TCMPS */
         supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | u64 | u16;
@@ -13636,20 +13794,12 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = s32 | s16 | u32 | u16;
         break;
     case 0x084u: /* TDEQUANT */
-    case 0x0c7u: /* TPARTARGMAX */
-    case 0x0c8u: /* TPARTARGMIN */
         supported = fp32;
         break;
-    case 0x100u: /* TPRELU */
-    case 0x101u: /* TAXPY */
     case 0x103u: /* TINSERT */
     case 0x104u: /* TIMG2COL */
     case 0x106u: /* TSORT */
     case 0x107u: /* TMRGSORT */
-    case 0x108u: /* TPUSH */
-    case 0x109u: /* TPOP */
-    case 0x10au: /* TALLOC */
-    case 0x10bu: /* TFREE */
         supported = standard;
         break;
     case 0x102u: /* TQUANT */
@@ -13672,8 +13822,6 @@ static int linx_tile_tepl_impl_source_arity(uint32_t op)
     case 0x019u: /* TEXPANDS */
     case 0x080u: /* TCI */
     case 0x081u: /* TTRI */
-    case 0x10au: /* TALLOC */
-    case 0x10bu: /* TFREE */
         return 0;
     case 0x00bu: /* TRELU */
     case 0x00du: /* TCVT */
@@ -13689,7 +13837,6 @@ static int linx_tile_tepl_impl_source_arity(uint32_t op)
     case 0x017u: /* TCOLSUM */
     case 0x018u: /* TRECIP */
     case 0x01du: /* TTRANS */
-    case 0x01cu: /* TRESHAPE */
     case 0x01eu: /* TCOLEXPAND */
     case 0x01fu: /* TROWEXPAND */
     case 0x020u: /* TADDS */
@@ -13716,14 +13863,10 @@ static int linx_tile_tepl_impl_source_arity(uint32_t op)
     case 0x03au: /* TCOLARGMIN */
     case 0x082u: /* TFILLPAD */
     case 0x085u: /* TEXTRACT */
-    case 0x100u: /* TPRELU */
-    case 0x101u: /* TAXPY */
     case 0x102u: /* TQUANT */
     case 0x103u: /* TINSERT */
     case 0x104u: /* TIMG2COL */
     case 0x106u: /* TSORT */
-    case 0x108u: /* TPUSH */
-    case 0x109u: /* TPOP */
         return 1;
     case 0x02cu: /* TSEL */
         return 3;
@@ -13754,7 +13897,7 @@ static uint64_t linx_tile_tepl_unary_qword(CPULinxState *env, uint32_t op,
         double out;
         switch (op) {
         case 0x00bu: out = input > 0.0 ? input : 0.0; break;
-        case 0x00du: case 0x01cu: out = input; break;
+        case 0x00du: out = input; break;
         case 0x00eu: out = exp(input); break;
         case 0x00fu: out = input > 0.0 ? log(input) : -INFINITY; break;
         case 0x010u: out = input >= 0.0 ? sqrt(input) : NAN; break;
@@ -13770,7 +13913,7 @@ static uint64_t linx_tile_tepl_unary_qword(CPULinxState *env, uint32_t op,
     switch (op) {
     case 0x00bu:
         return (dtype & 0x1fu) == 16u && (int64_t)value < 0 ? 0u : value;
-    case 0x00du: case 0x01cu: return value;
+    case 0x00du: return value;
     case 0x02du:
         return (dtype & 0x1fu) == 16u && (int64_t)value < 0
                    ? 0u - value : value;
@@ -14096,6 +14239,93 @@ static int linx_tile_tepl_source_arity(uint32_t selector)
     return impl == UINT32_MAX ? -1 : linx_tile_tepl_impl_source_arity(impl);
 }
 
+/*
+ * PTO ISA v0.3 (pto-spec@a7f9aab) reduce-and-expand family:
+ * TROW* reduce ops emit one value per row; TCOL* reduce ops emit one
+ * value per column.  B.DIM LB0/LB1/LB2 describes the 2D source; the
+ * destination is a row/column vector whose element count is the reduced
+ * axis (LB1 for row-reduce, LB0 for column-reduce).  Arg-reduce
+ * destinations hold 32-bit indices.
+ */
+static inline bool linx_tile_tepl_impl_is_row_reduce(uint32_t impl_op)
+{
+    return impl_op == 0x012u || impl_op == 0x013u || impl_op == 0x014u ||
+           impl_op == 0x035u || impl_op == 0x036u || impl_op == 0x037u;
+}
+
+static inline bool linx_tile_tepl_impl_is_col_reduce(uint32_t impl_op)
+{
+    return impl_op == 0x015u || impl_op == 0x016u || impl_op == 0x017u ||
+           impl_op == 0x038u || impl_op == 0x039u || impl_op == 0x03au;
+}
+
+static inline bool linx_tile_tepl_impl_is_reduce(uint32_t impl_op)
+{
+    return linx_tile_tepl_impl_is_row_reduce(impl_op) ||
+           linx_tile_tepl_impl_is_col_reduce(impl_op);
+}
+
+static inline bool linx_tile_tepl_impl_is_arg_reduce(uint32_t impl_op)
+{
+    return impl_op == 0x036u || impl_op == 0x037u ||
+           impl_op == 0x039u || impl_op == 0x03au;
+}
+
+static inline unsigned linx_tile_tepl_col_reduce_output_elems(
+    const CPULinxState *env)
+{
+    return (unsigned)(env->lb[0] & 0xffffu);
+}
+
+static inline bool linx_tile_tepl_col_reduce_dst_legal(
+    const CPULinxState *env, uint32_t impl_op, uint32_t bytes64,
+    unsigned dtype_elem_bytes)
+{
+    const unsigned dst_elem_bytes =
+        linx_tile_tepl_impl_is_arg_reduce(impl_op) ? 4u : dtype_elem_bytes;
+    const unsigned output_elems = linx_tile_tepl_col_reduce_output_elems(env);
+
+    return linx_tile_tepl_impl_is_col_reduce(impl_op) &&
+           output_elems != 0u && dst_elem_bytes != 0u &&
+           bytes64 <= LINX_TILE_MAX_BYTES && bytes64 % dst_elem_bytes == 0u &&
+           bytes64 >= (uint64_t)output_elems * dst_elem_bytes;
+}
+
+/*
+ * Column-reduce source shape: same LB0/LB1/LB2 contract as the ordinary
+ * shape helper, but the destination is a vector of `cols` values so the
+ * destination capacity bound (rows <= elems / physical_cols) does not
+ * apply.  Destination capacity is validated separately.
+ */
+static bool linx_tile_tepl_col_reduce_shape(const CPULinxState *env,
+                                            unsigned elem_bytes,
+                                            uint32_t elems,
+                                            uint32_t *rows_out,
+                                            uint32_t *cols_out,
+                                            uint32_t *physical_cols_out)
+{
+    uint32_t cols = (uint32_t)(env->lb[0] & 0xffffffffu);
+    uint32_t rows = (uint32_t)(env->lb[1] & 0xffffffffu);
+    uint32_t physical_cols = (uint32_t)(env->lb[2] & 0xffffffffu);
+
+    if (cols == 0u) {
+        cols = elems;
+    }
+    if (rows == 0u) {
+        rows = 1u;
+    }
+    if (physical_cols == 0u) {
+        physical_cols = cols;
+    }
+    if (elem_bytes == 0u || cols == 0u || physical_cols < cols) {
+        return false;
+    }
+    *rows_out = rows;
+    *cols_out = cols;
+    *physical_cols_out = physical_cols;
+    return true;
+}
+
 static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                            const unsigned *sources, unsigned source_count,
                            unsigned size_code, uint32_t op) {
@@ -14142,6 +14372,8 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     uint32_t cols = 0;
     uint32_t physical_cols = 0;
 
+    const bool col_reduce = linx_tile_tepl_impl_is_col_reduce(impl_op);
+
     if (!linx_tile_tepl_selector_accepted(canonical_op) ||
         !linx_tile_tepl_selector_executable(canonical_op) ||
         impl_op == UINT32_MAX ||
@@ -14154,13 +14386,25 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         bytes64 > LINX_TILE_MAX_BYTES ||
         (elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u &&
          elem_bytes != 8u) ||
-        (bytes64 % elem_bytes) != 0u ||
-        !linx_tile_tepl_shape(env, elem_bytes, (uint32_t)(bytes64 / elem_bytes),
-                              &rows, &cols, &physical_cols)) {
+        (col_reduce
+             ? !linx_tile_tepl_col_reduce_dst_legal(env, impl_op,
+                                                    (uint32_t)bytes64,
+                                                    elem_bytes)
+             : ((bytes64 % elem_bytes) != 0u ||
+                !linx_tile_tepl_shape(env, elem_bytes,
+                                      (uint32_t)(bytes64 / elem_bytes),
+                                      &rows, &cols, &physical_cols)))) {
         return false;
     }
 
     op = impl_op;
+
+    if (col_reduce &&
+        !linx_tile_tepl_col_reduce_shape(
+            env, elem_bytes, (uint32_t)(bytes64 / elem_bytes),
+            &rows, &cols, &physical_cols)) {
+        return false;
+    }
 
     const uint32_t active = rows * cols;
     const uint32_t dtype = operation_dtype;
@@ -14185,7 +14429,14 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
         linx_tile_set_elem_bytes(env, dst_tile, 8u);
         linx_tile_set_dtype(env, dst_tile, operation_dtype);
-        if (!linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64, 8u)) {
+        if (col_reduce) {
+            if (bytes64 % (cols * 8u) != 0u ||
+                !linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
+                                     (uint32_t)(bytes64 / (cols * 8u)))) {
+                return false;
+            }
+        } else if (!linx_tile_set_block_shape(env, dst_tile,
+                                              (uint32_t)bytes64, 8u)) {
             return false;
         }
         return true;
@@ -14734,6 +14985,20 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
             }
             linx_tile_set_elem(env, dst_tile, c, elem_bytes, result);
         }
+        /*
+         * Column-reduce destination is a row vector of `cols` values
+         * (TCOLSUM.md: "dst row/vector tile, one value per column"), so
+         * publish the reduced shape instead of the 2D source shape.
+         */
+        env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
+        linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+        linx_tile_set_dtype(env, dst_tile, operation_dtype);
+        if (bytes64 % (cols * elem_bytes) != 0u ||
+            !linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
+                                 bytes64 / (cols * elem_bytes))) {
+            return false;
+        }
+        return true;
     } else if (op == 0x01du) {
         if (!has_src0) {
             return false;
@@ -16018,14 +16283,55 @@ static bool linx_tile_preflight_tma(
             source_count < required_sources) {
             return false;
         }
+        /*
+         * ISA v0.3 (pto-spec@a7f9aab) MGATHER/MSCATTER dtypes:
+         * "data: ... F32; index: S32, U32".  The index tile is the first
+         * gather source and the second scatter source; any other index
+         * dtype (e.g. FP16/FP32 index tiles from legacy lowering) is an
+         * illegal tuple and must fail closed before any memory side effect.
+         */
+        {
+            const unsigned index_slot =
+                (env->tile_func & 0x1f) == LINX_TMA_MSCATTER ||
+                (env->tile_func & 0x1f) == LINX_TMA_MSCATTER_MASK ? 1u : 0u;
+            const uint32_t index_dtype =
+                source_count > index_slot
+                    ? (env->tile_reg_dtype[sources[index_slot]] & 0x1fu)
+                    : UINT32_MAX;
+            if (index_dtype != 17u && index_dtype != 25u) {
+                return false;
+            }
+        }
         for (unsigned i = 0; i < env->tile_iot_count; i++) {
             const LinxTileIOTDesc d = linx_tile_get_iot_desc(env, i);
             const unsigned size_code = d.has_size ? d.size & 0x1f
                                                   : env->tile_iot_size & 0x1f;
-            if (!linx_tile_size_code_valid(size_code)) {
+            const bool iot_is_output = env->tile_iot_output_valid[i];
+            /*
+             * MSCATTER/MSCATTER_MASK are source-only stores: TSize=000 means
+             * the transfer size comes from the source descriptor (B.IOT.md),
+             * so a zero size code is legal on non-output IOTs. Output IOTs
+             * (MGATHER destination) and other invalid size codes stay
+             * fail-closed.
+             */
+            if (!iot_is_output && size_code == 0u) {
+                /*
+                 * Source-only stores (MSCATTER/MSCATTER_MASK) declare no
+                 * output TSize: TSize=000 means the transfer size comes from
+                 * the source data Tile descriptor (B.IOT.md). Derive and
+                 * validate it here so the store stays fail-closed.
+                 */
+                unsigned derived = 0u;
+                if (source_count < 1u ||
+                    !linx_tile_size_code_from_bytes(
+                        env->tile_reg_bytes[sources[0]], &derived) ||
+                    !linx_tile_size_code_valid(derived)) {
+                    return false;
+                }
+            } else if (!linx_tile_size_code_valid(size_code)) {
                 return false;
             }
-            if (env->tile_iot_output_valid[i]) {
+            if (iot_is_output) {
                 output_seen = true;
                 linx_tile_publish_output(planned_live,
                                          env->tile_iot_output_phys[i]);
@@ -16467,6 +16773,13 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
                                        &group_output_size_code) &&
             bytes64 == group_output_bytes;
         if (!cooperative_matrix_output &&
+            !(env->blocktype == LINX_BLOCK_TEPL &&
+              linx_tile_tepl_col_reduce_dst_legal(
+                  env,
+                  linx_tile_tepl_impl_selector(env->tile_func & 0x7fu),
+                  (uint32_t)bytes64,
+                  linx_tile_dtype_elem_bytes(
+                      linx_tile_effective_dtype(env)))) &&
             !linx_tile_block_shape_valid(
                 env, (uint32_t)bytes64,
                 linx_tile_dtype_elem_bytes(linx_tile_effective_dtype(env)))) {
@@ -16922,6 +17235,26 @@ static bool linx_tile_materialize_planned_outputs(
             const unsigned rows = linx_tile_cube_dim(env->lb[0]);
             const unsigned cols = linx_tile_cube_dim(env->lb[1]);
             if (!linx_tile_set_shape(env, dst_tile, cols, rows, cols, rows)) {
+                return false;
+            }
+        } else if (env->blocktype == LINX_BLOCK_TEPL &&
+                   linx_tile_tepl_impl_is_col_reduce(
+                       linx_tile_tepl_impl_selector(
+                           env->tile_func & 0x7fu))) {
+            /*
+             * Column-reduce destination is a row vector of LB0 values
+             * (TCOLSUM.md: "dst row/vector tile, one value per column"),
+             * not the 2D source shape carried in B.DIM.
+             */
+            const uint32_t impl =
+                linx_tile_tepl_impl_selector(env->tile_func & 0x7fu);
+            const unsigned dst_elem =
+                linx_tile_tepl_impl_is_arg_reduce(impl) ? 4u : elem_bytes;
+            const unsigned cols = (unsigned)(env->lb[0] & 0xffffu);
+            if (cols == 0u || dst_elem == 0u ||
+                bytes % (cols * dst_elem) != 0u ||
+                !linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
+                                     bytes / (cols * dst_elem))) {
                 return false;
             }
         } else if (!linx_tile_set_block_shape(env, dst_tile, bytes, elem_bytes)) {
@@ -17803,11 +18136,23 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
+                if (size_code == 0u &&
+                    !linx_tile_size_code_from_bytes(
+                        env->tile_reg_bytes[sources[0]], &size_code)) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    break;
+                }
                 linx_tile_mscatter_common(env, sources[0], sources[1], 0,
                                           false, addr_reg, size_code);
                 break;
             case LINX_TMA_MSCATTER_MASK:
                 if (source_count < 3 || output_index != UINT_MAX) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    break;
+                }
+                if (size_code == 0u &&
+                    !linx_tile_size_code_from_bytes(
+                        env->tile_reg_bytes[sources[0]], &size_code)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
@@ -18860,6 +19205,9 @@ static uint64_t linx_fp_unop_sqrt(CPULinxState *env, uint64_t a, uint32_t srctyp
     case 1:
         a = (uint64_t)(uint32_t)float32_sqrt((float32)(uint32_t)a, &env->fp_status);
         break;
+    case 2:
+        a = (uint64_t)(uint16_t)float16_sqrt(make_float16((uint16_t)a), &env->fp_status);
+        break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -18890,6 +19238,10 @@ static uint64_t linx_fp_unop_recip(CPULinxState *env, uint64_t a, uint32_t srcty
         a = (uint64_t)cvt.u;
         break;
     }
+    case 2:
+        a = (uint64_t)(uint16_t)float16_div(float16_one, make_float16((uint16_t)a),
+                                            &env->fp_status);
+        break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return 0;
@@ -18918,6 +19270,14 @@ static uint64_t linx_fp_unop_exp(CPULinxState *env, uint64_t a, uint32_t srctype
         } cvt = { .u = (uint32_t)a };
         cvt.f = expf(cvt.f);
         a = (uint64_t)cvt.u;
+        break;
+    }
+    case 2: {
+        const float32 promoted = float16_to_float32(
+            make_float16((uint16_t)a), true, &env->fp_status);
+        const float value = expf(float32_val(promoted));
+        a = (uint64_t)float16_val(float32_to_float16(
+            make_float32(linx_tile_f32_as_word(value)), true, &env->fp_status));
         break;
     }
     default:
@@ -18993,6 +19353,12 @@ static uint64_t linx_fp_ternop_muladd(CPULinxState *env, uint64_t a, uint64_t b,
     case 1:
         a = (uint64_t)(uint32_t)float32_muladd((float32)(uint32_t)a, (float32)(uint32_t)b,
                                                (float32)(uint32_t)c, flags, &env->fp_status);
+        break;
+    case 2:
+        a = (uint64_t)(uint16_t)float16_muladd(make_float16((uint16_t)a),
+                                               make_float16((uint16_t)b),
+                                               make_float16((uint16_t)c),
+                                               flags, &env->fp_status);
         break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
