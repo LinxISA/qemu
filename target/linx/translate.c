@@ -926,6 +926,11 @@ static bool linx_is_bstart_at_pc(DisasContext *ctx, vaddr pc)
     if (len == 4) {
         const uint32_t insn = raw & UINT32_MAX;
 
+        /* PTO B.HINT TRACE.{begin,end} starts an empty FALL block. */
+        if ((insn & UINT32_C(0xffff7fff)) == UINT32_C(0x00001033)) {
+            return true;
+        }
+
         /* Generic BSTART split forms: low opcode 0x11/0x21 with simm25 target. */
         if ((insn & 0x7f) == 0x11 || (insn & 0x7f) == 0x21) {
             return true;
@@ -2920,11 +2925,8 @@ static bool trans_b_hint_trace(DisasContext *ctx, arg_b_hint_trace *a)
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
-    }
     (void)a;
-    return true;
+    return linx_begin_header_target(ctx, LINX_BR_FALL, 0);
 }
 
 static bool linx_setret_common(DisasContext *ctx, int64_t imm_hw)

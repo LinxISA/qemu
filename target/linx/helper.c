@@ -9178,9 +9178,29 @@ static bool linx_tile_output_hand(const LinxTileIOTDesc *desc,
     return false;
 }
 
-static bool linx_tile_reserve_output(const uint16_t live[LINX_TILE_HAND_COUNT],
-                                     const LinxTileIOTDesc *desc,
-                                     unsigned *tile_out)
+static bool linx_tile_output_reuses_bound_source(const CPULinxState *env,
+                                                 unsigned last_index,
+                                                 unsigned tile)
+{
+    for (unsigned i = 0; i < last_index && i < LINX_TILE_MAX_IOT; i++) {
+        for (unsigned source = 0; source < 2; source++) {
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0u &&
+                env->tile_iot_src_phys[i][source] == tile) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool linx_tile_reserve_output(
+    const CPULinxState *env,
+    const uint16_t live[LINX_TILE_HAND_COUNT],
+    const uint16_t reserved[LINX_TILE_HAND_COUNT],
+    const uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
+    const uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
+    const LinxTileIOTDesc *desc, unsigned output_index,
+    unsigned *tile_out)
 {
     unsigned hand = 0;
 
@@ -9188,9 +9208,46 @@ static bool linx_tile_reserve_output(const uint16_t live[LINX_TILE_HAND_COUNT],
         return false;
     }
     for (unsigned depth = 0; depth < LINX_TILE_HAND_DEPTH; depth++) {
+        if ((live[hand] | reserved[hand]) & LINX_TILE_HAND_BIT(depth)) {
+            continue;
+        }
         if ((live[hand] & LINX_TILE_HAND_BIT(depth)) == 0) {
             *tile_out = hand * LINX_TILE_HAND_DEPTH + depth;
             return true;
+        }
+    }
+
+    /* A push ages Q#16 out of the architectural producer-age window. */
+    if (count_by_hand[hand] == LINX_TILE_HAND_DEPTH) {
+        const unsigned oldest = order[hand][LINX_TILE_HAND_DEPTH - 1u];
+        const unsigned depth = oldest % LINX_TILE_HAND_DEPTH;
+        const bool oldest_hand_ok = oldest / LINX_TILE_HAND_DEPTH == hand;
+        const bool oldest_live =
+            (live[hand] & LINX_TILE_HAND_BIT(depth)) != 0u;
+        const bool oldest_reserved =
+            (reserved[hand] & LINX_TILE_HAND_BIT(depth)) != 0u;
+        const bool oldest_pinned = env->tile_pin_owner[oldest] != 0u;
+        const bool source_reuse =
+            linx_tile_output_reuses_bound_source(env, output_index, oldest);
+
+        if (oldest_hand_ok && oldest_live && !oldest_reserved &&
+            !oldest_pinned && !source_reuse) {
+            *tile_out = oldest;
+            return true;
+        }
+        if (linx_debug_local_enabled_p()) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx tile reserve full hand=%u count=%u"
+                          " oldest=%u q16_pin=0x%x live=0x%04x"
+                          " reserved=0x%04x output_index=%u\n",
+                          hand, count_by_hand[hand], oldest,
+                          env->tile_pin_owner[oldest], live[hand],
+                          reserved[hand], output_index);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx tile reserve reasons hand_ok=%u live=%u"
+                          " reserved=%u pin=%u source=%u\n",
+                          oldest_hand_ok, oldest_live, oldest_reserved,
+                          oldest_pinned, source_reuse);
         }
     }
     return false;
@@ -9224,6 +9281,41 @@ static bool linx_tile_publish_order_state(
     order[hand][0] = tile;
     count_by_hand[hand] = count + 1u;
     return true;
+}
+
+/* Apply one already-bound output to a private producer-age window copy. */
+static bool linx_tile_stage_output(
+    uint16_t live[LINX_TILE_HAND_COUNT],
+    uint16_t reserved[LINX_TILE_HAND_COUNT],
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
+    uint8_t count_by_hand[LINX_TILE_HAND_COUNT], unsigned tile)
+{
+    const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+    const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+
+    if (hand >= LINX_TILE_HAND_COUNT ||
+        (reserved[hand] & LINX_TILE_HAND_BIT(depth)) == 0u) {
+        return false;
+    }
+
+    if (count_by_hand[hand] == LINX_TILE_HAND_DEPTH) {
+        const unsigned oldest = order[hand][LINX_TILE_HAND_DEPTH - 1u];
+        const unsigned oldest_depth = oldest % LINX_TILE_HAND_DEPTH;
+
+        /* A full window can only reuse the architectural Q#16 slot. */
+        if (oldest / LINX_TILE_HAND_DEPTH != hand || oldest != tile) {
+            return false;
+        }
+        live[hand] &= ~LINX_TILE_HAND_BIT(oldest_depth);
+        order[hand][LINX_TILE_HAND_DEPTH - 1u] = 0u;
+        count_by_hand[hand]--;
+    } else if ((live[hand] & LINX_TILE_HAND_BIT(depth)) != 0u) {
+        return false;
+    }
+
+    reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
+    linx_tile_publish_output(live, tile);
+    return linx_tile_publish_order_state(order, count_by_hand, tile);
 }
 
 static void linx_tile_remove_order_state(
@@ -10147,6 +10239,11 @@ static bool linx_template_fret_stk_single_reg_fast(CPULinxState *env,
                                             &restore_host_loads,
                                             &restore_fallback_loads);
 
+    /* Validate the restored return target before publishing SP/RA. */
+    if (!linx_bstart_cache_fast_hit(env, value)) {
+        HELPER(linx_check_bstart_target)(env, value);
+    }
+
     linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_STK, reg, reg,
                                 stacksize, 1);
 
@@ -10172,17 +10269,6 @@ static bool linx_template_fret_stk_single_reg_fast(CPULinxState *env,
 
     const uint64_t ra = env->gpr[LINX_REG_RA];
     linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc, ra, old_sp);
-    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, ra);
-    if (frame_stats) {
-        if (ret_fast_hit) {
-            linx_frame_stat_ret_fast_hits++;
-        } else {
-            linx_frame_stat_ret_checks++;
-        }
-    }
-    if (!ret_fast_hit) {
-        HELPER(linx_check_bstart_target)(env, ra);
-    }
     linx_template_clear(env);
     env->pc = ra;
     linx_template_commit_or_chain(env, cs, env->pc, chain);
@@ -10490,6 +10576,19 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
                                    false,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    if (restore_count > 0) {
+        uint64_t restored_ra = env->gpr[LINX_REG_RA];
+        for (int i = 0; i < restore_count; i++) {
+            if (regs[i] == LINX_REG_RA) {
+                restored_ra = values[i];
+                break;
+            }
+        }
+        /* Validate the restored return target before publishing frame state. */
+        if (!linx_bstart_cache_fast_hit(env, restored_ra)) {
+            HELPER(linx_check_bstart_target)(env, restored_ra);
+        }
+    }
     const uint64_t host_verify_loads = trace_enabled ?
         linx_frame_stat_restore_host_verify_loads - host_verify_loads_before :
         0;
@@ -10522,17 +10621,6 @@ static void linx_template_fret_stk_impl(CPULinxState *env, uint64_t cur_pc,
 
     const uint64_t ra = env->gpr[LINX_REG_RA];
     linx_call_trace_emit(env, LINX_CALL_TRACE_FRET_STK, cur_pc, ra, old_sp);
-    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, ra);
-    if (frame_stats) {
-        if (ret_fast_hit) {
-            linx_frame_stat_ret_fast_hits++;
-        } else {
-            linx_frame_stat_ret_checks++;
-        }
-    }
-    if (!ret_fast_hit) {
-        HELPER(linx_check_bstart_target)(env, ra);
-    }
     linx_template_clear(env);
     env->pc = ra;
     linx_fret_stk_trace_publish(env, cur_pc, &trace_observation);
@@ -10583,6 +10671,10 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
                                    true,
                                    &restore_host_loads,
                                    &restore_fallback_loads);
+    /* FRET.RA resolves its target from pre-restore RA. */
+    if (!linx_bstart_cache_fast_hit(env, retRa)) {
+        HELPER(linx_check_bstart_target)(env, retRa);
+    }
     linx_frame_shape_hot_record(env, LINX_TEMPLATE_FRET_RA, reg_begin, reg_end,
                                 stacksize, restore_count);
 
@@ -10601,17 +10693,6 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
     linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
                               restore_count);
 
-    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, retRa);
-    if (frame_stats) {
-        if (ret_fast_hit) {
-            linx_frame_stat_ret_fast_hits++;
-        } else {
-            linx_frame_stat_ret_checks++;
-        }
-    }
-    if (!ret_fast_hit) {
-        HELPER(linx_check_bstart_target)(env, retRa);
-    }
     linx_template_clear(env);
     env->pc = retRa;
     linx_template_commit_or_chain(env, cs, env->pc, chain);
@@ -15385,8 +15466,8 @@ static bool linx_tile_get_shared_tload_size(const CPULinxState *env,
     if ((reg_dst & 0x3u) != 0u || size_class == 0u || size_class > 7u) {
         return false;
     }
-    /* Shared class 1 is 512 B; TMA uses log2(bytes)-4 internally. */
-    *size_code_out = size_class + 4u;
+    /* SharedTSize is PE-local: class 1 is 128 B. */
+    *size_code_out = size_class + 2u;
     return true;
 }
 
@@ -15447,6 +15528,24 @@ static bool linx_tile_complete_bound_output(CPULinxState *env,
     }
     const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
     const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+
+    if (hand >= LINX_TILE_HAND_COUNT ||
+        (reserved[hand] & LINX_TILE_HAND_BIT(depth)) == 0u) {
+        return false;
+    }
+    if (count_by_hand[hand] == LINX_TILE_HAND_DEPTH) {
+        const unsigned oldest = order[hand][LINX_TILE_HAND_DEPTH - 1u];
+        const unsigned oldest_depth = oldest % LINX_TILE_HAND_DEPTH;
+
+        /* The reservation selected the entry that ages out at this commit. */
+        if (oldest / LINX_TILE_HAND_DEPTH != hand || oldest != tile ||
+            env->tile_pin_owner[oldest] != 0u) {
+            return false;
+        }
+        live[hand] &= ~LINX_TILE_HAND_BIT(oldest_depth);
+        order[hand][LINX_TILE_HAND_DEPTH - 1u] = 0u;
+        count_by_hand[hand]--;
+    }
     reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
     linx_tile_publish_output(live, tile);
     return linx_tile_publish_order_state(order, count_by_hand, tile);
@@ -15717,8 +15816,8 @@ static bool linx_tile_collect_matrix_bindings(
     unsigned source_count = 0;
     unsigned output_count = 0;
 
-    if (env->tile_iot_count == 0u || !env->tile_fixp_attr_valid ||
-        env->tile_fixp_attr != 0u ||
+    if (env->tile_iot_count == 0u ||
+        !env->tile_fixp_attr_valid || env->tile_fixp_attr != 0u ||
         !linx_tile_collect_sources(env, sources, &source_count) ||
         source_count != required_sources) {
         return false;
@@ -16284,7 +16383,6 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 return;
             }
-            env->tile_iot_src_phys[index][source] = src_phys[source];
         }
     }
 
@@ -16292,32 +16390,38 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
     env->tile_iot_output_valid[index] = 0;
 
     if (desc.has_size && (vector_block || tile_output)) {
-        uint16_t occupied[LINX_TILE_HAND_COUNT];
+        uint16_t staged_live[LINX_TILE_HAND_COUNT];
+        uint16_t staged_reserved[LINX_TILE_HAND_COUNT];
+        uint8_t staged_order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
+        uint8_t staged_count[LINX_TILE_HAND_COUNT];
         unsigned dst_tile;
         const uint64_t bytes64 = desc.has_size && desc.size < 60u
                                  ? (1ull << (desc.size + 4u)) : 0;
 
-        for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
-            occupied[hand] = env->tile_hand_live[hand] |
-                             env->tile_hand_reserved[hand];
-        }
+        memcpy(staged_live, env->tile_hand_live, sizeof(staged_live));
+        memcpy(staged_reserved, env->tile_hand_reserved,
+               sizeof(staged_reserved));
+        memcpy(staged_order, env->tile_hand_order, sizeof(staged_order));
+        memcpy(staged_count, env->tile_hand_count, sizeof(staged_count));
         for (unsigned planned = 0; planned < index; planned++) {
             if (env->tile_iot_output_valid[planned]) {
                 const unsigned tile = env->tile_iot_output_phys[planned];
-                occupied[tile / LINX_TILE_HAND_DEPTH] |=
-                    LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
-            }
-        }
-        for (unsigned tile = 0;
-             tile < LINX_TILE_SLOT_COUNT; tile++) {
-            if (env->tile_pin_owner[tile]) {
-                occupied[tile / LINX_TILE_HAND_DEPTH] |=
-                    LINX_TILE_HAND_BIT(tile % LINX_TILE_HAND_DEPTH);
+                const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+                const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+                staged_reserved[hand] |= LINX_TILE_HAND_BIT(depth);
+                if (!linx_tile_stage_output(staged_live, staged_reserved,
+                                             staged_order, staged_count,
+                                             tile)) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    return;
+                }
             }
         }
         if (bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
             (bytes64 & 3u) != 0 ||
-            !linx_tile_reserve_output(occupied, &desc, &dst_tile)) {
+            !linx_tile_reserve_output(
+                env, staged_live, staged_reserved, staged_order, staged_count,
+                &desc, index, &dst_tile)) {
             env->tile_iot_src_valid[index] = 0;
             memset(env->tile_iot_src_phys[index], 0,
                    sizeof(env->tile_iot_src_phys[index]));
@@ -16374,8 +16478,17 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         }
         env->tile_iot_output_valid[index] = 1;
         env->tile_iot_output_phys[index] = dst_tile;
+        env->tile_hand_reserved[hand] |= LINX_TILE_HAND_BIT(depth);
         (void)depth;
         (void)prior_dst;
+    }
+
+    /* Freeze source provenance and pin each bound reader until commit. */
+    for (unsigned source = 0; source < 2; source++) {
+        if ((src_valid & (1u << source)) != 0u) {
+            env->tile_pin_owner[src_phys[source]] |= owner;
+            env->tile_iot_src_phys[index][source] = src_phys[source];
+        }
     }
 
     env->tile_iot_desc[env->tile_iot_count++] = packed;
@@ -16509,7 +16622,13 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
             env, sources[bias_index], with_scale ? 1u : env->tile_dtype)) {
         return false;
     }
-    return env->tile_reg_capacity[dst_tile] >= (1ull << (size_code + 4u));
+    /* The destination is only materialized after this preflight succeeds. */
+    const uint64_t allocated = UINT64_C(1) << (size_code + 4u);
+    const uint64_t required_bytes =
+        (uint64_t)linx_tile_cube_dim(env->lb[0]) *
+        linx_tile_cube_dim(env->lb[1]) * sizeof(uint32_t);
+
+    return allocated >= required_bytes;
 }
 
 static bool linx_tile_group_cube_profile(CPULinxState *env,
@@ -16537,6 +16656,8 @@ static bool linx_tile_group_cube_profile(CPULinxState *env,
         env->pe_id >= LINX_CORE4_PE_COUNT ||
         env->blocktype != LINX_BLOCK_CUBE ||
         (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
+        !linx_tile_datr_applicable(
+            env->blocktype, env->tile_func, env->tile_attr_raw) ||
         env->tile_dtype != 1u || env->tile_shared_binder_count != 1u ||
         !linx_tile_group_fp32_sizes(env, &left_bytes, &right_bytes,
                                     &output_bytes, &output_size_code) ||
@@ -16576,7 +16697,8 @@ static bool linx_tile_group_cube_profile(CPULinxState *env,
         &cpu->core4->shared_tile[env->tile_shared_binder[0]];
     qemu_mutex_lock(&cpu->core4->lock);
     valid = shared->ready && shared->defined_mask == 0xfu &&
-            shared->dtype == 1u && shared->bytes == right_bytes;
+            shared->dtype == 1u &&
+            shared->bytes == right_bytes * LINX_CORE4_PE_COUNT;
     qemu_mutex_unlock(&cpu->core4->lock);
     return valid;
 }
@@ -17015,9 +17137,13 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
             peer->tile_acc_cols = n;
             peer->tile_acc_rows = m;
         }
+        const uint32_t right_bytes =
+            core4->collective_k * core4->collective_n * sizeof(uint32_t);
+        const uint8_t *shared_right = shared->data + i * right_bytes;
+
         valid = valid && linx_tile_cube_compute_shared_b_057(
-            peer, core4->collective_src[i], shared->data,
-            shared->bytes, shared->dtype, output_size_code, with_acc);
+            peer, core4->collective_src[i], shared_right,
+            right_bytes, shared->dtype, output_size_code, with_acc);
         if (!valid) {
             break;
         }
@@ -17334,19 +17460,21 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
                 }
-                const size_t bytes = UINT64_C(1) << (size_code + 4u);
-                g_autofree uint8_t *staged = g_malloc(bytes);
+                const size_t local_bytes = UINT64_C(1) << (size_code + 4u);
+                const size_t aggregate_bytes =
+                    local_bytes * LINX_CORE4_PE_COUNT;
+                g_autofree uint8_t *staged = g_malloc(aggregate_bytes);
                 const uint64_t base = env->gpr[addr_reg];
-                for (size_t i = 0; i < bytes; i++) {
+                for (size_t i = 0; i < aggregate_bytes; i++) {
                     staged[i] = cpu_ldub_data(env, (abi_ptr)(base + i));
                 }
                 LinxSharedTileVersion *shared =
                     &cpu->core4->shared_tile[env->tile_shared_binder[0]];
                 qemu_mutex_lock(&cpu->core4->lock);
-                memcpy(shared->data, staged, bytes);
-                memset(shared->data + bytes, 0,
-                       LINX_SHARED_TILE_MAX_BYTES - bytes);
-                shared->bytes = bytes;
+                memcpy(shared->data, staged, aggregate_bytes);
+                memset(shared->data + aggregate_bytes, 0,
+                       LINX_SHARED_TILE_MAX_BYTES - aggregate_bytes);
+                shared->bytes = aggregate_bytes;
                 shared->dtype = linx_tile_effective_dtype(env);
                 shared->producer_bpc = env->bpc;
                 shared->defined_mask = 0xfu;
@@ -20347,6 +20475,16 @@ static bool linx_is_bstart_at_addr(CPULinxState *env, uint64_t pc)
         }
         const uint32_t insn = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
                               ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+
+        /*
+         * PTO defines B.HINT TRACE.{begin,end} as a special empty block
+         * marker.  Bit 15 selects begin versus end and is intentionally
+         * excluded from the opcode match, so both encodings are valid
+         * indirect/return targets.
+         */
+        if ((insn & UINT32_C(0xffff7fff)) == UINT32_C(0x00001033)) {
+            return true;
+        }
 
         if (linx_is_legacy_ret_j_wrapper_target(env, pc)) {
             return true;

@@ -181,9 +181,16 @@ static inline uint32_t linx_tile_datr_allowed(uint32_t blocktype,
         }
         return function == 3u ? 0u : LINX_DATR_LAYOUT;
     case 6u: /* CUBE */
-        return function == 8u ?
-            LINX_DATR_SAT | LINX_DATR_CANONICALIZE |
-            LINX_DATR_DATA_TYPE | LINX_DATR_RMODE | LINX_DATR_LAYOUT : 0u;
+        if (!linx_tile_cube_function_accepted(function)) {
+            return 0u;
+        }
+        /*
+         * Matrix B.DATR carries BType, RMode and Sat. PadValue shares the
+         * common header encoding but is not consumed by CUBE, so every encoded
+         * PadValue, including Null, is semantically inert for this family.
+         */
+        return LINX_DATR_SAT | LINX_DATR_DATA_TYPE | LINX_DATR_RMODE |
+               LINX_DATR_PAD_OR_BYTE_ID;
     case 7u: /* TEPL */
         return linx_tile_tepl_datr_allowed(function & 0x7fu);
     default:

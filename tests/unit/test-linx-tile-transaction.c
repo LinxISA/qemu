@@ -383,6 +383,32 @@ static void test_tepl_trems_zero_scalar_is_atomic(void)
     g_free(env);
 }
 
+static void test_cube_datr_uses_active_matrix_profile(void)
+{
+    static const uint32_t active_functions[] = {
+        0u, 1u, 2u, 4u, 5u, 6u, 16u, 17u, 18u, 20u, 21u, 22u,
+    };
+    const uint32_t null_fp32_none = (1u << 7) | (3u << 12);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(active_functions); i++) {
+        const uint32_t function = active_functions[i];
+
+        g_assert_true(linx_tile_datr_applicable(6u, function,
+                                                null_fp32_none));
+        g_assert_true(linx_tile_datr_applicable(
+            6u, function, null_fp32_none | (7u << 25) | (1u << 28)));
+        g_assert_false(linx_tile_datr_applicable(
+            6u, function, null_fp32_none | (1u << 17)));
+        g_assert_false(linx_tile_datr_applicable(
+            6u, function, null_fp32_none | (1u << 2)));
+        g_assert_false(linx_tile_datr_applicable(
+            6u, function, null_fp32_none | (1u << 22)));
+    }
+
+    g_assert_false(linx_tile_cube_function_accepted(8u));
+    g_assert_cmphex(linx_tile_datr_allowed(6u, 8u), ==, 0u);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -408,5 +434,7 @@ int main(int argc, char **argv)
                     test_tepl_trem_zero_tile_divisor_is_atomic);
     g_test_add_func("/linx/tile-transaction/tepl-trems-zero-scalar",
                     test_tepl_trems_zero_scalar_is_atomic);
+    g_test_add_func("/linx/tile-transaction/cube-datr-profile",
+                    test_cube_datr_uses_active_matrix_profile);
     return g_test_run();
 }

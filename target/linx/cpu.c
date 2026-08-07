@@ -2091,6 +2091,11 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     CPULinxState *env = cpu_env(cs);
     int exception = cs->exception_index;
     uint64_t last_pc = env->pc;
+    const uint32_t src_acr = env->acr & 0xfu;
+    const uint32_t dst_acr = src_acr == 0u ? 0u : 1u;
+    const bool direct_boot_fault =
+        linx_cpu_env_enabled("LINX_VIRT_TEST_FINISHER") &&
+        env->ssr_acr[dst_acr][LINX_SSR_EVBASE] == 0u;
 
     linx_dump_event_state(cs, "interrupt-entry", exception);
 
@@ -2133,6 +2138,16 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                           "Linx: block fault at PC=0x%" PRIx64 "\n",
                           last_pc);
         }
+        if (direct_boot_fault) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: unhandled block/control-flow fault in "
+                          "finisher direct boot; exiting with failure\n");
+            qemu_system_shutdown_request_with_code(
+                SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 1);
+            cs->exception_index = -1;
+            cpu_exit(cs);
+            return;
+        }
         /* v0.3: BI is determined by the E_BLOCK EC class. */
         {
             const uint8_t ec = linx_eblock_cause_ec(env->pending_trap_cause);
@@ -2147,6 +2162,16 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case LINX_EXCP_TILE_FAULT:
+        if (direct_boot_fault) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: unhandled Tile fault in finisher direct "
+                          "boot; exiting with failure\n");
+            qemu_system_shutdown_request_with_code(
+                SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 1);
+            cs->exception_index = -1;
+            cpu_exit(cs);
+            return;
+        }
         linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                LINX_TRAPNUM_BLOCK_TRAP,
                                true,  /* argv: fault address/TPC */
@@ -2158,6 +2183,26 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx: illegal instruction at PC=0x%" PRIx64 "\n",
                       last_pc);
+        {
+            /*
+             * A finisher-enabled bare ELF has no firmware trap fallback. If
+             * it did not install EVBASE, returning to the faulting PC would
+             * replay the same illegal instruction forever. Report a failed
+             * guest run while preserving architectural trap delivery for
+             * AVS/Linux guests that installed an exception vector.
+             */
+            if (linx_cpu_env_enabled("LINX_VIRT_TEST_FINISHER") &&
+                env->ssr_acr[dst_acr][LINX_SSR_EVBASE] == 0u) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Linx: unhandled illegal instruction in "
+                              "finisher direct boot; exiting with failure\n");
+                qemu_system_shutdown_request_with_code(
+                    SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 1);
+                cs->exception_index = -1;
+                cpu_exit(cs);
+                return;
+            }
+        }
         linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
                                LINX_TRAPNUM_ILLEGAL_INST,
                                false, /* argv */
@@ -2254,8 +2299,8 @@ static void linx_cpu_do_interrupt(CPUState *cs)
          */
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
 
-        const uint32_t src_acr = env->acr & 0xFu;
-        const uint32_t dst_acr = 1;
+        const uint32_t irq_src_acr = env->acr & 0xFu;
+        const uint32_t irq_dst_acr = 1;
         /*
          * Asynchronous IRQs are taken at instruction boundaries, so env->pc is
          * already the architectural resume address. Using insn_pc_next here can
@@ -2271,70 +2316,70 @@ static void linx_cpu_do_interrupt(CPUState *cs)
          * scalar blocks.
          */
         const bool user_bstart_resume =
-            src_acr == 2 && linx_cpu_is_bstart_at_addr(cs, resume_pc);
+            irq_src_acr == 2 && linx_cpu_is_bstart_at_addr(cs, resume_pc);
         if (user_bstart_resume) {
             resume_bpc = resume_pc;
         }
 
-        uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], src_acr);
+        uint64_t src_cstate = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], irq_src_acr);
         src_cstate |= LINX_ECSTATE_BI_BIT;
 
-        linx_acr_save_block_state(env, src_acr);
+        linx_acr_save_block_state(env, irq_src_acr);
         if (user_bstart_resume) {
-            linx_acr_reset_block_state_for_header(env, src_acr, resume_bpc);
+            linx_acr_reset_block_state_for_header(env, irq_src_acr, resume_bpc);
         }
-        const LinxAcrBlockState *src_state = &env->acr_block_state[src_acr];
-        linx_acr_restore_block_state(env, dst_acr);
+        const LinxAcrBlockState *src_state = &env->acr_block_state[irq_src_acr];
+        linx_acr_restore_block_state(env, irq_dst_acr);
 
-        const uint64_t evbase = env->ssr_acr[dst_acr][LINX_SSR_EVBASE];
+        const uint64_t evbase = env->ssr_acr[irq_dst_acr][LINX_SSR_EVBASE];
 
-        if (src_acr == dst_acr) {
+        if (irq_src_acr == irq_dst_acr) {
             const uint32_t depth_before = env->ebarg_stack_depth;
-            if (linx_ebarg_stack_push(env, dst_acr)) {
-                trace_linx_ebarg_stack_push(dst_acr, depth_before,
+            if (linx_ebarg_stack_push(env, irq_dst_acr)) {
+                trace_linx_ebarg_stack_push(irq_dst_acr, depth_before,
                                             env->ebarg_stack_depth);
             } else if (depth_before >= LINX_EBARG_STACK_DEPTH) {
-                trace_linx_ebarg_stack_overflow(dst_acr, depth_before);
+                trace_linx_ebarg_stack_overflow(irq_dst_acr, depth_before);
             }
         }
 
         /* Save interrupt source state into managing ACR bank. */
-        env->ssr_acr[dst_acr][LINX_SSR_ECSTATE] = src_cstate;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_CUR] = resume_bpc;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_BPC_TGT] = resume_pc;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TPC] = resume_pc;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LRA] = 0;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ0] = src_state->tq[0];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ1] = src_state->tq[1];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ2] = src_state->tq[2];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_TQ3] = src_state->tq[3];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ0] = src_state->uq[0];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ1] = src_state->uq[1];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ2] = src_state->uq[2];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_UQ3] = src_state->uq[3];
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(src_state->lb[0], src_state->lb[1], src_state->lb[2]);
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(src_state->lc[0], src_state->lc[1], src_state->lc[2]);
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
-        env->ssr_acr[dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_ECSTATE] = src_cstate;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG0] = (uint64_t)(src_state->blocktype & 0x1fu);
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_BPC_CUR] = resume_bpc;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_BPC_TGT] = resume_pc;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_TPC] = resume_pc;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_LRA] = 0;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_TQ0] = src_state->tq[0];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_TQ1] = src_state->tq[1];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_TQ2] = src_state->tq[2];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_TQ3] = src_state->tq[3];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_UQ0] = src_state->uq[0];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_UQ1] = src_state->uq[1];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_UQ2] = src_state->uq[2];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_UQ3] = src_state->uq[3];
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_LB] = linx_pack_u16x3(src_state->lb[0], src_state->lb[1], src_state->lb[2]);
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_LC] = linx_pack_u16x3(src_state->lc[0], src_state->lc[1], src_state->lc[2]);
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_EXT_PTR] = 0;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_EBARG_EXT_META] = 0;
 
         /* Find an IRQ ID from IPENDING (simple bitmap model). */
         uint32_t irq_id = LINX_IRQ_TIMER0;
         {
-            const uint64_t ip = env->ssr_acr[dst_acr][LINX_SSR_IPENDING];
+            const uint64_t ip = env->ssr_acr[irq_dst_acr][LINX_SSR_IPENDING];
             if (ip) {
                 irq_id = (uint32_t)ctz64(ip);
             }
         }
 
-        trace_linx_deliver_async_irq(src_acr, dst_acr, irq_id, 1u,
+        trace_linx_deliver_async_irq(irq_src_acr, irq_dst_acr, irq_id, 1u,
                                      resume_pc, resume_bpc, resume_pc,
                                      evbase, src_cstate,
-                                     env->ssr_acr[dst_acr][LINX_SSR_IPENDING]);
+                                     env->ssr_acr[irq_dst_acr][LINX_SSR_IPENDING]);
 
-        env->ssr_acr[dst_acr][LINX_SSR_TRAPNO] =
+        env->ssr_acr[irq_dst_acr][LINX_SSR_TRAPNO] =
             linx_trapno_make(false, true, 0, LINX_TRAPNUM_INTERRUPT);
-        env->ssr_acr[dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)irq_id;
+        env->ssr_acr[irq_dst_acr][LINX_SSR_TRAPARG0] = (uint64_t)irq_id;
 
         /*
          * Linux entry expects live SSR_TP to name thread_info for user-origin
@@ -2342,26 +2387,27 @@ static void linx_cpu_do_interrupt(CPUState *cs)
          * handoff; asynchronous interrupts need the same TLS save so the
          * from_user prologue can switch to the kernel stack.
          */
-        if (src_acr == 2 && dst_acr == 1) {
+        if (irq_src_acr == 2 && irq_dst_acr == 1) {
             const uint64_t user_tp = env->ssr[LINX_SSR_TP];
-            const uint64_t thread_info = env->ssr_acr[dst_acr][LINX_SSR_ETEMP];
+            const uint64_t thread_info = env->ssr_acr[irq_dst_acr][LINX_SSR_ETEMP];
 
             env->ssr[LINX_SSR_TP] = thread_info;
-            env->ssr_acr[dst_acr][LINX_SSR_ETEMP0] = user_tp;
+            env->ssr_acr[irq_dst_acr][LINX_SSR_ETEMP0] = user_tp;
             linx_cpu_tp_trace_emit_handoff(env, "irq_user_to_kernel",
-                                           src_acr, dst_acr, user_tp,
+                                           irq_src_acr, irq_dst_acr, user_tp,
                                            thread_info);
-        } else if (src_acr == dst_acr) {
+        } else if (irq_src_acr == irq_dst_acr) {
             linx_cpu_prepare_same_acr_exception_frame(env,
                                                       "irq_same_acr_frame",
-                                                      dst_acr);
+                                                      irq_dst_acr);
         }
 
         /* Switch to managing ring and vector. */
         env->ssr[LINX_SSR_CSTATE] &= ~LINX_CSTATE_I_BIT;
-        env->acr = dst_acr;
+        env->acr = irq_dst_acr;
         linx_refresh_tb_dbg_active(env);
-        env->ssr[LINX_SSR_CSTATE] = linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], dst_acr);
+        env->ssr[LINX_SSR_CSTATE] =
+            linx_cstate_set_acr(env->ssr[LINX_SSR_CSTATE], irq_dst_acr);
         env->pc = evbase ? evbase : last_pc;
         cs->exception_index = -1;
         linx_dump_event_state(cs, "irq-delivered", exception);
