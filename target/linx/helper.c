@@ -15459,19 +15459,25 @@ static void linx_tile_consume_bound_sources(
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
     uint8_t *carrier_valid, uint8_t *carrier)
 {
-    for (unsigned source = 0; source < 2; source++) {
-        unsigned tile;
-        const unsigned absent = source == 0 ? LINX_IOT_S0V : LINX_IOT_S1V;
-        const unsigned reuse = source == 0 ? LINX_IOT_S0R : LINX_IOT_S1R;
-
-        if ((desc->flags & absent) != 0 ||
-            !linx_tile_get_bound_source(env, index, source, &tile)) {
-            continue;
-        }
-        linx_tile_release_source(live, order, count_by_hand, tile,
-                                 (desc->flags & reuse) != 0,
-                                 carrier_valid, carrier);
-    }
+    /*
+     * PTO v0.3/v5 B.IOT has no source-reuse fields.  Bits [18:15] are
+     * PE_MASK, while source lifetime is tracked by the producer-age window
+     * and reader completion.  In particular, binding a source to a block
+     * must not remove its architectural hand/rank name after commit: a later
+     * block may still legally refer to that producer.  The old v4 path used
+     * S0R/S1R here, but interpreting the v5 PE_MASK as those flags drops
+     * sources and turns valid later references into repeated illegal traps.
+     * Keep the staged live/order state untouched; failed blocks already use a
+     * private copy, so this also preserves fail-before-mutation semantics.
+     */
+    (void)env;
+    (void)live;
+    (void)index;
+    (void)desc;
+    (void)order;
+    (void)count_by_hand;
+    (void)carrier_valid;
+    (void)carrier;
 }
 
 static bool linx_tile_collect_tepl_bindings(
