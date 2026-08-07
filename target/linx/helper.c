@@ -12467,6 +12467,32 @@ static inline uint32_t linx_tile_canonicalize_nan(uint32_t value,
     }
 }
 
+/*
+ * Row-reduce destination stride: the destination allocation holds
+ * `valid_rows x stride` elements (TROWSUM.md: Col/LB2 is the row-major
+ * stride of the reduced tile; the compiler sizes the destination TSize as
+ * rows x stride x elem).  A dense 1-column vector is the stride-1 special
+ * case.  Returns false when the allocation cannot hold an integral number
+ * of rows at any stride.
+ */
+static inline bool linx_tile_tepl_row_reduce_dst_stride(
+    const CPULinxState *env, uint32_t bytes64, unsigned dst_elem_bytes,
+    unsigned *stride_out)
+{
+    const uint64_t rows = (uint32_t)(env->lb[1] & 0xffffu);
+
+    if (rows == 0u || dst_elem_bytes == 0u || bytes64 == 0u ||
+        bytes64 % (rows * dst_elem_bytes) != 0u) {
+        return false;
+    }
+    const uint64_t stride = bytes64 / (rows * dst_elem_bytes);
+    if (stride == 0u || stride > UINT32_MAX) {
+        return false;
+    }
+    *stride_out = (unsigned)stride;
+    return true;
+}
+
 static bool linx_tile_tepl_product(CPULinxState *env, unsigned dst_tile,
                                    unsigned src_tile, bool row_reduce,
                                    uint32_t rows, uint32_t cols,
@@ -12482,6 +12508,12 @@ static bool linx_tile_tepl_product(CPULinxState *env, unsigned dst_tile,
         return false;
     }
 
+    unsigned dst_stride = 1u;
+    if (row_reduce &&
+        !linx_tile_tepl_row_reduce_dst_stride(env, bytes, elem_bytes,
+                                              &dst_stride)) {
+        return false;
+    }
     for (uint32_t output = 0; output < output_count; output++) {
         const uint32_t reduce_count = row_reduce ? cols : rows;
         uint32_t product = linx_tile_tepl_one(dtype);
@@ -12498,7 +12530,8 @@ static bool linx_tile_tepl_product(CPULinxState *env, unsigned dst_tile,
             product = linx_tile_tepl_binary_word(env, 0x002u, dtype,
                                                  product, value);
         }
-        if (!linx_tile_set_elem(env, dst_tile, output, elem_bytes, product)) {
+        if (!linx_tile_set_elem(env, dst_tile, output * dst_stride,
+                                elem_bytes, product)) {
             return false;
         }
     }
@@ -12507,8 +12540,8 @@ static bool linx_tile_tepl_product(CPULinxState *env, unsigned dst_tile,
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
     linx_tile_set_dtype(env, dst_tile, dtype);
     if (row_reduce) {
-        return linx_tile_set_shape(env, dst_tile, 1u, rows, 1u,
-                                   bytes / elem_bytes);
+        return linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride,
+                                   bytes / (dst_stride * elem_bytes));
     }
     if (bytes % (cols * elem_bytes) != 0u) {
         return false;
@@ -12533,6 +12566,12 @@ static bool linx_tile_tepl_arg_reduce(CPULinxState *env, unsigned dst_tile,
         return false;
     }
 
+    unsigned dst_stride = 1u;
+    if (row_reduce &&
+        !linx_tile_tepl_row_reduce_dst_stride(env, bytes, sizeof(uint32_t),
+                                              &dst_stride)) {
+        return false;
+    }
     for (uint32_t output = 0; output < output_count; output++) {
         const uint32_t reduce_count = row_reduce ? cols : rows;
         const uint32_t first_r = row_reduce ? output : 0u;
@@ -12562,8 +12601,8 @@ static bool linx_tile_tepl_arg_reduce(CPULinxState *env, unsigned dst_tile,
                 best_index = reduce;
             }
         }
-        if (!linx_tile_set_elem(env, dst_tile, output, sizeof(uint32_t),
-                                best_index)) {
+        if (!linx_tile_set_elem(env, dst_tile, output * dst_stride,
+                                sizeof(uint32_t), best_index)) {
             return false;
         }
     }
@@ -12572,8 +12611,8 @@ static bool linx_tile_tepl_arg_reduce(CPULinxState *env, unsigned dst_tile,
     linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
     linx_tile_set_dtype(env, dst_tile, 25u);
     if (row_reduce) {
-        return linx_tile_set_shape(env, dst_tile, 1u, rows, 1u,
-                                   bytes / sizeof(uint32_t));
+        return linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride,
+                                   bytes / (dst_stride * sizeof(uint32_t)));
     }
     if (bytes % (cols * sizeof(uint32_t)) != 0u) {
         return false;
@@ -13747,7 +13786,8 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = integers;
         break;
     case 0x02du: /* TABS */
-        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | s8;
+        /* TABS.md: dtypes are only F32/F16. */
+        supported = fp32 | fp16;
         break;
     case 0x02fu: /* TNEG */
         supported = fp64 | fp32 | fp16 | bf16 | s64 | s32 | s16;
@@ -14059,8 +14099,14 @@ static bool linx_tile_tepl64_core(CPULinxState *env, unsigned dst_tile,
                     env, sum ? 0x000u : (maximum ? 0x004u : 0x005u),
                     dtype, result, value);
             }
-            const uint32_t dst_lane = row_reduce ? o * physical_cols : o;
-            if (!linx_tile_set_elem64(env, dst_tile, dst_lane, 8u, result))
+            unsigned dst_stride = 1u;
+            if (row_reduce &&
+                !linx_tile_tepl_row_reduce_dst_stride(env, bytes, 8u,
+                                                       &dst_stride)) {
+                return false;
+            }
+            if (!linx_tile_set_elem64(env, dst_tile,
+                                      o * dst_stride, 8u, result))
                 return false;
         }
         return true;
@@ -14291,6 +14337,27 @@ static inline bool linx_tile_tepl_col_reduce_dst_legal(
            bytes64 >= (uint64_t)output_elems * dst_elem_bytes;
 }
 
+static inline unsigned linx_tile_tepl_row_reduce_output_elems(
+    const CPULinxState *env)
+{
+    return (unsigned)(env->lb[1] & 0xffffu);
+}
+
+static inline bool linx_tile_tepl_row_reduce_dst_legal(
+    const CPULinxState *env, uint32_t impl_op, uint32_t bytes64,
+    unsigned dtype_elem_bytes)
+{
+    const unsigned dst_elem_bytes =
+        linx_tile_tepl_impl_is_arg_reduce(impl_op) ? 4u : dtype_elem_bytes;
+    const unsigned output_elems = linx_tile_tepl_row_reduce_output_elems(env);
+
+    return linx_tile_tepl_impl_is_row_reduce(impl_op) &&
+           output_elems != 0u && dst_elem_bytes != 0u &&
+           bytes64 <= LINX_TILE_MAX_BYTES && bytes64 % dst_elem_bytes == 0u &&
+           bytes64 >= (uint64_t)output_elems * dst_elem_bytes;
+}
+
+
 /*
  * Column-reduce source shape: same LB0/LB1/LB2 contract as the ordinary
  * shape helper, but the destination is a vector of `cols` values so the
@@ -14298,6 +14365,35 @@ static inline bool linx_tile_tepl_col_reduce_dst_legal(
  * apply.  Destination capacity is validated separately.
  */
 static bool linx_tile_tepl_col_reduce_shape(const CPULinxState *env,
+                                            unsigned elem_bytes,
+                                            uint32_t elems,
+                                            uint32_t *rows_out,
+                                            uint32_t *cols_out,
+                                            uint32_t *physical_cols_out)
+{
+    uint32_t cols = (uint32_t)(env->lb[0] & 0xffffffffu);
+    uint32_t rows = (uint32_t)(env->lb[1] & 0xffffffffu);
+    uint32_t physical_cols = (uint32_t)(env->lb[2] & 0xffffffffu);
+
+    if (cols == 0u) {
+        cols = elems;
+    }
+    if (rows == 0u) {
+        rows = 1u;
+    }
+    if (physical_cols == 0u) {
+        physical_cols = cols;
+    }
+    if (elem_bytes == 0u || cols == 0u || physical_cols < cols) {
+        return false;
+    }
+    *rows_out = rows;
+    *cols_out = cols;
+    *physical_cols_out = physical_cols;
+    return true;
+}
+
+static bool linx_tile_tepl_row_reduce_shape(const CPULinxState *env,
                                             unsigned elem_bytes,
                                             uint32_t elems,
                                             uint32_t *rows_out,
@@ -14372,7 +14468,18 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
     uint32_t cols = 0;
     uint32_t physical_cols = 0;
 
-    const bool col_reduce = linx_tile_tepl_impl_is_col_reduce(impl_op);
+    const bool is_row_reduce = linx_tile_tepl_impl_is_row_reduce(impl_op);
+    const bool is_col_reduce = linx_tile_tepl_impl_is_col_reduce(impl_op);
+    const bool reduce_dst_legal =
+        is_col_reduce
+            ? linx_tile_tepl_col_reduce_dst_legal(env, impl_op,
+                                                  (uint32_t)bytes64,
+                                                  elem_bytes)
+            : (is_row_reduce
+                   ? linx_tile_tepl_row_reduce_dst_legal(env, impl_op,
+                                                         (uint32_t)bytes64,
+                                                         elem_bytes)
+                   : false);
 
     if (!linx_tile_tepl_selector_accepted(canonical_op) ||
         !linx_tile_tepl_selector_executable(canonical_op) ||
@@ -14386,10 +14493,8 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         bytes64 > LINX_TILE_MAX_BYTES ||
         (elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u &&
          elem_bytes != 8u) ||
-        (col_reduce
-             ? !linx_tile_tepl_col_reduce_dst_legal(env, impl_op,
-                                                    (uint32_t)bytes64,
-                                                    elem_bytes)
+        ((is_col_reduce || is_row_reduce)
+             ? !reduce_dst_legal
              : ((bytes64 % elem_bytes) != 0u ||
                 !linx_tile_tepl_shape(env, elem_bytes,
                                       (uint32_t)(bytes64 / elem_bytes),
@@ -14399,8 +14504,14 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
 
     op = impl_op;
 
-    if (col_reduce &&
+    if (is_col_reduce &&
         !linx_tile_tepl_col_reduce_shape(
+            env, elem_bytes, (uint32_t)(bytes64 / elem_bytes),
+            &rows, &cols, &physical_cols)) {
+        return false;
+    }
+    if (is_row_reduce &&
+        !linx_tile_tepl_row_reduce_shape(
             env, elem_bytes, (uint32_t)(bytes64 / elem_bytes),
             &rows, &cols, &physical_cols)) {
         return false;
@@ -14429,10 +14540,19 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
         linx_tile_set_elem_bytes(env, dst_tile, 8u);
         linx_tile_set_dtype(env, dst_tile, operation_dtype);
-        if (col_reduce) {
+        if (is_col_reduce) {
             if (bytes64 % (cols * 8u) != 0u ||
                 !linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
                                      (uint32_t)(bytes64 / (cols * 8u)))) {
+                return false;
+            }
+        } else if (is_row_reduce) {
+            unsigned dst_stride = 1u;
+            if (!linx_tile_tepl_row_reduce_dst_stride(
+                    env, (uint32_t)bytes64, 8u, &dst_stride) ||
+                !linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride,
+                                     (uint32_t)(bytes64 /
+                                                (dst_stride * 8u)))) {
                 return false;
             }
         } else if (!linx_tile_set_block_shape(env, dst_tile,
@@ -14527,7 +14647,19 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         const uint32_t src_rows = env->tile_reg_valid_rows[src0_tile];
         const uint32_t src_cols = env->tile_reg_valid_cols[src0_tile];
         const uint32_t src_stride = env->tile_reg_cols[src0_tile];
-        if (row_off + src_rows > rows || col_off + src_cols > cols) {
+        /*
+         * TINSERT.md: LB0/LB1 are the source sub-tile ValidCol/ValidRow,
+         * LB2 (Col) is the destination tile total column count / row stride.
+         * The destination window bounds are therefore checked against LB2 and
+         * the destination row count derived from the allocation size, not
+         * against the source window shape carried in LB0/LB1.
+         */
+        const uint64_t dst_cols = physical_cols;
+        const uint64_t dst_elem_count = bytes64 / elem_bytes;
+        if (dst_cols == 0u || elem_bytes == 0u ||
+            dst_elem_count % dst_cols != 0u ||
+            row_off + src_rows > dst_elem_count / dst_cols ||
+            col_off + src_cols > dst_cols) {
             return false;
         }
         for (uint32_t r = 0; r < src_rows; r++) {
@@ -14929,6 +15061,11 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
         if (!has_src0) {
             return false;
         }
+        unsigned dst_stride = 1u;
+        if (!linx_tile_tepl_row_reduce_dst_stride(
+                env, (uint32_t)bytes64, elem_bytes, &dst_stride)) {
+            return false;
+        }
         for (uint32_t r = 0; r < rows; r++) {
             uint32_t result = 0;
             if (!linx_tile_get_elem(env, src0_tile, r * physical_cols,
@@ -14954,9 +15091,28 @@ static bool linx_tile_tepl(CPULinxState *env, unsigned dst_tile,
                         result, value);
                 }
             }
-            linx_tile_set_elem(env, dst_tile, r * physical_cols, elem_bytes,
+            linx_tile_set_elem(env, dst_tile, r * dst_stride, elem_bytes,
                                result);
         }
+        /*
+         * Row-reduce destination is a column vector, one value per row
+         * (TROWMAX.md: "dst column/vector tile, one value per row").  The
+         * destination allocation holds rows x stride elements: a dense
+         * 1-column vector when the TSize has one element per row, or a
+         * row-strided tile when the compiler allocated
+         * rows x LB2 x elem (e.g. TileM x 8 with ValidCol=1 in
+         * normalize_weight_pto.hpp).  Publish the stride so consumers
+         * (TROWEXPAND, TADDS, TSTORE, ...) read each row at its own lane.
+         */
+        env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
+        linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+        linx_tile_set_dtype(env, dst_tile, operation_dtype);
+        if (!linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride,
+                                 (uint32_t)(bytes64 /
+                                            (dst_stride * elem_bytes)))) {
+            return false;
+        }
+        return true;
     } else if (op == 0x015u || op == 0x016u || op == 0x017u) {
         if (!has_src0) {
             return false;
@@ -15556,6 +15712,22 @@ static inline unsigned linx_tile_cube_dim(uint32_t value)
 {
     return value ? value : 8u;
 }
+static bool linx_tile_cube_dst_legal(const CPULinxState *env,
+                                         uint32_t bytes)
+{
+    const unsigned m = linx_tile_cube_dim(env->lb[0]);
+    const unsigned n = linx_tile_cube_dim(env->lb[1]);
+    const uint8_t acc_dtype = linx_tile_numeric_acc_dtype(env->tile_dtype);
+    const unsigned acc_bytes = acc_dtype == UINT8_MAX
+        ? 0u : linx_tile_dtype_elem_bytes(acc_dtype);
+
+    /* CUBE D is an AccType (S32/F32) M x N Local Tile; LB0=M, LB1=N, LB2=K. */
+    return acc_bytes != 0u && m != 0u && n != 0u &&
+           bytes >= (uint64_t)m * n * acc_bytes &&
+           bytes % acc_bytes == 0u &&
+           m <= UINT16_MAX && n <= UINT16_MAX;
+}
+
 
 static bool linx_tile_cube_operand_legal(const CPULinxState *env,
                                          unsigned tile, uint32_t dtype,
@@ -15618,10 +15790,12 @@ static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
                                                      unsigned slot)
 {
     /*
-     * The B.IOR assembly list is encoded as RegSrc1, RegSrc0, RegSrc2,
-     * followed by RegDst.  Keep both RI consumers on this canonical order.
+     * B.IOR.md (pto-spec@a7f9aabe): the authored list is
+     * `B.IOR RegSrc0, RegSrc1, RegSrc2, ->RegDst` with RegSrc0 at
+     * [19:15] and RegSrc1 at [24:20].  Keep both RI consumers on this
+     * canonical order.
      */
-    static const unsigned shifts[] = { 10, 5, 15, 0 };
+    static const unsigned shifts[] = { 5, 10, 15, 0 };
 
     g_assert(slot < ARRAY_SIZE(shifts));
     return (desc >> shifts[slot]) & 0x1fu;
@@ -15778,6 +15952,22 @@ static bool linx_tile_get_bound_output(const CPULinxState *env,
     return true;
 }
 
+static bool linx_tile_tile_is_bound_source_at(const CPULinxState *env,
+                                                  unsigned index,
+                                                  unsigned tile)
+{
+    if (index >= LINX_TILE_MAX_IOT) {
+        return false;
+    }
+    for (unsigned source = 0; source < 2; source++) {
+        if ((env->tile_iot_src_valid[index] & (1u << source)) != 0u &&
+            env->tile_iot_src_phys[index][source] == tile) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool linx_tile_complete_bound_output(CPULinxState *env,
                                             uint16_t live[LINX_TILE_HAND_COUNT],
                                             uint16_t reserved[LINX_TILE_HAND_COUNT],
@@ -15804,7 +15994,8 @@ static bool linx_tile_complete_bound_output(CPULinxState *env,
 
         /* The reservation selected the entry that ages out at this commit. */
         if (oldest / LINX_TILE_HAND_DEPTH != hand || oldest != tile ||
-            env->tile_pin_owner[oldest] != 0u) {
+            (env->tile_pin_owner[oldest] != 0u &&
+             !linx_tile_tile_is_bound_source_at(env, index, oldest))) {
             return false;
         }
         live[hand] &= ~LINX_TILE_HAND_BIT(oldest_depth);
@@ -16382,6 +16573,7 @@ static bool linx_tile_preflight_tma(
             const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
             unsigned src_tile;
             unsigned dst_tile;
+
             if (!linx_tile_size_code_valid(size_code)) {
                 return false;
             }
@@ -16396,8 +16588,10 @@ static bool linx_tile_preflight_tma(
             } else {
                 return false;
             }
-            if (!linx_tile_get_bound_output(env, i, &dst_tile) ||
-                env->tile_reg_bytes[src_tile] < (1ull << (size_code + 4u))) {
+            if (!linx_tile_get_bound_output(env, i, &dst_tile)) {
+                return false;
+            }
+            if (env->tile_reg_bytes[src_tile] < (1ull << (size_code + 4u))) {
                 return false;
             }
             linx_tile_consume_bound_sources(env, planned_live, i, &d,
@@ -16739,7 +16933,7 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         const uint32_t tepl_op = env->tile_func & 0x7fu;
         const bool in_place_version =
             env->blocktype == LINX_BLOCK_TEPL &&
-            (tepl_op == 0x02fu || tepl_op == 0x063u);
+            (tepl_op == 0x02fu);
         unsigned prior_dst = 0;
         if (in_place_version) {
             if (env->tile_hand_count[hand] == 0u) {
@@ -16772,14 +16966,35 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
                                        &group_output_bytes,
                                        &group_output_size_code) &&
             bytes64 == group_output_bytes;
+        /*
+         * Local TMOV is byte-preserving (TMOV.md: dtypes "byte-preserving;
+         * descriptors must be compatible"); its header DataType is not
+         * consumed and the destination size class is the only sizing
+         * constraint, so skip the dtype-derived shape gate.
+         */
+        const bool tmov_byte_preserving =
+            env->blocktype == LINX_BLOCK_TMA &&
+            (env->tile_func & 0x1fu) == LINX_TMA_TMOV;
+        const bool cube_dst_legal =
+            env->blocktype == LINX_BLOCK_CUBE &&
+            linx_tile_cube_dst_legal(env, (uint32_t)bytes64);
+        const bool tepl_reduce_dst_legal =
+            env->blocktype == LINX_BLOCK_TEPL &&
+            (linx_tile_tepl_col_reduce_dst_legal(
+                 env,
+                 linx_tile_tepl_impl_selector(env->tile_func & 0x7fu),
+                 (uint32_t)bytes64,
+                 linx_tile_dtype_elem_bytes(
+                     linx_tile_effective_dtype(env))) ||
+             linx_tile_tepl_row_reduce_dst_legal(
+                 env,
+                 linx_tile_tepl_impl_selector(env->tile_func & 0x7fu),
+                 (uint32_t)bytes64,
+                 linx_tile_dtype_elem_bytes(
+                     linx_tile_effective_dtype(env))));
         if (!cooperative_matrix_output &&
-            !(env->blocktype == LINX_BLOCK_TEPL &&
-              linx_tile_tepl_col_reduce_dst_legal(
-                  env,
-                  linx_tile_tepl_impl_selector(env->tile_func & 0x7fu),
-                  (uint32_t)bytes64,
-                  linx_tile_dtype_elem_bytes(
-                      linx_tile_effective_dtype(env)))) &&
+            !tmov_byte_preserving &&
+            !tepl_reduce_dst_legal && !cube_dst_legal &&
             !linx_tile_block_shape_valid(
                 env, (uint32_t)bytes64,
                 linx_tile_dtype_elem_bytes(linx_tile_effective_dtype(env)))) {
@@ -16940,7 +17155,6 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
     const uint64_t required_bytes =
         (uint64_t)linx_tile_cube_dim(env->lb[0]) *
         linx_tile_cube_dim(env->lb[1]) * sizeof(uint32_t);
-
     return allocated >= required_bytes;
 }
 
@@ -17058,6 +17272,23 @@ static void linx_tile_restore_reg(CPULinxState *env,
     env->tile_reg_valid_rows[tile] = snapshot->valid_rows;
     env->tile_reg_cols[tile] = snapshot->cols;
     env->tile_reg_rows[tile] = snapshot->rows;
+}
+
+
+static inline uint32_t linx_tile_tmov_source_dtype(const CPULinxState *env,
+                                                   unsigned iot_index)
+{
+    const uint8_t valid = env->tile_iot_src_valid[iot_index];
+    const unsigned src = (valid & 1u) != 0u
+                             ? env->tile_iot_src_phys[iot_index][0]
+                             : ((valid & 2u) != 0u
+                                    ? env->tile_iot_src_phys[iot_index][1]
+                                    : LINX_TILE_SLOT_COUNT);
+    if (src < LINX_TILE_SLOT_COUNT &&
+        linx_tile_dtype_elem_bytes(env->tile_reg_dtype[src]) != 0u) {
+        return env->tile_reg_dtype[src] & 0x1fu;
+    }
+    return env->tile_dtype & 0x1fu;
 }
 
 static bool linx_tile_materialize_planned_outputs(
@@ -17213,20 +17444,39 @@ static bool linx_tile_materialize_planned_outputs(
                                matrix_func == LINX_CUBE_TGEMV_MX ||
                                matrix_func == LINX_CUBE_TGEMV_MX_BIAS ||
                                matrix_func == LINX_CUBE_TGEMV_MX_ACC;
+        const bool tmov = env->blocktype == LINX_BLOCK_TMA &&
+                          (env->tile_func & 0x1fu) == LINX_TMA_TMOV;
+        /*
+         * TMOV is byte-preserving (TMOV.md: "byte-preserving; descriptors
+         * must be compatible") and does not consume the header DataType;
+         * the destination inherits the bound source Tile dtype so the
+         * materialized metadata stays consistent with the copied payload.
+         */
         const uint32_t output_dtype = env->blocktype == LINX_BLOCK_CUBE
             ? (matrix_mx ? LINX_TILE_ACC_FP32 :
                linx_tile_numeric_acc_dtype(env->tile_dtype))
-            : linx_tile_effective_dtype(env);
+            : (tmov ? linx_tile_tmov_source_dtype(env, i)
+                    : linx_tile_effective_dtype(env));
         const unsigned elem_bytes = linx_tile_dtype_elem_bytes(output_dtype);
         const uint32_t tepl_op = env->tile_func & 0x7fu;
         const bool in_place = env->blocktype == LINX_BLOCK_TEPL &&
-                              (tepl_op == 0x02fu || tepl_op == 0x063u);
+                              (tepl_op == 0x02fu);
         const unsigned prior = in_place ? env->tile_hand_order[hand][0] : 0u;
 
         reserved[hand] |= LINX_TILE_HAND_BIT(depth);
         linx_tile_invalidate_acc_sources_on_output(
             dst_tile, acc_sources_valid, acc_src0, acc_src1);
-        memset(env->tile_reg[dst_tile], 0, sizeof(env->tile_reg[dst_tile]));
+        /*
+         * A full-hand destination reserve may reuse the very slot that this
+         * byte-preserving TMOV reads (Q#16 push).  Do not clear that backing
+         * storage before the move; the TMOV execution then preserves the
+         * payload as a self copy.
+         */
+        const bool tmov_aliased_source =
+            tmov && env->tile_iot_src_phys[i][0] == dst_tile;
+        if (!tmov_aliased_source) {
+            memset(env->tile_reg[dst_tile], 0, sizeof(env->tile_reg[dst_tile]));
+        }
         env->tile_reg_capacity[dst_tile] = bytes;
         env->tile_reg_bytes[dst_tile] = bytes;
         linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
@@ -17255,6 +17505,28 @@ static bool linx_tile_materialize_planned_outputs(
                 bytes % (cols * dst_elem) != 0u ||
                 !linx_tile_set_shape(env, dst_tile, cols, 1u, cols,
                                      bytes / (cols * dst_elem))) {
+                return false;
+            }
+        } else if (env->blocktype == LINX_BLOCK_TEPL &&
+                   linx_tile_tepl_impl_is_row_reduce(
+                       linx_tile_tepl_impl_selector(
+                           env->tile_func & 0x7fu))) {
+            /*
+             * Row-reduce destination is a column vector of LB1 values
+             * (TROWMAX.md: "dst column/vector tile, one value per row"),
+             * not the 2D source shape carried in B.DIM.
+             */
+            const uint32_t impl =
+                linx_tile_tepl_impl_selector(env->tile_func & 0x7fu);
+            const unsigned dst_elem =
+                linx_tile_tepl_impl_is_arg_reduce(impl) ? 4u : elem_bytes;
+            const unsigned rows = (unsigned)(env->lb[1] & 0xffffu);
+            unsigned dst_stride = 1u;
+            if (rows == 0u || dst_elem == 0u ||
+                !linx_tile_tepl_row_reduce_dst_stride(env, bytes, dst_elem,
+                                                      &dst_stride) ||
+                !linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride,
+                                     bytes / (dst_stride * dst_elem))) {
                 return false;
             }
         } else if (!linx_tile_set_block_shape(env, dst_tile, bytes, elem_bytes)) {

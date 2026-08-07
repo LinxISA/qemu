@@ -1812,6 +1812,7 @@ static vaddr linx_pcrel_target(vaddr pc, int64_t simm_hw)
 static bool linx_illegal(DisasContext *ctx)
 {
     vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: illegal instruction @ 0x%" VADDR_PRIx
                   " (insn_len=%u in_body=%u tb_flags=0x%x env_in_body=%u)\n",
@@ -2091,7 +2092,11 @@ static bool trans_c_setret(DisasContext *ctx, arg_c_setret *a)
 static bool trans_c_bstart_direct(DisasContext *ctx, arg_c_bstart_direct *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    return linx_begin_header_target(ctx, LINX_BR_DIRECT,
+    uint8_t brtype = linx_is_setret_at_pc(ctx, ctx->base.pc_next)
+                         ? LINX_BR_CALL
+                         : LINX_BR_DIRECT;
+
+    return linx_begin_header_target(ctx, brtype,
                                     linx_pcrel_target(current_pc, a->simm12));
 }
 
@@ -2661,7 +2666,16 @@ static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
                                           uint32_t blocktype, uint32_t func)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (!linx_tile_data_type_accepted(dtype & 0x1fu)) {
+
+    /*
+     * Local TMOV (TLSU function 2) is a byte-preserving move
+     * (TMOV.md: dtypes "byte-preserving; descriptors must be compatible"),
+     * so the header DataType field is not consumed and must not gate the
+     * instruction.  All other TLSU/CUBE/TEPL headers keep the strict
+     * 5-bit dtype table check (B.DATR.md: 31 is invalid).
+     */
+    const bool byte_preserving_tmov = blocktype == 2u && func == 2u;
+    if (!byte_preserving_tmov && !linx_tile_data_type_accepted(dtype & 0x1fu)) {
         return linx_illegal(ctx);
     }
     if (ctx->in_body) {

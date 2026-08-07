@@ -11,7 +11,7 @@
 static inline bool linx_tile_tepl_preflight_resolve_ior(
     const CPULinxState *env, unsigned slot, unsigned *reg_out)
 {
-    static const unsigned shifts[] = { 10u, 5u, 15u, 0u };
+    static const unsigned shifts[] = { 5u, 10u, 15u, 0u };
     const unsigned count = env->tile_ior_count < LINX_TILE_MAX_IOR
                                ? env->tile_ior_count
                                : LINX_TILE_MAX_IOR;
