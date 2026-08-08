@@ -17562,6 +17562,26 @@ static bool linx_tile_materialize_planned_outputs(
                                      bytes / (dst_stride * dst_elem))) {
                 return false;
             }
+        } else if (tmov) {
+            /*
+             * TMOV is byte-preserving and "descriptors must be compatible"
+             * (TMOV.md); the destination inherits the bound source Tile
+             * shape.  Aliased moves (REUSEA/B, src == dst) therefore keep
+             * the pre-existing 2D metadata instead of being re-derived
+             * from B.DIM, which is not part of a TMOV block.
+             */
+            const uint8_t src_valid = env->tile_iot_src_valid[i];
+            unsigned src_tile = LINX_TILE_SLOT_COUNT;
+            if ((src_valid & 1u) != 0u) {
+                src_tile = env->tile_iot_src_phys[i][0];
+            } else if ((src_valid & 2u) != 0u) {
+                src_tile = env->tile_iot_src_phys[i][1];
+            }
+            if (src_tile >= LINX_TILE_SLOT_COUNT ||
+                env->tile_reg_bytes[src_tile] != bytes) {
+                return false;
+            }
+            linx_tile_copy_shape(env, dst_tile, src_tile);
         } else if (!linx_tile_set_block_shape(env, dst_tile, bytes, elem_bytes)) {
             return false;
         }
