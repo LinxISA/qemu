@@ -2243,6 +2243,23 @@ static void linx_cpu_do_interrupt(CPUState *cs)
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
         uint64_t fault_pc = last_pc;
+        /*
+         * A finisher-enabled bare ELF that did not install EVBASE has no
+         * firmware trap fallback. Delivering the trap would resume at the
+         * faulting PC and replay the same access forever; report a failed
+         * guest run instead, mirroring the ILLEGAL_INST finisher path.
+         */
+        if (linx_cpu_env_enabled("LINX_VIRT_TEST_FINISHER") &&
+            env->ssr_acr[dst_acr][LINX_SSR_EVBASE] == 0u) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "Linx: unhandled data access fault in "
+                          "finisher direct boot; exiting with failure\n");
+            qemu_system_shutdown_request_with_code(
+                SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 1);
+            cs->exception_index = -1;
+            cpu_exit(cs);
+            return;
+        }
         const bool in_body = env->in_body != 0;
         const bool user_data_fault =
             (env->acr & 0xFu) == 2 &&
