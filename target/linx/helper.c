@@ -13701,6 +13701,9 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     const uint32_t fp32 = LINX_TILE_DTYPE_MASK(1u) |
                           LINX_TILE_DTYPE_MASK(2u) |
                           LINX_TILE_DTYPE_MASK(3u);
+    /* ISA dtype lists name the standard F32 format; TF32/HF32 are distinct
+     * encodings and are only accepted where the instruction page lists them. */
+    const uint32_t fp32_exact = LINX_TILE_DTYPE_MASK(1u);
     const uint32_t fp16 = LINX_TILE_DTYPE_MASK(4u);
     const uint32_t bf16 = LINX_TILE_DTYPE_MASK(5u);
     const uint32_t s64 = LINX_TILE_DTYPE_MASK(16u);
@@ -13722,13 +13725,6 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x003u: /* TDIV */
     case 0x004u: /* TMAX */
     case 0x005u: /* TMIN */
-    case 0x012u: /* TROWMAX */
-    case 0x013u: /* TROWMIN */
-    case 0x014u: /* TROWSUM */
-    case 0x015u: /* TCOLMAX */
-    case 0x016u: /* TCOLMIN */
-    case 0x017u: /* TCOLSUM */
-    case 0x019u: /* TEXPANDS */
     case 0x020u: /* TADDS */
     case 0x021u: /* TSUBS */
     case 0x022u: /* TMULS */
@@ -13736,6 +13732,22 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x024u: /* TMAXS */
     case 0x025u: /* TMINS */
         supported = standard;
+        break;
+    case 0x012u: /* TROWMAX */
+    case 0x013u: /* TROWMIN */
+    case 0x014u: /* TROWSUM */
+        /* TROWMAX/TROWMIN/TROWSUM.md: dtypes are only F16/F32. */
+        supported = fp32_exact | fp16;
+        break;
+    case 0x015u: /* TCOLMAX */
+    case 0x016u: /* TCOLMIN */
+    case 0x017u: /* TCOLSUM */
+        /* TCOLMAX/TCOLMIN/TCOLSUM.md: F16/F32/S8/U8/S16/U16/S32/U32/BF16. */
+        supported = fp32_exact | fp16 | bf16 | s8 | u8 | s16 | u16 | s32 | u32;
+        break;
+    case 0x019u: /* TEXPANDS */
+        /* TEXPANDS.md: U8/S8/U16/S16/U32/S32/F16/BF16/F32. */
+        supported = fp32_exact | fp16 | bf16 | s8 | u8 | s16 | u16 | s32 | u32;
         break;
     case 0x006u: /* TAND */
     case 0x007u: /* TOR */
@@ -13757,8 +13769,6 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x01au: /* TGATHER */
     case 0x01bu: /* TSCATTER */
     case 0x01du: /* TTRANS */
-    case 0x01eu: /* TCOLEXPAND */
-    case 0x01fu: /* TROWEXPAND */
     case 0x082u: /* TFILLPAD */
     case 0x085u: /* TEXTRACT */
     case 0x087u: /* TCONCAT */
@@ -13767,6 +13777,11 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x0c5u: /* TPARTMAX */
     case 0x0c6u: /* TPARTMIN */
         supported = standard;
+        break;
+    case 0x01eu: /* TCOLEXPAND */
+    case 0x01fu: /* TROWEXPAND */
+        /* TROWEXPAND/TCOLEXPAND.md: S8/U8/S16/U16/S32/U32/F16/BF16/F32. */
+        supported = fp32_exact | fp16 | bf16 | s8 | u8 | s16 | u16 | s32 | u32;
         break;
     case 0x081u: /* TTRI */
         supported = fp32 | fp16 | bf16 | s32 | s16 | s8 | u32 | u16 | u8;
@@ -13800,19 +13815,23 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
         supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | u64 | u16;
         break;
     case 0x035u: /* TROWPROD */
-        supported = fp64 | fp32 | fp16 | s64 | s32 | s16;
+        /* TROWPROD.md: F16/F32/S32/S16. */
+        supported = fp32_exact | fp16 | s32 | s16;
         break;
     case 0x036u: /* TROWARGMAX */
     case 0x037u: /* TROWARGMIN */
-        supported = fp64 | fp32 | fp16;
+        /* TROWARGMAX/TROWARGMIN.md: src F16/F32; dst index U32/S32. */
+        supported = fp32_exact | fp16;
         break;
     case 0x038u: /* TCOLPROD */
-        supported = fp64 | fp32 | fp16 | bf16 | s64 | s32 | s16 |
-                    u64 | u32 | u16;
+        /* TCOLPROD.md: F16/F32/BF16/S16/U16/S32/U32. */
+        supported = fp32_exact | fp16 | bf16 | s16 | u16 | s32 | u32;
         break;
     case 0x039u: /* TCOLARGMAX */
     case 0x03au: /* TCOLARGMIN */
-        supported = fp64 | fp32 | fp16 | integers;
+        /* TCOLARGMAX/TCOLARGMIN.md: src S8/U8/S16/U16/S32/U32/F16/F32;
+         * dst index U32/S32. */
+        supported = fp32_exact | fp16 | s8 | u8 | s16 | u16 | s32 | u32;
         break;
     case 0x03bu: /* TROWEXPANDADD */
     case 0x03cu: /* TROWEXPANDSUB */
@@ -13828,7 +13847,8 @@ static bool linx_tile_tepl_impl_dtype_supported(uint32_t op, uint32_t dtype)
     case 0x046u: /* TCOLEXPANDMAX */
     case 0x047u: /* TCOLEXPANDMIN */
     case 0x048u: /* TCOLEXPANDEXPDIF */
-        supported = fp32 | fp16;
+        /* TROWEXPAND* / TCOLEXPAND* arithmetic: F16/F32 only. */
+        supported = fp32_exact | fp16;
         break;
     case 0x080u: /* TCI */
         supported = s32 | s16 | u32 | u16;
@@ -16792,6 +16812,19 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
     }
     if (shared_tmov &&
         !linx_tile_shared_tmov_append_valid(env, &desc)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+
+    /*
+     * TMOV.md:42 / B.IOT.md:82-83: ordinary Local TMOV requires one real
+     * Local source (T#1..16/U#1..16/M#1..16/N#1..16) and a Local destination
+     * in the ->DstTile<SIZE> form.  The retired source-only "TSize=" bundle
+     * decodes here as a T#0 source with a synthesized T-queue destination;
+     * reject it before any reservation or queue mutation.
+     */
+    if (env->blocktype == LINX_BLOCK_TMA && tma_func == LINX_TMA_TMOV &&
+        (((desc.flags & LINX_IOT_S0V) != 0u) || desc.src0 == 0u)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
