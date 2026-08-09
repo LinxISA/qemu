@@ -4087,6 +4087,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
+        memset(env->tile_reg_layout, 0, sizeof(env->tile_reg_layout));
         memset(env->tile_reg_valid_cols, 0,
                sizeof(env->tile_reg_valid_cols));
         memset(env->tile_reg_valid_rows, 0,
@@ -4327,7 +4328,6 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    /* v18 expands each Tile hand from 8 to 16 ranks and widens its masks. */
     .version_id = 18,
     .minimum_version_id = 18,
     .pre_save = linx_cpu_pre_save,
@@ -4419,6 +4419,8 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
+                              LINX_TILE_SLOT_COUNT, 18),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_layout, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_cols, LinxCPU,
                                LINX_TILE_SLOT_COUNT, 18),

@@ -40,8 +40,6 @@ static unsigned cube_dtype_bytes(uint32_t dtype)
     }
 }
 
-static unsigned cube_dim(uint32_t value) { return value ? value : 8u; }
-
 static bool cube_operand_legal(const CPULinxState *env, unsigned tile,
                                uint32_t dtype, unsigned rows, unsigned cols)
 {
@@ -175,9 +173,14 @@ static bool linx_tile_cube_compute_common_058(
     unsigned bias, unsigned size_code, bool mx, bool with_bias,
     bool accumulate)
 {
-    unsigned m = cube_dim(env->lb[0]);
-    unsigned n = cube_dim(env->lb[1]);
-    unsigned kdim = cube_dim(env->lb[2]);
+    unsigned m = src_a < LINX_TILE_SLOT_COUNT
+        ? env->tile_reg_valid_rows[src_a] : 0u;
+    unsigned n = shared_b != NULL
+        ? env->lb[0]
+        : (src_b < LINX_TILE_SLOT_COUNT
+               ? env->tile_reg_valid_cols[src_b] : 0u);
+    unsigned kdim = src_a < LINX_TILE_SLOT_COUNT
+        ? env->tile_reg_valid_cols[src_a] : 0u;
     uint32_t left_dtype =
         src_a < LINX_TILE_SLOT_COUNT
             ? env->tile_reg_dtype[src_a] & 31u
@@ -195,9 +198,16 @@ static bool linx_tile_cube_compute_common_058(
     unsigned groups = (kdim + 31u) / 32u;
     float_status fp_status = {0};
     uint8_t *next;
+    const bool powers_of_two =
+        m != 0u && (m & (m - 1u)) == 0u &&
+        n != 0u && (n & (n - 1u)) == 0u &&
+        kdim != 0u && (kdim & (kdim - 1u)) == 0u &&
+        env->lb[2] != 0u && (env->lb[2] & (env->lb[2] - 1u)) == 0u;
 
     if (src_a >= LINX_TILE_SLOT_COUNT ||
         (shared_b == NULL && src_b >= LINX_TILE_SLOT_COUNT) ||
+        !powers_of_two || env->lb[0] != n || env->lb[1] != m ||
+        env->lb[2] < n ||
         m > UINT16_MAX || n > UINT16_MAX ||
         acc_dtype == UINT8_MAX || allocated == 0u ||
         allocated > LINX_TILE_MAX_BYTES || required == 0u ||
@@ -215,7 +225,14 @@ static bool linx_tile_cube_compute_common_058(
         (mx && (!cube_operand_legal(env, row_scale, 13u, m, groups) ||
                 !cube_operand_legal(env, column_scale, 13u, groups, n))) ||
         (with_bias &&
-         !cube_operand_legal(env, bias, mx ? 1u : env->tile_dtype, 1u, n)) ||
+         (bias >= LINX_TILE_SLOT_COUNT ||
+          (env->tile_reg_valid_rows[bias] != 1u &&
+           env->tile_reg_valid_rows[bias] != m) ||
+          (env->tile_reg_valid_cols[bias] != 1u &&
+           env->tile_reg_valid_cols[bias] != n) ||
+          !cube_operand_legal(env, bias, mx ? 1u : env->tile_dtype,
+                              env->tile_reg_valid_rows[bias],
+                              env->tile_reg_valid_cols[bias]))) ||
         (accumulate &&
          (!env->tile_acc_valid || env->tile_acc_dtype != acc_dtype ||
           env->tile_acc_rows != m || env->tile_acc_cols != n ||
@@ -273,7 +290,11 @@ static bool linx_tile_cube_compute_common_058(
                 if (with_bias) {
                     uint64_t raw;
                     uint32_t bias_raw;
-                    if (!cube_read_raw(env, bias, 0, j, &raw)) {
+                    const unsigned bias_row =
+                        env->tile_reg_valid_rows[bias] == 1u ? 0u : i;
+                    const unsigned bias_col =
+                        env->tile_reg_valid_cols[bias] == 1u ? 0u : j;
+                    if (!cube_read_raw(env, bias, bias_row, bias_col, &raw)) {
                         goto fail;
                     }
                     bias_raw =
@@ -305,7 +326,11 @@ static bool linx_tile_cube_compute_common_058(
                 }
                 if (with_bias) {
                     uint64_t raw;
-                    if (!cube_read_raw(env, bias, 0, j, &raw)) {
+                    const unsigned bias_row =
+                        env->tile_reg_valid_rows[bias] == 1u ? 0u : i;
+                    const unsigned bias_col =
+                        env->tile_reg_valid_cols[bias] == 1u ? 0u : j;
+                    if (!cube_read_raw(env, bias, bias_row, bias_col, &raw)) {
                         goto fail;
                     }
                     uint64_t bias_raw = linx_tile_numeric_f64_raw(

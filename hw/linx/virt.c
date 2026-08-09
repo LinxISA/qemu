@@ -467,6 +467,7 @@ typedef struct LinxVirtMachineState {
     uint8_t *dfx_ram_ptr;
 
     char *cross_model_dump;
+    char *cross_model_tile_dump;
     uint64_t cross_model_address;
     uint32_t cross_model_size;
     bool cross_model_dump_pending;
@@ -3424,6 +3425,118 @@ static void linx_virt_set_cross_model_dump(Object *obj, const char *value,
     s->cross_model_dump = g_strdup(value);
 }
 
+static char *linx_virt_get_cross_model_tile_dump(Object *obj, Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->cross_model_tile_dump);
+}
+
+static void linx_virt_set_cross_model_tile_dump(Object *obj,
+                                                const char *value,
+                                                Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    g_free(s->cross_model_tile_dump);
+    s->cross_model_tile_dump = value && value[0] != '\0' ? g_strdup(value) : NULL;
+}
+
+static void linx_put_le16(GByteArray *out, uint16_t value)
+{
+    uint8_t bytes[] = { value & 0xffu, value >> 8 };
+    g_byte_array_append(out, bytes, sizeof(bytes));
+}
+
+static void linx_put_le32(GByteArray *out, uint32_t value)
+{
+    uint8_t bytes[] = {
+        value & 0xffu, (value >> 8) & 0xffu,
+        (value >> 16) & 0xffu, (value >> 24) & 0xffu,
+    };
+    g_byte_array_append(out, bytes, sizeof(bytes));
+}
+
+static const uint8_t linx_tile_state_isa_sha256[32] = {
+    0xcf, 0x50, 0x4d, 0xb8, 0x6e, 0xb4, 0x62, 0x15,
+    0x67, 0x72, 0x32, 0xb9, 0xc8, 0x4f, 0xc6, 0x1c,
+    0xef, 0x55, 0xa8, 0x09, 0x13, 0xf3, 0xd3, 0xd6,
+    0x09, 0xb5, 0x9e, 0x6a, 0x38, 0x26, 0x72, 0xbd,
+};
+
+static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
+{
+    g_autoptr(GByteArray) out = g_byte_array_new();
+    uint32_t record_count = 0;
+
+    g_byte_array_append(out, (const uint8_t *)"PTOAST58", 8);
+    linx_put_le16(out, 1);
+    g_byte_array_append(out, linx_tile_state_isa_sha256,
+                        sizeof(linx_tile_state_isa_sha256));
+    g_byte_array_append(out, (const uint8_t *)&s->pe_count, 1);
+    g_byte_array_append(out, (const uint8_t *)"\0", 1);
+    const guint count_offset = out->len;
+    linx_put_le32(out, 0);
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        CPULinxState *env = &s->cpu[pe]->env;
+        for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
+            for (unsigned rank = 0; rank < env->tile_hand_count[hand]; rank++) {
+                const unsigned tile = env->tile_hand_order[hand][rank];
+                if (tile >= LINX_TILE_SLOT_COUNT ||
+                    env->tile_reg_bytes[tile] == 0) {
+                    continue;
+                }
+                const uint8_t header[] = {
+                    pe, hand, rank, 1,
+                    env->tile_reg_dtype[tile], env->tile_reg_layout[tile], 0, 0,
+                };
+                g_byte_array_append(out, header, sizeof(header));
+                linx_put_le32(out, env->tile_reg_capacity[tile]);
+                linx_put_le32(out, env->tile_reg_bytes[tile]);
+                linx_put_le16(out, env->tile_reg_valid_rows[tile]);
+                linx_put_le16(out, env->tile_reg_valid_cols[tile]);
+                linx_put_le16(out, env->tile_reg_rows[tile]);
+                linx_put_le16(out, env->tile_reg_cols[tile]);
+                linx_put_le32(out, env->tile_reg_bytes[tile]);
+                linx_put_le32(out, env->tile_reg_bytes[tile]);
+                for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i++) {
+                    const uint8_t defined = 0xffu;
+                    g_byte_array_append(out, &defined, 1);
+                }
+                for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i += 4) {
+                    const uint32_t remaining = env->tile_reg_bytes[tile] - i;
+                    const uint32_t word = env->tile_reg[tile][i / 4];
+                    if (remaining >= 4) {
+                        linx_put_le32(out, word);
+                    } else {
+                        for (uint32_t byte = 0; byte < remaining; byte++) {
+                            const uint8_t value = (word >> (8u * byte)) & 0xffu;
+                            g_byte_array_append(out,
+                                                &value, 1);
+                        }
+                    }
+                }
+                record_count++;
+            }
+        }
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        out->data[count_offset + i] = (record_count >> (8u * i)) & 0xffu;
+    }
+    g_autofree char *tmp_path = g_strdup_printf("%s.tmp", s->cross_model_tile_dump);
+    if (!g_file_set_contents(tmp_path, (const char *)out->data, out->len, err)) {
+        unlink(tmp_path);
+        return false;
+    }
+    if (g_rename(tmp_path, s->cross_model_tile_dump) != 0) {
+        g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
+                    "rename tile-state snapshot: %s", strerror(errno));
+        unlink(tmp_path);
+        return false;
+    }
+    return true;
+}
+
 static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
 {
     LinxVirtMachineState *s = container_of(notifier, LinxVirtMachineState,
@@ -3432,21 +3545,32 @@ static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
     g_autoptr(GError) err = NULL;
     ShutdownCause cause = *(ShutdownCause *)opaque;
 
-    if (!s->cross_model_dump_pending || !s->cross_model_dump ||
-        cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN) {
+    if (cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN ||
+        ((!s->cross_model_dump_pending || !s->cross_model_dump) &&
+         !s->cross_model_tile_dump)) {
         return;
     }
 
-    tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
-    if (!g_file_set_contents(tmp_path,
-                             (const char *)s->dfx_ram_ptr +
-                                 s->cross_model_address,
-                             s->cross_model_size, &err) ||
-        g_rename(tmp_path, s->cross_model_dump) != 0) {
-        error_report("linx virt: cannot write cross-model dump '%s': %s",
-                     s->cross_model_dump,
-                     err ? err->message : strerror(errno));
-        unlink(tmp_path);
+    if (s->cross_model_dump_pending && s->cross_model_dump) {
+        tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
+        if (!g_file_set_contents(tmp_path,
+                                 (const char *)s->dfx_ram_ptr +
+                                     s->cross_model_address,
+                                 s->cross_model_size, &err) ||
+            g_rename(tmp_path, s->cross_model_dump) != 0) {
+            error_report("linx virt: cannot write cross-model dump '%s': %s",
+                         s->cross_model_dump,
+                         err ? err->message : strerror(errno));
+            unlink(tmp_path);
+        }
+    }
+    if (s->cross_model_tile_dump) {
+        g_clear_error(&err);
+        if (!linx_write_tile_state(s, &err)) {
+            error_report("linx virt: cannot write tile-state dump '%s': %s",
+                         s->cross_model_tile_dump,
+                         err ? err->message : strerror(errno));
+        }
     }
 }
 
@@ -3459,6 +3583,7 @@ static void linx_virt_instance_init(Object *obj)
     s->dfx_memwatch_stop = false;
     s->dfx_ram_ptr = NULL;
     s->cross_model_dump = NULL;
+    s->cross_model_tile_dump = NULL;
     s->cross_model_address = 0;
     s->cross_model_size = 0;
     s->cross_model_dump_pending = false;
@@ -3486,6 +3611,12 @@ static void linx_virt_instance_init(Object *obj)
                             linx_virt_set_cross_model_dump);
     object_property_set_description(obj, "cross-model-dump",
                                     "Write a guest RAM range after test-finisher shutdown");
+
+    object_property_add_str(obj, "cross-model-tile-dump",
+                            linx_virt_get_cross_model_tile_dump,
+                            linx_virt_set_cross_model_tile_dump);
+    object_property_set_description(obj, "cross-model-tile-dump",
+                                    "Write architecture-visible Tile state after test-finisher shutdown");
 
     object_property_add_uint64_ptr(obj, "cross-model-address",
                                    &s->cross_model_address,
@@ -3570,6 +3701,8 @@ static void linx_virt_init(MachineState *machine)
                          (uint64_t)machine->ram_size);
             exit(1);
         }
+    }
+    if (s->cross_model_dump || s->cross_model_tile_dump) {
         s->cross_model_shutdown_notifier.notify = linx_cross_model_shutdown;
         qemu_register_shutdown_notifier(&s->cross_model_shutdown_notifier);
     }
