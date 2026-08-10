@@ -1,14 +1,14 @@
 /*
- * Linx TEPL pre-publish operand checks shared with the native atomicity test.
+ * Linx tile-operation pre-publish checks shared with the native atomicity test.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
-#ifndef LINX_TILE_TEPL_PREFLIGHT_H
-#define LINX_TILE_TEPL_PREFLIGHT_H
+#ifndef LINX_TILE_OPERATION_PREFLIGHT_H
+#define LINX_TILE_OPERATION_PREFLIGHT_H
 
 #include "cpu.h"
 
-static inline bool linx_tile_tepl_preflight_resolve_ior(
+static inline bool linx_tile_operation_preflight_resolve_ior(
     const CPULinxState *env, unsigned slot, unsigned *reg_out)
 {
     static const unsigned shifts[] = { 10u, 5u, 15u, 0u };
@@ -40,7 +40,7 @@ static inline bool linx_tile_tepl_preflight_resolve_ior(
     return false;
 }
 
-static inline bool linx_tile_tepl_preflight_shape_covers(
+static inline bool linx_tile_operation_preflight_shape_covers(
     const CPULinxState *env, unsigned tile, uint32_t valid_cols,
     uint32_t valid_rows, uint32_t cols, uint32_t rows)
 {
@@ -51,7 +51,7 @@ static inline bool linx_tile_tepl_preflight_shape_covers(
            env->tile_reg_rows[tile] >= rows;
 }
 
-static inline bool linx_tile_tepl_remainder_divisor_nonzero(
+static inline bool linx_tile_operation_remainder_divisor_nonzero(
     uint32_t dtype, unsigned elem_bytes, uint64_t raw)
 {
     switch (dtype & 0x1fu) {
@@ -75,7 +75,7 @@ static inline bool linx_tile_tepl_remainder_divisor_nonzero(
     }
 }
 
-static inline bool linx_tile_tepl_remainder_tile_divisors_legal(
+static inline bool linx_tile_operation_remainder_tile_divisors_legal(
     const CPULinxState *env, unsigned tile, uint32_t dtype,
     unsigned elem_bytes, uint32_t valid_cols, uint32_t valid_rows,
     uint32_t cols)
@@ -97,7 +97,7 @@ static inline bool linx_tile_tepl_remainder_tile_divisors_legal(
                 return false;
             }
             memcpy(&raw, data + offset, elem_bytes);
-            if (!linx_tile_tepl_remainder_divisor_nonzero(
+            if (!linx_tile_operation_remainder_divisor_nonzero(
                     dtype, elem_bytes, raw)) {
                 return false;
             }
@@ -109,18 +109,20 @@ static inline bool linx_tile_tepl_remainder_tile_divisors_legal(
 /*
  * Checks that must happen before output materialization.  Remaining
  * operation-specific checks are covered by the snapshotted dry execution in
- * linx_tile_preflight_tepl(); keeping these high-risk checks here makes them
+ * linx_tile_preflight_operation(); keeping these high-risk checks here makes them
  * independently regression-testable against a real CPULinxState.
  */
-static inline bool linx_tile_tepl_pre_publish_legal(
+static inline bool linx_tile_operation_pre_publish_legal(
     const CPULinxState *env, uint32_t impl, const unsigned *sources,
     unsigned source_count, uint32_t dtype, unsigned elem_bytes,
     uint32_t valid_cols, uint32_t valid_rows, uint32_t cols, uint32_t rows)
 {
     unsigned src0 = source_count > 0u ? sources[0] : 0u;
     unsigned src1 = source_count > 1u ? sources[1] : 0u;
+    unsigned src2 = source_count > 2u ? sources[2] : 0u;
     bool has_src0 = source_count > 0u;
     bool has_src1 = source_count > 1u;
+    bool has_src2 = source_count > 2u;
     const bool expand = impl == 0x01eu || impl == 0x01fu ||
                         (impl >= 0x03bu && impl <= 0x048u);
     const bool partial = impl >= 0x0c3u && impl <= 0x0c6u;
@@ -148,12 +150,14 @@ static inline bool linx_tile_tepl_pre_publish_legal(
     }
 
     if ((!expand && !partial && !custom_shape &&
-         ((has_src0 && !linx_tile_tepl_preflight_shape_covers(
+         ((has_src0 && !linx_tile_operation_preflight_shape_covers(
                            env, src0, valid_cols, valid_rows, cols, rows)) ||
-          (has_src1 && !linx_tile_tepl_preflight_shape_covers(
-                           env, src1, valid_cols, valid_rows, cols, rows)))) ||
+          (has_src1 && !linx_tile_operation_preflight_shape_covers(
+                           env, src1, valid_cols, valid_rows, cols, rows)) ||
+          (has_src2 && !linx_tile_operation_preflight_shape_covers(
+                           env, src2, valid_cols, valid_rows, cols, rows)))) ||
         (expand && impl >= 0x03bu &&
-         (!has_src0 || !linx_tile_tepl_preflight_shape_covers(
+         (!has_src0 || !linx_tile_operation_preflight_shape_covers(
                            env, src0, valid_cols, valid_rows, cols, rows)))) {
         return false;
     }
@@ -163,9 +167,15 @@ static inline bool linx_tile_tepl_pre_publish_legal(
         unsigned zero_reg;
 
         return has_src0 && !has_src1 &&
-               linx_tile_tepl_preflight_resolve_ior(env, 0u, &scale_reg) &&
-               linx_tile_tepl_preflight_resolve_ior(env, 1u, &zero_reg) &&
+               linx_tile_operation_preflight_resolve_ior(env, 0u, &scale_reg) &&
+               linx_tile_operation_preflight_resolve_ior(env, 1u, &zero_reg) &&
                env->gpr[scale_reg] != 0u;
+    }
+    if (impl == 0x10cu) { /* TFMA */
+        return has_src0 && has_src1 && has_src2 &&
+               env->tile_reg_dtype[src0] == dtype &&
+               env->tile_reg_dtype[src1] == dtype &&
+               env->tile_reg_dtype[src2] == dtype;
     }
     if (impl == 0x00du) { /* TCVT */
         return has_src0 && !has_src1 && src0 < LINX_TILE_SLOT_COUNT &&
@@ -174,19 +184,19 @@ static inline bool linx_tile_tepl_pre_publish_legal(
                env->tile_reg_cols[src0] == cols;
     }
     if (impl == 0x030u) { /* TREM */
-        return has_src1 && linx_tile_tepl_remainder_tile_divisors_legal(
+        return has_src1 && linx_tile_operation_remainder_tile_divisors_legal(
                                env, src1, dtype, elem_bytes, valid_cols,
                                valid_rows, cols);
     }
     if (impl == 0x032u) { /* TREMS */
         unsigned scalar_reg;
 
-        return linx_tile_tepl_preflight_resolve_ior(
+        return linx_tile_operation_preflight_resolve_ior(
                    env, 0u, &scalar_reg) &&
-               linx_tile_tepl_remainder_divisor_nonzero(
+               linx_tile_operation_remainder_divisor_nonzero(
                    dtype, elem_bytes, env->gpr[scalar_reg]);
     }
     return true;
 }
 
-#endif /* LINX_TILE_TEPL_PREFLIGHT_H */
+#endif /* LINX_TILE_OPERATION_PREFLIGHT_H */

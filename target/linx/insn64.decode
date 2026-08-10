@@ -201,7 +201,7 @@ v_rdfmin 0000 0000 0000 .... .011 .... .000 1101 0000 0000 0000 .... .001 .... .
 # Stores (bridged)
 # ---------------------------------------------------------------------------
 
-# PTO ISA 0.57.1 long vector forms that are part of the locked decode catalog.
+# LinxISA 0.58 long-vector forms outside the PTO common subset.
 # Keep these exact forms visible to the consumer parity gate.  Execution is
 # capability-faulted by the translators until the optional long-vector
 # execution profile is implemented.

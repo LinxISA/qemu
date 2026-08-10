@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute all 75 canonical 0.57.1 hardware numeric vectors in shared C."""
+"""Execute the 75 numeric vectors inherited unchanged by LinxISA 0.58."""
 
 import ctypes
 import json
@@ -26,7 +26,7 @@ RMODE = {"RNE": 1, "RTZ": 2, "RDN": 3, "RUP": 4,
 WRAPPER = r'''
 #include <math.h>
 #include <stdint.h>
-#include "tile_numeric_057.h"
+#include "tile_numeric_058.h"
 
 uint64_t v_nan(unsigned d) { return linx_tile_numeric_canonical_nan(d); }
 int v_ordinary(unsigned d) { return linx_tile_numeric_ordinary(d); }
@@ -117,7 +117,7 @@ def number(text):
 class HardwareNumericVectors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory(prefix="linx-numeric-0571-")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="linx-numeric-058-")
         source = Path(cls.tmp.name) / "vectors.c"
         library = Path(cls.tmp.name) / "vectors.so"
         source.write_text(WRAPPER, encoding="utf-8")

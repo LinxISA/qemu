@@ -2,8 +2,8 @@
 
 #include "qemu/osdep.h"
 #include "target/linx/cpu.h"
-#include "target/linx/tile_isa_057.h"
-#include "target/linx/tile_tepl_preflight.h"
+#include "target/linx/tile_isa_058.h"
+#include "target/linx/tile_operation_preflight.h"
 #include "target/linx/tile_transaction.h"
 
 typedef struct VisibleTileState {
@@ -238,7 +238,7 @@ static void test_tstore_size_comes_from_source_footprint(void)
     g_free(env);
 }
 
-static void test_tepl_invalid_shape_is_atomic(void)
+static void test_operation_invalid_shape_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
@@ -254,28 +254,28 @@ static void test_tepl_invalid_shape_is_atomic(void)
     env->tile_reg_rows[1] = 2u;
     capture_cpu_visible_state(env, before);
 
-    g_assert_false(linx_tile_tepl_pre_publish_legal(
+    g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x000u, sources, 2u, 17u, 4u, 4u, 2u, 4u, 2u));
     assert_cpu_visible_state_unchanged(env, before);
     g_free(before);
     g_free(env);
 }
 
-static void test_tepl_missing_tquant_scale_is_atomic(void)
+static void test_operation_missing_tquant_scale_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
     const unsigned sources[1] = { 0u };
 
     capture_cpu_visible_state(env, before);
-    g_assert_false(linx_tile_tepl_pre_publish_legal(
+    g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x102u, sources, 1u, 17u, 4u, 4u, 2u, 4u, 2u));
     assert_cpu_visible_state_unchanged(env, before);
     g_free(before);
     g_free(env);
 }
 
-static void test_tepl_tcvt_accepts_different_carrier_rows(void)
+static void test_operation_tcvt_accepts_different_carrier_rows(void)
 {
     CPULinxState *env = new_atomicity_env();
     const unsigned sources[1] = { 0u };
@@ -288,15 +288,15 @@ static void test_tepl_tcvt_accepts_different_carrier_rows(void)
     env->tile_reg_cols[0] = 32u;
     env->tile_reg_rows[0] = 32u;
 
-    g_assert_true(linx_tile_tepl_pre_publish_legal(
+    g_assert_true(linx_tile_operation_pre_publish_legal(
         env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
     env->tile_reg_valid_rows[0] = 31u;
-    g_assert_false(linx_tile_tepl_pre_publish_legal(
+    g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
     g_free(env);
 }
 
-static void test_tepl_zero_tquant_scale_is_atomic(void)
+static void test_operation_zero_tquant_scale_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
@@ -309,14 +309,14 @@ static void test_tepl_zero_tquant_scale_is_atomic(void)
     env->gpr[3] = 7u;
     capture_cpu_visible_state(env, before);
 
-    g_assert_false(linx_tile_tepl_pre_publish_legal(
+    g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x102u, sources, 1u, 17u, 4u, 4u, 2u, 4u, 2u));
     assert_cpu_visible_state_unchanged(env, before);
     g_free(before);
     g_free(env);
 }
 
-static void test_tepl_trem_zero_tile_divisor_is_atomic(void)
+static void test_operation_trem_zero_tile_divisor_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
@@ -339,7 +339,7 @@ static void test_tepl_trem_zero_tile_divisor_is_atomic(void)
     }
     env->tile_reg[1][5] = 0u;
     capture_cpu_visible_state(env, before);
-    gate.operands_legal = linx_tile_tepl_pre_publish_legal(
+    gate.operands_legal = linx_tile_operation_pre_publish_legal(
         env, 0x030u, sources, 2u, 17u, 4u, 4u, 2u, 4u, 2u);
 
     g_assert_cmpint(linx_tile_txn_guarded_apply(
@@ -350,7 +350,7 @@ static void test_tepl_trem_zero_tile_divisor_is_atomic(void)
     g_free(env);
 }
 
-static void test_tepl_trems_zero_scalar_is_atomic(void)
+static void test_operation_trems_zero_scalar_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
@@ -372,7 +372,7 @@ static void test_tepl_trems_zero_scalar_is_atomic(void)
     env->tile_ior_desc[0] = 2u << 10;
     env->gpr[2] = 0u;
     capture_cpu_visible_state(env, before);
-    gate.operands_legal = linx_tile_tepl_pre_publish_legal(
+    gate.operands_legal = linx_tile_operation_pre_publish_legal(
         env, 0x032u, sources, 1u, 17u, 4u, 4u, 2u, 4u, 2u);
 
     g_assert_cmpint(linx_tile_txn_guarded_apply(
@@ -396,17 +396,17 @@ int main(int argc, char **argv)
                     test_valid_transaction_applies_once);
     g_test_add_func("/linx/tile-transaction/tstore-source-footprint",
                     test_tstore_size_comes_from_source_footprint);
-    g_test_add_func("/linx/tile-transaction/tepl-invalid-shape",
-                    test_tepl_invalid_shape_is_atomic);
-    g_test_add_func("/linx/tile-transaction/tepl-missing-tquant-scale",
-                    test_tepl_missing_tquant_scale_is_atomic);
-    g_test_add_func("/linx/tile-transaction/tepl-tcvt-carrier-shape",
-                    test_tepl_tcvt_accepts_different_carrier_rows);
-    g_test_add_func("/linx/tile-transaction/tepl-zero-tquant-scale",
-                    test_tepl_zero_tquant_scale_is_atomic);
-    g_test_add_func("/linx/tile-transaction/tepl-trem-zero-tile-divisor",
-                    test_tepl_trem_zero_tile_divisor_is_atomic);
-    g_test_add_func("/linx/tile-transaction/tepl-trems-zero-scalar",
-                    test_tepl_trems_zero_scalar_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-invalid-shape",
+                    test_operation_invalid_shape_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-missing-tquant-scale",
+                    test_operation_missing_tquant_scale_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-tcvt-carrier-shape",
+                    test_operation_tcvt_accepts_different_carrier_rows);
+    g_test_add_func("/linx/tile-transaction/operation-zero-tquant-scale",
+                    test_operation_zero_tquant_scale_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-trem-zero-tile-divisor",
+                    test_operation_trem_zero_tile_divisor_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-trems-zero-scalar",
+                    test_operation_trems_zero_scalar_is_atomic);
     return g_test_run();
 }

@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parents[2]
 CPU_H = ROOT / "target/linx/cpu.h"
 CPU_C = ROOT / "target/linx/cpu.c"
 HELPER = ROOT / "target/linx/helper.c"
-CUBE = ROOT / "target/linx/tile_cube_057.c"
-TEPL_PREFLIGHT = ROOT / "target/linx/tile_tepl_preflight.h"
-TILE_ISA = ROOT / "target/linx/tile_isa_057.h"
+CUBE = ROOT / "target/linx/tile_cube_058.c"
+OPERATION_PREFLIGHT = ROOT / "target/linx/tile_operation_preflight.h"
+TILE_ISA = ROOT / "target/linx/tile_isa_058.h"
 
 
 class V02TileHandDepthTest(unittest.TestCase):
@@ -23,7 +23,7 @@ class V02TileHandDepthTest(unittest.TestCase):
         cls.helper = HELPER.read_text(encoding="utf-8")
         cls.production_tile_paths = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in (HELPER, CUBE, TEPL_PREFLIGHT, TILE_ISA)
+            for path in (HELPER, CUBE, OPERATION_PREFLIGHT, TILE_ISA)
         )
 
     def test_each_hand_has_sixteen_addressable_ranks(self) -> None:
@@ -92,14 +92,14 @@ class V02TileHandDepthTest(unittest.TestCase):
     def test_all_physical_tile_bounds_use_slot_count(self) -> None:
         sources = {
             "helper.c": self.helper,
-            "tile_cube_057.c": (
-                ROOT / "target/linx/tile_cube_057.c"
+            "tile_cube_058.c": (
+                ROOT / "target/linx/tile_cube_058.c"
             ).read_text(encoding="utf-8"),
-            "tile_tepl_preflight.h": (
-                ROOT / "target/linx/tile_tepl_preflight.h"
+            "tile_operation_preflight.h": (
+                ROOT / "target/linx/tile_operation_preflight.h"
             ).read_text(encoding="utf-8"),
-            "tile_isa_057.h": (
-                ROOT / "target/linx/tile_isa_057.h"
+            "tile_isa_058.h": (
+                ROOT / "target/linx/tile_isa_058.h"
             ).read_text(encoding="utf-8"),
         }
         stale_guards = (
@@ -124,7 +124,7 @@ class V02TileHandDepthTest(unittest.TestCase):
                     self.assertNotIn(stale_guard, source)
         self.assertIn(
             "const uint32_t tile_bytes[LINX_TILE_SLOT_COUNT]",
-            sources["tile_isa_057.h"],
+            sources["tile_isa_058.h"],
         )
 
     def test_vector_tbase_preserves_slot_sixty_three_for_local_access(

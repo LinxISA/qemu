@@ -1,11 +1,11 @@
 /*
- * PTO ISA 0.57.1 tile operation identity tables.
+ * PTO ISA 0.58 tile operation identity and engine tables.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef TARGET_LINX_TILE_ISA_057_H
-#define TARGET_LINX_TILE_ISA_057_H
+#ifndef TARGET_LINX_TILE_ISA_058_H
+#define TARGET_LINX_TILE_ISA_058_H
 
 enum {
     LINX_IOT_S0V = 1u << 0,
@@ -51,7 +51,7 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
     return d;
 }
 
-/* Source-only operations recover the encoded allocation size from the Tile. */
+/* Source-only operations recover the internal allocation size from the Tile. */
 static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
                                                   unsigned *size_code)
 {
@@ -72,7 +72,7 @@ static inline bool linx_tile_tstore_resolve_binding(
 {
     unsigned source;
 
-    /* PTO ISA 0.57.1 TSTORE has a source operand but no destination size. */
+    /* TSTORE has a source operand but no destination TSize field. */
     if (desc->has_size) {
         return false;
     }
@@ -103,14 +103,14 @@ static inline bool linx_tile_layout_accepted(uint32_t layout)
            (UINT32_C(0x5816035b) & (UINT32_C(1) << layout)) != 0;
 }
 
-/* BSTART.TEPL encodes a two-bit Mode followed by a five-bit Function. */
-static inline bool linx_tile_tepl_selector_accepted(uint32_t selector)
+/* TEPL remains only the unchanged two-bit Mode/five-bit Function carrier. */
+static inline bool linx_tile_operation_selector_accepted(uint32_t selector)
 {
     static const uint32_t function_masks[4] = {
-        UINT32_C(0x0cffffdf),
-        UINT32_C(0x0c00bfdf),
+        UINT32_C(0x1cffbfdf),
+        UINT32_C(0x0c003fdf),
         UINT32_C(0x3fff3fff),
-        UINT32_C(0x3ffffdff),
+        UINT32_C(0x001ffdfd),
     };
     const uint32_t mode = selector >> 5;
     const uint32_t function = selector & 0x1fu;
@@ -119,7 +119,32 @@ static inline bool linx_tile_tepl_selector_accepted(uint32_t selector)
            (function_masks[mode] & (UINT32_C(1) << function)) != 0;
 }
 
-/* CUBE functions outside this mask are reserved by PTO ISA 0.57.1. */
+typedef enum LinxTileEngine {
+    LINX_TILE_ENGINE_VEC,
+    LINX_TILE_ENGINE_SFU,
+    LINX_TILE_ENGINE_TLSU,
+    LINX_TILE_ENGINE_CUBE,
+} LinxTileEngine;
+
+static inline LinxTileEngine linx_tile_operation_engine(uint32_t selector)
+{
+    static const uint32_t vec_function_masks[4] = {
+        UINT32_C(0x1c83bfdf),
+        UINT32_C(0x0c003fdf),
+        UINT32_C(0x00000000),
+        UINT32_C(0x00000000),
+    };
+    const uint32_t mode = selector >> 5;
+    const uint32_t function = selector & 0x1fu;
+
+    if (mode < ARRAY_SIZE(vec_function_masks) &&
+        (vec_function_masks[mode] & (UINT32_C(1) << function)) != 0u) {
+        return LINX_TILE_ENGINE_VEC;
+    }
+    return LINX_TILE_ENGINE_SFU;
+}
+
+/* CUBE functions outside this mask are reserved by PTO ISA 0.58. */
 static inline bool linx_tile_cube_function_accepted(uint32_t function)
 {
     return function < 32u &&
@@ -148,7 +173,7 @@ static inline uint32_t linx_tile_datr_nonzero_fields(uint32_t packed)
 }
 
 /* Generated from pto-spec spec/catalog/tile-operations.json. */
-static inline uint32_t linx_tile_tepl_datr_allowed(uint32_t selector)
+static inline uint32_t linx_tile_operation_datr_allowed(uint32_t selector)
 {
     static const uint8_t allowed[128] = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -175,7 +200,7 @@ static inline uint32_t linx_tile_datr_allowed(uint32_t blocktype,
                                               uint32_t function)
 {
     switch (blocktype) {
-    case 2u: /* TMA */
+    case 2u: /* TLSU */
         if (function == 6u) {
             return LINX_DATR_LAYOUT | LINX_DATR_PAD_OR_BYTE_ID;
         }
@@ -185,7 +210,7 @@ static inline uint32_t linx_tile_datr_allowed(uint32_t blocktype,
             LINX_DATR_SAT | LINX_DATR_CANONICALIZE |
             LINX_DATR_DATA_TYPE | LINX_DATR_RMODE | LINX_DATR_LAYOUT : 0u;
     case 7u: /* TEPL */
-        return linx_tile_tepl_datr_allowed(function & 0x7fu);
+        return linx_tile_operation_datr_allowed(function & 0x7fu);
     default:
         return 0u;
     }
@@ -199,4 +224,4 @@ static inline bool linx_tile_datr_applicable(uint32_t blocktype,
             ~linx_tile_datr_allowed(blocktype, function)) == 0u;
 }
 
-#endif /* TARGET_LINX_TILE_ISA_057_H */
+#endif /* TARGET_LINX_TILE_ISA_058_H */

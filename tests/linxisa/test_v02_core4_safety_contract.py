@@ -97,7 +97,8 @@ class V02Core4SafetyContractTest(unittest.TestCase):
             CPU.index("static bool linx_core4_cpu_binder_live") :
             CPU.index("static int linx_cpu_pre_save")
         ]
-        self.assertIn("shared->ready", migration)
+        self.assertIn("shared->allocation_mask", migration)
+        self.assertIn("shared->initialized_mask", migration)
         self.assertIn("core4->collective_arrived", migration)
         self.assertIn("env->tile_shared_binder_count", migration)
         self.assertIn(

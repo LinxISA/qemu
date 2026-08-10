@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exact raw-encoding guards for the PTO ISA 0.57.1 tile contract."""
+"""Exact raw-encoding guards for the PTO ISA 0.58 tile contract."""
 
 from pathlib import Path
 import re
@@ -10,43 +10,49 @@ ROOT = Path(__file__).resolve().parents[2]
 TARGET = ROOT / "target" / "linx"
 
 
-class V0571TileRawContractTest(unittest.TestCase):
+class V058TileRawContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.decode = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
-        cls.table = (TARGET / "tile_isa_057.h").read_text(encoding="utf-8")
+        cls.table = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
 
-    def test_tepl_mode_function_raw_contract(self) -> None:
+    def test_vec_sfu_use_unchanged_tepl_carrier(self) -> None:
         self.assertIn("%Mode 25:2", self.decode)
         self.assertIn("%TileFunc 20:5", self.decode)
         self.assertNotIn("TileOp10", self.decode)
-        # The 0.57.1 consumer exposes each accepted TEPL selector as a direct
+        # The 0.58 consumer exposes each accepted VEC/SFU selector as a direct
         # decode form.  DType remains the only wildcard in those forms.
-        direct_tepl = [line for line in self.decode.splitlines()
+        direct_operations = [line for line in self.decode.splitlines()
                        if line.lstrip().startswith("bstart_t") and
                        "dtype=%TileDataType" in line and
                        not line.lstrip().startswith((
                            "bstart_tepl", "bstart_tload", "bstart_tstore",
                            "bstart_tmov", "bstart_tprefetch",
                            "bstart_tmatmul", "bstart_tgemv"))]
-        self.assertEqual(98, len(direct_tepl))
+        self.assertEqual(87, len(direct_operations))
+        self.assertTrue(any(line.lstrip().startswith("bstart_tfma")
+                            for line in self.decode.splitlines()))
+        for retired in ("tprelu", "taxpy", "tgatherb", "tdeinterleave",
+                        "tinterleave", "treshape", "tpush", "tpop",
+                        "talloc", "tfree", "tpartargmax", "tpartargmin"):
+            self.assertNotIn(f"bstart_{retired}", self.decode)
         self.assertIn(".mask=UINT64_C(0x7ffffff)", self.meta)
         self.assertIn(".match=UINT64_C(0x19181)", self.meta)
 
-    def test_tepl_acceptance_is_98_of_128(self) -> None:
+    def test_vec_sfu_carrier_acceptance_is_87_of_128(self) -> None:
         function_table = self.table.split("function_masks[4] = {", 1)[1]
         function_table = function_table.split("};", 1)[0]
         masks = [int(value, 16) for value in re.findall(
             r"UINT32_C\(0x([0-9a-f]{8})\)", function_table
         )]
         self.assertEqual(len(masks), 4)
-        self.assertEqual(sum(mask.bit_count() for mask in masks), 98)
-        self.assertEqual(128 - sum(mask.bit_count() for mask in masks), 30)
+        self.assertEqual(sum(mask.bit_count() for mask in masks), 87)
+        self.assertEqual(128 - sum(mask.bit_count() for mask in masks), 41)
 
-    def test_b_iot_uses_latest_v02_forms(self) -> None:
+    def test_b_iot_uses_final_v058_forms(self) -> None:
         patterns = [line for line in self.decode.splitlines()
                     if line.lstrip().startswith("b_iot ")]
         self.assertEqual(len(patterns), 3)
@@ -79,7 +85,7 @@ class V0571TileRawContractTest(unittest.TestCase):
         self.assertIn("UINT32_C(0x1f1f7fff)", self.table)
         self.assertIn("UINT32_C(0x5816035b)", self.table)
 
-    def test_tma_31_compatibility_is_deleted(self) -> None:
+    def test_retired_tlsu_compatibility_is_deleted(self) -> None:
         self.assertNotIn("TCVT_COMPAT", self.helper)
 
     def test_cube_is_fail_closed_to_13_functions(self) -> None:

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "target/linx/cpu.h"
-#include "target/linx/tile_cube_057.h"
-#include "target/linx/tile_numeric_057.h"
+#include "target/linx/tile_cube_058.h"
+#include "target/linx/tile_numeric_058.h"
 #include <fenv.h>
 
 static unsigned dtype_bytes(unsigned dtype)
@@ -65,7 +65,7 @@ static uint64_t run_acccvt(CPULinxState *env, unsigned dtype, double value,
     env->tile_dtype = dtype;
     env->tile_attr_raw = (rmode << 25) | ((unsigned)sat << 28);
     env->tile_reg_capacity[31] = 16;
-    g_assert_true(linx_tile_acccvt_057(env, 31, 0));
+    g_assert_true(linx_tile_acccvt_058(env, 31, 0));
     memcpy(&raw, env->tile_reg[31], dtype_bytes(dtype));
     g_assert_cmpuint(env->tile_reg_valid_cols[31], ==, 1);
     g_assert_cmpuint(env->tile_reg_valid_rows[31], ==, 1);
@@ -125,7 +125,7 @@ static void test_all_production_type_rows(void)
         env->tile_dtype = ordinary[i];
         set_tile(env, 0, ordinary[i], 1, 1, &one, dtype_bytes(ordinary[i]));
         set_tile(env, 1, ordinary[i], 1, 1, &one, dtype_bytes(ordinary[i]));
-        g_assert_true(linx_tile_cube_compute_057(env, 0, 1, 0, 0, 0, 0, false,
+        g_assert_true(linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false,
                                                  false, false));
         if (env->tile_acc_dtype == LINX_TILE_ACC_FP32) {
             float result;
@@ -149,14 +149,14 @@ static void test_all_production_type_rows(void)
         set_tile(env, 1, mx[i][1], 1, 1, &right, 1);
         set_tile(env, 2, 13, 1, 1, &scale, 1);
         set_tile(env, 3, 13, 1, 1, &scale, 1);
-        g_assert_true(linx_tile_cube_compute_057(env, 0, 1, 2, 3, 0, 0, true,
+        g_assert_true(linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true,
                                                  false, false));
         memcpy(&result, env->tile_acc, sizeof(result));
         g_assert_cmpfloat(result, ==, 1.0);
     }
     env->tile_dtype = 15;
     g_assert_false(
-        linx_tile_cube_compute_057(env, 0, 1, 0, 0, 0, 0, false, false, false));
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false, false, false));
     g_free(env);
 }
 
@@ -174,7 +174,7 @@ static void test_ordinary_bias_and_acc(void)
     set_tile(env, 1, 1, 2, 2, right, sizeof(right));
     set_tile(env, 2, 1, 1, 2, bias, sizeof(bias));
     g_assert_true(
-        linx_tile_cube_compute_057(env, 0, 1, 0, 0, 2, 2, false, true, false));
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 2, 2, false, true, false));
     memcpy(result, env->tile_acc, sizeof(result));
     g_assert_cmpfloat(result[0], ==, 20);
     g_assert_cmpfloat(result[1], ==, 20);
@@ -185,7 +185,7 @@ static void test_ordinary_bias_and_acc(void)
     g_assert_cmpuint(env->tile_acc_cols, ==, 2);
 
     g_assert_true(
-        linx_tile_cube_compute_057(env, 0, 1, 0, 0, 0, 2, false, false, true));
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 2, false, false, true));
     memcpy(result, env->tile_acc, sizeof(result));
     g_assert_cmpfloat(result[0], ==, 39);
     g_assert_cmpfloat(result[1], ==, 42);
@@ -205,18 +205,18 @@ static void test_upper_physical_slots(void)
     env->tile_dtype = 1;
     set_tile(env, 32, 1, 1, 1, &left, sizeof(left));
     set_tile(env, 47, 1, 1, 1, &right, sizeof(right));
-    g_assert_true(linx_tile_cube_compute_057(env, 32, 47, 0, 0, 0, 0,
+    g_assert_true(linx_tile_cube_compute_058(env, 32, 47, 0, 0, 0, 0,
                                              false, false, false));
     memcpy(&result, env->tile_acc, sizeof(result));
     g_assert_cmpfloat(result, ==, 6.0f);
 
     env->tile_reg_capacity[48] = 16;
-    g_assert_true(linx_tile_acccvt_057(env, 48, 0));
+    g_assert_true(linx_tile_acccvt_058(env, 48, 0));
     memcpy(&result, env->tile_reg[48], sizeof(result));
     g_assert_cmpfloat(result, ==, 6.0f);
 
     env->tile_reg_capacity[63] = 16;
-    g_assert_true(linx_tile_acccvt_057(env, 63, 0));
+    g_assert_true(linx_tile_acccvt_058(env, 63, 0));
     memcpy(&result, env->tile_reg[63], sizeof(result));
     g_assert_cmpfloat(result, ==, 6.0f);
     g_free(env);
@@ -241,7 +241,7 @@ static void test_mx_crosses_k32(void)
     set_tile(env, 3, 13, 2, 1, scale_b, sizeof(scale_b));
     set_tile(env, 4, 1, 1, 1, &bias, sizeof(bias));
     g_assert_true(
-        linx_tile_cube_compute_057(env, 0, 1, 2, 3, 4, 0, true, true, false));
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 4, 0, true, true, false));
     memcpy(&result, env->tile_acc, sizeof(result));
     g_assert_cmpfloat(result, ==, 42);
 
@@ -251,7 +251,7 @@ static void test_mx_crosses_k32(void)
     env->tile_acc_valid = 1;
     env->tile_acc_rows = env->tile_acc_cols = 1;
     g_assert_true(
-        linx_tile_cube_compute_057(env, 0, 1, 2, 3, 0, 0, true, false, true));
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true, false, true));
     memcpy(&result, env->tile_acc, sizeof(result));
     g_assert_cmpfloat(result, ==, 43);
     g_free(env);
@@ -329,13 +329,13 @@ static void test_acccvt_is_host_fenv_independent(void)
     set_tile(env, 1, 1, 1, 1, &operand, sizeof(operand));
     fesetround(FE_TONEAREST);
     g_assert_true(
-        linx_tile_cube_compute_057(env, 0, 1, 0, 0, 0, 0, false, false, false));
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false, false, false));
     memcpy(&cube_expected, env->tile_acc, sizeof(cube_expected));
     expected = run_acccvt(env, 4, value, 1, false);
     for (unsigned i = 0; i < G_N_ELEMENTS(host_modes); i++) {
         fesetround(host_modes[i]);
         env->tile_dtype = 1;
-        g_assert_true(linx_tile_cube_compute_057(env, 0, 1, 0, 0, 0, 0, false,
+        g_assert_true(linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false,
                                                  false, false));
         g_assert_cmphex(*(uint32_t *)env->tile_acc, ==, cube_expected);
         g_assert_cmphex(run_acccvt(env, 4, value, 1, false), ==, expected);
@@ -410,7 +410,7 @@ static void test_acccvt_preserves_signed_zero(void)
     env->tile_dtype = 12;
     env->tile_attr_raw = 1u << 25;
     env->tile_reg_capacity[31] = 16;
-    g_assert_true(linx_tile_acccvt_057(env, 31, 0));
+    g_assert_true(linx_tile_acccvt_058(env, 31, 0));
     g_assert_cmphex(((uint8_t *)env->tile_reg[31])[0], ==, 0x91);
     g_assert_cmpuint(env->tile_reg_cols[31], ==, 2);
     g_free(env);
@@ -477,7 +477,7 @@ static void test_failures_preserve_acc_and_destination(void)
     before_acc_valid = env->tile_acc_valid;
     before_acc_cols = env->tile_acc_cols;
     before_acc_rows = env->tile_acc_rows;
-    g_assert_false(linx_tile_acccvt_057(env, 31, 0));
+    g_assert_false(linx_tile_acccvt_058(env, 31, 0));
     g_assert_cmpmem(env->tile_reg[31], sizeof(before_tile), before_tile,
                     sizeof(before_tile));
     g_assert_cmpmem(env->tile_acc, sizeof(before_acc), before_acc,
@@ -511,7 +511,7 @@ static void test_failures_preserve_acc_and_destination(void)
     before_acc_cols = env->tile_acc_cols;
     before_acc_rows = env->tile_acc_rows;
     g_assert_false(
-        linx_tile_cube_compute_057(env, 0, 1, 2, 3, 0, 0, true, false, false));
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true, false, false));
     g_assert_cmpmem(env->tile_acc, sizeof(before_acc), before_acc,
                     sizeof(before_acc));
     g_assert_cmpuint(env->tile_acc_bytes, ==, before_acc_bytes);

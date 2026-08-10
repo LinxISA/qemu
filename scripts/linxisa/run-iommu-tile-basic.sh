@@ -9,6 +9,7 @@ LLC="${LLC:-$LLVM_BUILD/bin/llc}"
 
 QEMU_BUILD="${QEMU_BUILD:-$ROOT/build}"
 QEMU_BIN="${QEMU_BIN:-}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-15}"
 
 if [[ -z "$QEMU_BIN" ]]; then
   for cand in \
@@ -57,4 +58,21 @@ echo "[llc] -mtriple=linx64 $SRC"
 
 qemu_direct_kernel_args "$OUT_O"
 echo "[run] $QEMU_BIN ${QEMU_DIRECT_KERNEL_ARGS[*]}"
-"$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}"
+LINX_VIRT_TEST_FINISHER=1 python3 - "$TIMEOUT_SECONDS" \
+  "$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}" <<'PY'
+import os
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    result = subprocess.run(cmd, env=os.environ.copy(), timeout=timeout)
+except subprocess.TimeoutExpired:
+    print(f"error: QEMU timed out after {timeout:g}s", file=sys.stderr)
+    raise SystemExit(124)
+if result.returncode != 0:
+    print(f"error: QEMU exited with status {result.returncode}", file=sys.stderr)
+    raise SystemExit(result.returncode or 1)
+PY
+echo "[PASS] iommu-tile-basic (PTO 0.58 TLSU descriptor path)"
