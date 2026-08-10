@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for canonical PTO ISA 0.57.1 B.IOT forms."""
+"""Regression checks for canonical PTO ISA 0.58 B.IOT forms."""
 
 from pathlib import Path
 import unittest
@@ -10,8 +10,8 @@ TRANSLATE = ROOT / "target/linx/translate.c"
 HELPER = ROOT / "target/linx/helper.c"
 
 
-class V057BIOTSourceOnlyTest(unittest.TestCase):
-    def test_v02_forms_preserve_pe_mask_and_source_arity(self) -> None:
+class V058BIOTSourceOnlyTest(unittest.TestCase):
+    def test_v058_forms_preserve_pe_mask_and_source_arity(self) -> None:
         text = TRANSLATE.read_text(encoding="utf-8")
         self.assertIn(
             "const uint32_t flags = func == 4u ? 0u",
@@ -26,11 +26,10 @@ class V057BIOTSourceOnlyTest(unittest.TestCase):
         )
         self.assertNotIn("IOTV4", text)
 
-    def test_v02_shape_constraints_are_canonical(self) -> None:
+    def test_v058_shape_constraints_are_canonical(self) -> None:
         text = TRANSLATE.read_text(encoding="utf-8")
-        self.assertIn(
-            "pe_mask == 0u || func < 4u || func > 6u || tsize > 7u", text
-        )
+        self.assertIn("if (pe_mask == 0u)", text)
+        self.assertIn("func < 4u || func > 6u || tsize > 7u", text)
         self.assertIn(
             "const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;",
             text,

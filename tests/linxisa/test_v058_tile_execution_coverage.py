@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generated-contract coverage for PTO ISA 0.57.1 tile execution."""
+"""Generated-contract coverage for PTO ISA 0.58 tile execution."""
 
 import pathlib
 import re
@@ -8,11 +8,11 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HELPER = (ROOT / "target/linx/helper.c").read_text()
-HEADER = (ROOT / "target/linx/tile_isa_057.h").read_text()
+HEADER = (ROOT / "target/linx/tile_isa_058.h").read_text()
 
 
 class TileExecutionCoverage(unittest.TestCase):
-    def test_every_accepted_tepl_selector_has_an_executable_mapping(self):
+    def test_every_accepted_vec_sfu_selector_has_an_executable_mapping(self):
         masks_match = re.search(
             r"function_masks\[4\]\s*=\s*\{(.*?)\};", HEADER, re.S
         )
@@ -25,7 +25,7 @@ class TileExecutionCoverage(unittest.TestCase):
             if mask & (1 << function)
         }
         mapping_body = re.search(
-            r"linx_tile_tepl_impl_selector\(.*?\)\s*\{(.*?)\n\}", HELPER, re.S
+            r"linx_tile_operation_impl_selector\(.*?\)\s*\{(.*?)\n\}", HELPER, re.S
         ).group(1)
         mappings = {
             int(selector, 16): int(implementation, 16)
@@ -35,7 +35,7 @@ class TileExecutionCoverage(unittest.TestCase):
             )
         }
         executable_body = re.search(
-            r"linx_tile_tepl_impl_selector_executable\(.*?\)\s*\{(.*?)\n\}",
+            r"linx_tile_operation_impl_selector_executable\(.*?\)\s*\{(.*?)\n\}",
             HELPER,
             re.S,
         ).group(1)
@@ -44,7 +44,7 @@ class TileExecutionCoverage(unittest.TestCase):
             for value in re.findall(r"case 0x([0-9a-f]+)u:", executable_body)
         }
         selector_body = re.search(
-            r"linx_tile_tepl_selector_executable\(.*?\)\s*\{(.*?)\n\}",
+            r"linx_tile_operation_selector_executable\(.*?\)\s*\{(.*?)\n\}",
             HELPER,
             re.S,
         ).group(1)
@@ -52,10 +52,22 @@ class TileExecutionCoverage(unittest.TestCase):
             int(value, 16)
             for value in re.findall(r"case 0x([0-9a-f]+)u:", selector_body)
         }
-        self.assertEqual(98, len(accepted))
+        self.assertEqual(87, len(accepted))
         self.assertEqual(accepted, mappings.keys())
         self.assertEqual(accepted, executable_selectors)
         self.assertEqual(set(), set(mappings.values()) - executable)
+
+        vec_match = re.search(
+            r"vec_function_masks\[4\]\s*=\s*\{(.*?)\};", HEADER, re.S
+        )
+        self.assertIsNotNone(vec_match)
+        vec_masks = [int(x, 16) for x in re.findall(
+            r"0x([0-9a-f]+)", vec_match.group(1)
+        )]
+        self.assertEqual(35, sum(mask.bit_count() for mask in vec_masks))
+        self.assertEqual(52, len(accepted) - sum(
+            mask.bit_count() for mask in vec_masks
+        ))
 
     def test_all_cube_functions_have_execution_cases(self):
         cube_body = re.search(

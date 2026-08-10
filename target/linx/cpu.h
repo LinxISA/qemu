@@ -22,7 +22,7 @@
 #error "LinxISA does not support user mode emulation"
 #endif
 
-/* Canonical v0.57 test-finisher MMIO contract. */
+/* Stable Linx test-finisher MMIO contract. */
 #define LINX_VIRT_FINISHER_ADDR UINT64_C(0x10009000)
 #define LINX_VIRT_FINISHER_FAIL UINT64_C(0x3333)
 #define LINX_VIRT_FINISHER_PASS UINT64_C(0x5555)
@@ -30,15 +30,26 @@
 
 #define LINX_CORE4_PE_COUNT 4
 #define LINX_SHARED_TILE_COUNT 256
-#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)
+#define LINX_SHARED_TILE_MAX_BYTES (8 * 1024)
 
-typedef struct LinxSharedTileVersion {
+typedef struct LinxSharedTileLane {
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
     uint32_t bytes;
     uint32_t dtype;
+    uint16_t valid_cols;
+    uint16_t valid_rows;
+    uint16_t cols;
+    uint16_t rows;
+} LinxSharedTileLane;
+
+typedef struct LinxSharedTileVersion {
+    LinxSharedTileLane lane[LINX_CORE4_PE_COUNT];
+    uint32_t per_pe_capacity;
+    uint32_t allocated_bytes;
+    uint32_t dtype;
     uint64_t producer_bpc;
-    uint8_t defined_mask;
-    uint8_t ready;
+    uint8_t allocation_mask;
+    uint8_t initialized_mask;
 } LinxSharedTileVersion;
 
 typedef struct LinxCore4State {
@@ -55,6 +66,10 @@ typedef struct LinxCore4State {
     uint32_t collective_k;
     uint8_t collective_arrived;
     uint8_t collective_src[LINX_CORE4_PE_COUNT];
+    uint8_t collective_dst[LINX_CORE4_PE_COUNT];
+    uint8_t collective_peer[LINX_CORE4_PE_COUNT];
+    uint8_t collective_pe_mask;
+    uint8_t collective_size_code;
     uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
 } LinxCore4State;
 
@@ -337,7 +352,7 @@ typedef struct LinxAcrBlockState {
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint32_t tile_shared_binder_count;
-    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
+    uint32_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];
@@ -466,7 +481,7 @@ typedef struct CPUArchState {
     uint64_t vec_ri_value[LINX_VEC_RI_MAX];
     uint32_t tile_iot_count;
     uint32_t tile_shared_binder_count;
-    uint8_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
+    uint32_t tile_shared_binder[LINX_TILE_MAX_SHARED_BINDERS];
     uint64_t tile_iot_desc[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_valid[LINX_TILE_MAX_IOT];
     uint8_t tile_iot_src_phys[LINX_TILE_MAX_IOT][2];

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-derived guards for PTO ISA 0.57.1 numeric/layout contracts."""
+"""Source-derived guards for the LinxISA/PTO 0.58 numeric/layout contract."""
 
 from pathlib import Path
 import re
@@ -11,7 +11,7 @@ HELPER = (ROOT / "target/linx/helper.c").read_text(encoding="utf-8")
 TRANSLATE = (ROOT / "target/linx/translate.c").read_text(encoding="utf-8")
 
 
-class V0571TileNumericLayoutContract(unittest.TestCase):
+class V058TileNumericLayoutContract(unittest.TestCase):
     def test_all_13_layout_codes_have_exact_source_destination_pairs(self):
         body = re.search(
             r"linx_tile_decode_datr_layout\(.*?\n\}", HELPER, re.S
@@ -102,7 +102,7 @@ class V0571TileNumericLayoutContract(unittest.TestCase):
         self.assertLess(commit.index("linx_tile_preflight_talloc"),
                         commit.index(apply_gate))
 
-    def test_fp64_s64_u64_have_executable_tepl_carriers(self):
+    def test_fp64_s64_u64_have_executable_vec_sfu_carriers(self):
         for literal in (
             "LINX_TILE_DTYPE_MASK(0u)",
             "LINX_TILE_DTYPE_MASK(16u)",
@@ -110,8 +110,8 @@ class V0571TileNumericLayoutContract(unittest.TestCase):
             "0x7ff8000000000000",
         ):
             self.assertIn(literal, HELPER.lower() if literal.startswith("0x") else HELPER)
-        self.assertIn("linx_tile_tepl_binary_qword", HELPER)
-        self.assertIn("linx_tile_tepl_convert64", HELPER)
+        self.assertIn("linx_tile_operation_binary_qword", HELPER)
+        self.assertIn("linx_tile_operation_convert64", HELPER)
         self.assertIn("elem_bytes != 8u", HELPER)
 
 

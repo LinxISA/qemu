@@ -19,7 +19,6 @@
 %simm5_6_s5 6:s5
 %uimm5 6:5
 %imm8 6:8
-%SharedTID 6:8
 
 # Block headers / terminators
 # Note: c_bstop is all zeros - check it first before other block instructions
@@ -90,12 +89,8 @@ c_addi          .... .... ..00 1100 %SrcL simm5=%simm5_11_s5
 c_slli          0001 0... ..10 1100 %uimm5
 c_srli          0001 1... ..10 1100 %uimm5
 
-# Block dimension immediate (LB0/LB1/LB2)
-# These forms intentionally overlap: C.B.DIM reserves bits[15:14]=11 while
-# C.B.DIMI uses the same low opcode with LoopNest encoded in bits[15:14].
-# DavinciOO v5 reassigns the old compressed register-dimension form to the
-# SharedTile binder. Dynamic dimensions use 32-bit B.DIM.
-c_b_ios        11.. .... ..11 1100 shared=%SharedTID
+# Block dimension immediate (LB0/LB1/LB2). The former C.B.IOS spelling is
+# retired in 0.58; its overlapping 11xx words remain unclaimed/illegal.
 c_b_dimi       00.. .... ..11 1100 loopnest=0 imm8=%imm8
 c_b_dimi       01.. .... ..11 1100 loopnest=1 imm8=%imm8
 c_b_dimi       10.. .... ..11 1100 loopnest=2 imm8=%imm8

@@ -10,7 +10,7 @@ linx_tile_test_target = declare_dependency(
 linx_tile_cube_test_target = declare_dependency(
   dependencies: [linx_tile_test_target],
   sources: [
-    '../../target/linx/tile_cube_057.c',
+    '../../target/linx/tile_cube_058.c',
     '../../fpu/softfloat.c',
   ],
 )

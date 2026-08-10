@@ -3,7 +3,7 @@
 _start:
   C.BSTART
 
-  # Minimal tile decoupled-header smoke: ensure TMA block kind is observed.
+  # Minimal Tile decoupled-header smoke: ensure TLSU block kind is observed.
   BSTART.TLOAD INT32
   B.TEXT __linx_tile_empty_body
   C.BSTART

@@ -46,7 +46,7 @@
 %Mode 25:2
 %XBRaw 15:17
 
-# Canonical v0.57 control/data attribute fields
+# Canonical LinxISA 0.58 control and data attribute fields.
 %BA_DR 26:1
 %BA_aq 16:1
 %BA_atom 17:1
@@ -88,6 +88,9 @@
 %IOTV5PeMask 15:4
 %IOTV5TSize 9:3
 %IOTV5Dst 7:2
+%SharedTID 20:8
+%PE_MASK 15:4
+%TSize 9:3
 
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
@@ -110,7 +113,8 @@ bstart_fp_ind     0000 0000 0000 0000 0101 0001 0000 0001
 bstart_fp_icall   0000 0000 0000 0000 0110 0001 0000 0001
 bstart_fp_ret     0000 0000 0000 0000 0111 0001 0000 0001
 bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
-# PTO ISA 0.57.1 direct TEPL headers (generated from locked catalog).
+# PTO ISA 0.58 direct VEC/SFU operation headers.  TEPL is only the unchanged
+# Mode/Function encoding carrier.
 {
   bstart_tadd                 .... .000 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tsub                 .... .000 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
@@ -128,7 +132,6 @@ bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
   bstart_tnot                 .... .001 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tneg                 .... .001 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_trelu                .... .001 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tprelu               .... .000 1110 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tdiv                 .... .000 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_trem                 .... .000 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tsqrt                .... .001 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
@@ -137,7 +140,7 @@ bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
   bstart_texp                 .... .001 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_trsqrt               .... .001 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tadds                .... .010 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_taxpy                .... .010 1111 0001 1001 0001 1000 0001 dtype=%TileDataType
+  bstart_tfma                 .... .001 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tsubs                .... .010 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tmuls                .... .010 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tdivs                .... .010 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
@@ -193,23 +196,13 @@ bstart_sys        .... .... .... .... .001 0000 1000 0001 %simm17
   bstart_tconcat              .... .110 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_ttrans               .... .110 1110 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_timg2col             .... .110 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tgatherb             .... .110 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tdeinterleave        .... .111 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tinterleave          .... .111 1001 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_treshape             .... .111 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tsort                .... .110 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tmrgsort             .... .110 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_thistogram           .... .110 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpush                .... .111 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpop                 .... .111 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_talloc               .... .111 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tfree                .... .111 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tpartadd             .... .111 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tpartmul             .... .111 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tpartmax             .... .111 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tpartmin             .... .111 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartargmax          .... .111 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartargmin          .... .111 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
   # Canonical selector form retained for decoders that do not use aliases.
   bstart_tepl               ..... .. ..... 00011 001 00011 000 000 1 dtype=%TileDataType mode=%Mode function=%TileFunc
 }
@@ -226,7 +219,7 @@ bstart_mseq 0000 0..0 0000 0000 1001 0001 1000 0001 mode=%Mode
 # MPAR: parallel vector execution with memory access
 bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 
-# Tile block headers (TMA/CUBE). These are fall-through blocks that commit at
+# Tile block headers (TLSU/CUBE). These are fall-through blocks that commit at
 # (C.)BSTOP or when the next BSTART is encountered.
 {
   bstart_tload   .... .000 0000 0001 0001 0001 1000 0001 dtype=%TileDataType
@@ -237,6 +230,8 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
   bstart_mscatter .... .000 0101 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mgather_mask .... .000 0110 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mscatter_mask .... .000 0111 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_mgather_cas .... .000 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
+  bstart_gmov .... .000 1101 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_acccvt .... .000 1000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul .... .000 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_bias .... .000 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
@@ -253,6 +248,8 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 }
 
 # DavinciOO PTO ISA v0.2/v5 Tile dependency descriptors.
+# PTO ISA 0.58 Shared binding. TSize=0 is a source; 1..7 is a destination.
+b_ios          0000 .... .... 0... .001 ...0 0001 0011 shared=%SharedTID pe_mask=%PE_MASK tsize=%TSize
 b_iot          .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=4
 b_iot          0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=5
 b_iot          0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=6
@@ -302,7 +299,7 @@ swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%
 lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
-# v0.57 local compare-and-swap and DMA encodings.
+# LinxISA 0.58 local compare-and-swap and DMA encodings.
 casb   .... .... .... .... .000 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 cash   .... .... .... .... .001 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 casw   .... .... .... .... .010 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl

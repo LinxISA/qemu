@@ -17,7 +17,7 @@
 #include "exec/log.h"
 #include "trace.h"
 #include "opcode_meta.h"
-#include "tile_isa_057.h"
+#include "tile_isa_058.h"
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -2329,113 +2329,102 @@ static bool trans_bstart_sys(DisasContext *ctx, arg_bstart_sys *a)
     return linx_begin_sys_header_target(ctx, 0);
 }
 
-#define LINX_TRANS_TEPL_DIRECT(name, selector) \
+#define LINX_TRANS_TILE_OPERATION_DIRECT(name, selector) \
     static bool trans_bstart_##name(DisasContext *ctx, \
                                     arg_bstart_##name *a) \
     { \
         return trans_bstart_tile_common(ctx, a->dtype, selector); \
     }
 
-LINX_TRANS_TEPL_DIRECT(tadd, 0x000u)
-LINX_TRANS_TEPL_DIRECT(tsub, 0x001u)
-LINX_TRANS_TEPL_DIRECT(tmul, 0x002u)
-LINX_TRANS_TEPL_DIRECT(tmax, 0x00bu)
-LINX_TRANS_TEPL_DIRECT(tmin, 0x00cu)
-LINX_TRANS_TEPL_DIRECT(tand, 0x006u)
-LINX_TRANS_TEPL_DIRECT(tor, 0x007u)
-LINX_TRANS_TEPL_DIRECT(txor, 0x008u)
-LINX_TRANS_TEPL_DIRECT(tshl, 0x009u)
-LINX_TRANS_TEPL_DIRECT(tshr, 0x00au)
-LINX_TRANS_TEPL_DIRECT(tcmp, 0x00du)
-LINX_TRANS_TEPL_DIRECT(tsel, 0x01au)
-LINX_TRANS_TEPL_DIRECT(tabs, 0x00fu)
-LINX_TRANS_TEPL_DIRECT(tnot, 0x010u)
-LINX_TRANS_TEPL_DIRECT(tneg, 0x011u)
-LINX_TRANS_TEPL_DIRECT(trelu, 0x017u)
-LINX_TRANS_TEPL_DIRECT(tprelu, 0x00eu)
-LINX_TRANS_TEPL_DIRECT(tdiv, 0x003u)
-LINX_TRANS_TEPL_DIRECT(trem, 0x004u)
-LINX_TRANS_TEPL_DIRECT(tsqrt, 0x015u)
-LINX_TRANS_TEPL_DIRECT(tlog, 0x013u)
-LINX_TRANS_TEPL_DIRECT(trecip, 0x014u)
-LINX_TRANS_TEPL_DIRECT(texp, 0x012u)
-LINX_TRANS_TEPL_DIRECT(trsqrt, 0x016u)
-LINX_TRANS_TEPL_DIRECT(tadds, 0x020u)
-LINX_TRANS_TEPL_DIRECT(taxpy, 0x02fu)
-LINX_TRANS_TEPL_DIRECT(tsubs, 0x021u)
-LINX_TRANS_TEPL_DIRECT(tmuls, 0x022u)
-LINX_TRANS_TEPL_DIRECT(tdivs, 0x023u)
-LINX_TRANS_TEPL_DIRECT(tmins, 0x02cu)
-LINX_TRANS_TEPL_DIRECT(tmaxs, 0x02bu)
-LINX_TRANS_TEPL_DIRECT(trems, 0x024u)
-LINX_TRANS_TEPL_DIRECT(tands, 0x026u)
-LINX_TRANS_TEPL_DIRECT(tors, 0x027u)
-LINX_TRANS_TEPL_DIRECT(txors, 0x028u)
-LINX_TRANS_TEPL_DIRECT(tcmps, 0x02du)
-LINX_TRANS_TEPL_DIRECT(tsels, 0x03au)
-LINX_TRANS_TEPL_DIRECT(tshls, 0x029u)
-LINX_TRANS_TEPL_DIRECT(tshrs, 0x02au)
-LINX_TRANS_TEPL_DIRECT(trowsum, 0x040u)
-LINX_TRANS_TEPL_DIRECT(trowprod, 0x043u)
-LINX_TRANS_TEPL_DIRECT(trowmax, 0x041u)
-LINX_TRANS_TEPL_DIRECT(trowmin, 0x042u)
-LINX_TRANS_TEPL_DIRECT(trowargmax, 0x04cu)
-LINX_TRANS_TEPL_DIRECT(trowargmin, 0x04du)
-LINX_TRANS_TEPL_DIRECT(tcolsum, 0x050u)
-LINX_TRANS_TEPL_DIRECT(tcolprod, 0x053u)
-LINX_TRANS_TEPL_DIRECT(tcolmax, 0x051u)
-LINX_TRANS_TEPL_DIRECT(tcolmin, 0x052u)
-LINX_TRANS_TEPL_DIRECT(tcolargmax, 0x05cu)
-LINX_TRANS_TEPL_DIRECT(tcolargmin, 0x05du)
-LINX_TRANS_TEPL_DIRECT(trowexpand, 0x044u)
-LINX_TRANS_TEPL_DIRECT(trowexpandadd, 0x045u)
-LINX_TRANS_TEPL_DIRECT(trowexpandsub, 0x046u)
-LINX_TRANS_TEPL_DIRECT(trowexpandmul, 0x047u)
-LINX_TRANS_TEPL_DIRECT(trowexpanddiv, 0x048u)
-LINX_TRANS_TEPL_DIRECT(trowexpandmax, 0x049u)
-LINX_TRANS_TEPL_DIRECT(trowexpandmin, 0x04au)
-LINX_TRANS_TEPL_DIRECT(trowexpandexpdif, 0x04bu)
-LINX_TRANS_TEPL_DIRECT(tcolexpand, 0x054u)
-LINX_TRANS_TEPL_DIRECT(tcolexpandadd, 0x055u)
-LINX_TRANS_TEPL_DIRECT(tcolexpandsub, 0x056u)
-LINX_TRANS_TEPL_DIRECT(tcolexpandmul, 0x057u)
-LINX_TRANS_TEPL_DIRECT(tcolexpanddiv, 0x058u)
-LINX_TRANS_TEPL_DIRECT(tcolexpandmax, 0x059u)
-LINX_TRANS_TEPL_DIRECT(tcolexpandmin, 0x05au)
-LINX_TRANS_TEPL_DIRECT(tcolexpandexpdif, 0x05bu)
-LINX_TRANS_TEPL_DIRECT(texpands, 0x03bu)
-LINX_TRANS_TEPL_DIRECT(tci, 0x066u)
-LINX_TRANS_TEPL_DIRECT(ttri, 0x067u)
-LINX_TRANS_TEPL_DIRECT(tfillpad, 0x065u)
-LINX_TRANS_TEPL_DIRECT(tcvt, 0x01bu)
-LINX_TRANS_TEPL_DIRECT(tquant, 0x06au)
-LINX_TRANS_TEPL_DIRECT(tdequant, 0x06bu)
-LINX_TRANS_TEPL_DIRECT(textract, 0x062u)
-LINX_TRANS_TEPL_DIRECT(tinsert, 0x063u)
-LINX_TRANS_TEPL_DIRECT(tgather, 0x06fu)
-LINX_TRANS_TEPL_DIRECT(tscatter, 0x070u)
-LINX_TRANS_TEPL_DIRECT(tconcat, 0x060u)
-LINX_TRANS_TEPL_DIRECT(ttrans, 0x06eu)
-LINX_TRANS_TEPL_DIRECT(timg2col, 0x064u)
-LINX_TRANS_TEPL_DIRECT(tgatherb, 0x061u)
-LINX_TRANS_TEPL_DIRECT(tdeinterleave, 0x078u)
-LINX_TRANS_TEPL_DIRECT(tinterleave, 0x079u)
-LINX_TRANS_TEPL_DIRECT(treshape, 0x077u)
-LINX_TRANS_TEPL_DIRECT(tsort, 0x06cu)
-LINX_TRANS_TEPL_DIRECT(tmrgsort, 0x06du)
-LINX_TRANS_TEPL_DIRECT(thistogram, 0x068u)
-LINX_TRANS_TEPL_DIRECT(tpush, 0x07au)
-LINX_TRANS_TEPL_DIRECT(tpop, 0x07bu)
-LINX_TRANS_TEPL_DIRECT(talloc, 0x07cu)
-LINX_TRANS_TEPL_DIRECT(tfree, 0x07du)
-LINX_TRANS_TEPL_DIRECT(tpartadd, 0x071u)
-LINX_TRANS_TEPL_DIRECT(tpartmul, 0x072u)
-LINX_TRANS_TEPL_DIRECT(tpartmax, 0x073u)
-LINX_TRANS_TEPL_DIRECT(tpartmin, 0x074u)
-LINX_TRANS_TEPL_DIRECT(tpartargmax, 0x075u)
-LINX_TRANS_TEPL_DIRECT(tpartargmin, 0x076u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tadd, 0x000u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsub, 0x001u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmul, 0x002u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmax, 0x00bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmin, 0x00cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tand, 0x006u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tor, 0x007u)
+LINX_TRANS_TILE_OPERATION_DIRECT(txor, 0x008u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tshl, 0x009u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tshr, 0x00au)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcmp, 0x00du)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsel, 0x01au)
+LINX_TRANS_TILE_OPERATION_DIRECT(tabs, 0x00fu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tnot, 0x010u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tneg, 0x011u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trelu, 0x017u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tfma, 0x01cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tdiv, 0x003u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trem, 0x004u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsqrt, 0x015u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tlog, 0x013u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trecip, 0x014u)
+LINX_TRANS_TILE_OPERATION_DIRECT(texp, 0x012u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trsqrt, 0x016u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tadds, 0x020u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsubs, 0x021u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmuls, 0x022u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tdivs, 0x023u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmins, 0x02cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmaxs, 0x02bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(trems, 0x024u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tands, 0x026u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tors, 0x027u)
+LINX_TRANS_TILE_OPERATION_DIRECT(txors, 0x028u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcmps, 0x02du)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsels, 0x03au)
+LINX_TRANS_TILE_OPERATION_DIRECT(tshls, 0x029u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tshrs, 0x02au)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowsum, 0x040u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowprod, 0x043u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowmax, 0x041u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowmin, 0x042u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowargmax, 0x04cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowargmin, 0x04du)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolsum, 0x050u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolprod, 0x053u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolmax, 0x051u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolmin, 0x052u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolargmax, 0x05cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolargmin, 0x05du)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpand, 0x044u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandadd, 0x045u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandsub, 0x046u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandmul, 0x047u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpanddiv, 0x048u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandmax, 0x049u)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandmin, 0x04au)
+LINX_TRANS_TILE_OPERATION_DIRECT(trowexpandexpdif, 0x04bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpand, 0x054u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandadd, 0x055u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandsub, 0x056u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandmul, 0x057u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpanddiv, 0x058u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandmax, 0x059u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandmin, 0x05au)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcolexpandexpdif, 0x05bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(texpands, 0x03bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tci, 0x066u)
+LINX_TRANS_TILE_OPERATION_DIRECT(ttri, 0x067u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tfillpad, 0x065u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tcvt, 0x01bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tquant, 0x06au)
+LINX_TRANS_TILE_OPERATION_DIRECT(tdequant, 0x06bu)
+LINX_TRANS_TILE_OPERATION_DIRECT(textract, 0x062u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tinsert, 0x063u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tgather, 0x06fu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tscatter, 0x070u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tconcat, 0x060u)
+LINX_TRANS_TILE_OPERATION_DIRECT(ttrans, 0x06eu)
+LINX_TRANS_TILE_OPERATION_DIRECT(timg2col, 0x064u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tsort, 0x06cu)
+LINX_TRANS_TILE_OPERATION_DIRECT(tmrgsort, 0x06du)
+LINX_TRANS_TILE_OPERATION_DIRECT(thistogram, 0x068u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tpartadd, 0x071u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tpartmul, 0x072u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tpartmax, 0x073u)
+LINX_TRANS_TILE_OPERATION_DIRECT(tpartmin, 0x074u)
 
-#undef LINX_TRANS_TEPL_DIRECT
+#undef LINX_TRANS_TILE_OPERATION_DIRECT
 
 static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t op)
 {
@@ -2454,7 +2443,7 @@ static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t
     tcg_gen_movi_i32(cpu_tile_dtype, dtype);
 
     /* Keep the canonical Mode+Function selector as the architectural ID. */
-    tcg_gen_movi_i32(cpu_blocktype, 7); /* TEPL */
+    tcg_gen_movi_i32(cpu_blocktype, 7); /* VEC/SFU via TEPL carrier */
     tcg_gen_movi_i32(cpu_tile_func, op);
 
     /* Canonical v0.4 baseline keeps these tile blocks coupled in QEMU. */
@@ -2558,6 +2547,17 @@ static bool trans_bstart_mscatter_mask(DisasContext *ctx,
                                        arg_bstart_mscatter_mask *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 7);
+}
+
+static bool trans_bstart_mgather_cas(DisasContext *ctx,
+                                     arg_bstart_mgather_cas *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 8);
+}
+
+static bool trans_bstart_gmov(DisasContext *ctx, arg_bstart_gmov *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 13);
 }
 
 static bool trans_bstart_tmatmul(DisasContext *ctx, arg_bstart_tmatmul *a)
@@ -2693,8 +2693,11 @@ static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
     return true;
 }
 
-static bool trans_c_b_ios(DisasContext *ctx, arg_c_b_ios *a)
+static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
 {
+    if (a->pe_mask == 0u) {
+        return true;
+    }
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2703,8 +2706,10 @@ static bool trans_c_b_ios(DisasContext *ctx, arg_c_b_ios *a)
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
     gen_helper_linx_tile_append_shared_binder(
-        tcg_env, tcg_constant_i32(a->shared & 0xffu));
-    /* Shared TLOAD has no B.IOT, so the binder itself keeps commit pending. */
+        tcg_env, tcg_constant_i32((a->shared & 0xffu) |
+                                  ((a->pe_mask & 0xfu) << 8) |
+                                  ((a->tsize & 0x7u) << 12)));
+    /* Shared bindings have no B.IOT, so the binder keeps commit pending. */
     tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
     return true;
 }
@@ -2728,6 +2733,9 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                              uint32_t last, uint32_t pe_mask,
                              uint32_t src0, uint32_t src1, uint32_t tsize)
 {
+    if (pe_mask == 0u) {
+        return true;
+    }
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
@@ -2736,13 +2744,13 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    if (pe_mask == 0u || func < 4u || func > 6u || tsize > 7u) {
+    if (func < 4u || func > 6u || tsize > 7u) {
         return linx_illegal(ctx);
     }
     const uint32_t flags = func == 4u ? 0u
                            : func == 5u ? LINX_IOT_S1V
                                        : LINX_IOT_S0V | LINX_IOT_S1V;
-    /* TSize describes Core4; a Local Tile occupies one PE quarter. */
+    /* TSize is the per-PE Local Tile capacity; PE_MASK selects participants. */
     const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
     linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
                             local_size_code, tsize != 0u);
@@ -6442,104 +6450,104 @@ static bool trans_v_sw_brg(DisasContext *ctx, arg_v_sw_brg *a)
 }
 
 /*
- * The locked 0.57.1 catalog contains an optional long-vector memory/atomic/
+ * The locked LinxISA 0.58 catalog contains an optional long-vector memory/atomic/
  * shuffle profile that the current QEMU execution engine does not advertise.
  * Decode every exact form so metadata and disassembly agree, then raise the
  * architectural capability fault before any guest-visible mutation.
  */
-#define TRANS_V0571_CAPABILITY_FAULT(name)                                  \
+#define TRANS_V058_CAPABILITY_FAULT(name)                                   \
     static bool trans_##name(DisasContext *ctx, arg_##name *a)              \
     {                                                                        \
         (void)a;                                                             \
         return linx_illegal(ctx);                                            \
     }
 
-TRANS_V0571_CAPABILITY_FAULT(v_lbi)
-TRANS_V0571_CAPABILITY_FAULT(v_lbi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lbui)
-TRANS_V0571_CAPABILITY_FAULT(v_lbui_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_ld)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_add)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_and)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_max)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_min)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_or)
-TRANS_V0571_CAPABILITY_FAULT(v_ld_xor)
-TRANS_V0571_CAPABILITY_FAULT(v_ldi)
-TRANS_V0571_CAPABILITY_FAULT(v_ldi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_ldi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_ldi_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lhi)
-TRANS_V0571_CAPABILITY_FAULT(v_lhi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lhi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_lhi_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lhui)
-TRANS_V0571_CAPABILITY_FAULT(v_lhui_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lhui_u)
-TRANS_V0571_CAPABILITY_FAULT(v_lhui_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_add)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_and)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_max)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_min)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_or)
-TRANS_V0571_CAPABILITY_FAULT(v_lw_xor)
-TRANS_V0571_CAPABILITY_FAULT(v_lwi)
-TRANS_V0571_CAPABILITY_FAULT(v_lwi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lwi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_lwi_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lwu)
-TRANS_V0571_CAPABILITY_FAULT(v_lwu_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lwui)
-TRANS_V0571_CAPABILITY_FAULT(v_lwui_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_lwui_u)
-TRANS_V0571_CAPABILITY_FAULT(v_lwui_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_qpop)
-TRANS_V0571_CAPABILITY_FAULT(v_qpush)
-TRANS_V0571_CAPABILITY_FAULT(v_sbi)
-TRANS_V0571_CAPABILITY_FAULT(v_sbi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sd)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_add)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_and)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_max)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_min)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_or)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_u)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sd_xor)
-TRANS_V0571_CAPABILITY_FAULT(v_sdi)
-TRANS_V0571_CAPABILITY_FAULT(v_sdi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sdi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_sdi_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sh_u)
-TRANS_V0571_CAPABILITY_FAULT(v_sh_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_shfl_bfly)
-TRANS_V0571_CAPABILITY_FAULT(v_shfl_down)
-TRANS_V0571_CAPABILITY_FAULT(v_shfl_idx)
-TRANS_V0571_CAPABILITY_FAULT(v_shfl_up)
-TRANS_V0571_CAPABILITY_FAULT(v_shfli_bfly)
-TRANS_V0571_CAPABILITY_FAULT(v_shfli_down)
-TRANS_V0571_CAPABILITY_FAULT(v_shfli_idx)
-TRANS_V0571_CAPABILITY_FAULT(v_shfli_up)
-TRANS_V0571_CAPABILITY_FAULT(v_shi)
-TRANS_V0571_CAPABILITY_FAULT(v_shi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_shi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_shi_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_add)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_and)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_max)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_min)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_or)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_u)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_u_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_sw_xor)
-TRANS_V0571_CAPABILITY_FAULT(v_swi)
-TRANS_V0571_CAPABILITY_FAULT(v_swi_brg)
-TRANS_V0571_CAPABILITY_FAULT(v_swi_u)
-TRANS_V0571_CAPABILITY_FAULT(v_swi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lbi)
+TRANS_V058_CAPABILITY_FAULT(v_lbi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lbui)
+TRANS_V058_CAPABILITY_FAULT(v_lbui_brg)
+TRANS_V058_CAPABILITY_FAULT(v_ld)
+TRANS_V058_CAPABILITY_FAULT(v_ld_add)
+TRANS_V058_CAPABILITY_FAULT(v_ld_and)
+TRANS_V058_CAPABILITY_FAULT(v_ld_brg)
+TRANS_V058_CAPABILITY_FAULT(v_ld_max)
+TRANS_V058_CAPABILITY_FAULT(v_ld_min)
+TRANS_V058_CAPABILITY_FAULT(v_ld_or)
+TRANS_V058_CAPABILITY_FAULT(v_ld_xor)
+TRANS_V058_CAPABILITY_FAULT(v_ldi)
+TRANS_V058_CAPABILITY_FAULT(v_ldi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_ldi_u)
+TRANS_V058_CAPABILITY_FAULT(v_ldi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lhi)
+TRANS_V058_CAPABILITY_FAULT(v_lhi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lhi_u)
+TRANS_V058_CAPABILITY_FAULT(v_lhi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lhui)
+TRANS_V058_CAPABILITY_FAULT(v_lhui_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lhui_u)
+TRANS_V058_CAPABILITY_FAULT(v_lhui_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lw_add)
+TRANS_V058_CAPABILITY_FAULT(v_lw_and)
+TRANS_V058_CAPABILITY_FAULT(v_lw_max)
+TRANS_V058_CAPABILITY_FAULT(v_lw_min)
+TRANS_V058_CAPABILITY_FAULT(v_lw_or)
+TRANS_V058_CAPABILITY_FAULT(v_lw_xor)
+TRANS_V058_CAPABILITY_FAULT(v_lwi)
+TRANS_V058_CAPABILITY_FAULT(v_lwi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lwi_u)
+TRANS_V058_CAPABILITY_FAULT(v_lwi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lwu)
+TRANS_V058_CAPABILITY_FAULT(v_lwu_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lwui)
+TRANS_V058_CAPABILITY_FAULT(v_lwui_brg)
+TRANS_V058_CAPABILITY_FAULT(v_lwui_u)
+TRANS_V058_CAPABILITY_FAULT(v_lwui_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_qpop)
+TRANS_V058_CAPABILITY_FAULT(v_qpush)
+TRANS_V058_CAPABILITY_FAULT(v_sbi)
+TRANS_V058_CAPABILITY_FAULT(v_sbi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sd)
+TRANS_V058_CAPABILITY_FAULT(v_sd_add)
+TRANS_V058_CAPABILITY_FAULT(v_sd_and)
+TRANS_V058_CAPABILITY_FAULT(v_sd_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sd_max)
+TRANS_V058_CAPABILITY_FAULT(v_sd_min)
+TRANS_V058_CAPABILITY_FAULT(v_sd_or)
+TRANS_V058_CAPABILITY_FAULT(v_sd_u)
+TRANS_V058_CAPABILITY_FAULT(v_sd_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sd_xor)
+TRANS_V058_CAPABILITY_FAULT(v_sdi)
+TRANS_V058_CAPABILITY_FAULT(v_sdi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sdi_u)
+TRANS_V058_CAPABILITY_FAULT(v_sdi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sh_u)
+TRANS_V058_CAPABILITY_FAULT(v_sh_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_shfl_bfly)
+TRANS_V058_CAPABILITY_FAULT(v_shfl_down)
+TRANS_V058_CAPABILITY_FAULT(v_shfl_idx)
+TRANS_V058_CAPABILITY_FAULT(v_shfl_up)
+TRANS_V058_CAPABILITY_FAULT(v_shfli_bfly)
+TRANS_V058_CAPABILITY_FAULT(v_shfli_down)
+TRANS_V058_CAPABILITY_FAULT(v_shfli_idx)
+TRANS_V058_CAPABILITY_FAULT(v_shfli_up)
+TRANS_V058_CAPABILITY_FAULT(v_shi)
+TRANS_V058_CAPABILITY_FAULT(v_shi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_shi_u)
+TRANS_V058_CAPABILITY_FAULT(v_shi_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sw_add)
+TRANS_V058_CAPABILITY_FAULT(v_sw_and)
+TRANS_V058_CAPABILITY_FAULT(v_sw_max)
+TRANS_V058_CAPABILITY_FAULT(v_sw_min)
+TRANS_V058_CAPABILITY_FAULT(v_sw_or)
+TRANS_V058_CAPABILITY_FAULT(v_sw_u)
+TRANS_V058_CAPABILITY_FAULT(v_sw_u_brg)
+TRANS_V058_CAPABILITY_FAULT(v_sw_xor)
+TRANS_V058_CAPABILITY_FAULT(v_swi)
+TRANS_V058_CAPABILITY_FAULT(v_swi_brg)
+TRANS_V058_CAPABILITY_FAULT(v_swi_u)
+TRANS_V058_CAPABILITY_FAULT(v_swi_u_brg)
 
-#undef TRANS_V0571_CAPABILITY_FAULT
+#undef TRANS_V058_CAPABILITY_FAULT
 
 static bool trans_xb(DisasContext *ctx, arg_xb *a)
 {

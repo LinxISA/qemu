@@ -1,7 +1,9 @@
 target triple = "linx64"
 
-declare <1024 x i32> @llvm.linx.tma.tload(ptr, i32)
-declare void @llvm.linx.tma.tstore(ptr, <1024 x i32>, i32)
+declare <1024 x i32> @llvm.linx.tlsu.tload.desc.v1024i32.p0(
+  ptr, i32, i32, i32, i32, i32, i64)
+declare void @llvm.linx.tlsu.tstore.desc.p0.v1024i32(
+  ptr, <1024 x i32>, i32, i32, i32, i32, i32, i64)
 
 @src_buf = internal global [1024 x i32] zeroinitializer, align 4096
 @dst_buf = internal global [1024 x i32] zeroinitializer, align 4096
@@ -13,7 +15,7 @@ declare void @llvm.linx.tma.tstore(ptr, <1024 x i32>, i32)
 
 define void @virt_exit(i32 %code) noreturn {
 entry:
-  %exit_reg = inttoptr i64 268435460 to ptr
+  %exit_reg = inttoptr i64 268472320 to ptr
   store volatile i32 %code, ptr %exit_reg, align 4
   br label %loop
 
@@ -23,8 +25,8 @@ loop:
 
 define void @trap_vector() noreturn {
 entry:
-  %exit_reg = inttoptr i64 268435460 to ptr
-  store volatile i32 1, ptr %exit_reg, align 4
+  %exit_reg = inttoptr i64 268472320 to ptr
+  store volatile i32 13107, ptr %exit_reg, align 4
   br label %loop
 
 loop:
@@ -85,8 +87,11 @@ init:
 copy:
   %src_iova = inttoptr i64 65536 to ptr
   %dst_iova = inttoptr i64 69632 to ptr
-  %t = call <1024 x i32> @llvm.linx.tma.tload(ptr %src_iova, i32 12)
-  call void @llvm.linx.tma.tstore(ptr %dst_iova, <1024 x i32> %t, i32 12)
+  %t = call <1024 x i32> @llvm.linx.tlsu.tload.desc.v1024i32.p0(
+    ptr %src_iova, i32 17, i32 0, i32 1024, i32 1, i32 6, i64 0)
+  call void @llvm.linx.tlsu.tstore.desc.p0.v1024i32(
+    ptr %dst_iova, <1024 x i32> %t, i32 17, i32 0, i32 1024, i32 1,
+    i32 6, i64 0)
   br label %check
 
 check:
@@ -104,11 +109,10 @@ check_ok:
   br i1 %j_more, label %check, label %pass
 
 fail:
-  call void @virt_exit(i32 1)
+  call void @virt_exit(i32 13107)
   unreachable
 
 pass:
-  call void @virt_exit(i32 0)
+  call void @virt_exit(i32 21845)
   unreachable
 }
-

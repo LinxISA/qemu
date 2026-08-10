@@ -3775,6 +3775,10 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_k = 0;
     core4->collective_arrived = 0;
     memset(core4->collective_src, 0, sizeof(core4->collective_src));
+    memset(core4->collective_dst, 0, sizeof(core4->collective_dst));
+    memset(core4->collective_peer, 0, sizeof(core4->collective_peer));
+    core4->collective_pe_mask = 0;
+    core4->collective_size_code = 0;
     memset(core4->collective_resume_pc, 0,
            sizeof(core4->collective_resume_pc));
     for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
@@ -3977,8 +3981,9 @@ static bool linx_core4_migration_state_live(LinxCore4State *core4)
     for (unsigned tile = 0; tile < LINX_SHARED_TILE_COUNT; tile++) {
         const LinxSharedTileVersion *shared = &core4->shared_tile[tile];
 
-        if (shared->ready || shared->bytes || shared->dtype ||
-            shared->producer_bpc || shared->defined_mask) {
+        if (shared->allocation_mask || shared->initialized_mask ||
+            shared->per_pe_capacity || shared->allocated_bytes ||
+            shared->dtype || shared->producer_bpc) {
             live = true;
             break;
         }

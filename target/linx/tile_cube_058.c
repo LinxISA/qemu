@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
-#include "tile_cube_057.h"
-#include "tile_numeric_057.h"
+#include "tile_cube_058.h"
+#include "tile_numeric_058.h"
 
 static unsigned cube_dtype_bytes(uint32_t dtype)
 {
@@ -168,7 +168,7 @@ static uint64_t cube_unsigned(uint32_t dtype, uint64_t raw,
     }
 }
 
-static bool linx_tile_cube_compute_common_057(
+static bool linx_tile_cube_compute_common_058(
     CPULinxState *env, unsigned src_a, unsigned src_b,
     const uint8_t *shared_b, uint32_t shared_b_bytes,
     uint32_t shared_b_dtype, unsigned row_scale, unsigned column_scale,
@@ -361,23 +361,23 @@ fail:
     return false;
 }
 
-bool linx_tile_cube_compute_057(CPULinxState *env, unsigned src_a,
+bool linx_tile_cube_compute_058(CPULinxState *env, unsigned src_a,
                                 unsigned src_b, unsigned row_scale,
                                 unsigned column_scale, unsigned bias,
                                 unsigned size_code, bool mx, bool with_bias,
                                 bool accumulate)
 {
-    return linx_tile_cube_compute_common_057(
+    return linx_tile_cube_compute_common_058(
         env, src_a, src_b, NULL, 0u, 0u, row_scale, column_scale, bias,
         size_code, mx, with_bias, accumulate);
 }
 
-bool linx_tile_cube_compute_shared_b_057(
+bool linx_tile_cube_compute_shared_b_058(
     CPULinxState *env, unsigned src_a, const uint8_t *shared_b,
     uint32_t shared_b_bytes, uint32_t shared_b_dtype, unsigned size_code,
     bool accumulate)
 {
-    return linx_tile_cube_compute_common_057(
+    return linx_tile_cube_compute_common_058(
         env, src_a, UINT_MAX, shared_b, shared_b_bytes, shared_b_dtype, 0u,
         0u, 0u, size_code, false, false, accumulate);
 }
@@ -408,7 +408,7 @@ static uint64_t cube_saturate_integer(uint64_t raw, uint8_t acc_dtype,
     return dst_signed ? (raw > smax ? smax : raw) : (raw > umax ? umax : raw);
 }
 
-bool linx_tile_acccvt_057(CPULinxState *env, unsigned dst_tile,
+bool linx_tile_acccvt_058(CPULinxState *env, unsigned dst_tile,
                           unsigned size_code)
 {
     uint32_t dst_dtype = env->tile_dtype & 31u;
