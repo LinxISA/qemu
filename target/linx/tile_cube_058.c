@@ -17,6 +17,13 @@ LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
     };
 }
 
+bool linx_tile_cube_group_dimensions_legal_058(const CPULinxState *env)
+{
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+
+    return dims.m == 8u && dims.n == 32u && dims.k == 32u;
+}
+
 static bool cube_nonzero_power_of_two(unsigned value)
 {
     return value != 0u && (value & (value - 1u)) == 0u;

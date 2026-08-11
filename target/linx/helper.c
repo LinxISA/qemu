@@ -16259,8 +16259,8 @@ static bool linx_tile_group_cube_profile(CPULinxState *env,
         env->blocktype != LINX_BLOCK_CUBE ||
         (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
         dtype != 1u || env->tile_shared_binder_count != 1u ||
-        env->tile_iot_count != 1u || env->lb[0] != 8u ||
-        env->lb[1] != 32u || env->lb[2] != 32u ||
+        env->tile_iot_count != 1u ||
+        !linx_tile_cube_group_dimensions_legal_058(env) ||
         env->tile_iot_src_valid[0] != 1u ||
         env->tile_iot_output_valid[0] != 0u ||
         !linx_tile_get_bound_source(env, 0u, 0u, &src_a)) {
@@ -16736,6 +16736,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     const uint8_t bit = 1u << pe;
     const uint32_t func = env->tile_func & 0x1fu;
     const unsigned shared_id = linx_tile_shared_id(env);
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     qemu_mutex_lock(&core4->lock);
     bool valid = true;
     if (core4->collective_arrived == 0u) {
@@ -16743,16 +16744,17 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         core4->collective_func = func;
         core4->collective_dtype = 1u;
         core4->collective_shared_id = shared_id;
-        core4->collective_m = 8u;
-        core4->collective_n = 32u;
-        core4->collective_k = 32u;
+        core4->collective_m = dims.m;
+        core4->collective_n = dims.n;
+        core4->collective_k = dims.k;
     } else {
         valid = core4->collective_bpc == env->bpc &&
                 core4->collective_func == func &&
                 core4->collective_dtype == 1u &&
                 core4->collective_shared_id == shared_id &&
-                core4->collective_m == 8u && core4->collective_n == 32u &&
-                core4->collective_k == 32u &&
+                core4->collective_m == dims.m &&
+                core4->collective_n == dims.n &&
+                core4->collective_k == dims.k &&
                 (core4->collective_arrived & bit) == 0u;
     }
     if (!valid) {

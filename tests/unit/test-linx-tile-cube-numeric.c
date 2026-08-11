@@ -248,6 +248,21 @@ static void test_non_square_loop_bound_mapping(void)
     g_free(env);
 }
 
+static void test_group_profile_dimension_contract(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+
+    env->lb[0] = 32;
+    env->lb[1] = 8;
+    env->lb[2] = 32;
+    g_assert_true(linx_tile_cube_group_dimensions_legal_058(env));
+
+    env->lb[0] = 8;
+    env->lb[1] = 32;
+    g_assert_false(linx_tile_cube_group_dimensions_legal_058(env));
+    g_free(env);
+}
+
 static void test_mx_k64(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -630,6 +645,8 @@ int main(int argc, char **argv)
                     test_upper_physical_slots);
     g_test_add_func("/linx/cube/non-square-loop-bounds",
                     test_non_square_loop_bound_mapping);
+    g_test_add_func("/linx/cube/group-profile-dimensions",
+                    test_group_profile_dimension_contract);
     g_test_add_func("/linx/cube/mx-k64", test_mx_k64);
     g_test_add_func("/linx/cube/reject-non-power-of-two-k",
                     test_reject_non_power_of_two_k);
