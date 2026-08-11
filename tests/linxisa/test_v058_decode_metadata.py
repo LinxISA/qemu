@@ -41,17 +41,19 @@ class V058DecodeMetadataTests(unittest.TestCase):
 
     def test_shared_tmov_source_forms_decode_to_distinct_functions(self) -> None:
         expected = {
-            "bstart_tmov_l2s_insert": "1001",
-            "bstart_tmov_l2s_publish": "1010",
-            "bstart_tmov_s2l_broadcast": "1011",
-            "bstart_tmov_s2l_extract": "1100",
+            "bstart_tmov_l2s_insert": ("1001", "0x911181"),
+            "bstart_tmov_l2s_publish": ("1010", "0xa11181"),
+            "bstart_tmov_s2l_broadcast": ("1011", "0xb11181"),
+            "bstart_tmov_s2l_extract": ("1100", "0xc11181"),
         }
-        for decode_name, function_bits in expected.items():
+        for decode_name, (function_bits, match) in expected.items():
             self.assertRegex(
                 self.insn32,
                 rf"(?m)^\s*{decode_name}\s+\.\.\.\.\s+\.000\s+"
                 rf"{function_bits}\s+0001\s+0001\s+0001\s+1000\s+0001\b",
             )
+            self.assertIn(f'.mnemonic="{decode_name}"', self.meta)
+            self.assertIn(f".match=UINT64_C({match})", self.meta)
 
     def test_b_iot_uses_all_exact_public_forms(self) -> None:
         patterns = (
