@@ -3,6 +3,25 @@
 #include "tile_cube_058.h"
 #include "tile_numeric_058.h"
 
+static unsigned cube_dimension(uint32_t value)
+{
+    return value ? value : 8u;
+}
+
+LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
+{
+    return (LinxTileCubeDimensions) {
+        .m = cube_dimension(env->lb[1]),
+        .n = cube_dimension(env->lb[0]),
+        .k = cube_dimension(env->lb[2]),
+    };
+}
+
+static bool cube_nonzero_power_of_two(unsigned value)
+{
+    return value != 0u && (value & (value - 1u)) == 0u;
+}
+
 static unsigned cube_dtype_bytes(uint32_t dtype)
 {
     switch (dtype & 31u) {
@@ -62,6 +81,49 @@ static bool cube_operand_legal(const CPULinxState *env, unsigned tile,
                                                  ? (cols + 1u) / 2u
                                                  : (uint64_t)cols * elem_bytes);
     return env->tile_reg_bytes[tile] >= required;
+}
+
+static bool cube_primary_dtype_legal(const CPULinxState *env,
+                                     uint32_t left_dtype,
+                                     uint32_t right_dtype, bool mx)
+{
+    return mx ? ((env->tile_dtype & 31u) == 1u &&
+                 linx_tile_numeric_mx_pair(left_dtype, right_dtype))
+              : (linx_tile_numeric_ordinary(env->tile_dtype) &&
+                 left_dtype == (env->tile_dtype & 31u) &&
+                 right_dtype == (env->tile_dtype & 31u));
+}
+
+bool linx_tile_cube_primary_legal_058(const CPULinxState *env,
+                                      unsigned src_a, unsigned src_b,
+                                      bool mx, bool accumulate)
+{
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    uint32_t left_dtype = src_a < LINX_TILE_SLOT_COUNT
+                              ? env->tile_reg_dtype[src_a] & 31u
+                              : UINT32_MAX;
+    uint32_t right_dtype = src_b < LINX_TILE_SLOT_COUNT
+                               ? env->tile_reg_dtype[src_b] & 31u
+                               : UINT32_MAX;
+    uint8_t acc_dtype = mx ? LINX_TILE_ACC_FP32
+                           : linx_tile_numeric_acc_dtype(env->tile_dtype);
+
+    if (src_a >= LINX_TILE_SLOT_COUNT || src_b >= LINX_TILE_SLOT_COUNT ||
+        !cube_nonzero_power_of_two(dims.m) ||
+        !cube_nonzero_power_of_two(dims.n) ||
+        !cube_nonzero_power_of_two(dims.k) ||
+        env->tile_reg_valid_rows[src_a] != dims.m ||
+        env->tile_reg_valid_cols[src_a] != dims.k ||
+        env->tile_reg_valid_rows[src_b] != dims.k ||
+        env->tile_reg_valid_cols[src_b] != dims.n ||
+        !cube_operand_legal(env, src_a, left_dtype, dims.m, dims.k) ||
+        !cube_operand_legal(env, src_b, right_dtype, dims.k, dims.n) ||
+        !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx)) {
+        return false;
+    }
+    return !accumulate ||
+           (env->tile_acc_valid && env->tile_acc_dtype == acc_dtype &&
+            env->tile_acc_rows == dims.m && env->tile_acc_cols == dims.n);
 }
 
 static bool cube_read_raw(const CPULinxState *env, unsigned tile, unsigned row,
@@ -173,14 +235,10 @@ static bool linx_tile_cube_compute_common_058(
     unsigned bias, unsigned size_code, bool mx, bool with_bias,
     bool accumulate)
 {
-    unsigned m = src_a < LINX_TILE_SLOT_COUNT
-        ? env->tile_reg_valid_rows[src_a] : 0u;
-    unsigned n = shared_b != NULL
-        ? env->lb[0]
-        : (src_b < LINX_TILE_SLOT_COUNT
-               ? env->tile_reg_valid_cols[src_b] : 0u);
-    unsigned kdim = src_a < LINX_TILE_SLOT_COUNT
-        ? env->tile_reg_valid_cols[src_a] : 0u;
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    unsigned m = dims.m;
+    unsigned n = dims.n;
+    unsigned kdim = dims.k;
     uint32_t left_dtype =
         src_a < LINX_TILE_SLOT_COUNT
             ? env->tile_reg_dtype[src_a] & 31u
@@ -200,23 +258,23 @@ static bool linx_tile_cube_compute_common_058(
     uint8_t *next;
 
     if (src_a >= LINX_TILE_SLOT_COUNT ||
-        (shared_b == NULL && src_b >= LINX_TILE_SLOT_COUNT) ||
-        env->lb[0] != n || env->lb[1] != m ||
-        env->lb[2] < n ||
+        (shared_b == NULL &&
+         !linx_tile_cube_primary_legal_058(env, src_a, src_b, mx,
+                                           accumulate)) ||
         m > UINT16_MAX || n > UINT16_MAX ||
         acc_dtype == UINT8_MAX || allocated == 0u ||
         allocated > LINX_TILE_MAX_BYTES || required == 0u ||
         required > allocated ||
-        (mx ? ((env->tile_dtype & 31u) != 1u ||
-               !linx_tile_numeric_mx_pair(left_dtype, right_dtype))
-            : (!linx_tile_numeric_ordinary(env->tile_dtype) ||
-               left_dtype != (env->tile_dtype & 31u) ||
-               right_dtype != (env->tile_dtype & 31u))) ||
-        !cube_operand_legal(env, src_a, left_dtype, m, kdim) ||
-        (shared_b != NULL
-             ? !cube_buffer_operand_legal(shared_b, shared_b_bytes,
-                                          right_dtype, kdim, n)
-             : !cube_operand_legal(env, src_b, right_dtype, kdim, n)) ||
+        (shared_b != NULL &&
+         (!cube_nonzero_power_of_two(m) ||
+          !cube_nonzero_power_of_two(n) ||
+          !cube_nonzero_power_of_two(kdim) ||
+          env->tile_reg_valid_rows[src_a] != m ||
+          env->tile_reg_valid_cols[src_a] != kdim ||
+          !cube_operand_legal(env, src_a, left_dtype, m, kdim) ||
+          !cube_buffer_operand_legal(shared_b, shared_b_bytes,
+                                     right_dtype, kdim, n) ||
+          !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx))) ||
         (mx && (!cube_operand_legal(env, row_scale, 13u, m, groups) ||
                 !cube_operand_legal(env, column_scale, 13u, groups, n))) ||
         (with_bias &&
@@ -228,7 +286,7 @@ static bool linx_tile_cube_compute_common_058(
           !cube_operand_legal(env, bias, mx ? 1u : env->tile_dtype,
                               env->tile_reg_valid_rows[bias],
                               env->tile_reg_valid_cols[bias]))) ||
-        (accumulate &&
+        (shared_b != NULL && accumulate &&
          (!env->tile_acc_valid || env->tile_acc_dtype != acc_dtype ||
           env->tile_acc_rows != m || env->tile_acc_cols != n ||
           env->tile_acc_bytes < required))) {

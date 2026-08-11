@@ -4,6 +4,16 @@
 
 #include "cpu.h"
 
+typedef struct LinxTileCubeDimensions {
+    unsigned m;
+    unsigned n;
+    unsigned k;
+} LinxTileCubeDimensions;
+
+LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env);
+bool linx_tile_cube_primary_legal_058(const CPULinxState *env,
+                                      unsigned src_a, unsigned src_b,
+                                      bool mx, bool accumulate);
 bool linx_tile_cube_compute_058(CPULinxState *env, unsigned src_a,
                                 unsigned src_b, unsigned row_scale,
                                 unsigned column_scale, unsigned bias,

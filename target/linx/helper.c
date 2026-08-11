@@ -15142,11 +15142,6 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
     }
 }
 
-static inline unsigned linx_tile_cube_dim(uint32_t value)
-{
-    return value ? value : 8u;
-}
-
 static bool linx_tile_cube_operand_legal(const CPULinxState *env,
                                          unsigned tile, uint32_t dtype,
                                          unsigned rows, unsigned cols)
@@ -15177,20 +15172,19 @@ static bool linx_tile_cube_scale_legal(const CPULinxState *env,
                                        unsigned row_scale,
                                        unsigned column_scale)
 {
-    const unsigned m = linx_tile_cube_dim(env->lb[0]);
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    const unsigned k = linx_tile_cube_dim(env->lb[2]);
-    const unsigned groups = (k + 31u) / 32u;
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    const unsigned groups = (dims.k + 31u) / 32u;
 
-    return linx_tile_cube_operand_legal(env, row_scale, 13u, m, groups) &&
-           linx_tile_cube_operand_legal(env, column_scale, 13u, groups, n);
+    return linx_tile_cube_operand_legal(env, row_scale, 13u, dims.m, groups) &&
+           linx_tile_cube_operand_legal(env, column_scale, 13u, groups,
+                                        dims.n);
 }
 
 static bool linx_tile_cube_bias_legal_for(const CPULinxState *env,
                                           unsigned bias, uint32_t dtype)
 {
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    return linx_tile_cube_operand_legal(env, bias, dtype, 1u, n);
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    return linx_tile_cube_operand_legal(env, bias, dtype, 1u, dims.n);
 }
 
 static bool linx_tile_cube_bias_legal(const CPULinxState *env, unsigned bias)
@@ -16159,42 +16153,6 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
 
 }
 
-static bool linx_tile_cube_primary_legal(const CPULinxState *env,
-                                         unsigned src_a, unsigned src_b,
-                                         bool accumulate)
-{
-    const unsigned m = linx_tile_cube_dim(env->lb[0]);
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    const unsigned k = linx_tile_cube_dim(env->lb[2]);
-    const uint32_t func = env->tile_func & 31u;
-    const bool mx = func == LINX_CUBE_TMATMUL_MX ||
-                    func == LINX_CUBE_TGEMV_MX ||
-                    func == LINX_CUBE_TMATMUL_MX_BIAS ||
-                    func == LINX_CUBE_TGEMV_MX_BIAS ||
-                    func == LINX_CUBE_TMATMUL_MX_ACC ||
-                    func == LINX_CUBE_TGEMV_MX_ACC;
-    const uint32_t left =
-        src_a < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_a] : UINT32_MAX;
-    const uint32_t right =
-        src_b < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_b] : UINT32_MAX;
-    const uint8_t acc_dtype = mx ? LINX_TILE_ACC_FP32 :
-        linx_tile_numeric_acc_dtype(env->tile_dtype);
-
-    if (src_a >= LINX_TILE_SLOT_COUNT || src_b >= LINX_TILE_SLOT_COUNT ||
-        (mx ? ((env->tile_dtype & 31u) != 1u ||
-               !linx_tile_numeric_mx_pair(left, right)) :
-              (!linx_tile_numeric_ordinary(env->tile_dtype) ||
-               left != (env->tile_dtype & 31u) ||
-               right != (env->tile_dtype & 31u))) ||
-        !linx_tile_cube_operand_legal(env, src_a, left, m, k) ||
-        !linx_tile_cube_operand_legal(env, src_b, right, k, n)) {
-        return false;
-    }
-    return !accumulate ||
-           (env->tile_acc_valid && env->tile_acc_dtype == acc_dtype &&
-            env->tile_acc_rows == m && env->tile_acc_cols == n);
-}
-
 static bool linx_tile_preflight_cube(const CPULinxState *env)
 {
     unsigned sources[LINX_TILE_MAX_IOT * 2];
@@ -16261,8 +16219,8 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
     }
 
     if (!linx_tile_collect_cube_sources(env, required, sources, &size_code) ||
-        !linx_tile_cube_primary_legal(env, sources[0], sources[1],
-                                      accumulate)) {
+        !linx_tile_cube_primary_legal_058(env, sources[0], sources[1],
+                                          with_scale, accumulate)) {
         return false;
     }
     if (with_scale &&
