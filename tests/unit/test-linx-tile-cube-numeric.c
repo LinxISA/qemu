@@ -253,12 +253,11 @@ static void test_group_profile_dimension_contract(void)
     CPULinxState *env = g_new0(CPULinxState, 1);
 
     env->lb[0] = 32;
-    env->lb[1] = 8;
+    env->lb[1] = 32;
     env->lb[2] = 32;
     g_assert_true(linx_tile_cube_group_dimensions_legal_058(env));
 
-    env->lb[0] = 8;
-    env->lb[1] = 32;
+    env->lb[1] = 8;
     g_assert_false(linx_tile_cube_group_dimensions_legal_058(env));
     g_free(env);
 }
