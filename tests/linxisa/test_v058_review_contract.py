@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Regression guards for the architectural issues raised in QEMU PR 50."""
 
 from __future__ import annotations
@@ -90,7 +91,9 @@ class V058ReviewContractTests(unittest.TestCase):
         ]
         self.assertIn("env->tile_ior_count > 1u", shared_size)
 
-    def test_regular_transfer_uses_valid_rectangle_and_element_stride(self) -> None:
+    def test_regular_transfer_uses_valid_rectangle_and_element_stride(
+        self,
+    ) -> None:
         load = self.helper[
             self.helper.index("static void linx_tile_load") :
             self.helper.index("static void linx_tile_store")

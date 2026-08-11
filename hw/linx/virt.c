@@ -3440,7 +3440,9 @@ static void linx_virt_set_cross_model_tile_dump(Object *obj,
     LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
     (void)errp;
     g_free(s->cross_model_tile_dump);
-    s->cross_model_tile_dump = value && value[0] != '\0' ? g_strdup(value) : NULL;
+    s->cross_model_tile_dump = value && value[0] != '\0'
+                                   ? g_strdup(value)
+                                   : NULL;
 }
 
 static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
@@ -3483,8 +3485,10 @@ static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
                                 records->len, err)) {
         return false;
     }
-    g_autofree char *tmp_path = g_strdup_printf("%s.tmp", s->cross_model_tile_dump);
-    if (!g_file_set_contents(tmp_path, (const char *)out->data, out->len, err)) {
+    g_autofree char *tmp_path =
+        g_strdup_printf("%s.tmp", s->cross_model_tile_dump);
+    if (!g_file_set_contents(tmp_path, (const char *)out->data,
+                             out->len, err)) {
         unlink(tmp_path);
         return false;
     }

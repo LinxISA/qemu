@@ -17289,7 +17289,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 for (uint32_t row = 0; row < valid_rows; row++) {
                     for (uint32_t col = 0; col < valid_cols; col++) {
                         const uint64_t source =
-                            ((uint64_t)row * stride_elements + col) * elem_bytes;
+                            ((uint64_t)row * stride_elements + col) *
+                            elem_bytes;
                         const size_t destination =
                             ((size_t)row * cols + col) * elem_bytes;
                         for (unsigned byte = 0; byte < elem_bytes; byte++) {
