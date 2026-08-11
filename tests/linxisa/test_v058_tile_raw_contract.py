@@ -55,7 +55,7 @@ class V058TileRawContractTest(unittest.TestCase):
     def test_b_iot_uses_final_v058_forms(self) -> None:
         patterns = [line for line in self.decode.splitlines()
                     if line.lstrip().startswith("b_iot ")]
-        self.assertEqual(len(patterns), 3)
+        self.assertEqual(len(patterns), 5)
         for field in (
             "%IOTV5Src1 26:6",
             "%IOTV5Src0 20:6",
@@ -67,7 +67,9 @@ class V058TileRawContractTest(unittest.TestCase):
             self.assertIn(field, self.decode)
         for mask, match in (
             ("0x707f", "0x4013"),
+            ("0x7e7f", "0x4013"),
             ("0xfc00707f", "0x5013"),
+            ("0xfc007e7f", "0x5013"),
             ("0xfff0707f", "0x6013"),
         ):
             self.assertIn(f".mask=UINT64_C({mask})", self.meta)
@@ -88,17 +90,18 @@ class V058TileRawContractTest(unittest.TestCase):
     def test_retired_tlsu_compatibility_is_deleted(self) -> None:
         self.assertNotIn("TCVT_COMPAT", self.helper)
 
-    def test_cube_is_fail_closed_to_13_functions(self) -> None:
-        self.assertIn("UINT32_C(0x00770177)", self.table)
+    def test_cube_is_fail_closed_to_12_functions(self) -> None:
+        self.assertIn("UINT32_C(0x00770077)", self.table)
         cube_names = (
             "tmatmul", "tmatmul_bias", "tmatmul_acc", "tmatmulmx",
             "tmatmulmx_bias", "tmatmulmx_acc", "tgemv", "tgemv_bias",
             "tgemv_acc", "tgemvmx", "tgemvmx_bias", "tgemvmx_acc",
-            "acccvt",
         )
         for name in cube_names:
             self.assertRegex(self.decode, rf"(?m)^\s*bstart_{name}\s")
             self.assertIn(f"trans_bstart_{name}", self.translate)
+        self.assertNotIn("bstart_acccvt", self.decode)
+        self.assertNotIn("LINX_CUBE_ACCCVT", self.helper)
 
 
 if __name__ == "__main__":

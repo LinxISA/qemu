@@ -493,8 +493,8 @@ static uint64_t cube_saturate_integer(uint64_t raw, uint8_t acc_dtype,
     return dst_signed ? (raw > smax ? smax : raw) : (raw > umax ? umax : raw);
 }
 
-bool linx_tile_acccvt_058(CPULinxState *env, unsigned dst_tile,
-                          unsigned size_code)
+bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
+                                   unsigned size_code)
 {
     uint32_t dst_dtype = env->tile_dtype & 31u;
     unsigned elem_bytes = cube_dtype_bytes(dst_dtype);

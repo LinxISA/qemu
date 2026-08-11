@@ -9151,7 +9151,6 @@ enum {
     LINX_CUBE_TMATMUL_MX = 4,
     LINX_CUBE_TMATMUL_MX_BIAS = 5,
     LINX_CUBE_TMATMUL_MX_ACC = 6,
-    LINX_CUBE_ACCCVT = 8,
     LINX_CUBE_TGEMV = 16,
     LINX_CUBE_TGEMV_BIAS = 17,
     LINX_CUBE_TGEMV_ACC = 18,
@@ -15203,11 +15202,6 @@ static bool linx_tile_cube_compute(CPULinxState *env, unsigned src_a,
                                       with_bias, accumulate);
 }
 
-static bool linx_tile_acccvt(CPULinxState *env, unsigned dst_tile,
-                             unsigned size_code)
-{
-    return linx_tile_acccvt_058(env, dst_tile, size_code);
-}
 static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
                                                      unsigned slot)
 {
@@ -15984,8 +15978,6 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
           tlsu_func == LINX_TLSU_MGATHER_MASK ||
           tlsu_func == LINX_TLSU_MGATHER_CAS ||
           tlsu_func == LINX_TLSU_GMOV)) ||
-        (env->blocktype == LINX_BLOCK_CUBE &&
-         (env->tile_func & 0x1f) == LINX_CUBE_ACCCVT) ||
         env->blocktype == LINX_BLOCK_OPERATION;
 
     /*
@@ -16195,25 +16187,6 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
         accumulate = true;
         with_scale = true;
         break;
-    case LINX_CUBE_ACCCVT: {
-        unsigned dst_tile;
-        LinxTileIOTDesc desc;
-        uint64_t bytes;
-
-        if (env->tile_iot_count != 1u ||
-            !linx_tile_get_bound_output(env, 0, &dst_tile)) {
-            return false;
-        }
-        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
-        if (!desc.has_size || !linx_tile_size_code_valid(desc.size & 0x1fu)) {
-            return false;
-        }
-        bytes = 1ull << ((desc.size & 0x1fu) + 4u);
-        return env->tile_acc_valid &&
-               linx_tile_numeric_ordinary(env->tile_dtype) &&
-               bytes <= LINX_TILE_MAX_BYTES &&
-               env->tile_reg_capacity[dst_tile] >= bytes;
-    }
     default:
         return false;
     }
@@ -17755,57 +17728,6 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                                                 &carrier_valid, &carrier);
             }
             carrier_valid = 0;
-            acc_sources_valid = 0;
-            break;
-        }
-        case LINX_CUBE_ACCCVT: {
-            LinxTileIOTDesc d;
-            if (env->tile_iot_count) {
-                d = linx_tile_decode_iot(env->tile_iot_desc[0]);
-            } else {
-                d.src0 = env->tile_iot_src0 & 0x3f;
-                d.src1 = env->tile_iot_src1 & 0x3f;
-                d.flags = env->tile_iot_flags & 0xf;
-                d.dst = env->tile_iot_dst & 0x7;
-                d.last = env->tile_iot_grp & 0x1;
-                d.reg = env->tile_iot_reg & 0x1f;
-                d.size = env->tile_iot_size & 0x1f;
-                d.has_size = env->tile_iot_size != 0;
-            }
-
-            unsigned dst_tile = 0;
-            if (!linx_tile_get_bound_output(env, 0, &dst_tile)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                break;
-            }
-            linx_tile_invalidate_acc_sources_on_output(
-                dst_tile, &acc_sources_valid, acc_src0, acc_src1);
-            const unsigned size_code = d.has_size ? (d.size & 0x1f)
-                                                  : (env->tile_iot_size & 0x1f);
-            if (!linx_tile_size_code_valid(size_code)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            }
-            if (!linx_tile_acccvt(env, dst_tile, size_code)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                break;
-            }
-            if (carrier_valid) {
-                linx_tile_release_source(live, order, count_by_hand,
-                                         carrier, false,
-                                         &carrier_valid, &carrier);
-            }
-            if (!linx_tile_complete_bound_output(
-                    env, live, reserved, order, count_by_hand, 0)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            }
-            carrier_valid = 1;
-            carrier = dst_tile;
-            memset(env->tile_acc, 0, sizeof(env->tile_acc));
-            env->tile_acc_bytes = 0;
-            env->tile_acc_dtype = 0;
-            env->tile_acc_valid = 0;
-            env->tile_acc_cols = 0;
-            env->tile_acc_rows = 0;
             acc_sources_valid = 0;
             break;
         }

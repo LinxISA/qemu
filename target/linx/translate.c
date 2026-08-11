@@ -2502,11 +2502,6 @@ static bool trans_bstart_vseq(DisasContext *ctx, arg_bstart_vseq *a)
     return trans_bstart_mseq(ctx, (arg_bstart_mseq *)a);
 }
 
-static bool trans_bstart_acccvt(DisasContext *ctx, arg_bstart_acccvt *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 6, 8);
-}
-
 static bool trans_bstart_tload(DisasContext *ctx, arg_bstart_tload *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 0);
