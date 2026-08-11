@@ -232,7 +232,6 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
   bstart_mscatter_mask .... .000 0111 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_mgather_cas .... .000 1000 0001 0001 0001 1000 0001 dtype=%TileDataType
   bstart_gmov .... .000 1101 0001 0001 0001 1000 0001 dtype=%TileDataType
-  bstart_acccvt .... .000 1000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul .... .000 0000 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_bias .... .000 0001 0011 0001 0001 1000 0001 dtype=%TileDataType
   bstart_tmatmul_acc .... .000 0010 0011 0001 0001 1000 0001 dtype=%TileDataType
@@ -250,9 +249,13 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 # DavinciOO PTO ISA v0.2/v5 Tile dependency descriptors.
 # PTO ISA 0.58 Shared binding. TSize=0 is a source; 1..7 is a destination.
 b_ios          0000 .... .... 0... .001 ...0 0001 0011 shared=%SharedTID pe_mask=%PE_MASK tsize=%TSize
-b_iot          .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=4
-b_iot          0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=5
-b_iot          0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=6
+{
+  b_iot        0000 00.. .... .... .101 000. .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=0 dst=%IOTV5Dst func=5
+  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=5
+  b_iot        .... .... .... .... .100 000. .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=0 dst=%IOTV5Dst func=4
+  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=4
+  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=6
+}
 
 # Decoupled-body pointer (decoupled block headers).
 b_text         .... .... .... .... .... .... .000 0011 %simm25

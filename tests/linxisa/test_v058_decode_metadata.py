@@ -36,6 +36,29 @@ class V058DecodeMetadataTests(unittest.TestCase):
             self.assertIn(decode_name, self.insn32)
             self.assertIn(f'.mnemonic="{decode_name}"', self.meta)
 
+        self.assertNotIn("bstart_acccvt", self.insn32)
+        self.assertNotIn('.mnemonic="bstart_acccvt"', self.meta)
+
+    def test_b_iot_uses_all_exact_public_forms(self) -> None:
+        patterns = (
+            "0000 00.. .... .... .101 .... .001 0011",
+            ".... .... .... .... .100 000. .001 0011",
+            ".... .... .... .... .100 .... .001 0011",
+            "0000 00.. .... .... .101 000. .001 0011",
+            "0000 0000 0000 .... .110 .... .001 0011",
+        )
+        b_iot_lines = tuple(
+            " ".join(line.split())
+            for line in self.insn32.splitlines()
+            if line.strip().startswith("b_iot ")
+        )
+        self.assertEqual(len(b_iot_lines), len(patterns))
+        for pattern in patterns:
+            self.assertTrue(
+                any(line.startswith(f"b_iot {pattern}") for line in b_iot_lines),
+                pattern,
+            )
+
     def test_b_ios_replaces_deleted_compressed_form(self) -> None:
         self.assertNotIn("c_b_ios", self.insn16)
         self.assertNotIn("c_b_ios", self.meta)

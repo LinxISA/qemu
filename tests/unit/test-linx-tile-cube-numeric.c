@@ -57,7 +57,7 @@ static void set_fp64_acc(CPULinxState *env, const double *values, unsigned rows,
     env->tile_acc_cols = cols;
 }
 
-static uint64_t run_acccvt(CPULinxState *env, unsigned dtype, double value,
+static uint64_t run_accumulator_convert(CPULinxState *env, unsigned dtype, double value,
                            unsigned rmode, bool sat)
 {
     uint64_t raw = 0;
@@ -65,7 +65,7 @@ static uint64_t run_acccvt(CPULinxState *env, unsigned dtype, double value,
     env->tile_dtype = dtype;
     env->tile_attr_raw = (rmode << 25) | ((unsigned)sat << 28);
     env->tile_reg_capacity[31] = 16;
-    g_assert_true(linx_tile_acccvt_058(env, 31, 0));
+    g_assert_true(linx_tile_accumulator_convert(env, 31, 0));
     memcpy(&raw, env->tile_reg[31], dtype_bytes(dtype));
     g_assert_cmpuint(env->tile_reg_valid_cols[31], ==, 1);
     g_assert_cmpuint(env->tile_reg_valid_rows[31], ==, 1);
@@ -211,12 +211,12 @@ static void test_upper_physical_slots(void)
     g_assert_cmpfloat(result, ==, 6.0f);
 
     env->tile_reg_capacity[48] = 16;
-    g_assert_true(linx_tile_acccvt_058(env, 48, 0));
+    g_assert_true(linx_tile_accumulator_convert(env, 48, 0));
     memcpy(&result, env->tile_reg[48], sizeof(result));
     g_assert_cmpfloat(result, ==, 6.0f);
 
     env->tile_reg_capacity[63] = 16;
-    g_assert_true(linx_tile_acccvt_058(env, 63, 0));
+    g_assert_true(linx_tile_accumulator_convert(env, 63, 0));
     memcpy(&result, env->tile_reg[63], sizeof(result));
     g_assert_cmpfloat(result, ==, 6.0f);
     g_free(env);
@@ -371,7 +371,7 @@ static void test_reject_undersized_accumulator(void)
     g_free(env);
 }
 
-static void test_acccvt_all_rounding_modes(void)
+static void test_accumulator_convert_all_rounding_modes(void)
 {
     static const struct {
         unsigned dtype;
@@ -403,9 +403,9 @@ static void test_acccvt_all_rounding_modes(void)
     double half_fp16 = 1.0 + ldexp(1.0, -11);
 
     for (unsigned mode = 0; mode < 8; mode++) {
-        g_assert_cmphex(run_acccvt(env, 4, half_fp16, mode, false), ==,
+        g_assert_cmphex(run_accumulator_convert(env, 4, half_fp16, mode, false), ==,
                         positive[mode]);
-        g_assert_cmphex(run_acccvt(env, 12, .375, mode, false) & 0xfu, ==,
+        g_assert_cmphex(run_accumulator_convert(env, 12, .375, mode, false) & 0xfu, ==,
                         packed[mode]);
     }
     for (unsigned i = 0; i < G_N_ELEMENTS(formats); i++) {
@@ -414,20 +414,20 @@ static void test_acccvt_all_rounding_modes(void)
                          (mode == 6 && (formats[i].lower & 1u) == 0u) ||
                          ((mode == 0 || mode == 1) && (formats[i].lower & 1u));
             uint64_t expected = upper ? formats[i].upper : formats[i].lower;
-            g_assert_cmphex(run_acccvt(env, formats[i].dtype,
+            g_assert_cmphex(run_accumulator_convert(env, formats[i].dtype,
                                        formats[i].halfway, mode, false),
                             ==, expected);
         }
     }
     for (unsigned mode = 0; mode < 8; mode++) {
-        g_assert_cmphex(run_acccvt(env, 0, 1.0, mode, false), ==,
+        g_assert_cmphex(run_accumulator_convert(env, 0, 1.0, mode, false), ==,
                         UINT64_C(0x3ff0000000000000));
     }
-    g_assert_cmphex(run_acccvt(env, 4, -half_fp16, 7, false), ==, 0xbc00);
+    g_assert_cmphex(run_accumulator_convert(env, 4, -half_fp16, 7, false), ==, 0xbc00);
     g_free(env);
 }
 
-static void test_acccvt_is_host_fenv_independent(void)
+static void test_accumulator_convert_is_host_fenv_independent(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
     double value = 1.0 + ldexp(1.0, -11);
@@ -445,20 +445,20 @@ static void test_acccvt_is_host_fenv_independent(void)
     g_assert_true(
         linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false, false, false));
     memcpy(&cube_expected, env->tile_acc, sizeof(cube_expected));
-    expected = run_acccvt(env, 4, value, 1, false);
+    expected = run_accumulator_convert(env, 4, value, 1, false);
     for (unsigned i = 0; i < G_N_ELEMENTS(host_modes); i++) {
         fesetround(host_modes[i]);
         env->tile_dtype = 1;
         g_assert_true(linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false,
                                                  false, false));
         g_assert_cmphex(*(uint32_t *)env->tile_acc, ==, cube_expected);
-        g_assert_cmphex(run_acccvt(env, 4, value, 1, false), ==, expected);
+        g_assert_cmphex(run_accumulator_convert(env, 4, value, 1, false), ==, expected);
     }
     fesetround(original);
     g_free(env);
 }
 
-static void test_acccvt_saturates_every_float_target(void)
+static void test_accumulator_convert_saturates_every_float_target(void)
 {
     static const struct {
         unsigned dtype;
@@ -482,17 +482,17 @@ static void test_acccvt_saturates_every_float_target(void)
     CPULinxState *env = g_new0(CPULinxState, 1);
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
-        g_assert_cmphex(run_acccvt(env, cases[i].dtype, INFINITY, 1, true), ==,
+        g_assert_cmphex(run_accumulator_convert(env, cases[i].dtype, INFINITY, 1, true), ==,
                         cases[i].max);
         if (cases[i].dtype != 0) {
-            g_assert_cmphex(run_acccvt(env, cases[i].dtype, 1e300, 1, true), ==,
+            g_assert_cmphex(run_accumulator_convert(env, cases[i].dtype, 1e300, 1, true), ==,
                             cases[i].max);
         }
     }
     g_free(env);
 }
 
-static void test_acccvt_preserves_signed_zero(void)
+static void test_accumulator_convert_preserves_signed_zero(void)
 {
     static const struct {
         unsigned dtype;
@@ -516,7 +516,7 @@ static void test_acccvt_preserves_signed_zero(void)
     CPULinxState *env = g_new0(CPULinxState, 1);
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
-        g_assert_cmphex(run_acccvt(env, cases[i].dtype, -0.0, 1, false), ==,
+        g_assert_cmphex(run_accumulator_convert(env, cases[i].dtype, -0.0, 1, false), ==,
                         cases[i].zero);
     }
     double packed_values[] = {.25, -.25};
@@ -524,13 +524,13 @@ static void test_acccvt_preserves_signed_zero(void)
     env->tile_dtype = 12;
     env->tile_attr_raw = 1u << 25;
     env->tile_reg_capacity[31] = 16;
-    g_assert_true(linx_tile_acccvt_058(env, 31, 0));
+    g_assert_true(linx_tile_accumulator_convert(env, 31, 0));
     g_assert_cmphex(((uint8_t *)env->tile_reg[31])[0], ==, 0x91);
     g_assert_cmpuint(env->tile_reg_cols[31], ==, 2);
     g_free(env);
 }
 
-static void test_acccvt_canonicalizes_nan(void)
+static void test_accumulator_convert_canonicalizes_nan(void)
 {
     static const struct {
         unsigned dtype;
@@ -551,9 +551,9 @@ static void test_acccvt_canonicalizes_nan(void)
     const double negative_nan = copysign(NAN, -1.0);
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
-        g_assert_cmphex(run_acccvt(env, cases[i].dtype, positive_nan, 1, false),
+        g_assert_cmphex(run_accumulator_convert(env, cases[i].dtype, positive_nan, 1, false),
                         ==, cases[i].canonical_nan);
-        g_assert_cmphex(run_acccvt(env, cases[i].dtype, negative_nan, 1, false),
+        g_assert_cmphex(run_accumulator_convert(env, cases[i].dtype, negative_nan, 1, false),
                         ==, cases[i].canonical_nan);
     }
     g_free(env);
@@ -591,7 +591,7 @@ static void test_failures_preserve_acc_and_destination(void)
     before_acc_valid = env->tile_acc_valid;
     before_acc_cols = env->tile_acc_cols;
     before_acc_rows = env->tile_acc_rows;
-    g_assert_false(linx_tile_acccvt_058(env, 31, 0));
+    g_assert_false(linx_tile_accumulator_convert(env, 31, 0));
     g_assert_cmpmem(env->tile_reg[31], sizeof(before_tile), before_tile,
                     sizeof(before_tile));
     g_assert_cmpmem(env->tile_acc, sizeof(before_acc), before_acc,
@@ -652,16 +652,16 @@ int main(int argc, char **argv)
                     test_reject_non_power_of_two_k);
     g_test_add_func("/linx/cube/reject-undersized-accumulator",
                     test_reject_undersized_accumulator);
-    g_test_add_func("/linx/cube/acccvt-rounding",
-                    test_acccvt_all_rounding_modes);
-    g_test_add_func("/linx/cube/acccvt-host-fenv",
-                    test_acccvt_is_host_fenv_independent);
-    g_test_add_func("/linx/cube/acccvt-saturation",
-                    test_acccvt_saturates_every_float_target);
-    g_test_add_func("/linx/cube/acccvt-signed-zero",
-                    test_acccvt_preserves_signed_zero);
-    g_test_add_func("/linx/cube/acccvt-canonical-nan",
-                    test_acccvt_canonicalizes_nan);
+    g_test_add_func("/linx/cube/accumulator_convert-rounding",
+                    test_accumulator_convert_all_rounding_modes);
+    g_test_add_func("/linx/cube/accumulator_convert-host-fenv",
+                    test_accumulator_convert_is_host_fenv_independent);
+    g_test_add_func("/linx/cube/accumulator_convert-saturation",
+                    test_accumulator_convert_saturates_every_float_target);
+    g_test_add_func("/linx/cube/accumulator_convert-signed-zero",
+                    test_accumulator_convert_preserves_signed_zero);
+    g_test_add_func("/linx/cube/accumulator_convert-canonical-nan",
+                    test_accumulator_convert_canonicalizes_nan);
     g_test_add_func("/linx/cube/fault-preservation",
                     test_failures_preserve_acc_and_destination);
     return g_test_run();

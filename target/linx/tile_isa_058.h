@@ -148,7 +148,7 @@ static inline LinxTileEngine linx_tile_operation_engine(uint32_t selector)
 static inline bool linx_tile_cube_function_accepted(uint32_t function)
 {
     return function < 32u &&
-           (UINT32_C(0x00770177) & (UINT32_C(1) << function)) != 0;
+           (UINT32_C(0x00770077) & (UINT32_C(1) << function)) != 0;
 }
 
 enum {

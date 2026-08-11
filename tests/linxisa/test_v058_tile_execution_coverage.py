@@ -80,7 +80,7 @@ class TileExecutionCoverage(unittest.TestCase):
             int(value)
             for value in re.findall(r"LINX_CUBE_[A-Z0-9_]+\s*=\s*(\d+)", enum_body)
         }
-        self.assertEqual({0, 1, 2, 4, 5, 6, 8, 16, 17, 18, 20, 21, 22}, accepted)
+        self.assertEqual({0, 1, 2, 4, 5, 6, 16, 17, 18, 20, 21, 22}, accepted)
         self.assertEqual(accepted, enum_values)
         for name in re.findall(r"(LINX_CUBE_[A-Z0-9_]+)\s*=", enum_body):
             self.assertRegex(HELPER, rf"case {name}:")
