@@ -204,6 +204,22 @@ static void test_valid_transaction_applies_once(void)
     g_assert_cmphex(state.tile_head[3], ==, 0x5710571u);
 }
 
+static void test_shared_allocation_accepts_only_compatible_subsets(void)
+{
+    g_assert_true(linx_tile_shared_allocation_compatible(
+        0xau, 0xau, 256u, 256u, 4u, 4u));
+    g_assert_true(linx_tile_shared_allocation_compatible(
+        0xau, 0x8u, 256u, 256u, 4u, 4u));
+    g_assert_true(linx_tile_shared_allocation_compatible(
+        0xau, 0x2u, 256u, 256u, 4u, 4u));
+    g_assert_false(linx_tile_shared_allocation_compatible(
+        0xau, 0xbu, 256u, 256u, 4u, 4u));
+    g_assert_false(linx_tile_shared_allocation_compatible(
+        0xau, 0x8u, 256u, 512u, 4u, 4u));
+    g_assert_false(linx_tile_shared_allocation_compatible(
+        0xau, 0x8u, 256u, 256u, 4u, 5u));
+}
+
 static void test_tstore_size_comes_from_source_footprint(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -394,6 +410,8 @@ int main(int argc, char **argv)
                     test_allocation_failure_is_atomic);
     g_test_add_func("/linx/tile-transaction/valid",
                     test_valid_transaction_applies_once);
+    g_test_add_func("/linx/tile-transaction/shared-compatible-subset",
+                    test_shared_allocation_accepts_only_compatible_subsets);
     g_test_add_func("/linx/tile-transaction/tstore-source-footprint",
                     test_tstore_size_comes_from_source_footprint);
     g_test_add_func("/linx/tile-transaction/operation-invalid-shape",

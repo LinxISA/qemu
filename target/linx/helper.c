@@ -17287,10 +17287,10 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     shared->dtype = dtype;
                     shared->producer_bpc = env->bpc;
                 } else {
-                    valid = shared->allocation_mask == pe_mask &&
-                            shared->per_pe_capacity == bytes &&
-                            shared->allocated_bytes == bytes * ctpop8(pe_mask) &&
-                            shared->dtype == dtype;
+                    valid = linx_tile_shared_allocation_compatible(
+                        shared->allocation_mask, pe_mask,
+                        shared->per_pe_capacity, bytes,
+                        shared->dtype, dtype);
                 }
                 if (valid) {
                     LinxSharedTileLane *lane = &shared->lane[env->pe_id];
