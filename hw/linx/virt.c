@@ -3500,7 +3500,15 @@ static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
                 linx_put_le32(out, env->tile_reg_bytes[tile]);
                 linx_put_le32(out, env->tile_reg_bytes[tile]);
                 for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i++) {
-                    const uint8_t defined = 0xffu;
+                    const uint32_t elem_bytes = env->tile_reg_elem_bytes[tile];
+                    const uint32_t element = elem_bytes == 0u ? 0u
+                                                              : i / elem_bytes;
+                    const uint32_t cols = env->tile_reg_cols[tile];
+                    const uint32_t row = cols == 0u ? 0u : element / cols;
+                    const uint32_t col = cols == 0u ? 0u : element % cols;
+                    const uint8_t defined = elem_bytes != 0u && cols != 0u &&
+                        row < env->tile_reg_valid_rows[tile] &&
+                        col < env->tile_reg_valid_cols[tile] ? 0xffu : 0u;
                     g_byte_array_append(out, &defined, 1);
                 }
                 for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i += 4) {
