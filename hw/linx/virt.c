@@ -15,6 +15,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/linx/tile-state-dump.h"
 #include "hw/virtio/virtio-mmio.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
@@ -3442,41 +3443,12 @@ static void linx_virt_set_cross_model_tile_dump(Object *obj,
     s->cross_model_tile_dump = value && value[0] != '\0' ? g_strdup(value) : NULL;
 }
 
-static void linx_put_le16(GByteArray *out, uint16_t value)
-{
-    uint8_t bytes[] = { value & 0xffu, value >> 8 };
-    g_byte_array_append(out, bytes, sizeof(bytes));
-}
-
-static void linx_put_le32(GByteArray *out, uint32_t value)
-{
-    uint8_t bytes[] = {
-        value & 0xffu, (value >> 8) & 0xffu,
-        (value >> 16) & 0xffu, (value >> 24) & 0xffu,
-    };
-    g_byte_array_append(out, bytes, sizeof(bytes));
-}
-
-static const uint8_t linx_tile_state_isa_sha256[32] = {
-    0xcf, 0x50, 0x4d, 0xb8, 0x6e, 0xb4, 0x62, 0x15,
-    0x67, 0x72, 0x32, 0xb9, 0xc8, 0x4f, 0xc6, 0x1c,
-    0xef, 0x55, 0xa8, 0x09, 0x13, 0xf3, 0xd3, 0xd6,
-    0x09, 0xb5, 0x9e, 0x6a, 0x38, 0x26, 0x72, 0xbd,
-};
-
 static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
 {
     g_autoptr(GByteArray) out = g_byte_array_new();
-    uint32_t record_count = 0;
+    g_autoptr(GArray) records = g_array_new(false, false,
+                                            sizeof(LinxTileStateRecord));
 
-    g_byte_array_append(out, (const uint8_t *)"PTOAST58", 8);
-    linx_put_le16(out, 1);
-    g_byte_array_append(out, linx_tile_state_isa_sha256,
-                        sizeof(linx_tile_state_isa_sha256));
-    g_byte_array_append(out, (const uint8_t *)&s->pe_count, 1);
-    g_byte_array_append(out, (const uint8_t *)"\0", 1);
-    const guint count_offset = out->len;
-    linx_put_le32(out, 0);
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         CPULinxState *env = &s->cpu[pe]->env;
         for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
@@ -3486,50 +3458,30 @@ static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
                     env->tile_reg_bytes[tile] == 0) {
                     continue;
                 }
-                const uint8_t header[] = {
-                    pe, hand, rank, 1,
-                    env->tile_reg_dtype[tile], env->tile_reg_layout[tile], 0, 0,
+                LinxTileStateRecord record = {
+                    .pe = pe,
+                    .hand = hand,
+                    .rank = rank,
+                    .dtype = env->tile_reg_dtype[tile],
+                    .layout = env->tile_reg_layout[tile],
+                    .elem_bytes = env->tile_reg_elem_bytes[tile],
+                    .capacity = env->tile_reg_capacity[tile],
+                    .bytes = env->tile_reg_bytes[tile],
+                    .valid_rows = env->tile_reg_valid_rows[tile],
+                    .valid_cols = env->tile_reg_valid_cols[tile],
+                    .rows = env->tile_reg_rows[tile],
+                    .cols = env->tile_reg_cols[tile],
+                    .payload = (const uint8_t *)env->tile_reg[tile],
                 };
-                g_byte_array_append(out, header, sizeof(header));
-                linx_put_le32(out, env->tile_reg_capacity[tile]);
-                linx_put_le32(out, env->tile_reg_bytes[tile]);
-                linx_put_le16(out, env->tile_reg_valid_rows[tile]);
-                linx_put_le16(out, env->tile_reg_valid_cols[tile]);
-                linx_put_le16(out, env->tile_reg_rows[tile]);
-                linx_put_le16(out, env->tile_reg_cols[tile]);
-                linx_put_le32(out, env->tile_reg_bytes[tile]);
-                linx_put_le32(out, env->tile_reg_bytes[tile]);
-                for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i++) {
-                    const uint32_t elem_bytes = env->tile_reg_elem_bytes[tile];
-                    const uint32_t element = elem_bytes == 0u ? 0u
-                                                              : i / elem_bytes;
-                    const uint32_t cols = env->tile_reg_cols[tile];
-                    const uint32_t row = cols == 0u ? 0u : element / cols;
-                    const uint32_t col = cols == 0u ? 0u : element % cols;
-                    const uint8_t defined = elem_bytes != 0u && cols != 0u &&
-                        row < env->tile_reg_valid_rows[tile] &&
-                        col < env->tile_reg_valid_cols[tile] ? 0xffu : 0u;
-                    g_byte_array_append(out, &defined, 1);
-                }
-                for (uint32_t i = 0; i < env->tile_reg_bytes[tile]; i += 4) {
-                    const uint32_t remaining = env->tile_reg_bytes[tile] - i;
-                    const uint32_t word = env->tile_reg[tile][i / 4];
-                    if (remaining >= 4) {
-                        linx_put_le32(out, word);
-                    } else {
-                        for (uint32_t byte = 0; byte < remaining; byte++) {
-                            const uint8_t value = (word >> (8u * byte)) & 0xffu;
-                            g_byte_array_append(out,
-                                                &value, 1);
-                        }
-                    }
-                }
-                record_count++;
+
+                g_array_append_val(records, record);
             }
         }
     }
-    for (unsigned i = 0; i < 4; i++) {
-        out->data[count_offset + i] = (record_count >> (8u * i)) & 0xffu;
+    if (!linx_tile_state_encode(out, s->pe_count,
+                                (const LinxTileStateRecord *)records->data,
+                                records->len, err)) {
+        return false;
     }
     g_autofree char *tmp_path = g_strdup_printf("%s.tmp", s->cross_model_tile_dump);
     if (!g_file_set_contents(tmp_path, (const char *)out->data, out->len, err)) {
