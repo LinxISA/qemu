@@ -15,6 +15,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/linx/tile-state-dump.h"
 #include "hw/virtio/virtio-mmio.h"
 #include "system/address-spaces.h"
 #include "system/device_tree.h"
@@ -467,6 +468,7 @@ typedef struct LinxVirtMachineState {
     uint8_t *dfx_ram_ptr;
 
     char *cross_model_dump;
+    char *cross_model_tile_dump;
     uint64_t cross_model_address;
     uint32_t cross_model_size;
     bool cross_model_dump_pending;
@@ -3424,6 +3426,81 @@ static void linx_virt_set_cross_model_dump(Object *obj, const char *value,
     s->cross_model_dump = g_strdup(value);
 }
 
+static char *linx_virt_get_cross_model_tile_dump(Object *obj, Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    return g_strdup(s->cross_model_tile_dump);
+}
+
+static void linx_virt_set_cross_model_tile_dump(Object *obj,
+                                                const char *value,
+                                                Error **errp)
+{
+    LinxVirtMachineState *s = LINX_VIRT_MACHINE(obj);
+    (void)errp;
+    g_free(s->cross_model_tile_dump);
+    s->cross_model_tile_dump = value && value[0] != '\0'
+                                   ? g_strdup(value)
+                                   : NULL;
+}
+
+static bool linx_write_tile_state(LinxVirtMachineState *s, GError **err)
+{
+    g_autoptr(GByteArray) out = g_byte_array_new();
+    g_autoptr(GArray) records = g_array_new(false, false,
+                                            sizeof(LinxTileStateRecord));
+
+    for (unsigned pe = 0; pe < s->pe_count; pe++) {
+        CPULinxState *env = &s->cpu[pe]->env;
+        for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
+            for (unsigned rank = 0; rank < env->tile_hand_count[hand]; rank++) {
+                const unsigned tile = env->tile_hand_order[hand][rank];
+                if (tile >= LINX_TILE_SLOT_COUNT ||
+                    env->tile_reg_bytes[tile] == 0) {
+                    continue;
+                }
+                LinxTileStateRecord record = {
+                    .pe = pe,
+                    .hand = hand,
+                    .rank = rank,
+                    .dtype = env->tile_reg_dtype[tile],
+                    .layout = env->tile_reg_layout[tile],
+                    .elem_bytes = env->tile_reg_elem_bytes[tile],
+                    .capacity = env->tile_reg_capacity[tile],
+                    .bytes = env->tile_reg_bytes[tile],
+                    .valid_rows = env->tile_reg_valid_rows[tile],
+                    .valid_cols = env->tile_reg_valid_cols[tile],
+                    .rows = env->tile_reg_rows[tile],
+                    .cols = env->tile_reg_cols[tile],
+                    .payload = (const uint8_t *)env->tile_reg[tile],
+                };
+
+                g_array_append_val(records, record);
+            }
+        }
+    }
+    if (!linx_tile_state_encode(out, s->pe_count,
+                                (const LinxTileStateRecord *)records->data,
+                                records->len, err)) {
+        return false;
+    }
+    g_autofree char *tmp_path =
+        g_strdup_printf("%s.tmp", s->cross_model_tile_dump);
+    if (!g_file_set_contents(tmp_path, (const char *)out->data,
+                             out->len, err)) {
+        unlink(tmp_path);
+        return false;
+    }
+    if (g_rename(tmp_path, s->cross_model_tile_dump) != 0) {
+        g_set_error(err, G_FILE_ERROR, g_file_error_from_errno(errno),
+                    "rename tile-state snapshot: %s", strerror(errno));
+        unlink(tmp_path);
+        return false;
+    }
+    return true;
+}
+
 static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
 {
     LinxVirtMachineState *s = container_of(notifier, LinxVirtMachineState,
@@ -3432,21 +3509,32 @@ static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
     g_autoptr(GError) err = NULL;
     ShutdownCause cause = *(ShutdownCause *)opaque;
 
-    if (!s->cross_model_dump_pending || !s->cross_model_dump ||
-        cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN) {
+    if (cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN ||
+        ((!s->cross_model_dump_pending || !s->cross_model_dump) &&
+         !s->cross_model_tile_dump)) {
         return;
     }
 
-    tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
-    if (!g_file_set_contents(tmp_path,
-                             (const char *)s->dfx_ram_ptr +
-                                 s->cross_model_address,
-                             s->cross_model_size, &err) ||
-        g_rename(tmp_path, s->cross_model_dump) != 0) {
-        error_report("linx virt: cannot write cross-model dump '%s': %s",
-                     s->cross_model_dump,
-                     err ? err->message : strerror(errno));
-        unlink(tmp_path);
+    if (s->cross_model_dump_pending && s->cross_model_dump) {
+        tmp_path = g_strdup_printf("%s.tmp", s->cross_model_dump);
+        if (!g_file_set_contents(tmp_path,
+                                 (const char *)s->dfx_ram_ptr +
+                                     s->cross_model_address,
+                                 s->cross_model_size, &err) ||
+            g_rename(tmp_path, s->cross_model_dump) != 0) {
+            error_report("linx virt: cannot write cross-model dump '%s': %s",
+                         s->cross_model_dump,
+                         err ? err->message : strerror(errno));
+            unlink(tmp_path);
+        }
+    }
+    if (s->cross_model_tile_dump) {
+        g_clear_error(&err);
+        if (!linx_write_tile_state(s, &err)) {
+            error_report("linx virt: cannot write tile-state dump '%s': %s",
+                         s->cross_model_tile_dump,
+                         err ? err->message : strerror(errno));
+        }
     }
 }
 
@@ -3459,6 +3547,7 @@ static void linx_virt_instance_init(Object *obj)
     s->dfx_memwatch_stop = false;
     s->dfx_ram_ptr = NULL;
     s->cross_model_dump = NULL;
+    s->cross_model_tile_dump = NULL;
     s->cross_model_address = 0;
     s->cross_model_size = 0;
     s->cross_model_dump_pending = false;
@@ -3486,6 +3575,12 @@ static void linx_virt_instance_init(Object *obj)
                             linx_virt_set_cross_model_dump);
     object_property_set_description(obj, "cross-model-dump",
                                     "Write a guest RAM range after test-finisher shutdown");
+
+    object_property_add_str(obj, "cross-model-tile-dump",
+                            linx_virt_get_cross_model_tile_dump,
+                            linx_virt_set_cross_model_tile_dump);
+    object_property_set_description(obj, "cross-model-tile-dump",
+                                    "Write architecture-visible Tile state after test-finisher shutdown");
 
     object_property_add_uint64_ptr(obj, "cross-model-address",
                                    &s->cross_model_address,
@@ -3570,6 +3665,8 @@ static void linx_virt_init(MachineState *machine)
                          (uint64_t)machine->ram_size);
             exit(1);
         }
+    }
+    if (s->cross_model_dump || s->cross_model_tile_dump) {
         s->cross_model_shutdown_notifier.notify = linx_cross_model_shutdown;
         qemu_register_shutdown_notifier(&s->cross_model_shutdown_notifier);
     }

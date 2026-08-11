@@ -14713,8 +14713,9 @@ static bool linx_tile_resolve_transfer_shape(const CPULinxState *env,
     return true;
 }
 
-static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_reg,
-                           unsigned size_code, uint64_t stride_bytes)
+static void linx_tile_load(CPULinxState *env, unsigned dst_tile,
+                           unsigned addr_reg, unsigned size_code,
+                           uint64_t stride_elements)
 {
     if (dst_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -14757,36 +14758,27 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
     }
 
     const uint64_t base = env->gpr[addr_reg];
-    memset(env->tile_reg[dst_tile], 0, LINX_TILE_MAX_BYTES);
-    for (uint32_t to = 0; to < tr_outer; to++) {
-        for (uint32_t ti = 0; ti < tr_inner; ti++) {
+    for (uint32_t to = 0; to < gm_outer; to++) {
+        for (uint32_t ti = 0; ti < gm_inner; ti++) {
             uint32_t dst_idx = 0;
             uint64_t value = 0;
             if (!linx_tile_linear_index(fmt.dst, tr_outer, tr_inner, elem_bytes, to, ti, &dst_idx)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 return;
             }
-            if (to < gm_outer && ti < gm_inner) {
-                uint32_t src_idx = 0;
-                if (!linx_tile_linear_index(fmt.src, gm_outer, gm_inner, elem_bytes, to, ti, &src_idx)) {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                    return;
-                }
-                uint64_t src_off = (uint64_t)src_idx * elem_bytes;
-                if (stride_bytes != 0 && fmt.src == LINX_TILE_LAYOUT_ND) {
-                    src_off = (uint64_t)to * stride_bytes +
-                              (uint64_t)ti * elem_bytes;
-                } else if (stride_bytes != 0 && fmt.src == LINX_TILE_LAYOUT_DN) {
-                    src_off = (uint64_t)ti * stride_bytes +
-                              (uint64_t)to * elem_bytes;
-                }
-                value = linx_tile_mem_read64(env, base + src_off, elem_bytes);
-            } else {
-                const uint32_t seed = (to * tr_inner) ^ ti ^ (uint32_t)base ^ (env->tile_arg_format << 8);
-                value = linx_tile_pad_value64(
-                    linx_tile_arg_pad(env->tile_arg_format), dtype,
-                    elem_bytes, seed);
+            uint32_t src_idx = 0;
+            if (!linx_tile_linear_index(fmt.src, gm_outer, gm_inner,
+                                        elem_bytes, to, ti, &src_idx)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                return;
             }
+            uint64_t src_off = (uint64_t)src_idx * elem_bytes;
+            if (fmt.src == LINX_TILE_LAYOUT_ND) {
+                src_off = ((uint64_t)to * stride_elements + ti) * elem_bytes;
+            } else if (fmt.src == LINX_TILE_LAYOUT_DN) {
+                src_off = ((uint64_t)ti * stride_elements + to) * elem_bytes;
+            }
+            value = linx_tile_mem_read64(env, base + src_off, elem_bytes);
             if (!linx_tile_set_elem64(env, dst_tile, dst_idx, elem_bytes,
                                       value)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -14803,8 +14795,9 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile, unsigned addr_r
     }
 }
 
-static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_reg,
-                            unsigned size_code, uint64_t stride_bytes)
+static void linx_tile_store(CPULinxState *env, unsigned src_tile,
+                            unsigned addr_reg, unsigned size_code,
+                            uint64_t stride_elements)
 {
     if (src_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -14872,12 +14865,10 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile, unsigned addr_
                 return;
             }
             uint64_t dst_off = (uint64_t)dst_idx * elem_bytes;
-            if (stride_bytes != 0 && fmt.dst == LINX_TILE_LAYOUT_ND) {
-                dst_off = (uint64_t)go * stride_bytes +
-                          (uint64_t)gi * elem_bytes;
-            } else if (stride_bytes != 0 && fmt.dst == LINX_TILE_LAYOUT_DN) {
-                dst_off = (uint64_t)gi * stride_bytes +
-                          (uint64_t)go * elem_bytes;
+            if (fmt.dst == LINX_TILE_LAYOUT_ND) {
+                dst_off = ((uint64_t)go * stride_elements + gi) * elem_bytes;
+            } else if (fmt.dst == LINX_TILE_LAYOUT_DN) {
+                dst_off = ((uint64_t)gi * stride_elements + go) * elem_bytes;
             }
             linx_tile_mem_write64(env, base + dst_off, elem_bytes, value);
         }
@@ -15151,11 +15142,6 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
     }
 }
 
-static inline unsigned linx_tile_cube_dim(uint32_t value)
-{
-    return value ? value : 8u;
-}
-
 static bool linx_tile_cube_operand_legal(const CPULinxState *env,
                                          unsigned tile, uint32_t dtype,
                                          unsigned rows, unsigned cols)
@@ -15186,20 +15172,19 @@ static bool linx_tile_cube_scale_legal(const CPULinxState *env,
                                        unsigned row_scale,
                                        unsigned column_scale)
 {
-    const unsigned m = linx_tile_cube_dim(env->lb[0]);
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    const unsigned k = linx_tile_cube_dim(env->lb[2]);
-    const unsigned groups = (k + 31u) / 32u;
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    const unsigned groups = (dims.k + 31u) / 32u;
 
-    return linx_tile_cube_operand_legal(env, row_scale, 13u, m, groups) &&
-           linx_tile_cube_operand_legal(env, column_scale, 13u, groups, n);
+    return linx_tile_cube_operand_legal(env, row_scale, 13u, dims.m, groups) &&
+           linx_tile_cube_operand_legal(env, column_scale, 13u, groups,
+                                        dims.n);
 }
 
 static bool linx_tile_cube_bias_legal_for(const CPULinxState *env,
                                           unsigned bias, uint32_t dtype)
 {
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    return linx_tile_cube_operand_legal(env, bias, dtype, 1u, n);
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    return linx_tile_cube_operand_legal(env, bias, dtype, 1u, dims.n);
 }
 
 static bool linx_tile_cube_bias_legal(const CPULinxState *env, unsigned bias)
@@ -15227,10 +15212,10 @@ static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
                                                      unsigned slot)
 {
     /*
-     * The B.IOR assembly list is encoded as RegSrc1, RegSrc0, RegSrc2,
+     * The B.IOR assembly list is encoded as RegSrc0, RegSrc1, RegSrc2,
      * followed by RegDst.  Keep both RI consumers on this canonical order.
      */
-    static const unsigned shifts[] = { 10, 5, 15, 0 };
+    static const unsigned shifts[] = { 5, 10, 15, 0 };
 
     g_assert(slot < ARRAY_SIZE(shifts));
     return (desc >> shifts[slot]) & 0x1fu;
@@ -15302,33 +15287,32 @@ static void linx_vec_capture_ri_values(CPULinxState *env)
 static bool linx_tile_get_base_reg(const CPULinxState *env, unsigned *addr_reg_out)
 {
     if (env->tile_ior_count == 0) {
-        return false;
+        *addr_reg_out = 0u;
+        return true;
     }
     const uint64_t desc = env->tile_ior_desc[env->tile_ior_count - 1u];
     const unsigned src0 = (unsigned)((desc >> 5) & 0x1fu);
-    const unsigned src1 = (unsigned)((desc >> 10) & 0x1fu);
-    const unsigned base = (src1 != 0) ? src1 : src0;
-    if (base >= LINX_GPR_COUNT) {
+    if (src0 >= LINX_GPR_COUNT) {
         return false;
     }
-    *addr_reg_out = base;
+    *addr_reg_out = src0;
     return true;
 }
 
-static uint64_t linx_tile_get_stride_bytes(const CPULinxState *env)
+static uint64_t linx_tile_get_stride_elements(const CPULinxState *env)
 {
     if (env->tile_ior_count == 0) {
-        return 0;
+        return env->lb[2];
     }
     const uint64_t desc = env->tile_ior_desc[env->tile_ior_count - 1u];
-    const unsigned src0 = (unsigned)((desc >> 5) & 0x1fu);
-    return src0 < LINX_GPR_COUNT ? env->gpr[src0] : 0;
+    const unsigned src1 = (unsigned)((desc >> 10) & 0x1fu);
+    return src1 < LINX_GPR_COUNT ? env->gpr[src1] : 0;
 }
 
 static bool linx_tile_get_shared_tload_size(const CPULinxState *env,
                                             unsigned *size_code_out)
 {
-    if (env->tile_ior_count != 1u || env->tile_shared_binder_count != 1u) {
+    if (env->tile_ior_count > 1u || env->tile_shared_binder_count != 1u) {
         return false;
     }
     const unsigned size_class = (env->tile_shared_binder[0] >> 12) & 0x7u;
@@ -15772,7 +15756,6 @@ static bool linx_tile_preflight_tlsu(
                linx_tile_get_base_reg(env, &addr_reg) &&
                linx_tile_get_shared_tload_size(env, &size_code) &&
                linx_tile_dtype_elem_bytes(dtype) != 0u &&
-               linx_tile_get_stride_bytes(env) == 0u &&
                linx_tile_transfer_preflight(env, size_code,
                                              LINX_TLSU_GM_TO_TR);
     }
@@ -15973,7 +15956,8 @@ void HELPER(linx_tile_append_ior)(CPULinxState *env, uint64_t packed)
     env->tile_ior_desc[env->tile_ior_count++] = packed;
 }
 
-void HELPER(linx_tile_append_shared_binder)(CPULinxState *env, uint32_t shared)
+void HELPER(linx_tile_append_shared_binder_v058)(CPULinxState *env,
+                                                  uint64_t shared)
 {
     if (env->tile_shared_binder_count >= LINX_TILE_MAX_SHARED_BINDERS ||
         (env->tile_shared_binder_count != 0u &&
@@ -16169,42 +16153,6 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
 
 }
 
-static bool linx_tile_cube_primary_legal(const CPULinxState *env,
-                                         unsigned src_a, unsigned src_b,
-                                         bool accumulate)
-{
-    const unsigned m = linx_tile_cube_dim(env->lb[0]);
-    const unsigned n = linx_tile_cube_dim(env->lb[1]);
-    const unsigned k = linx_tile_cube_dim(env->lb[2]);
-    const uint32_t func = env->tile_func & 31u;
-    const bool mx = func == LINX_CUBE_TMATMUL_MX ||
-                    func == LINX_CUBE_TGEMV_MX ||
-                    func == LINX_CUBE_TMATMUL_MX_BIAS ||
-                    func == LINX_CUBE_TGEMV_MX_BIAS ||
-                    func == LINX_CUBE_TMATMUL_MX_ACC ||
-                    func == LINX_CUBE_TGEMV_MX_ACC;
-    const uint32_t left =
-        src_a < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_a] : UINT32_MAX;
-    const uint32_t right =
-        src_b < LINX_TILE_SLOT_COUNT ? env->tile_reg_dtype[src_b] : UINT32_MAX;
-    const uint8_t acc_dtype = mx ? LINX_TILE_ACC_FP32 :
-        linx_tile_numeric_acc_dtype(env->tile_dtype);
-
-    if (src_a >= LINX_TILE_SLOT_COUNT || src_b >= LINX_TILE_SLOT_COUNT ||
-        (mx ? ((env->tile_dtype & 31u) != 1u ||
-               !linx_tile_numeric_mx_pair(left, right)) :
-              (!linx_tile_numeric_ordinary(env->tile_dtype) ||
-               left != (env->tile_dtype & 31u) ||
-               right != (env->tile_dtype & 31u))) ||
-        !linx_tile_cube_operand_legal(env, src_a, left, m, k) ||
-        !linx_tile_cube_operand_legal(env, src_b, right, k, n)) {
-        return false;
-    }
-    return !accumulate ||
-           (env->tile_acc_valid && env->tile_acc_dtype == acc_dtype &&
-            env->tile_acc_rows == m && env->tile_acc_cols == n);
-}
-
 static bool linx_tile_preflight_cube(const CPULinxState *env)
 {
     unsigned sources[LINX_TILE_MAX_IOT * 2];
@@ -16271,9 +16219,20 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
     }
 
     if (!linx_tile_collect_cube_sources(env, required, sources, &size_code) ||
-        !linx_tile_cube_primary_legal(env, sources[0], sources[1],
-                                      accumulate)) {
+        !linx_tile_cube_primary_legal_058(env, sources[0], sources[1],
+                                          with_scale, accumulate)) {
         return false;
+    }
+    if (accumulate) {
+        LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+        uint8_t acc_dtype = with_scale ? LINX_TILE_ACC_FP32 :
+            linx_tile_numeric_acc_dtype(env->tile_dtype);
+        unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
+        uint64_t required_acc_bytes = (uint64_t)dims.m * dims.n * acc_bytes;
+
+        if (env->tile_acc_bytes < required_acc_bytes) {
+            return false;
+        }
     }
     if (with_scale &&
         !linx_tile_cube_scale_legal(env, sources[2], sources[3])) {
@@ -16300,8 +16259,8 @@ static bool linx_tile_group_cube_profile(CPULinxState *env,
         env->blocktype != LINX_BLOCK_CUBE ||
         (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
         dtype != 1u || env->tile_shared_binder_count != 1u ||
-        env->tile_iot_count != 1u || env->lb[0] != 8u ||
-        env->lb[1] != 32u || env->lb[2] != 32u ||
+        env->tile_iot_count != 1u ||
+        !linx_tile_cube_group_dimensions_legal_058(env) ||
         env->tile_iot_src_valid[0] != 1u ||
         env->tile_iot_output_valid[0] != 0u ||
         !linx_tile_get_bound_source(env, 0u, 0u, &src_a)) {
@@ -16777,6 +16736,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     const uint8_t bit = 1u << pe;
     const uint32_t func = env->tile_func & 0x1fu;
     const unsigned shared_id = linx_tile_shared_id(env);
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     qemu_mutex_lock(&core4->lock);
     bool valid = true;
     if (core4->collective_arrived == 0u) {
@@ -16784,16 +16744,17 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         core4->collective_func = func;
         core4->collective_dtype = 1u;
         core4->collective_shared_id = shared_id;
-        core4->collective_m = 8u;
-        core4->collective_n = 32u;
-        core4->collective_k = 32u;
+        core4->collective_m = dims.m;
+        core4->collective_n = dims.n;
+        core4->collective_k = dims.k;
     } else {
         valid = core4->collective_bpc == env->bpc &&
                 core4->collective_func == func &&
                 core4->collective_dtype == 1u &&
                 core4->collective_shared_id == shared_id &&
-                core4->collective_m == 8u && core4->collective_n == 32u &&
-                core4->collective_k == 32u &&
+                core4->collective_m == dims.m &&
+                core4->collective_n == dims.n &&
+                core4->collective_k == dims.k &&
                 (core4->collective_arrived & bit) == 0u;
     }
     if (!valid) {
@@ -17312,9 +17273,6 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 const size_t bytes = UINT64_C(1) << (size_code + 4u);
                 g_autofree uint8_t *staged = g_malloc(bytes);
                 const uint64_t base = env->gpr[addr_reg];
-                for (size_t i = 0; i < bytes; i++) {
-                    staged[i] = cpu_ldub_data(env, (abi_ptr)(base + i));
-                }
                 const unsigned elem_bytes = linx_tile_dtype_elem_bytes(
                     linx_tile_effective_dtype(env));
                 const uint32_t elems = bytes / elem_bytes;
@@ -17325,6 +17283,22 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 const uint32_t cols = env->lb[2] != 0u
                                       ? env->lb[2] : valid_cols;
                 const uint32_t rows = cols != 0u ? elems / cols : 0u;
+                const uint64_t stride_elements =
+                    linx_tile_get_stride_elements(env);
+                memset(staged, 0, bytes);
+                for (uint32_t row = 0; row < valid_rows; row++) {
+                    for (uint32_t col = 0; col < valid_cols; col++) {
+                        const uint64_t source =
+                            ((uint64_t)row * stride_elements + col) *
+                            elem_bytes;
+                        const size_t destination =
+                            ((size_t)row * cols + col) * elem_bytes;
+                        for (unsigned byte = 0; byte < elem_bytes; byte++) {
+                            staged[destination + byte] = cpu_ldub_data(
+                                env, (abi_ptr)(base + source + byte));
+                        }
+                    }
+                }
                 const unsigned shared_id = linx_tile_shared_id(env);
                 const uint32_t dtype = linx_tile_effective_dtype(env);
                 LinxSharedTileVersion *shared =
@@ -17409,7 +17383,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                  * only full success publishes hand liveness.
                  */
                 linx_tile_load(env, dst_tile, addr_reg, size_code,
-                               linx_tile_get_stride_bytes(env));
+                               linx_tile_get_stride_elements(env));
                 if (!linx_tile_complete_bound_output(
                         env, live, reserved, order, count_by_hand, i)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -17542,7 +17516,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                  * allocator/source consumption publishes only after success.
                  */
                 linx_tile_store(env, src_tile, addr_reg, size_code,
-                                linx_tile_get_stride_bytes(env));
+                                linx_tile_get_stride_elements(env));
                 linx_tile_consume_bound_sources(env, live, i, &d,
                                                 order, count_by_hand,
                                                 &carrier_valid, &carrier);

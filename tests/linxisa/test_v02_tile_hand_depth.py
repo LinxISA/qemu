@@ -178,8 +178,8 @@ class V02TileHandDepthTest(unittest.TestCase):
         self.assertRegex(reserve, re.compile(r"return false;\s*}\s*$", re.S))
 
     def test_vmstate_explicitly_uses_new_layout(self) -> None:
-        self.assertIn(".version_id = 18", self.cpu_c)
-        self.assertIn(".minimum_version_id = 18", self.cpu_c)
+        self.assertIn(".version_id = 19", self.cpu_c)
+        self.assertIn(".minimum_version_id = 19", self.cpu_c)
         self.assertIn(
             "VMSTATE_UINT16_ARRAY_V(env.tile_hand_live", self.cpu_c
         )
@@ -187,6 +187,11 @@ class V02TileHandDepthTest(unittest.TestCase):
             "VMSTATE_UINT16_ARRAY_V(env.tile_hand_reserved", self.cpu_c
         )
         self.assertIn("LINX_TILE_SLOT_COUNT, 18", self.cpu_c)
+        self.assertRegex(
+            self.cpu_c,
+            r"VMSTATE_UINT8_ARRAY_V\(env\.tile_reg_layout, LinxCPU,\s*"
+            r"LINX_TILE_SLOT_COUNT, 19\)",
+        )
 
 
 if __name__ == "__main__":

@@ -513,6 +513,7 @@ typedef struct CPUArchState {
     uint32_t tile_reg_bytes[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
+    uint8_t tile_reg_layout[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_valid_cols[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_valid_rows[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_cols[LINX_TILE_SLOT_COUNT];

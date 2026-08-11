@@ -2705,8 +2705,8 @@ static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
-    gen_helper_linx_tile_append_shared_binder(
-        tcg_env, tcg_constant_i32((a->shared & 0xffu) |
+    gen_helper_linx_tile_append_shared_binder_v058(
+        tcg_env, tcg_constant_i64((a->shared & 0xffu) |
                                   ((a->pe_mask & 0xfu) << 8) |
                                   ((a->tsize & 0x7u) << 12)));
     /* Shared bindings have no B.IOT, so the binder keeps commit pending. */
@@ -3332,6 +3332,57 @@ static bool trans_madd(DisasContext *ctx, arg_madd *a)
     return trans_alu_binop(ctx, a->RegDst, out);
 }
 
+/*
+ * Scalar DIV/REM are non-trapping.  Guard cases that host division cannot
+ * execute directly: divide by zero and signed MIN_INT / -1 overflow.
+ */
+static void linx_emit_divrem(TCGv_i64 out, TCGv_i64 lhs, TCGv_i64 rhs,
+                             bool is_div, bool is_signed, bool is_word)
+{
+    TCGLabel *divzero = gen_new_label();
+    TCGLabel *done = gen_new_label();
+    TCGv_i64 minval = tcg_constant_i64(
+        (int64_t)(is_word ? UINT64_C(0xffffffff80000000) : INT64_MIN));
+
+    tcg_gen_brcondi_i64(TCG_COND_EQ, rhs, 0, divzero);
+    if (is_signed) {
+        TCGLabel *not_overflow = gen_new_label();
+        TCGLabel *overflow = gen_new_label();
+
+        tcg_gen_brcond_i64(TCG_COND_NE, lhs, minval, not_overflow);
+        tcg_gen_brcondi_i64(TCG_COND_EQ, rhs, -1, overflow);
+        gen_set_label(not_overflow);
+        if (is_div) {
+            tcg_gen_div_i64(out, lhs, rhs);
+        } else {
+            tcg_gen_rem_i64(out, lhs, rhs);
+        }
+        tcg_gen_br(done);
+        gen_set_label(overflow);
+        if (is_div) {
+            tcg_gen_mov_i64(out, lhs);
+        } else {
+            tcg_gen_movi_i64(out, 0);
+        }
+        tcg_gen_br(done);
+    } else {
+        if (is_div) {
+            tcg_gen_divu_i64(out, lhs, rhs);
+        } else {
+            tcg_gen_remu_i64(out, lhs, rhs);
+        }
+        tcg_gen_br(done);
+    }
+
+    gen_set_label(divzero);
+    if (is_div) {
+        tcg_gen_movi_i64(out, 0);
+    } else {
+        tcg_gen_mov_i64(out, lhs);
+    }
+    gen_set_label(done);
+}
+
 static bool trans_div_like(DisasContext *ctx, unsigned dst,
                            TCGv_i64 l, TCGv_i64 r, bool is_div, bool is_signed,
                            bool is_word)
@@ -3341,42 +3392,18 @@ static bool trans_div_like(DisasContext *ctx, unsigned dst,
     if (is_word) {
         TCGv_i64 l32 = tcg_temp_new_i64();
         TCGv_i64 r32 = tcg_temp_new_i64();
-        tcg_gen_ext32s_i64(l32, l);
-        tcg_gen_ext32s_i64(r32, r);
-        if (!is_signed) {
+        if (is_signed) {
+            tcg_gen_ext32s_i64(l32, l);
+            tcg_gen_ext32s_i64(r32, r);
+        } else {
             tcg_gen_ext32u_i64(l32, l);
             tcg_gen_ext32u_i64(r32, r);
         }
-        if (is_div) {
-            if (is_signed) {
-                tcg_gen_div_i64(out, l32, r32);
-            } else {
-                tcg_gen_divu_i64(out, l32, r32);
-            }
-        } else {
-            if (is_signed) {
-                tcg_gen_rem_i64(out, l32, r32);
-            } else {
-                tcg_gen_remu_i64(out, l32, r32);
-            }
-        }
+        linx_emit_divrem(out, l32, r32, is_div, is_signed, true);
         return linx_binop_w(ctx, dst, out);
     }
 
-    if (is_div) {
-        if (is_signed) {
-            tcg_gen_div_i64(out, l, r);
-        } else {
-            tcg_gen_divu_i64(out, l, r);
-        }
-    } else {
-        if (is_signed) {
-            tcg_gen_rem_i64(out, l, r);
-        } else {
-            tcg_gen_remu_i64(out, l, r);
-        }
-    }
-
+    linx_emit_divrem(out, l, r, is_div, is_signed, false);
     return trans_alu_binop(ctx, dst, out);
 }
 
@@ -7719,11 +7746,11 @@ static bool linx_hl_divrem_pair_common(DisasContext *ctx, uint32_t dst0,
 
     tcg_gen_brcondi_i64(TCG_COND_EQ, rhs, 0, divzero);
     if (!is_unsigned) {
-        const int64_t minval = word ? INT64_C(0xffffffff80000000)
-                                    : INT64_MIN;
+        TCGv_i64 minval = tcg_constant_i64(
+            word ? INT64_C(0xffffffff80000000) : INT64_MIN);
         TCGLabel *not_overflow = gen_new_label();
 
-        tcg_gen_brcondi_i64(TCG_COND_NE, lhs, minval, not_overflow);
+        tcg_gen_brcond_i64(TCG_COND_NE, lhs, minval, not_overflow);
         tcg_gen_brcondi_i64(TCG_COND_EQ, rhs, -1, overflow);
         gen_set_label(not_overflow);
     }

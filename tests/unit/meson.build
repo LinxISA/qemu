@@ -64,6 +64,7 @@ tests = {
   'test-fifo': [],
   'test-linx-tile-transaction': [linx_tile_test_target],
   'test-linx-tile-cube-numeric': [linx_tile_cube_test_target],
+  'test-linx-tile-state-dump': ['../../hw/linx/tile-state-dump.c'],
 }
 
 if have_system or have_tools

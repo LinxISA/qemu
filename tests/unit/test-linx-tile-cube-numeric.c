@@ -222,12 +222,91 @@ static void test_upper_physical_slots(void)
     g_free(env);
 }
 
-static void test_mx_crosses_k32(void)
+static void test_non_square_loop_bound_mapping(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    uint8_t left[2 * 64], right[64 * 4];
+
+    memset(left, 1, sizeof(left));
+    memset(right, 1, sizeof(right));
+    env->lb[0] = 4;
+    env->lb[1] = 2;
+    env->lb[2] = 64;
+    env->tile_dtype = 27;
+    set_tile(env, 0, 27, 2, 64, left, sizeof(left));
+    set_tile(env, 1, 27, 64, 4, right, sizeof(right));
+
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    g_assert_cmpuint(dims.m, ==, 2);
+    g_assert_cmpuint(dims.n, ==, 4);
+    g_assert_cmpuint(dims.k, ==, 64);
+    g_assert_true(linx_tile_cube_primary_legal_058(env, 0, 1, false, false));
+
+    env->lb[0] = 2;
+    env->lb[1] = 4;
+    g_assert_false(linx_tile_cube_primary_legal_058(env, 0, 1, false, false));
+    g_free(env);
+}
+
+static void test_group_profile_dimension_contract(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+
+    env->lb[0] = 32;
+    env->lb[1] = 8;
+    env->lb[2] = 32;
+    g_assert_true(linx_tile_cube_group_dimensions_legal_058(env));
+
+    env->lb[0] = 8;
+    env->lb[1] = 32;
+    g_assert_false(linx_tile_cube_group_dimensions_legal_058(env));
+    g_free(env);
+}
+
+static void test_mx_k64(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    uint8_t left[64], right[64], scale_a[] = {0x7f, 0x80};
+    uint8_t scale_b[] = {0x7f, 0x81};
+    float bias = 2, result, prior = 3;
+
+    memset(left, 0x38, sizeof(left));
+    memset(right, 0x3c, sizeof(right));
+    env->lb[0] = 1;
+    env->lb[1] = 1;
+    env->lb[2] = 64;
+    env->tile_dtype = 1;
+    set_tile(env, 0, 7, 1, 64, left, sizeof(left));
+    set_tile(env, 1, 8, 64, 1, right, sizeof(right));
+    set_tile(env, 2, 13, 1, 2, scale_a, sizeof(scale_a));
+    set_tile(env, 3, 13, 2, 1, scale_b, sizeof(scale_b));
+    set_tile(env, 4, 1, 1, 1, &bias, sizeof(bias));
+    g_assert_true(
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 4, 0, true, true, false));
+    memcpy(&result, env->tile_acc, sizeof(result));
+    g_assert_cmpfloat(result, ==, 290);
+
+    memcpy(env->tile_acc, &prior, sizeof(prior));
+    env->tile_acc_bytes = 16;
+    env->tile_acc_dtype = LINX_TILE_ACC_FP32;
+    env->tile_acc_valid = 1;
+    env->tile_acc_rows = env->tile_acc_cols = 1;
+    g_assert_true(
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true, false, true));
+    memcpy(&result, env->tile_acc, sizeof(result));
+    g_assert_cmpfloat(result, ==, 291);
+    g_free(env);
+}
+
+static void test_reject_non_power_of_two_k(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
     uint8_t left[33], right[33], scale_a[] = {0x7f, 0x80};
     uint8_t scale_b[] = {0x7f, 0x81};
-    float bias = 2, result, prior = 3;
+    uint32_t before_acc[LINX_TILE_MAX_WORDS];
+    uint32_t before_acc_bytes;
+    uint16_t before_acc_cols, before_acc_rows;
+    uint8_t before_acc_dtype, before_acc_valid;
 
     memset(left, 0x38, sizeof(left));
     memset(right, 0x3c, sizeof(right));
@@ -239,21 +318,56 @@ static void test_mx_crosses_k32(void)
     set_tile(env, 1, 8, 33, 1, right, sizeof(right));
     set_tile(env, 2, 13, 1, 2, scale_a, sizeof(scale_a));
     set_tile(env, 3, 13, 2, 1, scale_b, sizeof(scale_b));
-    set_tile(env, 4, 1, 1, 1, &bias, sizeof(bias));
-    g_assert_true(
-        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 4, 0, true, true, false));
-    memcpy(&result, env->tile_acc, sizeof(result));
-    g_assert_cmpfloat(result, ==, 42);
-
-    memcpy(env->tile_acc, &prior, sizeof(prior));
+    memset(env->tile_acc, 0xa5, sizeof(env->tile_acc));
     env->tile_acc_bytes = 16;
+    env->tile_acc_dtype = LINX_TILE_ACC_FP64;
+    env->tile_acc_valid = 1;
+    env->tile_acc_cols = 7;
+    env->tile_acc_rows = 9;
+    memcpy(before_acc, env->tile_acc, sizeof(before_acc));
+    before_acc_bytes = env->tile_acc_bytes;
+    before_acc_dtype = env->tile_acc_dtype;
+    before_acc_valid = env->tile_acc_valid;
+    before_acc_cols = env->tile_acc_cols;
+    before_acc_rows = env->tile_acc_rows;
+
+    g_assert_false(
+        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true, false, false));
+    g_assert_cmpmem(env->tile_acc, sizeof(before_acc), before_acc,
+                    sizeof(before_acc));
+    g_assert_cmpuint(env->tile_acc_bytes, ==, before_acc_bytes);
+    g_assert_cmpuint(env->tile_acc_dtype, ==, before_acc_dtype);
+    g_assert_cmpuint(env->tile_acc_valid, ==, before_acc_valid);
+    g_assert_cmpuint(env->tile_acc_cols, ==, before_acc_cols);
+    g_assert_cmpuint(env->tile_acc_rows, ==, before_acc_rows);
+    g_free(env);
+}
+
+static void test_reject_undersized_accumulator(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    CPULinxState *before;
+    float left[] = {1, 2, 3, 4};
+    float right[] = {5, 6, 7, 8};
+    float prior = 3;
+
+    env->lb[0] = env->lb[1] = env->lb[2] = 2;
+    env->tile_dtype = 1;
+    set_tile(env, 0, 1, 2, 2, left, sizeof(left));
+    set_tile(env, 1, 1, 2, 2, right, sizeof(right));
+    memset(env->tile_acc, 0xa5, sizeof(env->tile_acc));
+    memcpy(env->tile_acc, &prior, sizeof(prior));
+    env->tile_acc_bytes = sizeof(prior);
     env->tile_acc_dtype = LINX_TILE_ACC_FP32;
     env->tile_acc_valid = 1;
-    env->tile_acc_rows = env->tile_acc_cols = 1;
-    g_assert_true(
-        linx_tile_cube_compute_058(env, 0, 1, 2, 3, 0, 0, true, false, true));
-    memcpy(&result, env->tile_acc, sizeof(result));
-    g_assert_cmpfloat(result, ==, 43);
+    env->tile_acc_rows = 2;
+    env->tile_acc_cols = 2;
+    before = g_memdup2(env, sizeof(*env));
+
+    g_assert_false(
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false, false, true));
+    g_assert_cmpmem(env, sizeof(*env), before, sizeof(*before));
+    g_free(before);
     g_free(env);
 }
 
@@ -529,7 +643,15 @@ int main(int argc, char **argv)
     g_test_add_func("/linx/cube/ordinary-bias-acc", test_ordinary_bias_and_acc);
     g_test_add_func("/linx/cube/upper-physical-slots",
                     test_upper_physical_slots);
-    g_test_add_func("/linx/cube/mx-k32", test_mx_crosses_k32);
+    g_test_add_func("/linx/cube/non-square-loop-bounds",
+                    test_non_square_loop_bound_mapping);
+    g_test_add_func("/linx/cube/group-profile-dimensions",
+                    test_group_profile_dimension_contract);
+    g_test_add_func("/linx/cube/mx-k64", test_mx_k64);
+    g_test_add_func("/linx/cube/reject-non-power-of-two-k",
+                    test_reject_non_power_of_two_k);
+    g_test_add_func("/linx/cube/reject-undersized-accumulator",
+                    test_reject_undersized_accumulator);
     g_test_add_func("/linx/cube/acccvt-rounding",
                     test_acccvt_all_rounding_modes);
     g_test_add_func("/linx/cube/acccvt-host-fenv",
