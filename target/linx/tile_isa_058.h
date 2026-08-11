@@ -51,6 +51,17 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
     return d;
 }
 
+static inline bool linx_tile_shared_allocation_compatible(
+    uint8_t allocation_mask, uint8_t requested_mask,
+    uint32_t allocation_capacity, uint32_t requested_capacity,
+    uint32_t allocation_dtype, uint32_t requested_dtype)
+{
+    return allocation_mask == 0u ||
+           ((requested_mask & ~allocation_mask) == 0u &&
+            allocation_capacity == requested_capacity &&
+            allocation_dtype == requested_dtype);
+}
+
 /* Source-only operations recover the internal allocation size from the Tile. */
 static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
                                                   unsigned *size_code)

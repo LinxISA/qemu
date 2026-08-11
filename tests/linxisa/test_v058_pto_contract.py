@@ -50,6 +50,17 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("allocated_bytes", self.cpu)
         self.assertIn("LinxSharedTileVersion shared_tile[LINX_SHARED_TILE_COUNT]", self.cpu)
 
+    def test_shared_allocation_allows_subsets_but_rejects_expansion(
+        self,
+    ) -> None:
+        self.assertIn(
+            "linx_tile_shared_allocation_compatible", self.tile_isa
+        )
+        self.assertIn(
+            "(requested_mask & ~allocation_mask) == 0u", self.tile_isa
+        )
+        self.assertNotIn("shared->allocation_mask == pe_mask", self.helper)
+
     def test_engine_names_are_final_058_names(self) -> None:
         self.assertNotIn("LINX_BLOCK_TMA", self.helper)
         self.assertNotRegex(self.helper, r"\bLINX_TMA_[A-Z0-9_]+\b")
