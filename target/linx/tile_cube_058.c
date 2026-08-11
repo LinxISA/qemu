@@ -198,15 +198,10 @@ static bool linx_tile_cube_compute_common_058(
     unsigned groups = (kdim + 31u) / 32u;
     float_status fp_status = {0};
     uint8_t *next;
-    const bool powers_of_two =
-        m != 0u && (m & (m - 1u)) == 0u &&
-        n != 0u && (n & (n - 1u)) == 0u &&
-        kdim != 0u && (kdim & (kdim - 1u)) == 0u &&
-        env->lb[2] != 0u && (env->lb[2] & (env->lb[2] - 1u)) == 0u;
 
     if (src_a >= LINX_TILE_SLOT_COUNT ||
         (shared_b == NULL && src_b >= LINX_TILE_SLOT_COUNT) ||
-        !powers_of_two || env->lb[0] != n || env->lb[1] != m ||
+        env->lb[0] != n || env->lb[1] != m ||
         env->lb[2] < n ||
         m > UINT16_MAX || n > UINT16_MAX ||
         acc_dtype == UINT8_MAX || allocated == 0u ||
