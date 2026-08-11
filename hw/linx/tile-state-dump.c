@@ -39,6 +39,43 @@ static bool linx_tile_dtype_is_packed(uint8_t dtype)
     return dtype == 12 || dtype == 14 || dtype == 20 || dtype == 28;
 }
 
+static unsigned linx_tile_dtype_elem_bytes(uint8_t dtype)
+{
+    switch (dtype) {
+    case 0:
+    case 16:
+    case 24:
+        return 8;
+    case 1:
+    case 2:
+    case 3:
+    case 17:
+    case 25:
+        return 4;
+    case 4:
+    case 5:
+    case 18:
+    case 26:
+        return 2;
+    case 6:
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 11:
+    case 12:
+    case 13:
+    case 14:
+    case 19:
+    case 20:
+    case 27:
+    case 28:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static bool linx_tile_state_invalid(GError **errp, const char *message)
 {
     g_set_error_literal(errp, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
@@ -51,6 +88,8 @@ static bool linx_tile_state_validate_record(const LinxTileStateRecord *record,
                                             GError **errp)
 {
     bool packed = linx_tile_dtype_is_packed(record->dtype);
+    unsigned expected_elem_bytes =
+        linx_tile_dtype_elem_bytes(record->dtype);
     uint64_t row_bytes;
     uint64_t storage_bytes;
 
@@ -58,9 +97,15 @@ static bool linx_tile_state_validate_record(const LinxTileStateRecord *record,
         return linx_tile_state_invalid(errp,
                                        "tile-state layout must be zero");
     }
-    if (record->elem_bytes == 0 || (packed && record->elem_bytes != 1)) {
+    if (expected_elem_bytes == 0 ||
+        record->elem_bytes != expected_elem_bytes ||
+        (packed && record->elem_bytes != 1)) {
         return linx_tile_state_invalid(errp,
                                        "tile-state element size is invalid");
+    }
+    if (record->rows == 0 || record->cols == 0) {
+        return linx_tile_state_invalid(errp,
+                                       "tile-state storage shape is empty");
     }
     if (record->valid_rows > record->rows ||
         record->valid_cols > record->cols) {

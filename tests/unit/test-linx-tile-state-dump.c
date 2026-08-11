@@ -80,6 +80,7 @@ static LinxTileStateRecord valid_record(void)
     static const uint8_t payload[] = { 0 };
 
     return (LinxTileStateRecord) {
+        .dtype = 27,
         .elem_bytes = 1,
         .capacity = 1,
         .bytes = 1,
@@ -119,11 +120,29 @@ static void test_reject_invalid_records(void)
     assert_rejected(1, &record);
 
     record = valid_record();
+    record.dtype = 4;
+    assert_rejected(1, &record);
+
+    record = valid_record();
+    record.dtype = 15;
+    assert_rejected(1, &record);
+
+    record = valid_record();
     record.valid_rows = 2;
     assert_rejected(1, &record);
 
     record = valid_record();
     record.rows = 2;
+    assert_rejected(1, &record);
+
+    record = valid_record();
+    record.rows = 0;
+    record.valid_rows = 0;
+    assert_rejected(1, &record);
+
+    record = valid_record();
+    record.cols = 0;
+    record.valid_cols = 0;
     assert_rejected(1, &record);
 
     record = valid_record();
