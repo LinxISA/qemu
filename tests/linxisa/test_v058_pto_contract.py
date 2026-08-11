@@ -21,6 +21,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
         cls.tile_isa = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
+        cls.tile_cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.iommu_runner = (ROOT / "scripts/linxisa/run-iommu-tile-basic.sh").read_text(
@@ -95,6 +96,37 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("collective_peer", self.cpu)
         self.assertIn("collective_pe_mask", self.cpu)
         self.assertIn("linx_tile_gmov_source_matches_destination", self.helper)
+
+    def test_shared_tmov_uses_architectural_functions_and_atomic_lanes(self) -> None:
+        for name, function in (
+            ("LINX_TLSU_TMOV_L2S_INSERT", 9),
+            ("LINX_TLSU_TMOV_L2S_PUBLISH", 10),
+            ("LINX_TLSU_TMOV_S2L_BROADCAST", 11),
+            ("LINX_TLSU_TMOV_S2L_EXTRACT", 12),
+        ):
+            self.assertIn(f"{name} = {function}", self.helper)
+        self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
+        self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
+        self.assertIn("shared->initialized_mask |= pe_bit", self.helper)
+        self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
+        self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
+        self.assertNotIn("LinxSharedTileLane descriptor", self.helper)
+
+    def test_shared_cube_commits_explicit_destination_atomically(self) -> None:
+        self.assertIn("env->tile_iot_count != 2u", self.helper)
+        self.assertIn(
+            "linx_tile_get_bound_output(env, 1u, &destination)", self.helper
+        )
+        self.assertIn("core4->collective_dst[pe] = destination", self.helper)
+        self.assertIn("linx_tile_accumulator_convert(", self.helper)
+        self.assertIn("planned_count[i], 1u)", self.helper)
+        self.assertIn("planned_live[LINX_CORE4_PE_COUNT]", self.helper)
+        self.assertIn(
+            "dims.m == 32u && dims.n == 32u && dims.k == 32u", self.tile_cube
+        )
+        self.assertIn("env->tile_reg_bytes[src_a] != 32u * 32u * 4u", self.helper)
+        self.assertIn("(shared->initialized_mask & pe_bit) != 0u", self.helper)
+        self.assertIn("shared->initialized_mask == 0xfu", self.helper)
 
     def test_trace_classification_uses_the_four_engine_contract(self) -> None:
         self.assertIn("meta->op_id == LINX_OP_BSTART_TLSU", self.helper)

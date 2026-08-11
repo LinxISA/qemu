@@ -2517,6 +2517,30 @@ static bool trans_bstart_tmov(DisasContext *ctx, arg_bstart_tmov *a)
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 2);
 }
 
+static bool trans_bstart_tmov_l2s_insert(
+    DisasContext *ctx, arg_bstart_tmov_l2s_insert *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 9);
+}
+
+static bool trans_bstart_tmov_l2s_publish(
+    DisasContext *ctx, arg_bstart_tmov_l2s_publish *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 10);
+}
+
+static bool trans_bstart_tmov_s2l_broadcast(
+    DisasContext *ctx, arg_bstart_tmov_s2l_broadcast *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 11);
+}
+
+static bool trans_bstart_tmov_s2l_extract(
+    DisasContext *ctx, arg_bstart_tmov_s2l_extract *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 12);
+}
+
 static bool trans_bstart_tprefetch(DisasContext *ctx, arg_bstart_tprefetch *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 3);
