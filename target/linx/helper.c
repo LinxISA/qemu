@@ -16223,6 +16223,17 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
                                           with_scale, accumulate)) {
         return false;
     }
+    if (accumulate) {
+        LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+        uint8_t acc_dtype = with_scale ? LINX_TILE_ACC_FP32 :
+            linx_tile_numeric_acc_dtype(env->tile_dtype);
+        unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
+        uint64_t required_acc_bytes = (uint64_t)dims.m * dims.n * acc_bytes;
+
+        if (env->tile_acc_bytes < required_acc_bytes) {
+            return false;
+        }
+    }
     if (with_scale &&
         !linx_tile_cube_scale_legal(env, sources[2], sources[3])) {
         return false;

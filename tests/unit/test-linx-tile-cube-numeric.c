@@ -328,6 +328,34 @@ static void test_reject_non_power_of_two_k(void)
     g_free(env);
 }
 
+static void test_reject_undersized_accumulator(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    CPULinxState *before;
+    float left[] = {1, 2, 3, 4};
+    float right[] = {5, 6, 7, 8};
+    float prior = 3;
+
+    env->lb[0] = env->lb[1] = env->lb[2] = 2;
+    env->tile_dtype = 1;
+    set_tile(env, 0, 1, 2, 2, left, sizeof(left));
+    set_tile(env, 1, 1, 2, 2, right, sizeof(right));
+    memset(env->tile_acc, 0xa5, sizeof(env->tile_acc));
+    memcpy(env->tile_acc, &prior, sizeof(prior));
+    env->tile_acc_bytes = sizeof(prior);
+    env->tile_acc_dtype = LINX_TILE_ACC_FP32;
+    env->tile_acc_valid = 1;
+    env->tile_acc_rows = 2;
+    env->tile_acc_cols = 2;
+    before = g_memdup2(env, sizeof(*env));
+
+    g_assert_false(
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 0, false, false, true));
+    g_assert_cmpmem(env, sizeof(*env), before, sizeof(*before));
+    g_free(before);
+    g_free(env);
+}
+
 static void test_acccvt_all_rounding_modes(void)
 {
     static const struct {
@@ -605,6 +633,8 @@ int main(int argc, char **argv)
     g_test_add_func("/linx/cube/mx-k64", test_mx_k64);
     g_test_add_func("/linx/cube/reject-non-power-of-two-k",
                     test_reject_non_power_of_two_k);
+    g_test_add_func("/linx/cube/reject-undersized-accumulator",
+                    test_reject_undersized_accumulator);
     g_test_add_func("/linx/cube/acccvt-rounding",
                     test_acccvt_all_rounding_modes);
     g_test_add_func("/linx/cube/acccvt-host-fenv",

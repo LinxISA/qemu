@@ -286,10 +286,10 @@ static bool linx_tile_cube_compute_common_058(
           !cube_operand_legal(env, bias, mx ? 1u : env->tile_dtype,
                               env->tile_reg_valid_rows[bias],
                               env->tile_reg_valid_cols[bias]))) ||
+        (accumulate && env->tile_acc_bytes < required) ||
         (shared_b != NULL && accumulate &&
          (!env->tile_acc_valid || env->tile_acc_dtype != acc_dtype ||
-          env->tile_acc_rows != m || env->tile_acc_cols != n ||
-          env->tile_acc_bytes < required))) {
+          env->tile_acc_rows != m || env->tile_acc_cols != n))) {
         return false;
     }
 
