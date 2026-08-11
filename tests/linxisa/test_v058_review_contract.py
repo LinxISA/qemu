@@ -19,6 +19,9 @@ class V058ReviewContractTests(unittest.TestCase):
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
+        cls.tile_state_dump = (
+            ROOT / "hw/linx/tile-state-dump.c"
+        ).read_text(encoding="utf-8")
 
     def test_core4_collectives_keep_mttcg_disabled(self) -> None:
         self.assertIn(".mttcg_supported = false", self.cpu)
@@ -102,8 +105,9 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertRegex(load, r"stride_elements \+ ti\) \* elem_bytes")
         self.assertRegex(store, r"stride_elements \+ gi\) \* elem_bytes")
         self.assertIn("(uint64_t)row * stride_elements + col", self.helper)
-        self.assertIn("row < env->tile_reg_valid_rows[tile]", self.virt)
-        self.assertIn("col < env->tile_reg_valid_cols[tile]", self.virt)
+        self.assertIn("linx_tile_state_encode(out", self.virt)
+        self.assertIn("row < record->valid_rows", self.tile_state_dump)
+        self.assertIn("col < record->valid_cols", self.tile_state_dump)
 
 
 if __name__ == "__main__":
