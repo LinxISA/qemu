@@ -85,13 +85,25 @@ class TileExecutionCoverage(unittest.TestCase):
         for name in re.findall(r"(LINX_CUBE_[A-Z0-9_]+)\s*=", enum_body):
             self.assertRegex(HELPER, rf"case {name}:")
 
-    def test_implicit_acc_and_catalog_datr_guards_are_executable_contracts(self):
+    def test_explicit_acc_and_catalog_datr_guards_are_executable_contracts(self):
         collector = re.search(
             r"linx_tile_collect_cube_sources\(.*?\n\}", HELPER, re.S
         ).group(0)
-        self.assertIn("ACC is implicit", collector)
-        self.assertIn("if (d.has_size)", collector)
+        self.assertIn("else if (d.last != 0u || d.has_size", collector)
         self.assertIn("return false", collector)
+        self.assertRegex(
+            HELPER,
+            r"case LINX_CUBE_TMATMUL_ACC:\s*"
+            r"case LINX_CUBE_TGEMV_ACC:\s*required = 3u;",
+        )
+        self.assertRegex(
+            HELPER,
+            r"(?s)case LINX_CUBE_TMATMUL_ACC:\s*"
+            r"case LINX_CUBE_TGEMV_ACC:.*?"
+            r"linx_tile_collect_cube_sources\(env, 3u, sources,.*?"
+            r"linx_tile_cube_stage_accumulator\(env, sources\[0\],.*?"
+            r"linx_tile_cube_compute\(env, sources\[1\], sources\[2\]",
+        )
         self.assertIn("linx_tile_datr_applicable", HELPER)
         self.assertIn("Generated from pto-spec", HEADER)
 

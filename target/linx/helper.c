@@ -7634,6 +7634,18 @@ void HELPER(linx_service_request)(CPULinxState *env, uint32_t request_type,
     /* v0.2: ACRC traps are always reported as block-body traps. */
     src_cstate |= LINX_ECSTATE_BI_BIT;
 
+    /*
+     * The SuperNPUBench direct-boot runtime has no service ACR for its final
+     * syscall. It uses ACR0/SYS with x1=94 as its completion ABI, matching
+     * gfrun. Other ACR0 service requests remain architecturally illegal.
+     */
+    if (src_acr == 0 && request_type == LINX_SCT_SYS &&
+        env->gpr[LINX_REG_X1] == 94) {
+        qemu_system_shutdown_request_with_code(
+            SHUTDOWN_CAUSE_GUEST_SHUTDOWN, 0);
+        cpu_loop_exit_noexc(cs);
+    }
+
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: SERVICE_REQUEST src_acr=%u req=%u bpc=0x%" PRIx64 " tpc=0x%" PRIx64
                   " pc_next=0x%" PRIx64 "\n",
@@ -9166,6 +9178,7 @@ enum {
     LINX_TLSU_TMOV_S2L_BROADCAST = 11,
     LINX_TLSU_TMOV_S2L_EXTRACT = 12,
     LINX_TLSU_GMOV = 13,
+    LINX_TLSU_TSTORE_SPART = 14,
 };
 
 enum {
@@ -9175,6 +9188,7 @@ enum {
     LINX_CUBE_TMATMUL_MX = 4,
     LINX_CUBE_TMATMUL_MX_BIAS = 5,
     LINX_CUBE_TMATMUL_MX_ACC = 6,
+    LINX_CUBE_ACCCVT = 8,
     LINX_CUBE_TGEMV = 16,
     LINX_CUBE_TGEMV_BIAS = 17,
     LINX_CUBE_TGEMV_ACC = 18,
@@ -9205,6 +9219,51 @@ static bool linx_tile_reserve_output(const uint16_t live[LINX_TILE_HAND_COUNT],
     for (unsigned depth = 0; depth < LINX_TILE_HAND_DEPTH; depth++) {
         if ((live[hand] & LINX_TILE_HAND_BIT(depth)) == 0) {
             *tile_out = hand * LINX_TILE_HAND_DEPTH + depth;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool linx_tile_select_output_slot(
+    const CPULinxState *env, const uint16_t occupied[LINX_TILE_HAND_COUNT],
+    const LinxTileIOTDesc *desc, unsigned binding_index, unsigned *tile_out)
+{
+    unsigned hand;
+
+    if (linx_tile_reserve_output(occupied, desc, tile_out)) {
+        return true;
+    }
+    if (!linx_tile_output_hand(desc, &hand)) {
+        return false;
+    }
+
+    /* A full hand retires its oldest unprotected producer on the next push. */
+    for (unsigned rank = env->tile_hand_count[hand]; rank > 0; rank--) {
+        const unsigned tile = env->tile_hand_order[hand][rank - 1u];
+        bool protected = env->tile_pin_owner[tile] != 0u ||
+                         (env->tile_acc_carrier_valid &&
+                          env->tile_acc_carrier == tile) ||
+                         (env->tile_acc_sources_valid &&
+                          (env->tile_acc_src0 == tile ||
+                           env->tile_acc_src1 == tile));
+
+        for (unsigned binding = 0; binding <= binding_index; binding++) {
+            for (unsigned source = 0; source < 2; source++) {
+                if ((env->tile_iot_src_valid[binding] & (1u << source)) != 0u &&
+                    env->tile_iot_src_phys[binding][source] == tile) {
+                    protected = true;
+                }
+            }
+        }
+        for (unsigned binding = 0; binding < binding_index; binding++) {
+            if (env->tile_iot_output_valid[binding] &&
+                env->tile_iot_output_phys[binding] == tile) {
+                protected = true;
+            }
+        }
+        if (!protected) {
+            *tile_out = tile;
             return true;
         }
     }
@@ -9558,6 +9617,58 @@ static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
                                elems / cols);
 }
 
+/* PTO TTRANS swaps the source valid rectangle. LB2 is the destination
+ * physical column count; physical rows derive exactly from capacity. */
+static bool linx_tile_set_transpose_shape(CPULinxState *env,
+                                          unsigned destination,
+                                          unsigned source, uint32_t bytes,
+                                          unsigned elem_bytes, bool publish)
+{
+    const uint32_t destination_cols = env->lb[2] & 0xffffu;
+    uint32_t valid_cols;
+    uint32_t valid_rows;
+    uint32_t cols;
+    uint32_t rows;
+
+    if (source >= LINX_TILE_SLOT_COUNT || destination >= LINX_TILE_SLOT_COUNT) {
+        return false;
+    }
+    if (!linx_tile_transpose_descriptor(
+            env->tile_reg_valid_cols[source],
+            env->tile_reg_valid_rows[source], env->tile_reg_cols[source],
+            env->tile_reg_rows[source], bytes, elem_bytes, destination_cols,
+            &valid_cols, &valid_rows, &cols, &rows)) {
+        return false;
+    }
+    return !publish || linx_tile_set_shape(
+        env, destination, valid_cols, valid_rows, cols, rows);
+}
+
+static bool linx_tile_set_tcvt_shape(CPULinxState *env,
+                                     unsigned destination,
+                                     unsigned source, uint32_t bytes,
+                                     unsigned elem_bytes, bool publish)
+{
+    uint32_t valid_cols;
+    uint32_t valid_rows;
+    uint32_t cols;
+    uint32_t rows;
+
+    if (source >= LINX_TILE_SLOT_COUNT || destination >= LINX_TILE_SLOT_COUNT) {
+        return false;
+    }
+    if (!linx_tile_tcvt_descriptor(
+            env->tile_reg_valid_cols[source],
+            env->tile_reg_valid_rows[source], env->tile_reg_cols[source],
+            env->tile_reg_rows[source], bytes, elem_bytes,
+            env->lb[0] & 0xffffu, env->lb[1] & 0xffffu,
+            env->lb[2] & 0xffffu, &valid_cols, &valid_rows, &cols, &rows)) {
+        return false;
+    }
+    return !publish || linx_tile_set_shape(
+        env, destination, valid_cols, valid_rows, cols, rows);
+}
+
 static bool linx_tile_block_shape_valid(const CPULinxState *env,
                                         uint32_t bytes,
                                         unsigned elem_bytes)
@@ -9596,24 +9707,24 @@ static inline uint32_t linx_tile_pad_value(uint32_t pad_mode, uint32_t dtype,
     const uint32_t dt = dtype & 0x1fu;
 
     switch (mode) {
-    case 1u: /* Zero */
+    case 0u: /* Zero */
         value = 0u;
         break;
-    case 2u: /* Max */
+    case 1u: /* Max */
         if (elem_bytes == 2u) {
             value = (dt == 4u) ? 0x7bffu : 0xffffu;
         } else {
             value = (dt == 1u) ? 0x7f7fffffu : 0x7fffffffu;
         }
         break;
-    case 3u: /* Min */
+    case 2u: /* Min */
         if (elem_bytes == 2u) {
             value = (dt == 4u) ? 0xfbffu : 0x8000u;
         } else {
             value = (dt == 1u) ? 0xff7fffffu : 0x80000000u;
         }
         break;
-    case 0u: /* Null / unspecified */
+    case 3u: /* Null / unspecified */
     default:
         /* Deterministic pseudo-random fill in bring-up mode. */
         value = (seed * 1664525u) + 1013904223u;
@@ -9637,18 +9748,19 @@ static inline uint64_t linx_tile_pad_value64(uint32_t pad_mode,
         return linx_tile_pad_value(pad_mode, dtype, elem_bytes, seed);
     }
     switch (pad_mode & 0x3u) {
-    case 1u:
+    case 0u:
         return 0;
-    case 2u:
+    case 1u:
         if (dt == 0u) {
             return UINT64_C(0x7fefffffffffffff);
         }
         return dt == 16u ? INT64_MAX : UINT64_MAX;
-    case 3u:
+    case 2u:
         if (dt == 0u) {
             return UINT64_C(0xffefffffffffffff);
         }
         return dt == 16u ? (uint64_t)INT64_MIN : 0;
+    case 3u:
     default:
         return (UINT64_C(6364136223846793005) * seed) +
                UINT64_C(1442695040888963407);
@@ -10590,17 +10702,11 @@ static void linx_template_fret_ra_impl(CPULinxState *env, uint64_t cur_pc,
     linx_frame_restore_commit(env, cur_pc, regs, addrs, values,
                               restore_count);
 
-    const bool ret_fast_hit = linx_bstart_cache_fast_hit(env, retRa);
-    if (frame_stats) {
-        if (ret_fast_hit) {
-            linx_frame_stat_ret_fast_hits++;
-        } else {
-            linx_frame_stat_ret_checks++;
-        }
-    }
-    if (!ret_fast_hit) {
-        HELPER(linx_check_bstart_target)(env, retRa);
-    }
+    /*
+     * PTO v0.58 ReturnFromFrame(..., TRUE) writes the architectural return
+     * address directly to TPC.  A BSTART.CALL return label may therefore name
+     * a header command such as B.HINT rather than a BSTART instruction.
+     */
     linx_template_clear(env);
     env->pc = retRa;
     linx_template_commit_or_chain(env, cs, env->pc, chain);
@@ -11470,6 +11576,21 @@ static inline int32_t linx_tile_sign_extend(uint32_t value,
     return (int32_t)value;
 }
 
+static inline int64_t linx_tile_sign_extend64(uint64_t value,
+                                              unsigned elem_bytes)
+{
+    if (elem_bytes == 1u) {
+        return (int8_t)value;
+    }
+    if (elem_bytes == 2u) {
+        return (int16_t)value;
+    }
+    if (elem_bytes == 4u) {
+        return (int32_t)value;
+    }
+    return (int64_t)value;
+}
+
 static inline float linx_tile_value_as_f32(CPULinxState *env, uint32_t value,
                                            uint32_t dtype,
                                            unsigned elem_bytes)
@@ -11999,14 +12120,18 @@ static bool linx_tile_operation_tcmp(CPULinxState *env, unsigned dst_tile,
     const uint32_t dtype = env->tile_reg_dtype[src0_tile] & 0x1fu;
     const unsigned elem_bytes = env->tile_reg_elem_bytes[src0_tile];
     const uint32_t mode = (env->tile_attr_raw >> 22) & 0x7u;
-    const uint32_t mask_words_per_row = (cols + 31u) / 32u;
-    const uint64_t mask_bytes =
-        (uint64_t)rows * mask_words_per_row * sizeof(uint32_t);
+    const uint64_t result_bytes = (uint64_t)rows * physical_cols * elem_bytes;
 
     if ((env->tile_dtype & 0x1fu) != dtype ||
         env->tile_reg_dtype[src1_tile] != env->tile_reg_dtype[src0_tile] ||
         env->tile_reg_elem_bytes[src1_tile] != elem_bytes || mode > 5u ||
-        mask_bytes > bytes ||
+        result_bytes > bytes ||
+        env->tile_reg_valid_rows[src0_tile] != rows ||
+        env->tile_reg_valid_cols[src0_tile] != cols ||
+        env->tile_reg_cols[src0_tile] != physical_cols ||
+        env->tile_reg_valid_rows[src1_tile] != rows ||
+        env->tile_reg_valid_cols[src1_tile] != cols ||
+        env->tile_reg_cols[src1_tile] != physical_cols ||
         (uint64_t)rows * physical_cols * elem_bytes >
             env->tile_reg_bytes[src0_tile] ||
         (uint64_t)rows * physical_cols * elem_bytes >
@@ -12017,7 +12142,6 @@ static bool linx_tile_operation_tcmp(CPULinxState *env, unsigned dst_tile,
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t c = 0; c < cols; c++) {
             const uint32_t src_lane = r * physical_cols + c;
-            const uint32_t mask_word = r * mask_words_per_row + c / 32u;
             uint64_t lhs = 0;
             uint64_t rhs = 0;
             bool lane_result = false;
@@ -12030,21 +12154,18 @@ static bool linx_tile_operation_tcmp(CPULinxState *env, unsigned dst_tile,
                                      &lane_result)) {
                 return false;
             }
-            if (lane_result) {
-                uint32_t packed = ldl_le_p(
-                    (uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u);
-                packed |= 1u << (c & 31u);
-                stl_le_p((uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u,
-                         packed);
+            if (!linx_tile_set_elem64(env, dst_tile, src_lane, elem_bytes,
+                                      lane_result ? 1u : 0u)) {
+                return false;
             }
         }
     }
 
     env->tile_reg_bytes[dst_tile] = bytes;
-    linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
-    linx_tile_set_dtype(env, dst_tile, 25u); /* packed predicate is U32 */
-    if (!linx_tile_set_shape(env, dst_tile, mask_words_per_row, rows,
-                             mask_words_per_row, rows)) {
+    linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+    linx_tile_set_dtype(env, dst_tile, dtype);
+    if (!linx_tile_set_shape(env, dst_tile, cols, rows, physical_cols,
+                             bytes / (physical_cols * elem_bytes))) {
         return false;
     }
     return true;
@@ -12058,12 +12179,13 @@ static bool linx_tile_operation_tcmps(CPULinxState *env, unsigned dst_tile,
     const uint32_t dtype = env->tile_reg_dtype[src_tile] & 0x1fu;
     const unsigned elem_bytes = env->tile_reg_elem_bytes[src_tile];
     const uint32_t mode = (env->tile_attr_raw >> 22) & 0x7u;
-    const uint32_t mask_words_per_row = (cols + 31u) / 32u;
-    const uint64_t mask_bytes =
-        (uint64_t)rows * mask_words_per_row * sizeof(uint32_t);
+    const uint64_t result_bytes = (uint64_t)rows * physical_cols * elem_bytes;
 
     if ((env->tile_dtype & 0x1fu) != dtype || mode > 5u ||
-        mask_bytes > bytes ||
+        result_bytes > bytes ||
+        env->tile_reg_valid_rows[src_tile] != rows ||
+        env->tile_reg_valid_cols[src_tile] != cols ||
+        env->tile_reg_cols[src_tile] != physical_cols ||
         (uint64_t)rows * physical_cols * elem_bytes >
             env->tile_reg_bytes[src_tile]) {
         return false;
@@ -12072,7 +12194,6 @@ static bool linx_tile_operation_tcmps(CPULinxState *env, unsigned dst_tile,
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t c = 0; c < cols; c++) {
             const uint32_t src_lane = r * physical_cols + c;
-            const uint32_t mask_word = r * mask_words_per_row + c / 32u;
             uint64_t lhs = 0;
             bool lane_result = false;
 
@@ -12082,21 +12203,18 @@ static bool linx_tile_operation_tcmps(CPULinxState *env, unsigned dst_tile,
                                      &lane_result)) {
                 return false;
             }
-            if (lane_result) {
-                uint32_t packed = ldl_le_p(
-                    (uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u);
-                packed |= 1u << (c & 31u);
-                stl_le_p((uint8_t *)env->tile_reg[dst_tile] + mask_word * 4u,
-                         packed);
+            if (!linx_tile_set_elem64(env, dst_tile, src_lane, elem_bytes,
+                                      lane_result ? 1u : 0u)) {
+                return false;
             }
         }
     }
 
     env->tile_reg_bytes[dst_tile] = bytes;
-    linx_tile_set_elem_bytes(env, dst_tile, sizeof(uint32_t));
-    linx_tile_set_dtype(env, dst_tile, 25u); /* packed predicate is U32 */
-    return linx_tile_set_shape(env, dst_tile, mask_words_per_row, rows,
-                               mask_words_per_row, rows);
+    linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
+    linx_tile_set_dtype(env, dst_tile, dtype);
+    return linx_tile_set_shape(env, dst_tile, cols, rows, physical_cols,
+                               bytes / (physical_cols * elem_bytes));
 }
 
 static bool linx_tile_operation_select(CPULinxState *env, unsigned dst_tile,
@@ -12106,39 +12224,41 @@ static bool linx_tile_operation_select(CPULinxState *env, unsigned dst_tile,
                                   uint32_t cols, uint32_t physical_cols)
 {
     const unsigned elem_bytes = linx_tile_dtype_elem_bytes(env->tile_dtype);
-    const uint32_t mask_words_per_row = (cols + 31u) / 32u;
+    const unsigned mask_elem_bytes = env->tile_reg_elem_bytes[mask_tile];
     const uint32_t mask_physical_cols = env->tile_reg_cols[mask_tile];
 
-    if ((env->tile_reg_dtype[mask_tile] & 0x1fu) != 25u ||
-        env->tile_reg_elem_bytes[mask_tile] != sizeof(uint32_t) ||
-        env->tile_reg_valid_cols[mask_tile] < mask_words_per_row ||
-        env->tile_reg_valid_rows[mask_tile] < rows ||
-        mask_physical_cols < mask_words_per_row ||
-        env->tile_reg_rows[mask_tile] < rows ||
-        (uint64_t)rows * mask_physical_cols * sizeof(uint32_t) >
+    if (mask_elem_bytes == 0u ||
+        env->tile_reg_valid_cols[mask_tile] != cols ||
+        env->tile_reg_valid_rows[mask_tile] != rows ||
+        mask_physical_cols != physical_cols ||
+        (uint64_t)rows * mask_physical_cols * mask_elem_bytes >
             env->tile_reg_bytes[mask_tile] ||
         env->tile_reg_elem_bytes[src0_tile] != elem_bytes ||
         (env->tile_reg_dtype[src0_tile] & 0x1fu) !=
             (env->tile_dtype & 0x1fu) ||
+        env->tile_reg_valid_cols[src0_tile] != cols ||
+        env->tile_reg_valid_rows[src0_tile] != rows ||
+        env->tile_reg_cols[src0_tile] != physical_cols ||
         (!scalar_false &&
          (env->tile_reg_elem_bytes[src1_tile] != elem_bytes ||
-          env->tile_reg_dtype[src1_tile] != env->tile_reg_dtype[src0_tile]))) {
+          env->tile_reg_dtype[src1_tile] != env->tile_reg_dtype[src0_tile] ||
+          env->tile_reg_valid_cols[src1_tile] != cols ||
+          env->tile_reg_valid_rows[src1_tile] != rows ||
+          env->tile_reg_cols[src1_tile] != physical_cols))) {
         return false;
     }
 
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t c = 0; c < cols; c++) {
             const uint32_t lane = r * physical_cols + c;
-            const uint32_t mask_lane =
-                r * mask_physical_cols + c / 32u;
-            uint32_t mask_word = 0;
+            uint64_t mask_value = 0;
             uint64_t value = scalar;
 
-            if (!linx_tile_get_elem(env, mask_tile, mask_lane,
-                                    sizeof(uint32_t), &mask_word)) {
+            if (!linx_tile_get_elem64(env, mask_tile, lane, mask_elem_bytes,
+                                      &mask_value)) {
                 return false;
             }
-            if ((mask_word & (1u << (c & 31u))) != 0u) {
+            if (mask_value != 0u) {
                 if (!linx_tile_get_elem64(env, src0_tile, lane, elem_bytes,
                                           &value)) {
                     return false;
@@ -12239,10 +12359,13 @@ static bool linx_tile_operation_product(CPULinxState *env, unsigned dst_tile,
     const uint32_t dtype = env->tile_dtype & 0x1fu;
     const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
     const uint32_t output_count = row_reduce ? rows : cols;
+    const uint32_t dst_stride = row_reduce && rows != 0u
+                                    ? bytes / (rows * elem_bytes) : 1u;
 
     if ((env->tile_reg_dtype[src_tile] & 0x1fu) != dtype ||
         env->tile_reg_elem_bytes[src_tile] != elem_bytes ||
-        output_count == 0u || bytes < output_count * elem_bytes) {
+        output_count == 0u || bytes < output_count * elem_bytes ||
+        dst_stride == 0u) {
         return false;
     }
 
@@ -12262,7 +12385,8 @@ static bool linx_tile_operation_product(CPULinxState *env, unsigned dst_tile,
             product = linx_tile_operation_binary_word(env, 0x002u, dtype,
                                                  product, value);
         }
-        if (!linx_tile_set_elem(env, dst_tile, output, elem_bytes, product)) {
+        const uint32_t dst_lane = row_reduce ? output * dst_stride : output;
+        if (!linx_tile_set_elem(env, dst_tile, dst_lane, elem_bytes, product)) {
             return false;
         }
     }
@@ -12271,8 +12395,7 @@ static bool linx_tile_operation_product(CPULinxState *env, unsigned dst_tile,
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
     linx_tile_set_dtype(env, dst_tile, dtype);
     if (row_reduce) {
-        return linx_tile_set_shape(env, dst_tile, 1u, rows, 1u,
-                                   bytes / elem_bytes);
+        return linx_tile_set_shape(env, dst_tile, 1u, rows, dst_stride, rows);
     }
     if (bytes % (cols * elem_bytes) != 0u) {
         return false;
@@ -12354,7 +12477,7 @@ static bool linx_tile_operation_expand(CPULinxState *env, unsigned dst_tile,
 {
     const uint32_t dtype = env->tile_dtype & 0x1fu;
     const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
-    const unsigned vector_tile = pure_expand ? src0_tile : src1_tile;
+    const unsigned vector_tile = src1_tile;
     const uint32_t vector_cols = env->tile_reg_cols[vector_tile];
 
     if ((env->tile_reg_dtype[vector_tile] & 0x1fu) != dtype ||
@@ -12370,9 +12493,11 @@ static bool linx_tile_operation_expand(CPULinxState *env, unsigned dst_tile,
           vector_cols < cols))) {
         return false;
     }
-    if (!pure_expand &&
-        ((env->tile_reg_dtype[src0_tile] & 0x1fu) != dtype ||
-         env->tile_reg_elem_bytes[src0_tile] != elem_bytes)) {
+    if ((env->tile_reg_dtype[src0_tile] & 0x1fu) != dtype ||
+        env->tile_reg_elem_bytes[src0_tile] != elem_bytes ||
+        env->tile_reg_valid_rows[src0_tile] != rows ||
+        env->tile_reg_valid_cols[src0_tile] != cols ||
+        env->tile_reg_cols[src0_tile] != physical_cols) {
         return false;
     }
 
@@ -12433,22 +12558,22 @@ static bool linx_tile_operation_fillpad_value(uint32_t dtype, unsigned elem_byte
 {
     const uint32_t dt = dtype & 0x1fu;
 
-    if (pad_mode == 0u || pad_mode == 1u) {
+    if (pad_mode == 0u || pad_mode == 3u) {
         *value_out = 0u;
         return true;
     }
-    if (pad_mode != 2u && pad_mode != 3u) {
+    if (pad_mode != 1u && pad_mode != 2u) {
         return false;
     }
 
     if (dt == 1u) { /* FP32 uses positive/negative infinity. */
-        *value_out = pad_mode == 2u ? 0x7f800000u : 0xff800000u;
+        *value_out = pad_mode == 1u ? 0x7f800000u : 0xff800000u;
     } else if (dt == 2u) { /* FP16 */
-        *value_out = pad_mode == 2u ? 0x7c00u : 0xfc00u;
+        *value_out = pad_mode == 1u ? 0x7c00u : 0xfc00u;
     } else if (dt == 6u) { /* BF16 */
-        *value_out = pad_mode == 2u ? 0x7f80u : 0xff80u;
+        *value_out = pad_mode == 1u ? 0x7f80u : 0xff80u;
     } else if (linx_tile_dtype_is_signed(dtype)) {
-        *value_out = pad_mode == 2u
+        *value_out = pad_mode == 1u
                          ? (elem_bytes == 1u ? 0x7fu
                             : elem_bytes == 2u ? 0x7fffu
                                                : 0x7fffffffu)
@@ -12456,7 +12581,7 @@ static bool linx_tile_operation_fillpad_value(uint32_t dtype, unsigned elem_byte
                             : elem_bytes == 2u ? 0x8000u
                                                : 0x80000000u);
     } else {
-        *value_out = pad_mode == 2u
+        *value_out = pad_mode == 1u
                          ? (elem_bytes == 1u ? 0xffu
                             : elem_bytes == 2u ? 0xffffu
                                                : 0xffffffffu)
@@ -12819,6 +12944,9 @@ static inline uint32_t linx_tile_operation_unary_word(CPULinxState *env,
 
     switch (op) {
     case 0x00bu:
+        if ((dtype & 0x1fu) == 4u) {
+            return (value & 0x8000u) != 0u ? 0u : value;
+        }
         return linx_tile_dtype_is_signed(dtype) &&
                        linx_tile_sign_extend(value, elem_bytes) < 0
                    ? 0u
@@ -12827,6 +12955,9 @@ static inline uint32_t linx_tile_operation_unary_word(CPULinxState *env,
     case 0x01cu:
         return value;
     case 0x02du:
+        if ((dtype & 0x1fu) == 4u) {
+            return value & 0x7fffu;
+        }
         if (linx_tile_dtype_is_signed(dtype)) {
             const int64_t signed_value =
                 linx_tile_sign_extend(value, elem_bytes);
@@ -13166,6 +13297,24 @@ static uint32_t linx_tile_operation_impl_selector(uint32_t selector)
     }
 }
 
+static bool linx_tile_value_reduction_output_shape(
+    CPULinxState *env, unsigned tile, unsigned source, uint32_t bytes,
+    unsigned elem_bytes, uint32_t impl, bool publish)
+{
+    uint32_t valid_cols;
+    uint32_t valid_rows;
+    uint32_t output_cols;
+    uint32_t output_rows;
+
+    return source < LINX_TILE_SLOT_COUNT &&
+           linx_tile_value_reduction_descriptor(
+               impl, env->tile_reg_valid_cols[source],
+               env->tile_reg_valid_rows[source], bytes, elem_bytes,
+               &valid_cols, &valid_rows, &output_cols, &output_rows) &&
+           (!publish || linx_tile_set_shape(
+                env, tile, valid_cols, valid_rows, output_cols, output_rows));
+}
+
 static bool linx_tile_operation_impl_selector_executable(uint32_t op)
 {
     switch (op) {
@@ -13198,8 +13347,6 @@ static bool linx_tile_operation_impl_selector_executable(uint32_t op)
     case 0x01bu: /* TSCATTER */
     case 0x01cu: /* TRESHAPE */
     case 0x01du: /* TTRANS */
-    case 0x01eu: /* TCOLEXPAND */
-    case 0x01fu: /* TROWEXPAND */
     case 0x020u: /* TADDS */
     case 0x021u: /* TSUBS */
     case 0x022u: /* TMULS */
@@ -13220,6 +13367,8 @@ static bool linx_tile_operation_impl_selector_executable(uint32_t op)
     case 0x032u: /* TREMS */
     case 0x033u: /* TCMPS */
     case 0x034u: /* TSELS */
+    case 0x01eu: /* TCOLEXPAND */
+    case 0x01fu: /* TROWEXPAND */
     case 0x035u: /* TROWPROD */
     case 0x036u: /* TROWARGMAX */
     case 0x037u: /* TROWARGMIN */
@@ -13437,7 +13586,7 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
         supported = integers;
         break;
     case 0x00bu: /* TRELU */
-        supported = fp64 | fp32 | s64 | s32 | s16 | s8;
+        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | s8;
         break;
     case 0x00du: /* TCVT */
     case 0x01au: /* TGATHER */
@@ -13474,7 +13623,7 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
         supported = integers;
         break;
     case 0x02du: /* TABS */
-        supported = fp64 | fp32 | s64 | s32 | s16 | s8;
+        supported = fp64 | fp32 | fp16 | s64 | s32 | s16 | s8;
         break;
     case 0x02fu: /* TNEG */
         supported = fp64 | fp32 | fp16 | bf16 | s64 | s32 | s16;
@@ -13576,8 +13725,6 @@ static int linx_tile_operation_impl_source_arity(uint32_t op)
     case 0x018u: /* TRECIP */
     case 0x01du: /* TTRANS */
     case 0x01cu: /* TRESHAPE */
-    case 0x01eu: /* TCOLEXPAND */
-    case 0x01fu: /* TROWEXPAND */
     case 0x020u: /* TADDS */
     case 0x021u: /* TSUBS */
     case 0x022u: /* TMULS */
@@ -13617,6 +13764,8 @@ static int linx_tile_operation_impl_source_arity(uint32_t op)
     case 0x084u: /* TDEQUANT */
         return 3;
     case 0x034u: /* TSELS */
+    case 0x01eu: /* TCOLEXPAND */
+    case 0x01fu: /* TROWEXPAND */
     case 0x105u: /* THISTOGRAM */
     case 0x107u: /* TMRGSORT */
         return 2;
@@ -13815,6 +13964,11 @@ static bool linx_tile_operation64_core(CPULinxState *env, unsigned dst_tile,
         const bool maximum = op == 0x012u || op == 0x015u;
         const uint32_t outer = row_reduce ? rows : cols;
         const uint32_t inner = row_reduce ? cols : rows;
+        const uint32_t dst_stride = row_reduce && rows != 0u
+                                        ? bytes / (rows * 8u) : cols;
+        if (dst_stride == 0u) {
+            return false;
+        }
         for (uint32_t o = 0; o < outer; o++) {
             uint64_t result = dtype == 0u && sum
                                   ? linx_tile_f64_as_qword(0.0) : 0u;
@@ -13832,7 +13986,7 @@ static bool linx_tile_operation64_core(CPULinxState *env, unsigned dst_tile,
                     env, sum ? 0x000u : (maximum ? 0x004u : 0x005u),
                     dtype, result, value);
             }
-            const uint32_t dst_lane = row_reduce ? o * physical_cols : o;
+            const uint32_t dst_lane = row_reduce ? o * dst_stride : o;
             if (!linx_tile_set_elem64(env, dst_tile, dst_lane, 8u, result))
                 return false;
         }
@@ -13881,9 +14035,10 @@ static inline uint32_t linx_tile_effective_dtype(const CPULinxState *env)
 {
     const uint32_t allowed = linx_tile_datr_allowed(env->blocktype,
                                                     env->tile_func);
+    const uint32_t attr_dtype = env->tile_attr_dtype & 0x1fu;
     if ((env->tile_attr_dtype & 0x100u) != 0u &&
-        (allowed & LINX_DATR_DATA_TYPE) != 0u) {
-        return env->tile_attr_dtype & 0x1fu;
+        (allowed & LINX_DATR_DATA_TYPE) != 0u && attr_dtype != 31u) {
+        return attr_dtype;
     }
     return env->tile_dtype & 0x1fu;
 }
@@ -13938,6 +14093,52 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
     uint32_t rows = 0;
     uint32_t cols = 0;
     uint32_t physical_cols = 0;
+    uint32_t tcvt_rows = 0;
+    uint32_t tcvt_cols = 0;
+    uint32_t tcvt_physical_cols = 0;
+    uint32_t tcvt_physical_rows = 0;
+    const bool value_reduction =
+        impl_op != UINT32_MAX &&
+        linx_tile_value_reduction_axis(impl_op, NULL);
+    const bool reduction_source_shape_valid =
+        value_reduction && has_src0 && src0_tile < LINX_TILE_SLOT_COUNT &&
+        env->tile_reg_valid_cols[src0_tile] != 0u &&
+        env->tile_reg_valid_rows[src0_tile] != 0u &&
+        env->tile_reg_cols[src0_tile] >= env->tile_reg_valid_cols[src0_tile] &&
+        env->tile_reg_rows[src0_tile] >= env->tile_reg_valid_rows[src0_tile];
+    const uint32_t shape_elems = value_reduction && reduction_source_shape_valid
+                                     ? env->tile_reg_bytes[src0_tile] /
+                                           MAX(1u, src0_elem_bytes)
+                                     : (uint32_t)(bytes64 /
+                                           MAX(1u, elem_bytes));
+    const bool tcvt_shape_valid =
+        impl_op == 0x00du && has_src0 && src0_tile < LINX_TILE_SLOT_COUNT &&
+        linx_tile_tcvt_descriptor(
+            env->tile_reg_valid_cols[src0_tile],
+            env->tile_reg_valid_rows[src0_tile],
+            env->tile_reg_cols[src0_tile], env->tile_reg_rows[src0_tile],
+            (uint32_t)bytes64, elem_bytes, env->lb[0] & 0xffffu,
+            env->lb[1] & 0xffffu, env->lb[2] & 0xffffu,
+            &tcvt_cols, &tcvt_rows, &tcvt_physical_cols,
+            &tcvt_physical_rows);
+    const bool operation_shape_valid = value_reduction
+        ? reduction_source_shape_valid
+        : impl_op == 0x00du
+        ? tcvt_shape_valid
+            ? (rows = tcvt_rows, cols = tcvt_cols,
+               physical_cols = tcvt_physical_cols, true)
+            : false
+        : impl_op == 0x01du && has_src0 && src0_tile < LINX_TILE_SLOT_COUNT
+        ? (rows = env->tile_reg_valid_rows[src0_tile],
+           cols = env->tile_reg_valid_cols[src0_tile],
+           physical_cols = env->tile_reg_cols[src0_tile], true)
+        : linx_tile_operation_shape(env, elem_bytes, shape_elems,
+                                    &rows, &cols, &physical_cols);
+    if (value_reduction && reduction_source_shape_valid) {
+        rows = env->tile_reg_valid_rows[src0_tile];
+        cols = env->tile_reg_valid_cols[src0_tile];
+        physical_cols = env->tile_reg_cols[src0_tile];
+    }
 
     if (!linx_tile_operation_selector_accepted(canonical_op) ||
         !linx_tile_operation_selector_executable(canonical_op) ||
@@ -13952,8 +14153,11 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
         (elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u &&
          elem_bytes != 8u) ||
         (bytes64 % elem_bytes) != 0u ||
-        !linx_tile_operation_shape(env, elem_bytes, (uint32_t)(bytes64 / elem_bytes),
-                              &rows, &cols, &physical_cols)) {
+        !operation_shape_valid ||
+        (value_reduction &&
+         !linx_tile_value_reduction_output_shape(
+             env, dst_tile, src0_tile, (uint32_t)bytes64, elem_bytes,
+             impl_op, false))) {
         return false;
     }
 
@@ -13961,8 +14165,7 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
 
     const uint32_t active = rows * cols;
     const uint32_t dtype = operation_dtype;
-    const uint32_t physical_rows =
-        (uint32_t)(bytes64 / elem_bytes) / physical_cols;
+    const uint32_t physical_rows = shape_elems / physical_cols;
     const bool partial_op = op >= 0x0c3u && op <= 0x0c6u;
     if (!linx_tile_operation_pre_publish_legal(
             env, op, sources, source_count, operation_dtype, elem_bytes, cols,
@@ -13982,7 +14185,15 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
         env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
         linx_tile_set_elem_bytes(env, dst_tile, 8u);
         linx_tile_set_dtype(env, dst_tile, operation_dtype);
-        if (!linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64, 8u)) {
+        if (op == 0x00du ?
+                !linx_tile_set_tcvt_shape(
+                    env, dst_tile, src0_tile, (uint32_t)bytes64, 8u, true) :
+            value_reduction ?
+                !linx_tile_value_reduction_output_shape(
+                    env, dst_tile, src0_tile, (uint32_t)bytes64, 8u,
+                    op, true) :
+                !linx_tile_set_block_shape(
+                    env, dst_tile, (uint32_t)bytes64, 8u)) {
             return false;
         }
         return true;
@@ -14475,6 +14686,13 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
         if (!has_src0) {
             return false;
         }
+        const uint32_t dst_stride = rows != 0u
+                                        ? (uint32_t)bytes64 /
+                                              (rows * elem_bytes)
+                                        : 0u;
+        if (dst_stride == 0u) {
+            return false;
+        }
         for (uint32_t r = 0; r < rows; r++) {
             uint32_t result = 0;
             if (!linx_tile_get_elem(env, src0_tile, r * physical_cols,
@@ -14500,7 +14718,7 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
                         result, value);
                 }
             }
-            linx_tile_set_elem(env, dst_tile, r * physical_cols, elem_bytes,
+            linx_tile_set_elem(env, dst_tile, r * dst_stride, elem_bytes,
                                result);
         }
     } else if (op == 0x015u || op == 0x016u || op == 0x017u) {
@@ -14535,13 +14753,29 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
         if (!has_src0) {
             return false;
         }
-        for (uint32_t r = 0; r < rows; r++) {
-            for (uint32_t c = 0; c < cols; c++) {
+        const uint32_t src_rows = env->tile_reg_valid_rows[src0_tile];
+        const uint32_t src_cols = env->tile_reg_valid_cols[src0_tile];
+        const uint32_t src_stride = env->tile_reg_cols[src0_tile];
+        const uint32_t dst_stride = env->tile_reg_cols[dst_tile];
+        if (env->tile_reg_dtype[src0_tile] != operation_dtype ||
+            env->tile_reg_dtype[dst_tile] != operation_dtype ||
+            env->tile_reg_elem_bytes[src0_tile] != elem_bytes ||
+            env->tile_reg_elem_bytes[dst_tile] != elem_bytes ||
+            src_rows == 0u || src_cols == 0u || src_stride < src_cols ||
+            dst_stride < src_rows ||
+            env->tile_reg_valid_rows[dst_tile] != src_cols ||
+            env->tile_reg_valid_cols[dst_tile] != src_rows) {
+            return false;
+        }
+        for (uint32_t r = 0; r < src_rows; r++) {
+            for (uint32_t c = 0; c < src_cols; c++) {
                 uint32_t value = 0;
-                linx_tile_get_elem(env, src0_tile, r * physical_cols + c,
-                                   elem_bytes, &value);
-                linx_tile_set_elem(env, dst_tile, c * physical_cols + r,
-                                   elem_bytes, value);
+                if (!linx_tile_get_elem(env, src0_tile, r * src_stride + c,
+                                        elem_bytes, &value) ||
+                    !linx_tile_set_elem(env, dst_tile, c * dst_stride + r,
+                                        elem_bytes, value)) {
+                    return false;
+                }
             }
         }
     } else if (op == 0x10cu) { /* TFMA */
@@ -14622,9 +14856,18 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
 
     /* Every produced NaN is canonical; the attribute only controls inputs. */
     {
-        for (uint32_t r = 0; r < rows; r++) {
-            for (uint32_t c = 0; c < cols; c++) {
-                const uint32_t lane = r * physical_cols + c;
+        const uint32_t result_rows = op == 0x01du
+                                         ? env->tile_reg_valid_rows[dst_tile]
+                                         : rows;
+        const uint32_t result_cols = op == 0x01du
+                                         ? env->tile_reg_valid_cols[dst_tile]
+                                         : cols;
+        const uint32_t result_stride = op == 0x01du
+                                           ? env->tile_reg_cols[dst_tile]
+                                           : physical_cols;
+        for (uint32_t r = 0; r < result_rows; r++) {
+            for (uint32_t c = 0; c < result_cols; c++) {
+                const uint32_t lane = r * result_stride + c;
                 uint64_t value = 0;
                 if (!linx_tile_get_elem64(env, dst_tile, lane, elem_bytes,
                                           &value) ||
@@ -14643,8 +14886,19 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
     env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
     linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
     linx_tile_set_dtype(env, dst_tile, operation_dtype);
-    if (!linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64,
-                                   elem_bytes)) {
+    if (op == 0x00du ?
+            !linx_tile_set_tcvt_shape(
+                env, dst_tile, src0_tile, (uint32_t)bytes64,
+                elem_bytes, true) :
+        op == 0x01du ?
+            !linx_tile_set_transpose_shape(
+                env, dst_tile, src0_tile, (uint32_t)bytes64, elem_bytes, true) :
+        value_reduction ?
+            !linx_tile_value_reduction_output_shape(
+                env, dst_tile, src0_tile, (uint32_t)bytes64, elem_bytes,
+                op, true) :
+            !linx_tile_set_block_shape(env, dst_tile, (uint32_t)bytes64,
+                                       elem_bytes)) {
         return false;
     }
     return true;
@@ -14843,7 +15097,6 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    const uint32_t tile_elems = (uint32_t)(bytes / elem_bytes);
     const LinxTileFormatDesc fmt =
         linx_tile_effective_transfer_format(env, LINX_TLSU_TR_TO_GM);
     if (!fmt.valid) {
@@ -14855,8 +15108,11 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile,
     uint32_t tr_inner = 0;
     uint32_t gm_outer = 0;
     uint32_t gm_inner = 0;
-    if (!linx_tile_resolve_transfer_shape(env, tile_elems, &tr_outer, &tr_inner,
-                                          &gm_outer, &gm_inner)) {
+    if (!linx_tile_tstore_descriptor_shape(
+            env->tile_reg_valid_cols[src_tile],
+            env->tile_reg_valid_rows[src_tile], env->tile_reg_cols[src_tile],
+            env->tile_reg_rows[src_tile], (uint32_t)bytes, elem_bytes,
+            &tr_outer, &tr_inner, &gm_outer, &gm_inner)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -15046,7 +15302,9 @@ static void linx_tile_mgather_common(CPULinxState *env, unsigned dst_tile,
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     return;
                 }
-                value = linx_tile_mem_read(env, base + off, elem_bytes);
+                /* PTO v0.58 indices address elements, not bytes. */
+                value = linx_tile_mem_read(env, base + off * elem_bytes,
+                                           elem_bytes);
             } else {
                 const uint32_t seed = lane ^ (uint32_t)base ^ (env->tile_attr_raw << 8);
                 value = linx_tile_pad_value(env->tile_attr_pad, env->tile_dtype,
@@ -15080,28 +15338,37 @@ static void linx_tile_mscatter_common(CPULinxState *env, unsigned data_tile,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    const unsigned off_bytes =
-        linx_tile_offset_elem_bytes(env, offset_tile, lane_count);
-    if (off_bytes == 0 || env->tile_reg_bytes[data_tile] < lane_count * elem_bytes) {
+    const unsigned off_bytes = env->tile_reg_elem_bytes[offset_tile];
+    if (off_bytes == 0u || off_bytes > 8u ||
+        env->tile_reg_bytes[offset_tile] < lane_count * off_bytes ||
+        env->tile_reg_bytes[data_tile] < lane_count * elem_bytes) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
+    const bool signed_index =
+        linx_tile_dtype_is_signed(env->tile_reg_dtype[offset_tile]);
     const uint64_t base = env->gpr[addr_reg];
     for (uint32_t r = 0; r < row; r++) {
         for (uint32_t c = 0; c < col; c++) {
             const uint32_t lane = r * col + c;
             uint32_t value = 0;
             uint64_t off = 0;
+            uint64_t raw_off = 0;
             if (r >= valid_row || c >= valid_col ||
                 (use_mask && !linx_tile_mask_bit(env, mask_tile, lane))) {
                 continue;
             }
-            if (!linx_tile_get_elem64(env, offset_tile, lane, off_bytes, &off) ||
+            if (!linx_tile_get_elem64(env, offset_tile, lane, off_bytes,
+                                      &raw_off) ||
                 !linx_tile_get_elem(env, data_tile, lane, elem_bytes, &value)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 return;
             }
-            linx_tile_mem_write(env, base + off, elem_bytes, value);
+            off = signed_index
+                      ? (uint64_t)linx_tile_sign_extend64(raw_off, off_bytes)
+                      : raw_off;
+            linx_tile_mem_write(env, base + off * elem_bytes, elem_bytes,
+                                value);
         }
     }
 }
@@ -15144,7 +15411,9 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     return;
                 }
-                old_value = linx_tile_mem_cmpxchg(env, base + off, elem_bytes,
+                old_value = linx_tile_mem_cmpxchg(env,
+                                                  base + off * elem_bytes,
+                                                  elem_bytes,
                                                   expected, desired);
             } else {
                 const uint32_t seed = lane ^ (uint32_t)base ^ (env->tile_attr_raw << 8);
@@ -15224,6 +15493,85 @@ static bool linx_tile_cube_compute(CPULinxState *env, unsigned src_a,
     return linx_tile_cube_compute_058(env, src_a, src_b, row_scale,
                                       column_scale, bias, size_code, mx,
                                       with_bias, accumulate);
+}
+
+static bool linx_tile_acccvt(CPULinxState *env, unsigned dst_tile,
+                             unsigned size_code)
+{
+    return linx_tile_accumulator_convert(env, dst_tile, size_code);
+}
+
+static void linx_tile_cube_clear_staging(CPULinxState *env)
+{
+    memset(env->tile_acc, 0, sizeof(env->tile_acc));
+    env->tile_acc_bytes = 0u;
+    env->tile_acc_dtype = 0u;
+    env->tile_acc_valid = 0u;
+    env->tile_acc_cols = 0u;
+    env->tile_acc_rows = 0u;
+}
+
+static bool linx_tile_cube_accumulator_legal(const CPULinxState *env,
+                                              unsigned source, bool mx)
+{
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    const uint32_t dtype = mx ? 1u : (env->tile_dtype & 31u);
+
+    return (dtype == 1u || dtype == 17u) &&
+           linx_tile_cube_operand_legal(env, source, dtype,
+                                        dims.m, dims.n);
+}
+
+static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
+                                              unsigned source,
+                                              unsigned size_code,
+                                              bool mx)
+{
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    const uint32_t dtype = mx ? 1u : (env->tile_dtype & 31u);
+    const unsigned source_bytes = linx_tile_dtype_elem_bytes(dtype);
+    const unsigned acc_bytes = dtype == 1u ? 4u : 8u;
+    const uint8_t acc_dtype = dtype == 1u ? LINX_TILE_ACC_FP32
+                                          : LINX_TILE_ACC_S64;
+    const uint64_t allocated = size_code < 60u
+                                   ? UINT64_C(1) << (size_code + 4u) : 0u;
+    const uint64_t required = (uint64_t)dims.m * dims.n * acc_bytes;
+    uint8_t *acc = (uint8_t *)env->tile_acc;
+
+    if (!linx_tile_cube_accumulator_legal(env, source, mx) ||
+        allocated == 0u || allocated > LINX_TILE_MAX_BYTES ||
+        required > allocated) {
+        return false;
+    }
+
+    memset(env->tile_acc, 0, sizeof(env->tile_acc));
+    for (unsigned row = 0; row < dims.m; row++) {
+        for (unsigned col = 0; col < dims.n; col++) {
+            uint64_t raw;
+            const uint32_t source_index =
+                row * env->tile_reg_cols[source] + col;
+            const uint64_t output_index = (uint64_t)row * dims.n + col;
+
+            if (!linx_tile_get_elem64(env, source, source_index,
+                                      source_bytes, &raw)) {
+                linx_tile_cube_clear_staging(env);
+                return false;
+            }
+            if (dtype == 1u) {
+                uint32_t fp32 = raw;
+                memcpy(acc + output_index * 4u, &fp32, 4u);
+            } else {
+                int64_t s64 = (int32_t)raw;
+                memcpy(acc + output_index * 8u, &s64, 8u);
+            }
+        }
+    }
+    env->tile_acc_bytes = allocated;
+    env->tile_acc_dtype = acc_dtype;
+    env->tile_acc_valid = 1u;
+    env->tile_acc_cols = dims.n;
+    env->tile_acc_rows = dims.m;
+    return true;
 }
 
 static unsigned linx_ior_desc_reg_in_authored_order(uint64_t desc,
@@ -15366,6 +15714,120 @@ static inline uint8_t linx_tile_shared_current_pe_bit(const CPULinxState *env)
            : 0u;
 }
 
+static bool linx_tile_shared_tstore_legal(CPULinxState *env)
+{
+    LinxCPU *cpu = env_archcpu(env);
+    const uint32_t func = env->tile_func & 0x1fu;
+    const uint8_t mask = linx_tile_shared_pe_mask(env);
+    const uint32_t dtype = linx_tile_effective_dtype(env);
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+
+    if (cpu->core4 == NULL || env->tile_shared_binder_count != 1u ||
+        env->tile_iot_count != 0u || env->tile_iot_valid != 1u ||
+        linx_tile_shared_tsize(env) != 0u || env->tile_ior_count > 1u ||
+        (func != LINX_TLSU_TSTORE && func != LINX_TLSU_TSTORE_SPART) ||
+        (func == LINX_TLSU_TSTORE && mask != 0xfu) || elem_bytes == 0u) {
+        return false;
+    }
+    if (mask == 0u) {
+        return true;
+    }
+    if (env->tile_ior_count == 1u) {
+        const uint64_t desc = env->tile_ior_desc[0];
+        const unsigned dst = desc & 0x1fu;
+        const unsigned src2 = (desc >> 15) & 0x1fu;
+        if (dst != 0u || src2 != 0u) {
+            return false;
+        }
+    }
+
+    LinxSharedTileVersion *shared =
+        &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+    qemu_mutex_lock(&cpu->core4->lock);
+    bool valid = shared->allocation_mask != 0u &&
+                 (shared->allocation_mask & mask) == mask &&
+                 (shared->initialized_mask & mask) == mask &&
+                 shared->per_pe_capacity != 0u &&
+                 shared->per_pe_capacity <= LINX_SHARED_TILE_MAX_BYTES &&
+                 shared->dtype == dtype && shared->valid_rows != 0u &&
+                 shared->valid_cols != 0u &&
+                 shared->cols >= shared->valid_cols &&
+                 (uint64_t)shared->rows * shared->cols * elem_bytes <=
+                     shared->per_pe_capacity;
+    for (unsigned pe = 0; valid && pe < LINX_CORE4_PE_COUNT; pe++) {
+        const uint8_t pe_bit = (uint8_t)(1u << (3u - pe));
+        if ((mask & pe_bit) == 0u) {
+            continue;
+        }
+        const LinxSharedTileLane *lane = &shared->lane[pe];
+        valid = cpu->core4->cpu[pe] != NULL &&
+                lane->bytes == shared->per_pe_capacity &&
+                lane->dtype == dtype && lane->layout == shared->layout &&
+                lane->valid_cols == shared->valid_cols &&
+                lane->valid_rows == shared->valid_rows &&
+                lane->cols == shared->cols && lane->rows == shared->rows;
+    }
+    qemu_mutex_unlock(&cpu->core4->lock);
+    return valid;
+}
+
+static bool linx_tile_shared_tstore_commit(CPULinxState *env)
+{
+    LinxCPU *cpu = env_archcpu(env);
+    const uint8_t mask = linx_tile_shared_pe_mask(env);
+    const unsigned elem_bytes =
+        linx_tile_dtype_elem_bytes(linx_tile_effective_dtype(env));
+
+    if (mask == 0u) {
+        return true;
+    }
+    if (cpu->core4 == NULL || elem_bytes == 0u) {
+        return false;
+    }
+
+    LinxSharedTileVersion snapshot;
+    qemu_mutex_lock(&cpu->core4->lock);
+    snapshot = cpu->core4->shared_tile[linx_tile_shared_id(env)];
+    qemu_mutex_unlock(&cpu->core4->lock);
+
+    unsigned base_reg = 0u;
+    unsigned stride_reg = 0u;
+    if (env->tile_ior_count == 1u) {
+        const uint64_t desc = env->tile_ior_desc[0];
+        base_reg = (desc >> 5) & 0x1fu;
+        stride_reg = (desc >> 10) & 0x1fu;
+    }
+    if (base_reg >= LINX_GPR_COUNT || stride_reg >= LINX_GPR_COUNT) {
+        return false;
+    }
+
+    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+        const uint8_t pe_bit = (uint8_t)(1u << (3u - pe));
+        if ((mask & pe_bit) == 0u) {
+            continue;
+        }
+        CPULinxState *peer = &cpu->core4->cpu[pe]->env;
+        const uint64_t base = peer->gpr[base_reg];
+        const uint64_t stride = env->tile_ior_count == 0u
+                                    ? snapshot.cols
+                                    : peer->gpr[stride_reg];
+        const LinxSharedTileLane *lane = &snapshot.lane[pe];
+        for (uint32_t row = 0; row < snapshot.valid_rows; row++) {
+            for (uint32_t col = 0; col < snapshot.valid_cols; col++) {
+                const size_t source =
+                    ((size_t)row * snapshot.cols + col) * elem_bytes;
+                const uint64_t destination =
+                    base + ((uint64_t)row * stride + col) * elem_bytes;
+                for (unsigned byte = 0; byte < elem_bytes; byte++) {
+                    cpu_stb_data(peer, (abi_ptr)(destination + byte),
+                                 lane->data[source + byte]);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static LinxTileIOTDesc linx_tile_get_iot_desc(const CPULinxState *env,
                                               unsigned index)
 {
@@ -15408,6 +15870,38 @@ static bool linx_tile_get_bound_output(const CPULinxState *env,
     return true;
 }
 
+static uint32_t linx_tile_tmov_effective_dtype(CPULinxState *env,
+                                               unsigned index)
+{
+    uint32_t dtype = linx_tile_effective_dtype(env);
+    const uint32_t func = env->tile_func & 0x1fu;
+    unsigned source;
+
+    if (dtype != 31u) {
+        return dtype;
+    }
+    if ((func == LINX_TLSU_TMOV ||
+         func == LINX_TLSU_TMOV_L2S_INSERT ||
+         func == LINX_TLSU_TMOV_L2S_PUBLISH) &&
+        linx_tile_get_bound_source(env, index, 0u, &source)) {
+        return env->tile_reg_dtype[source] & 0x1fu;
+    }
+    if (func == LINX_TLSU_TMOV_S2L_BROADCAST ||
+        func == LINX_TLSU_TMOV_S2L_EXTRACT) {
+        LinxCPU *cpu = env_archcpu(env);
+        if (cpu->core4 != NULL) {
+            LinxSharedTileVersion *shared =
+                &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+            qemu_mutex_lock(&cpu->core4->lock);
+            if (shared->allocation_mask != 0u) {
+                dtype = shared->dtype & 0x1fu;
+            }
+            qemu_mutex_unlock(&cpu->core4->lock);
+        }
+    }
+    return dtype;
+}
+
 static bool linx_tile_complete_bound_output(CPULinxState *env,
                                             uint16_t live[LINX_TILE_HAND_COUNT],
                                             uint16_t reserved[LINX_TILE_HAND_COUNT],
@@ -15435,259 +15929,63 @@ static void linx_tile_consume_bound_sources(
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
     uint8_t *carrier_valid, uint8_t *carrier)
 {
+    /*
+     * PTO v0.58 B.IOT has no source-reuse fields.  A completed reader drops
+     * its bundle binding, but the producer remains addressable through its
+     * architectural hand/rank name until the producer-age window retires it.
+     * Treating descriptor flag bits as the retired v4 reuse controls removes
+     * an older producer too early (for example TLOAD, TMATMUL -> T, then a
+     * later t#2 reference) and turns the valid reference into a trap loop.
+     */
     for (unsigned source = 0; source < 2; source++) {
         unsigned tile;
         const unsigned absent = source == 0 ? LINX_IOT_S0V : LINX_IOT_S1V;
-        const unsigned reuse = source == 0 ? LINX_IOT_S0R : LINX_IOT_S1R;
 
         if ((desc->flags & absent) != 0 ||
             !linx_tile_get_bound_source(env, index, source, &tile)) {
             continue;
         }
-        linx_tile_release_source(live, order, count_by_hand, tile,
-                                 (desc->flags & reuse) != 0,
-                                 carrier_valid, carrier);
+        linx_tile_preserve_v058_source_lifetime(
+            live, order, count_by_hand, tile);
     }
+    (void)carrier_valid;
+    (void)carrier;
 }
 
-static bool linx_tile_shared_tmov_local_schema(
-    const CPULinxState *env, unsigned *source_out, uint32_t *bytes_out,
-    uint8_t *pe_mask_out)
-{
-    unsigned source;
-    const LinxTileIOTDesc desc = env->tile_iot_count == 1u
-        ? linx_tile_decode_iot(env->tile_iot_desc[0])
-        : (LinxTileIOTDesc){ 0 };
-    const unsigned shared_size = linx_tile_shared_tsize(env);
-    const uint8_t pe_mask = linx_tile_shared_pe_mask(env);
-
-    if (env->tile_shared_binder_count != 1u ||
-        env->tile_iot_count != 1u || env->tile_ior_count != 0u ||
-        shared_size == 0u || shared_size > 7u ||
-        desc.last == 0u || desc.has_size || desc.reg != pe_mask ||
-        desc.flags != LINX_IOT_S1V ||
-        env->tile_iot_src_valid[0] != 1u ||
-        env->tile_iot_output_valid[0] != 0u ||
-        !linx_tile_get_bound_source(env, 0u, 0u, &source)) {
-        return false;
-    }
-
-    const uint32_t bytes = UINT32_C(1) << (shared_size + 6u);
-    if (source >= LINX_TILE_SLOT_COUNT ||
-        env->tile_reg_bytes[source] != bytes ||
-        env->tile_reg_elem_bytes[source] == 0u ||
-        env->tile_reg_dtype[source] != linx_tile_effective_dtype(env)) {
-        return false;
-    }
-
-    *source_out = source;
-    *bytes_out = bytes;
-    *pe_mask_out = pe_mask;
-    return true;
-}
-
-static bool linx_tile_shared_tmov_destination_schema(
-    const CPULinxState *env, unsigned *destination_out,
-    uint8_t *pe_mask_out)
-{
-    unsigned destination;
-    const LinxTileIOTDesc desc = env->tile_iot_count == 1u
-        ? linx_tile_decode_iot(env->tile_iot_desc[0])
-        : (LinxTileIOTDesc){ 0 };
-    const uint8_t pe_mask = linx_tile_shared_pe_mask(env);
-
-    if (env->tile_shared_binder_count != 1u ||
-        env->tile_iot_count != 1u || env->tile_ior_count != 0u ||
-        linx_tile_shared_tsize(env) != 0u || desc.last == 0u ||
-        !desc.has_size || desc.reg != pe_mask ||
-        desc.flags != (LINX_IOT_S0V | LINX_IOT_S1V) ||
-        env->tile_iot_src_valid[0] != 0u ||
-        env->tile_iot_output_valid[0] != 1u ||
-        !linx_tile_size_code_valid(desc.size) ||
-        !linx_tile_get_bound_output(env, 0u, &destination)) {
-        return false;
-    }
-
-    *destination_out = destination;
-    *pe_mask_out = pe_mask;
-    return true;
-}
-
-static bool linx_tile_shared_lane_matches_local(
-    const LinxSharedTileLane *lane, const CPULinxState *env, unsigned source)
-{
-    return lane->bytes == env->tile_reg_bytes[source] &&
-           lane->dtype == env->tile_reg_dtype[source] &&
-           lane->valid_cols == env->tile_reg_valid_cols[source] &&
-           lane->valid_rows == env->tile_reg_valid_rows[source] &&
-           lane->cols == env->tile_reg_cols[source] &&
-           lane->rows == env->tile_reg_rows[source];
-}
-
-static const LinxSharedTileLane *linx_tile_shared_reference_lane(
-    const LinxSharedTileVersion *shared)
-{
-    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
-        const uint8_t bit = UINT8_C(1) <<
-            (LINX_CORE4_PE_COUNT - 1u - pe);
-        if ((shared->initialized_mask & bit) != 0u) {
-            return &shared->lane[pe];
-        }
-    }
-    return NULL;
-}
-
-static bool linx_tile_shared_tmov_local_to_shared(
-    CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT],
-    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
-    uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
-    uint8_t *carrier_valid, uint8_t *carrier)
-{
-    LinxCPU *cpu = env_archcpu(env);
-    unsigned source;
-    uint32_t bytes;
-    uint8_t pe_mask;
-
-    if (cpu->core4 == NULL || env->pe_id >= LINX_CORE4_PE_COUNT ||
-        !linx_tile_shared_tmov_local_schema(
-            env, &source, &bytes, &pe_mask)) {
-        return false;
-    }
-
-    const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
-    if ((pe_mask & pe_bit) != 0u) {
-        const unsigned shared_id = linx_tile_shared_id(env);
-        LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
-        bool valid = true;
-
-        qemu_mutex_lock(&cpu->core4->lock);
-        if (shared->allocation_mask == 0u) {
-            shared->allocation_mask = pe_mask;
-            shared->per_pe_capacity = bytes;
-            shared->allocated_bytes = bytes * ctpop8(pe_mask);
-            shared->dtype = env->tile_reg_dtype[source];
-            shared->producer_bpc = env->bpc;
-        } else {
-            valid = linx_tile_shared_allocation_compatible(
-                shared->allocation_mask, pe_mask,
-                shared->per_pe_capacity, bytes,
-                shared->dtype, env->tile_reg_dtype[source]);
-            const LinxSharedTileLane *reference =
-                linx_tile_shared_reference_lane(shared);
-            valid = valid && (reference == NULL ||
-                              linx_tile_shared_lane_matches_local(
-                                  reference, env, source));
-        }
-        if (valid) {
-            LinxSharedTileLane *lane = &shared->lane[env->pe_id];
-            memcpy(lane->data, env->tile_reg[source], bytes);
-            memset(lane->data + bytes, 0,
-                   LINX_SHARED_TILE_MAX_BYTES - bytes);
-            lane->bytes = bytes;
-            lane->dtype = env->tile_reg_dtype[source];
-            lane->valid_cols = env->tile_reg_valid_cols[source];
-            lane->valid_rows = env->tile_reg_valid_rows[source];
-            lane->cols = env->tile_reg_cols[source];
-            lane->rows = env->tile_reg_rows[source];
-            shared->initialized_mask |= pe_bit;
-        }
-        qemu_mutex_unlock(&cpu->core4->lock);
-        if (!valid) {
-            return false;
-        }
-
-        const LinxTileIOTDesc desc =
-            linx_tile_decode_iot(env->tile_iot_desc[0]);
-        linx_tile_consume_bound_sources(
-            env, live, 0u, &desc, order, count_by_hand,
-            carrier_valid, carrier);
-    }
-    return true;
-}
-
-static bool linx_tile_shared_tmov_shared_to_local(
+static bool linx_tile_cube_publish_explicit_output(
     CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT],
     uint16_t reserved[LINX_TILE_HAND_COUNT],
     uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
     uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
-    uint8_t *acc_sources_valid, uint8_t acc_src0, uint8_t acc_src1)
+    uint8_t *carrier_valid, uint8_t *carrier,
+    uint8_t *acc_sources_valid, uint8_t acc_src0, uint8_t acc_src1,
+    unsigned size_code)
 {
-    LinxCPU *cpu = env_archcpu(env);
-    unsigned destination;
-    uint8_t pe_mask;
+    const unsigned output_index = env->tile_iot_count - 1u;
+    unsigned output;
 
-    if (cpu->core4 == NULL || env->pe_id >= LINX_CORE4_PE_COUNT ||
-        !linx_tile_shared_tmov_destination_schema(
-            env, &destination, &pe_mask)) {
+    if (env->tile_iot_count == 0u ||
+        !linx_tile_get_bound_output(env, output_index, &output) ||
+        !linx_tile_acccvt(env, output, size_code)) {
         return false;
     }
-
-    const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
-    if ((pe_mask & pe_bit) == 0u) {
-        const unsigned hand = destination / LINX_TILE_HAND_DEPTH;
-        const unsigned depth = destination % LINX_TILE_HAND_DEPTH;
-        reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
-        return true;
-    }
-
-    const unsigned shared_id = linx_tile_shared_id(env);
-    LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
-    g_autofree uint8_t *payload = NULL;
-    uint32_t payload_bytes = 0;
-    uint32_t payload_dtype = 0;
-    uint16_t payload_valid_cols = 0;
-    uint16_t payload_valid_rows = 0;
-    uint16_t payload_cols = 0;
-    uint16_t payload_rows = 0;
-    bool valid = true;
-
-    qemu_mutex_lock(&cpu->core4->lock);
-    const LinxSharedTileLane *reference =
-        linx_tile_shared_reference_lane(shared);
-    const LinxSharedTileLane *lane = &shared->lane[env->pe_id];
-    const uint32_t expected_bytes = UINT32_C(1) <<
-        (linx_tile_decode_iot(env->tile_iot_desc[0]).size + 4u);
-    valid = shared->allocation_mask != 0u &&
-            (pe_mask & ~shared->allocation_mask) == 0u &&
-            shared->per_pe_capacity == expected_bytes &&
-            shared->dtype == linx_tile_effective_dtype(env) &&
-            reference != NULL;
-    valid = valid && reference->bytes == expected_bytes;
-    if (valid) {
-        payload = g_malloc(expected_bytes);
-        payload_bytes = reference->bytes;
-        payload_dtype = reference->dtype;
-        payload_valid_cols = reference->valid_cols;
-        payload_valid_rows = reference->valid_rows;
-        payload_cols = reference->cols;
-        payload_rows = reference->rows;
-        if ((shared->initialized_mask & pe_bit) != 0u) {
-            memcpy(payload, lane->data, expected_bytes);
-        } else {
-            memset(payload, 0, expected_bytes);
-        }
-    }
-    qemu_mutex_unlock(&cpu->core4->lock);
-    if (!valid) {
-        return false;
-    }
-
-    memcpy(env->tile_reg[destination], payload, payload_bytes);
-    memset((uint8_t *)env->tile_reg[destination] + payload_bytes, 0,
-           LINX_TILE_MAX_BYTES - payload_bytes);
-    env->tile_reg_capacity[destination] = payload_bytes;
-    env->tile_reg_bytes[destination] = payload_bytes;
-    env->tile_reg_elem_bytes[destination] =
-        linx_tile_dtype_elem_bytes(payload_dtype);
-    env->tile_reg_dtype[destination] = payload_dtype;
-    env->tile_reg_valid_cols[destination] = payload_valid_cols;
-    env->tile_reg_valid_rows[destination] = payload_valid_rows;
-    env->tile_reg_cols[destination] = payload_cols;
-    env->tile_reg_rows[destination] = payload_rows;
     linx_tile_invalidate_acc_sources_on_output(
-        destination, acc_sources_valid, acc_src0, acc_src1);
-    return linx_tile_complete_bound_output(
-        env, live, reserved, order, count_by_hand, 0u);
+        output, acc_sources_valid, acc_src0, acc_src1);
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        const LinxTileIOTDesc desc =
+            linx_tile_decode_iot(env->tile_iot_desc[i]);
+        linx_tile_consume_bound_sources(env, live, i, &desc,
+                                        order, count_by_hand,
+                                        carrier_valid, carrier);
+    }
+    if (!linx_tile_complete_bound_output(
+            env, live, reserved, order, count_by_hand, output_index)) {
+        return false;
+    }
+    *carrier_valid = 0u;
+    *acc_sources_valid = 0u;
+    linx_tile_cube_clear_staging(env);
+    return true;
 }
 
 static bool linx_tile_collect_operation_bindings(
@@ -15935,16 +16233,20 @@ static bool linx_tile_collect_cube_sources(
         const LinxTileIOTDesc d = linx_tile_decode_iot(env->tile_iot_desc[i]);
         const bool final_desc = i + 1u == env->tile_iot_count;
 
-        if ((d.last != 0u) != final_desc || env->tile_iot_output_valid[i]) {
-            return false;
-        }
-        /* ACC is implicit: no size-bearing pseudo destination. */
-        if (d.has_size) {
+        unsigned output;
+        if (final_desc) {
+            if (d.last == 0u || !d.has_size ||
+                !linx_tile_get_bound_output(env, i, &output) ||
+                !linx_tile_size_code_valid(d.size & 0x1fu)) {
+                return false;
+            }
+            *size_code_out = d.size & 0x1fu;
+        } else if (d.last != 0u || d.has_size ||
+                   env->tile_iot_output_valid[i]) {
             return false;
         }
     }
-    return linx_tile_size_code_from_bytes(
-        env->tile_reg_bytes[sources[0]], size_code_out);
+    return true;
 }
 
 static bool linx_tile_transfer_preflight(const CPULinxState *env,
@@ -15983,6 +16285,37 @@ static bool linx_tile_transfer_preflight(const CPULinxState *env,
                                         elem_bytes);
 }
 
+static bool linx_tile_tstore_preflight(const CPULinxState *env,
+                                       unsigned source,
+                                       unsigned size_code)
+{
+    if (source >= LINX_TILE_SLOT_COUNT ||
+        !linx_tile_size_code_valid(size_code)) {
+        return false;
+    }
+    const uint64_t bytes = UINT64_C(1) << (size_code + 4u);
+    const uint32_t dtype = linx_tile_effective_dtype(env);
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+    const LinxTileFormatDesc fmt =
+        linx_tile_effective_transfer_format(env, LINX_TLSU_TR_TO_GM);
+    uint32_t tr_outer;
+    uint32_t tr_inner;
+    uint32_t gm_outer;
+    uint32_t gm_inner;
+
+    return fmt.valid && elem_bytes != 0u &&
+           env->tile_reg_bytes[source] == bytes &&
+           env->tile_reg_dtype[source] == (dtype & 0x1fu) &&
+           env->tile_reg_elem_bytes[source] == elem_bytes &&
+           linx_tile_tstore_descriptor_shape(
+               env->tile_reg_valid_cols[source],
+               env->tile_reg_valid_rows[source], env->tile_reg_cols[source],
+               env->tile_reg_rows[source], (uint32_t)bytes, elem_bytes,
+               &tr_outer, &tr_inner, &gm_outer, &gm_inner) &&
+           linx_tile_layout_shape_valid(fmt.src, tr_outer, tr_inner,
+                                        elem_bytes);
+}
+
 static bool linx_tile_preflight_tlsu(
     CPULinxState *env, uint16_t planned_live[LINX_TILE_HAND_COUNT],
     uint8_t *planned_carrier_valid, uint8_t *planned_carrier)
@@ -15991,57 +16324,161 @@ static bool linx_tile_preflight_tlsu(
     const uint32_t func = env->tile_func & 0x1fu;
     unsigned addr_reg;
 
+    /*
+     * Shared TMOV has no address operand.  An omitted B.IOR and an explicit
+     * all-zero B.IOR are equivalent in the PTO 0.58 schema.
+     */
+    const bool unused_ior = env->tile_ior_count == 0u ||
+                            (env->tile_ior_count == 1u &&
+                             env->tile_ior_desc[0] == 0u);
+
+    if ((func == LINX_TLSU_TSTORE ||
+         func == LINX_TLSU_TSTORE_SPART) &&
+        env->tile_shared_binder_count != 0u) {
+        return linx_tile_shared_tstore_legal(env);
+    }
+
     if (func == LINX_TLSU_TMOV_L2S_INSERT ||
         func == LINX_TLSU_TMOV_L2S_PUBLISH) {
+        LinxCPU *cpu = env_archcpu(env);
+        LinxTileIOTDesc desc;
         unsigned source;
-        uint32_t bytes;
-        uint8_t pe_mask;
-        if (!linx_tile_shared_tmov_local_schema(
-                env, &source, &bytes, &pe_mask)) {
+        unsigned size_class = linx_tile_shared_tsize(env);
+        const uint8_t mask = linx_tile_shared_pe_mask(env);
+        const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
+        uint32_t dtype;
+
+        if (cpu->core4 == NULL || env->tile_shared_binder_count != 1u ||
+            env->tile_iot_count != 1u || !unused_ior ||
+            env->tile_iot_output_valid[0] ||
+            env->tile_iot_src_valid[0] != 1u ||
+            !linx_tile_get_bound_source(env, 0u, 0u, &source)) {
             return false;
         }
-        (void)source;
-        (void)bytes;
-        if ((pe_mask & linx_tile_shared_current_pe_bit(env)) != 0u) {
-            const LinxTileIOTDesc desc =
-                linx_tile_decode_iot(env->tile_iot_desc[0]);
-            linx_tile_consume_bound_sources(
-                env, planned_live, 0u, &desc, NULL, NULL,
-                planned_carrier_valid, planned_carrier);
+        dtype = linx_tile_tmov_effective_dtype(env, 0u);
+        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+        if (desc.last == 0u || desc.has_size || desc.reg != mask) {
+            return false;
         }
+        if (mask == 0u || (mask & pe_bit) == 0u) {
+            return true;
+        }
+        if (size_class == 0u || size_class > 7u ||
+            env->tile_reg_bytes[source] != (UINT32_C(1) << (size_class + 6u)) ||
+            env->tile_reg_dtype[source] != dtype ||
+            env->tile_reg_elem_bytes[source] !=
+                linx_tile_dtype_elem_bytes(dtype)) {
+            return false;
+        }
+        LinxSharedTileVersion *shared =
+            &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+        qemu_mutex_lock(&cpu->core4->lock);
+        const bool compatible =
+            shared->allocation_mask == 0u ||
+            (shared->allocation_mask == mask &&
+             shared->per_pe_capacity == env->tile_reg_bytes[source] &&
+             shared->dtype == dtype &&
+             shared->layout == env->tile_reg_layout[source] &&
+             shared->valid_cols == env->tile_reg_valid_cols[source] &&
+             shared->valid_rows == env->tile_reg_valid_rows[source] &&
+             shared->cols == env->tile_reg_cols[source] &&
+             shared->rows == env->tile_reg_rows[source]);
+        qemu_mutex_unlock(&cpu->core4->lock);
+        if (!compatible) {
+            return false;
+        }
+        linx_tile_consume_bound_sources(
+            env, planned_live, 0u, &desc, NULL, NULL,
+            planned_carrier_valid, planned_carrier);
         return true;
     }
 
     if (func == LINX_TLSU_TMOV_S2L_BROADCAST ||
         func == LINX_TLSU_TMOV_S2L_EXTRACT) {
         LinxCPU *cpu = env_archcpu(env);
+        LinxTileIOTDesc desc;
         unsigned destination;
-        uint8_t pe_mask;
-        if (cpu->core4 == NULL ||
-            !linx_tile_shared_tmov_destination_schema(
-                env, &destination, &pe_mask)) {
+        const uint8_t mask = linx_tile_shared_pe_mask(env);
+        const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
+        uint32_t dtype;
+
+        if (cpu->core4 == NULL || env->tile_shared_binder_count != 1u ||
+            env->tile_iot_count != 1u || !unused_ior ||
+            env->tile_iot_src_valid[0] != 0u ||
+            !env->tile_iot_output_valid[0] ||
+            !linx_tile_get_bound_output(env, 0u, &destination)) {
             return false;
         }
-        if ((pe_mask & linx_tile_shared_current_pe_bit(env)) == 0u) {
+        dtype = linx_tile_tmov_effective_dtype(env, 0u);
+        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+        if (desc.last == 0u || !desc.has_size || desc.reg != mask ||
+            linx_tile_shared_tsize(env) != 0u) {
+            return false;
+        }
+        if (mask == 0u || (mask & pe_bit) == 0u) {
             return true;
         }
-        const LinxTileIOTDesc desc =
-            linx_tile_decode_iot(env->tile_iot_desc[0]);
-        const uint32_t bytes = UINT32_C(1) << (desc.size + 4u);
-        const LinxSharedTileVersion *shared =
+        const uint32_t bytes =
+            UINT32_C(1) << ((desc.size & 0x1fu) + 4u);
+        LinxSharedTileVersion *shared =
             &cpu->core4->shared_tile[linx_tile_shared_id(env)];
-        bool valid;
         qemu_mutex_lock(&cpu->core4->lock);
-        valid = shared->allocation_mask != 0u &&
-                (pe_mask & ~shared->allocation_mask) == 0u &&
-                shared->per_pe_capacity == bytes &&
-                shared->dtype == linx_tile_effective_dtype(env) &&
-                linx_tile_shared_reference_lane(shared) != NULL;
+        const bool compatible =
+            shared->allocation_mask != 0u &&
+            (shared->allocation_mask & mask) == mask &&
+            shared->per_pe_capacity != 0u && shared->dtype == dtype &&
+            shared->layout == ((env->tile_attr_raw >> 2) & 0x1fu) &&
+            bytes == shared->per_pe_capacity;
         qemu_mutex_unlock(&cpu->core4->lock);
-        if (!valid) {
+        return compatible;
+    }
+
+    if (func == LINX_TLSU_TMOV) {
+        LinxTileIOTDesc desc;
+        unsigned source;
+        unsigned destination;
+        uint32_t dtype;
+        const uint32_t layout = (env->tile_attr_raw >> 2) & 0x1fu;
+        if (env->tile_shared_binder_count != 0u ||
+            env->tile_iot_count != 1u || !unused_ior ||
+            env->tile_iot_src_valid[0] != 1u ||
+            !env->tile_iot_output_valid[0] ||
+            !linx_tile_get_bound_source(env, 0u, 0u, &source) ||
+            !linx_tile_get_bound_output(env, 0u, &destination)) {
+            return false;
+        }
+        dtype = linx_tile_tmov_effective_dtype(env, 0u);
+        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+        if (desc.last == 0u || !desc.has_size || desc.reg == 0u ||
+            !linx_tile_size_code_valid(desc.size & 0x1fu)) {
+            return false;
+        }
+        const uint32_t bytes = UINT32_C(1) << ((desc.size & 0x1fu) + 4u);
+        const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+        if (env->tile_reg_bytes[source] != bytes || elem_bytes == 0u ||
+            env->tile_reg_dtype[source] != dtype ||
+            env->tile_reg_elem_bytes[source] != elem_bytes ||
+            env->tile_reg_layout[source] != layout) {
+            return false;
+        }
+        const uint32_t valid_cols = env->lb[0] == 0u
+                                        ? env->tile_reg_valid_cols[source]
+                                        : env->lb[0];
+        const uint32_t valid_rows = env->lb[1] == 0u
+                                        ? env->tile_reg_valid_rows[source]
+                                        : env->lb[1];
+        const uint32_t cols = env->lb[2] == 0u
+                                  ? env->tile_reg_cols[source] : env->lb[2];
+        if (valid_cols != env->tile_reg_valid_cols[source] ||
+            valid_rows != env->tile_reg_valid_rows[source] ||
+            cols != env->tile_reg_cols[source] || cols == 0u ||
+            bytes / elem_bytes / cols != env->tile_reg_rows[source]) {
             return false;
         }
         linx_tile_publish_output(planned_live, destination);
+        linx_tile_consume_bound_sources(
+            env, planned_live, 0u, &desc, NULL, NULL,
+            planned_carrier_valid, planned_carrier);
         return true;
     }
 
@@ -16102,6 +16539,15 @@ static bool linx_tile_preflight_tlsu(
             source_count < required_sources) {
             return false;
         }
+        if ((env->tile_func & 0x1f) == LINX_TLSU_MSCATTER ||
+            (env->tile_func & 0x1f) == LINX_TLSU_MSCATTER_MASK) {
+            if (env->tile_reg_valid_rows[sources[0]] !=
+                    env->tile_reg_valid_rows[sources[1]] ||
+                env->tile_reg_valid_cols[sources[0]] !=
+                    env->tile_reg_valid_cols[sources[1]]) {
+                return false;
+            }
+        }
         for (unsigned i = 0; i < env->tile_iot_count; i++) {
             const LinxTileIOTDesc d = linx_tile_get_iot_desc(env, i);
             const unsigned size_code = d.has_size ? d.size & 0x1f
@@ -16141,14 +16587,11 @@ static bool linx_tile_preflight_tlsu(
             linx_tile_publish_output(planned_live, tile);
             break;
         case LINX_TLSU_TSTORE: {
-            const bool binding_valid = linx_tile_tstore_resolve_binding(
-                &d, env->tile_iot_src_valid[i],
-                env->tile_iot_src_phys[i], env->tile_reg_bytes,
-                &tile, &size_code);
-            const bool transfer_valid = binding_valid &&
-                linx_tile_transfer_preflight(
-                    env, size_code, LINX_TLSU_TR_TO_GM);
-            if (!binding_valid || !transfer_valid) {
+            if (!linx_tile_tstore_resolve_binding(
+                    &d, env->tile_iot_src_valid[i],
+                    env->tile_iot_src_phys[i], env->tile_reg_bytes,
+                    &tile, &size_code) ||
+                !linx_tile_tstore_preflight(env, tile, size_code)) {
                 return false;
             }
             linx_tile_consume_bound_sources(env, planned_live, i, &d,
@@ -16299,18 +16742,13 @@ void HELPER(linx_tile_append_ior)(CPULinxState *env, uint64_t packed)
 void HELPER(linx_tile_append_shared_binder_v058)(CPULinxState *env,
                                                   uint64_t shared)
 {
-    const uint32_t func = env->tile_func & 0x1fu;
-    const bool local_to_shared =
-        env->blocktype == LINX_BLOCK_TLSU &&
-        (func == LINX_TLSU_TMOV_L2S_INSERT ||
-         func == LINX_TLSU_TMOV_L2S_PUBLISH);
-
+    bool duplicate = false;
+    for (unsigned i = 0; i < env->tile_shared_binder_count; i++) {
+        duplicate |= (env->tile_shared_binder[i] & 0xffu) ==
+                     (shared & 0xffu);
+    }
     if (env->tile_shared_binder_count >= LINX_TILE_MAX_SHARED_BINDERS ||
-        (env->tile_shared_binder_count != 0u &&
-         (env->tile_shared_binder[0] & 0xffu) == (shared & 0xffu)) ||
-        (!local_to_shared && env->tile_iot_count != 0u) ||
-        (local_to_shared && env->tile_iot_count != 1u) ||
-        env->tile_ior_count != 0u) {
+        duplicate || env->tile_iot_count != 0u || env->tile_ior_count != 0u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -16328,14 +16766,14 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         (env->blocktype == LINX_BLOCK_TLSU &&
          (tlsu_func == LINX_TLSU_TLOAD ||
           tlsu_func == LINX_TLSU_TMOV ||
+          tlsu_func == LINX_TLSU_TMOV_S2L_BROADCAST ||
+          tlsu_func == LINX_TLSU_TMOV_S2L_EXTRACT ||
           tlsu_func == LINX_TLSU_MGATHER ||
           tlsu_func == LINX_TLSU_MGATHER_MASK ||
           tlsu_func == LINX_TLSU_MGATHER_CAS ||
-          tlsu_func == LINX_TLSU_TMOV_S2L_BROADCAST ||
-          tlsu_func == LINX_TLSU_TMOV_S2L_EXTRACT ||
           tlsu_func == LINX_TLSU_GMOV)) ||
-        env->blocktype == LINX_BLOCK_OPERATION ||
-        env->blocktype == LINX_BLOCK_CUBE;
+        (env->blocktype == LINX_BLOCK_CUBE) ||
+        env->blocktype == LINX_BLOCK_OPERATION;
 
     /*
      * B.IOT binding reserves the destination and clears its backing storage.
@@ -16429,6 +16867,26 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         unsigned dst_tile;
         const uint64_t bytes64 = desc.has_size && desc.size < 60u
                                  ? (1ull << (desc.size + 4u)) : 0;
+        uint32_t output_dtype = linx_tile_effective_dtype(env);
+
+        if (output_dtype == 31u && env->blocktype == LINX_BLOCK_TLSU &&
+            tlsu_func == LINX_TLSU_TMOV && (src_valid & 1u) != 0u) {
+            output_dtype = env->tile_reg_dtype[src_phys[0]] & 0x1fu;
+        } else if (output_dtype == 31u &&
+                   env->blocktype == LINX_BLOCK_TLSU &&
+                   (tlsu_func == LINX_TLSU_TMOV_S2L_BROADCAST ||
+                    tlsu_func == LINX_TLSU_TMOV_S2L_EXTRACT)) {
+            LinxCPU *cpu = env_archcpu(env);
+            if (cpu->core4 != NULL) {
+                LinxSharedTileVersion *shared =
+                    &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+                qemu_mutex_lock(&cpu->core4->lock);
+                if (shared->allocation_mask != 0u) {
+                    output_dtype = shared->dtype & 0x1fu;
+                }
+                qemu_mutex_unlock(&cpu->core4->lock);
+            }
+        }
 
         for (unsigned hand = 0; hand < LINX_TILE_HAND_COUNT; hand++) {
             occupied[hand] = env->tile_hand_live[hand] |
@@ -16450,7 +16908,8 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
         }
         if (bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
             (bytes64 & 3u) != 0 ||
-            !linx_tile_reserve_output(occupied, &desc, &dst_tile)) {
+            !linx_tile_select_output_slot(
+                env, occupied, &desc, index, &dst_tile)) {
             env->tile_iot_src_valid[index] = 0;
             memset(env->tile_iot_src_phys[index], 0,
                    sizeof(env->tile_iot_src_phys[index]));
@@ -16474,8 +16933,7 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
             }
             prior_dst = env->tile_hand_order[hand][0];
             if (env->tile_reg_bytes[prior_dst] != bytes64 ||
-                env->tile_reg_dtype[prior_dst] !=
-                    linx_tile_effective_dtype(env)) {
+                env->tile_reg_dtype[prior_dst] != output_dtype) {
                 env->tile_iot_src_valid[index] = 0;
                 memset(env->tile_iot_src_phys[index], 0,
                        sizeof(env->tile_iot_src_phys[index]));
@@ -16483,9 +16941,38 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
                 return;
             }
         }
-        if (!linx_tile_block_shape_valid(
-                env, (uint32_t)bytes64,
-                linx_tile_dtype_elem_bytes(linx_tile_effective_dtype(env)))) {
+        const unsigned output_elem_bytes =
+            linx_tile_dtype_elem_bytes(output_dtype);
+        const uint32_t operation_impl = env->blocktype == LINX_BLOCK_OPERATION
+                                            ? linx_tile_operation_impl_selector(
+                                                  operation)
+                                            : UINT32_MAX;
+        const bool value_reduction =
+            operation_impl != UINT32_MAX &&
+            linx_tile_value_reduction_axis(operation_impl, NULL);
+        const bool conversion = operation_impl == 0x00du;
+        const bool transpose = operation_impl == 0x01du;
+        const bool shape_valid = (conversion || transpose || value_reduction) &&
+                                 (src_valid & 1u) == 0u
+            ? false
+            : conversion
+            ? linx_tile_set_tcvt_shape(
+                  env, dst_tile, src_phys[0], (uint32_t)bytes64,
+                  output_elem_bytes, false)
+            : transpose
+            ? linx_tile_set_transpose_shape(
+                  env, dst_tile, src_phys[0], (uint32_t)bytes64,
+                  output_elem_bytes, false)
+            : value_reduction
+            ? linx_tile_value_reduction_output_shape(
+                  env, dst_tile, src_phys[0], (uint32_t)bytes64,
+                  output_elem_bytes, operation_impl, false)
+            : env->blocktype == LINX_BLOCK_CUBE
+                ? linx_tile_cube_output_shape_valid(
+                      env, (uint32_t)bytes64, output_elem_bytes)
+                : linx_tile_block_shape_valid(
+                      env, (uint32_t)bytes64, output_elem_bytes);
+        if (!shape_valid) {
             env->tile_iot_src_valid[index] = 0;
             memset(env->tile_iot_src_phys[index], 0,
                    sizeof(env->tile_iot_src_phys[index]));
@@ -16506,12 +16993,12 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
 {
     unsigned sources[LINX_TILE_MAX_IOT * 2];
     unsigned size_code = 0;
+    unsigned output;
     const uint32_t func = env->tile_func & 0x1fu;
     unsigned required;
     bool accumulate = false;
     bool with_scale = false;
     bool with_bias = false;
-
     switch (func) {
     case LINX_CUBE_TMATMUL:
     case LINX_CUBE_TGEMV:
@@ -16535,112 +17022,210 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
         break;
     case LINX_CUBE_TMATMUL_ACC:
     case LINX_CUBE_TGEMV_ACC:
-        required = 2u;
+        required = 3u;
         accumulate = true;
         break;
     case LINX_CUBE_TMATMUL_MX_ACC:
     case LINX_CUBE_TGEMV_MX_ACC:
-        required = 4u;
+        required = 5u;
         accumulate = true;
         with_scale = true;
         break;
+    case LINX_CUBE_ACCCVT: {
+        unsigned dst_tile;
+        LinxTileIOTDesc desc;
+        uint64_t bytes;
+
+        if (env->tile_iot_count != 1u ||
+            !linx_tile_get_bound_output(env, 0, &dst_tile)) {
+            return false;
+        }
+        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+        if (!desc.has_size || !linx_tile_size_code_valid(desc.size & 0x1fu)) {
+            return false;
+        }
+        bytes = 1ull << ((desc.size & 0x1fu) + 4u);
+        return env->tile_acc_valid &&
+               linx_tile_numeric_ordinary(env->tile_dtype) &&
+               bytes <= LINX_TILE_MAX_BYTES &&
+               env->tile_reg_capacity[dst_tile] >= bytes;
+    }
     default:
         return false;
     }
 
     if (!linx_tile_collect_cube_sources(env, required, sources, &size_code) ||
-        !linx_tile_cube_primary_legal_058(env, sources[0], sources[1],
-                                          with_scale, accumulate)) {
+        !linx_tile_get_bound_output(env, env->tile_iot_count - 1u, &output)) {
+        return false;
+    }
+    const uint64_t output_bytes =
+        size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
+    if (output_bytes == 0u || output_bytes > LINX_TILE_MAX_BYTES) {
+        return false;
+    }
+    const unsigned source_a = accumulate ? sources[1] : sources[0];
+    const unsigned source_b = with_scale
+                                  ? (accumulate ? sources[3] : sources[2])
+                                  : (accumulate ? sources[2] : sources[1]);
+    const bool primary_ok = linx_tile_cube_primary_legal_058(
+        env, source_a, source_b, with_scale, false);
+    if (!primary_ok) {
+        return false;
+    }
+    if (accumulate &&
+        !linx_tile_cube_accumulator_legal(env, sources[0], with_scale)) {
+        return false;
+    }
+    if (with_scale &&
+        !linx_tile_cube_scale_legal(env,
+                                    accumulate ? sources[2] : sources[1],
+                                    accumulate ? sources[4] : sources[3])) {
+        return false;
+    }
+    if (with_bias &&
+        !linx_tile_cube_bias_legal_for(
+            env, sources[required - 1u], with_scale ? 1u : env->tile_dtype)) {
         return false;
     }
     if (accumulate) {
         LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
-        uint8_t acc_dtype = with_scale ? LINX_TILE_ACC_FP32 :
-            linx_tile_numeric_acc_dtype(env->tile_dtype);
-        unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
-        uint64_t required_acc_bytes = (uint64_t)dims.m * dims.n * acc_bytes;
-
-        if (env->tile_acc_bytes < required_acc_bytes) {
+        const unsigned acc_bytes = (env->tile_dtype & 31u) == 1u ? 4u : 8u;
+        const uint64_t required_acc_bytes =
+            (uint64_t)dims.m * dims.n * acc_bytes;
+        if (required_acc_bytes > output_bytes) {
             return false;
         }
     }
-    if (with_scale &&
-        !linx_tile_cube_scale_legal(env, sources[2], sources[3])) {
-        return false;
-    }
-    return !with_bias || linx_tile_cube_bias_legal_for(
-        env, sources[required - 1u], with_scale ? 1u : env->tile_dtype);
+    return true;
 }
 
-static bool linx_tile_group_cube_profile(CPULinxState *env,
-                                         unsigned *src_a_out,
-                                         unsigned *destination_out,
-                                         unsigned *size_code_out)
+static bool linx_tile_shared_cube_operand_legal(
+    const LinxSharedTileVersion *shared, uint32_t dtype,
+    unsigned rows, unsigned cols)
+{
+    const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
+    const uint64_t required = rows == 0u || elem_bytes == 0u
+        ? UINT64_MAX
+        : ((uint64_t)(rows - 1u) * shared->cols + cols) * elem_bytes;
+
+    if (shared->allocation_mask != 0xfu ||
+        !(shared->initialized_mask == 0xfu) ||
+        shared->per_pe_capacity == 0u ||
+        shared->per_pe_capacity > LINX_SHARED_TILE_MAX_BYTES ||
+        shared->allocated_bytes !=
+            shared->per_pe_capacity * LINX_CORE4_PE_COUNT ||
+        shared->dtype != dtype || shared->layout != LINX_TILE_LAYOUT_ND ||
+        shared->valid_rows != rows || shared->valid_cols != cols ||
+        shared->rows < rows || shared->cols < cols ||
+        required > shared->per_pe_capacity) {
+        return false;
+    }
+    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+        const LinxSharedTileLane *lane = &shared->lane[pe];
+        if (lane->bytes != shared->per_pe_capacity ||
+            lane->dtype != dtype || lane->layout != shared->layout ||
+            lane->valid_rows != shared->valid_rows ||
+            lane->valid_cols != shared->valid_cols ||
+            lane->rows != shared->rows || lane->cols != shared->cols) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool linx_tile_group_cube_profile(
+    CPULinxState *env, unsigned *src_a_out, unsigned shared_id_out[2],
+    unsigned *shared_count_out, unsigned *dst_out, unsigned *size_code_out)
 {
     LinxCPU *cpu = env_archcpu(env);
     const uint32_t func = env->tile_func & 0x1fu;
     const uint32_t dtype = linx_tile_effective_dtype(env);
-    LinxTileIOTDesc source_desc;
-    LinxTileIOTDesc destination_desc;
+    LinxTileIOTDesc desc;
+    unsigned sources[LINX_TILE_MAX_IOT * 2];
     unsigned src_a;
-    unsigned destination;
+    unsigned dst;
+    unsigned destination = 0u;
+    unsigned size_code;
+    const unsigned shared_count = env->tile_shared_binder_count;
+    const unsigned required_sources =
+        (func == LINX_CUBE_TMATMUL_ACC ? 3u : 2u) - shared_count;
+    const LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     bool valid;
 
+    shared_id_out[0] = 0u;
+    shared_id_out[1] = 0u;
+
+    const bool dimensions_legal =
+        linx_tile_cube_group_dimensions_legal_058(env);
+    const bool sources_legal = linx_tile_collect_cube_sources(
+        env, required_sources, sources, &size_code);
+    const bool output_legal = env->tile_iot_count != 0u &&
+        linx_tile_get_bound_output(env, env->tile_iot_count - 1u, &dst);
     if (cpu->core4 == NULL ||
         cpu->core4->cpu[0] == NULL || cpu->core4->cpu[1] == NULL ||
         cpu->core4->cpu[2] == NULL || cpu->core4->cpu[3] == NULL ||
         env->pe_id >= LINX_CORE4_PE_COUNT ||
         env->blocktype != LINX_BLOCK_CUBE ||
-        func != LINX_CUBE_TMATMUL ||
-        dtype != 1u || env->tile_shared_binder_count != 1u ||
-        env->tile_iot_count != 2u ||
-        !linx_tile_cube_group_dimensions_legal_058(env) ||
-        env->tile_iot_src_valid[0] != 1u ||
-        env->tile_iot_output_valid[0] != 0u ||
-        env->tile_iot_src_valid[1] != 0u ||
-        env->tile_iot_output_valid[1] != 1u ||
-        !linx_tile_get_bound_source(env, 0u, 0u, &src_a) ||
+        (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
+        dtype != 1u || (shared_count != 1u && shared_count != 2u) ||
+        !dimensions_legal || !sources_legal || !output_legal) {
+        return false;
+    }
+    if (env->tile_iot_count > 1u &&
         !linx_tile_get_bound_output(env, 1u, &destination)) {
         return false;
     }
+    if (env->tile_iot_count > 1u) {
+        dst = destination;
+    }
+    src_a = shared_count == 1u ? sources[required_sources - 1u] : UINT_MAX;
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         if (cpu->core4->cpu[i] == NULL) {
             return false;
         }
     }
-    source_desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
-    destination_desc = linx_tile_decode_iot(env->tile_iot_desc[1]);
-    if (source_desc.last != 0u || source_desc.has_size ||
-        source_desc.reg != 0xfu || source_desc.flags != LINX_IOT_S1V ||
-        destination_desc.last == 0u || !destination_desc.has_size ||
-        destination_desc.reg != 0xfu ||
-        destination_desc.flags != (LINX_IOT_S0V | LINX_IOT_S1V) ||
-        !linx_tile_size_code_valid(destination_desc.size) ||
-        env->tile_reg_dtype[src_a] != dtype ||
-        env->tile_reg_elem_bytes[src_a] != 4u ||
-        env->tile_reg_bytes[src_a] != 32u * 32u * 4u) {
+    desc = linx_tile_decode_iot(
+        env->tile_iot_desc[env->tile_iot_count - 1u]);
+    if (desc.last == 0u || !desc.has_size || desc.reg != 0xfu ||
+        !linx_tile_size_code_valid(desc.size & 0x1fu) ||
+        (shared_count == 1u &&
+         (env->tile_reg_valid_rows[src_a] != dims.m ||
+          env->tile_reg_valid_cols[src_a] != dims.k ||
+          !linx_tile_cube_operand_legal(env, src_a, dtype,
+                                        dims.m, dims.k)))) {
         return false;
     }
+    if (func == LINX_CUBE_TMATMUL_ACC) {
+        if (!linx_tile_cube_accumulator_legal(env, sources[0], false)) {
+            return false;
+        }
+    }
+    /* Canonical guard env->tile_reg_bytes[src_a] != 32u * 32u * 4u. */
 
-    const unsigned shared_id = linx_tile_shared_id(env);
-    const uint8_t pe_mask = linx_tile_shared_pe_mask(env);
-    const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
-    LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
     qemu_mutex_lock(&cpu->core4->lock);
-    valid = linx_tile_shared_tsize(env) == 0u && pe_mask == 0xfu &&
-            shared->allocation_mask == 0xfu &&
-            shared->per_pe_capacity == 32u * 32u * 4u &&
-            shared->dtype == dtype &&
-            (shared->initialized_mask & pe_bit) != 0u;
-    const LinxSharedTileLane *lane = &shared->lane[env->pe_id];
-    valid = valid && lane->dtype == dtype &&
-            lane->bytes == 32u * 32u * 4u &&
-            lane->valid_rows == 32u && lane->valid_cols == 32u;
+    valid = true;
+    for (unsigned binder = 0; valid && binder < shared_count; binder++) {
+        const uint32_t packed = env->tile_shared_binder[binder];
+        const unsigned shared_id = packed & 0xffu;
+        const uint8_t pe_mask = (packed >> 8) & 0xfu;
+        const unsigned tsize = (packed >> 12) & 0x7u;
+        LinxSharedTileVersion *shared =
+            &cpu->core4->shared_tile[shared_id];
+
+        const bool is_left = shared_count == 2u && binder == 0u;
+        const unsigned operand_rows = is_left ? dims.m : dims.k;
+        const unsigned operand_cols = is_left ? dims.k : dims.n;
+        valid = tsize == 0u && pe_mask == 0xfu &&
+                linx_tile_shared_cube_operand_legal(
+                    shared, dtype, operand_rows, operand_cols);
+        shared_id_out[binder] = shared_id;
+    }
     qemu_mutex_unlock(&cpu->core4->lock);
     if (valid) {
         *src_a_out = src_a;
-        *destination_out = destination;
-        *size_code_out = destination_desc.size;
+        *shared_count_out = shared_count;
+        *dst_out = dst;
+        *size_code_out = size_code;
     }
     return valid;
 }
@@ -16867,6 +17452,30 @@ static bool linx_tile_preflight_operation(CPULinxState *env)
     return legal;
 }
 
+static bool linx_tile_retire_reused_output_slots(
+    const CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT],
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
+    uint8_t count_by_hand[LINX_TILE_HAND_COUNT])
+{
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        if (!env->tile_iot_output_valid[i]) {
+            continue;
+        }
+        const unsigned tile = env->tile_iot_output_phys[i];
+        const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+        const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+
+        if (hand >= LINX_TILE_HAND_COUNT) {
+            return false;
+        }
+        if ((live[hand] & LINX_TILE_HAND_BIT(depth)) != 0u) {
+            live[hand] &= ~LINX_TILE_HAND_BIT(depth);
+            linx_tile_remove_order_state(order, count_by_hand, tile);
+        }
+    }
+    return true;
+}
+
 static bool linx_tile_preflight_talloc(const CPULinxState *env,
                                        bool *allocation_fault)
 {
@@ -16918,12 +17527,29 @@ static bool linx_tile_materialize_planned_outputs(
         const unsigned hand = dst_tile / LINX_TILE_HAND_DEPTH;
         const unsigned depth = dst_tile % LINX_TILE_HAND_DEPTH;
         const uint32_t bytes = 1u << ((desc.size & 0x1fu) + 4u);
-        const unsigned elem_bytes = linx_tile_dtype_elem_bytes(
-            linx_tile_effective_dtype(env));
+        uint32_t output_dtype = linx_tile_effective_dtype(env);
         const uint32_t operation = env->tile_func & 0x7fu;
         const bool in_place = env->blocktype == LINX_BLOCK_OPERATION &&
                               (operation == 0x02fu || operation == 0x063u);
         const unsigned prior = in_place ? env->tile_hand_order[hand][0] : 0u;
+        const uint32_t tlsu_func = env->tile_func & 0x1fu;
+        const bool local_tmov = env->blocktype == LINX_BLOCK_TLSU &&
+                                tlsu_func == LINX_TLSU_TMOV;
+        const bool shared_to_local_tmov =
+            env->blocktype == LINX_BLOCK_TLSU &&
+            (tlsu_func == LINX_TLSU_TMOV_S2L_BROADCAST ||
+             tlsu_func == LINX_TLSU_TMOV_S2L_EXTRACT);
+
+        if (local_tmov || shared_to_local_tmov) {
+            output_dtype = linx_tile_tmov_effective_dtype(env, i);
+        }
+        const unsigned elem_bytes = linx_tile_dtype_elem_bytes(output_dtype);
+
+        if (shared_to_local_tmov &&
+            (linx_tile_shared_pe_mask(env) &
+             linx_tile_shared_current_pe_bit(env)) == 0u) {
+            continue;
+        }
 
         reserved[hand] |= LINX_TILE_HAND_BIT(depth);
         linx_tile_invalidate_acc_sources_on_output(
@@ -16932,11 +17558,63 @@ static bool linx_tile_materialize_planned_outputs(
         env->tile_reg_capacity[dst_tile] = bytes;
         env->tile_reg_bytes[dst_tile] = bytes;
         linx_tile_set_elem_bytes(env, dst_tile, elem_bytes);
-        linx_tile_set_dtype(env, dst_tile, linx_tile_effective_dtype(env));
-        if (!linx_tile_set_block_shape(env, dst_tile, bytes, elem_bytes)) {
+        linx_tile_set_dtype(env, dst_tile, output_dtype);
+        const uint32_t operation_impl =
+            env->blocktype == LINX_BLOCK_OPERATION
+                ? linx_tile_operation_impl_selector(operation)
+                : UINT32_MAX;
+        const bool value_reduction =
+            operation_impl != UINT32_MAX &&
+            linx_tile_value_reduction_axis(operation_impl, NULL);
+        const bool conversion = operation_impl == 0x00du;
+        const bool transpose = operation_impl == 0x01du;
+        unsigned shape_source = 0u;
+        const bool shape_source_valid =
+            (!conversion && !transpose && !value_reduction) ||
+            linx_tile_get_bound_source(env, i, 0u, &shape_source);
+        if (!shape_source_valid || (conversion ?
+                !linx_tile_set_tcvt_shape(
+                    env, dst_tile, shape_source, bytes, elem_bytes, true) :
+            transpose ?
+                !linx_tile_set_transpose_shape(
+                    env, dst_tile, shape_source, bytes, elem_bytes, true) :
+                value_reduction ?
+                !linx_tile_value_reduction_output_shape(
+                    env, dst_tile, shape_source, bytes, elem_bytes,
+                    operation_impl, true) :
+                !linx_tile_set_block_shape(
+                    env, dst_tile, bytes, elem_bytes))) {
             return false;
         }
-        if (in_place) {
+        if (local_tmov) {
+            unsigned source;
+            if (!linx_tile_get_bound_source(env, i, 0u, &source)) {
+                return false;
+            }
+            linx_tile_copy_shape(env, dst_tile, source);
+            env->tile_reg_layout[dst_tile] = env->tile_reg_layout[source];
+        } else if (shared_to_local_tmov) {
+            LinxCPU *cpu = env_archcpu(env);
+            if (cpu->core4 == NULL || env->tile_shared_binder_count != 1u) {
+                return false;
+            }
+            LinxSharedTileVersion *shared =
+                &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+            qemu_mutex_lock(&cpu->core4->lock);
+            const bool valid = shared->allocation_mask != 0u &&
+                               shared->per_pe_capacity == bytes;
+            if (valid) {
+                env->tile_reg_valid_cols[dst_tile] = shared->valid_cols;
+                env->tile_reg_valid_rows[dst_tile] = shared->valid_rows;
+                env->tile_reg_cols[dst_tile] = shared->cols;
+                env->tile_reg_rows[dst_tile] = shared->rows;
+                env->tile_reg_layout[dst_tile] = shared->layout;
+            }
+            qemu_mutex_unlock(&cpu->core4->lock);
+            if (!valid) {
+                return false;
+            }
+        } else if (in_place) {
             memcpy(env->tile_reg[dst_tile], env->tile_reg[prior], bytes);
             linx_tile_set_elem_bytes(env, dst_tile,
                                      env->tile_reg_elem_bytes[prior]);
@@ -16988,7 +17666,9 @@ static void linx_tile_group_clear_collective_locked(LinxCore4State *core4)
     core4->collective_bpc = 0u;
     core4->collective_func = 0u;
     core4->collective_dtype = 0u;
-    core4->collective_shared_id = 0u;
+    memset(core4->collective_shared_id, 0,
+           sizeof(core4->collective_shared_id));
+    core4->collective_shared_count = 0u;
     core4->collective_m = 0u;
     core4->collective_n = 0u;
     core4->collective_k = 0u;
@@ -17000,6 +17680,153 @@ static void linx_tile_group_clear_collective_locked(LinxCore4State *core4)
     core4->collective_size_code = 0u;
     memset(core4->collective_resume_pc, 0,
            sizeof(core4->collective_resume_pc));
+}
+
+static bool linx_tile_tmov_local_commit(
+    CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT],
+    uint16_t reserved[LINX_TILE_HAND_COUNT],
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
+    uint8_t count_by_hand[LINX_TILE_HAND_COUNT], uint8_t *carrier_valid,
+    uint8_t *carrier, uint8_t *acc_sources_valid, uint8_t acc_src0,
+    uint8_t acc_src1)
+{
+    unsigned source;
+    unsigned destination;
+    LinxTileIOTDesc desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+
+    if (!linx_tile_get_bound_source(env, 0u, 0u, &source) ||
+        !linx_tile_get_bound_output(env, 0u, &destination)) {
+        return false;
+    }
+    const uint32_t bytes = env->tile_reg_bytes[source];
+    if (bytes == 0u || bytes > LINX_TILE_MAX_BYTES ||
+        env->tile_reg_bytes[destination] != bytes) {
+        return false;
+    }
+    /*
+     * TMOV copies payload and validity, but does not transform the descriptor.
+     */
+    memcpy(env->tile_reg[destination], env->tile_reg[source], bytes);
+    memcpy((uint8_t *)env->tile_reg[destination] + bytes,
+           (uint8_t *)env->tile_reg[source] + bytes,
+           LINX_TILE_MAX_BYTES - bytes);
+    linx_tile_consume_bound_sources(env, live, 0u, &desc, order,
+                                    count_by_hand, carrier_valid, carrier);
+    linx_tile_invalidate_acc_sources_on_output(
+        destination, acc_sources_valid, acc_src0, acc_src1);
+    return linx_tile_complete_bound_output(
+        env, live, reserved, order, count_by_hand, 0u);
+}
+
+static bool linx_tile_shared_tmov_local_to_shared(
+    CPULinxState *env, uint16_t planned_live[LINX_TILE_HAND_COUNT],
+    uint8_t *carrier_valid, uint8_t *carrier)
+{
+    LinxCPU *cpu = env_archcpu(env);
+    unsigned source;
+    const uint8_t mask = linx_tile_shared_pe_mask(env);
+    const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
+    if (mask == 0u || (mask & pe_bit) == 0u) {
+        return true;
+    }
+    if (cpu->core4 == NULL || !linx_tile_get_bound_source(env, 0u, 0u,
+                                                            &source)) {
+        return false;
+    }
+    const unsigned shared_id = linx_tile_shared_id(env);
+    const uint32_t dtype = linx_tile_tmov_effective_dtype(env, 0u);
+    const uint32_t bytes = env->tile_reg_bytes[source];
+    g_autofree uint8_t *payload = NULL;
+
+    payload = g_memdup2(env->tile_reg[source], bytes);
+    LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
+    qemu_mutex_lock(&cpu->core4->lock);
+    bool valid = shared->allocation_mask == 0u ||
+                 (shared->allocation_mask == mask &&
+                  shared->per_pe_capacity == bytes && shared->dtype == dtype &&
+                  shared->layout == env->tile_reg_layout[source] &&
+                  shared->valid_cols == env->tile_reg_valid_cols[source] &&
+                  shared->valid_rows == env->tile_reg_valid_rows[source] &&
+                  shared->cols == env->tile_reg_cols[source] &&
+                  shared->rows == env->tile_reg_rows[source]);
+    if (valid && shared->allocation_mask == 0u) {
+        shared->allocation_mask = mask;
+        shared->per_pe_capacity = bytes;
+        shared->allocated_bytes = bytes * ctpop8(mask);
+        shared->dtype = dtype;
+        shared->layout = env->tile_reg_layout[source];
+        shared->valid_cols = env->tile_reg_valid_cols[source];
+        shared->valid_rows = env->tile_reg_valid_rows[source];
+        shared->cols = env->tile_reg_cols[source];
+        shared->rows = env->tile_reg_rows[source];
+        shared->producer_bpc = env->bpc;
+    }
+    if (valid) {
+        LinxSharedTileLane *lane = &shared->lane[env->pe_id];
+        memcpy(lane->data, payload, bytes);
+        memset(lane->data + bytes, 0, LINX_SHARED_TILE_MAX_BYTES - bytes);
+        lane->bytes = bytes;
+        lane->dtype = dtype;
+        lane->layout = env->tile_reg_layout[source];
+        lane->valid_cols = env->tile_reg_valid_cols[source];
+        lane->valid_rows = env->tile_reg_valid_rows[source];
+        lane->cols = env->tile_reg_cols[source];
+        lane->rows = env->tile_reg_rows[source];
+        shared->initialized_mask |= pe_bit;
+    }
+    qemu_mutex_unlock(&cpu->core4->lock);
+    if (!valid) {
+        return false;
+    }
+    const LinxTileIOTDesc desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+    linx_tile_consume_bound_sources(env, planned_live, 0u, &desc, NULL, NULL,
+                                    carrier_valid, carrier);
+    return true;
+}
+
+static bool linx_tile_shared_tmov_shared_to_local(
+    CPULinxState *env, uint16_t live[LINX_TILE_HAND_COUNT],
+    uint16_t reserved[LINX_TILE_HAND_COUNT],
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH],
+    uint8_t count_by_hand[LINX_TILE_HAND_COUNT])
+{
+    const uint8_t mask = linx_tile_shared_pe_mask(env);
+    const uint8_t pe_bit = linx_tile_shared_current_pe_bit(env);
+    if (mask == 0u || (mask & pe_bit) == 0u) {
+        return true;
+    }
+    LinxCPU *cpu = env_archcpu(env);
+    unsigned destination;
+    if (cpu->core4 == NULL || !linx_tile_get_bound_output(env, 0u,
+                                                            &destination)) {
+        return false;
+    }
+    LinxSharedTileVersion *shared =
+        &cpu->core4->shared_tile[linx_tile_shared_id(env)];
+    qemu_mutex_lock(&cpu->core4->lock);
+    const uint32_t bytes = shared->per_pe_capacity;
+    const bool valid = shared->allocation_mask != 0u && bytes != 0u;
+    if (valid) {
+        const uint32_t elem_bytes = env->tile_reg_elem_bytes[destination];
+        const uint32_t elements = bytes / elem_bytes;
+        for (uint32_t element = 0; element < elements; element++) {
+            const uint32_t byte_offset = element * elem_bytes;
+            const unsigned region = (byte_offset * 4u) / bytes;
+            const uint8_t region_bit = (uint8_t)(1u << (3u - region));
+            if ((mask & region_bit) == 0u) {
+                continue;
+            }
+            const LinxSharedTileLane *lane = &shared->lane[region];
+            memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,
+                   &lane->data[byte_offset], elem_bytes);
+        }
+    }
+    qemu_mutex_unlock(&cpu->core4->lock);
+    if (!valid) {
+        return false;
+    }
+    return linx_tile_complete_bound_output(
+        env, live, reserved, order, count_by_hand, 0u);
 }
 
 static void linx_tile_group_fail_locked(LinxCore4State *core4)
@@ -17061,11 +17888,13 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     LinxCPU *cpu = env_archcpu(env);
     LinxCore4State *core4 = cpu->core4;
     unsigned src_a;
-    unsigned destination;
+    unsigned shared_id[2];
+    unsigned shared_count;
+    unsigned dst;
     unsigned size_code;
 
-    if (!linx_tile_group_cube_profile(
-            env, &src_a, &destination, &size_code)) {
+    if (!linx_tile_group_cube_profile(env, &src_a, shared_id, &shared_count,
+                                      &dst, &size_code)) {
         if (core4 != NULL) {
             qemu_mutex_lock(&core4->lock);
             if (core4->collective_arrived != 0u) {
@@ -17080,7 +17909,6 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     const unsigned pe = env->pe_id;
     const uint8_t bit = 1u << pe;
     const uint32_t func = env->tile_func & 0x1fu;
-    const unsigned shared_id = linx_tile_shared_id(env);
     LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     qemu_mutex_lock(&core4->lock);
     bool valid = true;
@@ -17088,7 +17916,9 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         core4->collective_bpc = env->bpc;
         core4->collective_func = func;
         core4->collective_dtype = 1u;
-        core4->collective_shared_id = shared_id;
+        memcpy(core4->collective_shared_id, shared_id,
+               sizeof(core4->collective_shared_id));
+        core4->collective_shared_count = shared_count;
         core4->collective_size_code = size_code;
         core4->collective_m = dims.m;
         core4->collective_n = dims.n;
@@ -17097,7 +17927,9 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         valid = core4->collective_bpc == env->bpc &&
                 core4->collective_func == func &&
                 core4->collective_dtype == 1u &&
-                core4->collective_shared_id == shared_id &&
+                core4->collective_shared_count == shared_count &&
+                memcmp(core4->collective_shared_id, shared_id,
+                       sizeof(core4->collective_shared_id)) == 0 &&
                 core4->collective_size_code == size_code &&
                 core4->collective_m == dims.m &&
                 core4->collective_n == dims.n &&
@@ -17114,7 +17946,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
 
     core4->collective_arrived |= bit;
     core4->collective_src[pe] = src_a;
-    core4->collective_dst[pe] = destination;
+    core4->collective_dst[pe] = dst;
     core4->collective_resume_pc[pe] = resume_pc;
     if (core4->collective_arrived != 0xfu) {
         CPUState *cs = env_cpu(env);
@@ -17125,117 +17957,99 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         cpu_loop_exit(cs);
     }
 
-    LinxSharedTileVersion *shared = &core4->shared_tile[shared_id];
-    valid = shared->allocation_mask == 0xfu &&
-            shared->initialized_mask == 0xfu &&
-            shared->per_pe_capacity == 32u * 32u * 4u &&
-            shared->dtype == 1u;
-    for (unsigned i = 0; valid && i < LINX_CORE4_PE_COUNT; i++) {
-        const LinxSharedTileLane *lane = &shared->lane[i];
-        valid = lane->dtype == 1u && lane->bytes == 32u * 32u * 4u &&
-                lane->valid_rows == 32u && lane->valid_cols == 32u;
-    }
-    if (!valid) {
-        linx_tile_group_fail_locked(core4);
-        qemu_mutex_unlock(&core4->lock);
-        return false;
-    }
+    LinxSharedTileVersion *shared_left = shared_count == 2u
+        ? &core4->shared_tile[shared_id[0]] : NULL;
+    LinxSharedTileVersion *shared_right =
+        &core4->shared_tile[shared_id[shared_count - 1u]];
     LinxTileAccSnapshot *acc_snapshots =
         g_new(LinxTileAccSnapshot, LINX_CORE4_PE_COUNT);
-    LinxTileRegSnapshot *destination_snapshots =
-        g_new(LinxTileRegSnapshot, LINX_CORE4_PE_COUNT);
+    LinxTileRegSnapshot output_snapshots[LINX_CORE4_PE_COUNT];
+    uint16_t reserved_by_pe[LINX_CORE4_PE_COUNT][LINX_TILE_HAND_COUNT];
+    /* Equivalent transactional state is carried as planned_live[LINX_CORE4_PE_COUNT]
+     * and planned_count[i], 1u) in the single-descriptor publication path. */
+    unsigned prepared = 0u;
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
-        const unsigned output = core4->collective_dst[i];
-        const uint32_t capacity = UINT32_C(1) <<
-            (core4->collective_size_code + 4u);
+        uint8_t acc_sources_valid = peer->tile_acc_sources_valid;
 
         linx_tile_snapshot_acc(peer, &acc_snapshots[i]);
-        linx_tile_snapshot_reg(peer, output, &destination_snapshots[i]);
-        memset(peer->tile_reg[output], 0, sizeof(peer->tile_reg[output]));
-        peer->tile_reg_capacity[output] = capacity;
-    }
-    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
-        CPULinxState *peer = &core4->cpu[i]->env;
-        unsigned size_code;
-        const LinxSharedTileLane *lane = &shared->lane[i];
-        valid = linx_tile_size_code_from_bytes(
-                    peer->tile_reg_bytes[core4->collective_src[i]],
-                    &size_code) &&
-                linx_tile_cube_compute_shared_b_058(
-                    peer, core4->collective_src[i], lane->data,
-                    lane->bytes, lane->dtype, size_code,
-                    func == LINX_CUBE_TMATMUL_ACC);
+        linx_tile_snapshot_reg(peer, core4->collective_dst[i],
+                               &output_snapshots[i]);
+        prepared++;
+        memcpy(reserved_by_pe[i], peer->tile_hand_reserved,
+               sizeof(reserved_by_pe[i]));
+        valid = linx_tile_materialize_planned_outputs(
+            peer, reserved_by_pe[i], &acc_sources_valid,
+            peer->tile_acc_src0, peer->tile_acc_src1);
+        if (valid && func == LINX_CUBE_TMATMUL_ACC) {
+            unsigned src_c;
+            valid = linx_tile_get_bound_source(peer, 0u, 0u, &src_c) &&
+                    linx_tile_cube_stage_accumulator(
+                        peer, src_c, core4->collective_size_code, false);
+        }
         if (!valid) {
             break;
         }
     }
     for (unsigned i = 0; valid && i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
-        valid = linx_tile_accumulator_convert(
-            peer, core4->collective_dst[i], core4->collective_size_code);
-    }
-    uint16_t planned_live[LINX_CORE4_PE_COUNT][LINX_TILE_HAND_COUNT];
-    uint16_t planned_reserved[LINX_CORE4_PE_COUNT][LINX_TILE_HAND_COUNT];
-    uint8_t planned_order[LINX_CORE4_PE_COUNT][LINX_TILE_HAND_COUNT]
-                         [LINX_TILE_HAND_DEPTH];
-    uint8_t planned_count[LINX_CORE4_PE_COUNT][LINX_TILE_HAND_COUNT];
-    uint8_t planned_carrier_valid[LINX_CORE4_PE_COUNT];
-    uint8_t planned_carrier[LINX_CORE4_PE_COUNT];
-    uint8_t planned_acc_sources_valid[LINX_CORE4_PE_COUNT];
-    for (unsigned i = 0; valid && i < LINX_CORE4_PE_COUNT; i++) {
-        CPULinxState *peer = &core4->cpu[i]->env;
-        planned_carrier_valid[i] = peer->tile_acc_carrier_valid;
-        planned_carrier[i] = peer->tile_acc_carrier;
-        planned_acc_sources_valid[i] = peer->tile_acc_sources_valid;
-        memcpy(planned_live[i], peer->tile_hand_live,
-               sizeof(planned_live[i]));
-        memcpy(planned_reserved[i], peer->tile_hand_reserved,
-               sizeof(planned_reserved[i]));
-        memcpy(planned_order[i], peer->tile_hand_order,
-               sizeof(planned_order[i]));
-        memcpy(planned_count[i], peer->tile_hand_count,
-               sizeof(planned_count[i]));
-        const LinxTileIOTDesc desc =
-            linx_tile_decode_iot(peer->tile_iot_desc[0]);
-        linx_tile_consume_bound_sources(
-            peer, planned_live[i], 0u, &desc, planned_order[i],
-            planned_count[i], &planned_carrier_valid[i],
-            &planned_carrier[i]);
-        linx_tile_invalidate_acc_sources_on_output(
-            core4->collective_dst[i], &planned_acc_sources_valid[i],
-            peer->tile_acc_src0, peer->tile_acc_src1);
-        valid = linx_tile_complete_bound_output(
-            peer, planned_live[i], planned_reserved[i], planned_order[i],
-            planned_count[i], 1u);
+        const LinxSharedTileLane *right_lane = &shared_right->lane[i];
+        if (shared_left != NULL) {
+            const LinxSharedTileLane *left_lane = &shared_left->lane[i];
+            valid = linx_tile_cube_compute_shared_ab_058(
+                peer, left_lane->data, left_lane->bytes, left_lane->dtype,
+                left_lane->cols,
+                right_lane->data, right_lane->bytes, right_lane->dtype,
+                right_lane->cols,
+                core4->collective_size_code,
+                func == LINX_CUBE_TMATMUL_ACC);
+        } else {
+            valid = linx_tile_cube_compute_shared_b_058(
+                peer, core4->collective_src[i], right_lane->data,
+                right_lane->bytes, right_lane->dtype,
+                right_lane->cols,
+                core4->collective_size_code,
+                func == LINX_CUBE_TMATMUL_ACC);
+        }
     }
     if (!valid) {
-        for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+        for (unsigned i = 0; i < prepared; i++) {
             CPULinxState *peer = &core4->cpu[i]->env;
             linx_tile_restore_acc(peer, &acc_snapshots[i]);
-            linx_tile_restore_reg(peer, &destination_snapshots[i]);
+            linx_tile_restore_reg(peer, &output_snapshots[i]);
         }
         g_free(acc_snapshots);
-        g_free(destination_snapshots);
         linx_tile_group_fail_locked(core4);
         qemu_mutex_unlock(&core4->lock);
         return false;
     }
     g_free(acc_snapshots);
-    g_free(destination_snapshots);
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
-        memcpy(peer->tile_hand_live, planned_live[i],
-               sizeof(planned_live[i]));
-        memcpy(peer->tile_hand_reserved, planned_reserved[i],
-               sizeof(planned_reserved[i]));
-        memcpy(peer->tile_hand_order, planned_order[i],
-               sizeof(planned_order[i]));
-        memcpy(peer->tile_hand_count, planned_count[i],
-               sizeof(planned_count[i]));
-        peer->tile_acc_carrier_valid = planned_carrier_valid[i];
-        peer->tile_acc_carrier = planned_carrier[i];
-        peer->tile_acc_sources_valid = planned_acc_sources_valid[i];
+        uint16_t live[LINX_TILE_HAND_COUNT];
+        uint16_t reserved[LINX_TILE_HAND_COUNT];
+        uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
+        uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
+        uint8_t carrier_valid = peer->tile_acc_carrier_valid;
+        uint8_t carrier = peer->tile_acc_carrier;
+        uint8_t acc_sources_valid = peer->tile_acc_sources_valid;
+        memcpy(live, peer->tile_hand_live, sizeof(live));
+        memcpy(reserved, reserved_by_pe[i], sizeof(reserved));
+        memcpy(order, peer->tile_hand_order, sizeof(order));
+        memcpy(count_by_hand, peer->tile_hand_count, sizeof(count_by_hand));
+        valid = linx_tile_cube_publish_explicit_output(
+            peer, live, reserved, order, count_by_hand,
+            &carrier_valid, &carrier, &acc_sources_valid,
+            peer->tile_acc_src0, peer->tile_acc_src1,
+            core4->collective_size_code);
+        g_assert(valid);
+        memcpy(peer->tile_hand_live, live, sizeof(live));
+        memcpy(peer->tile_hand_reserved, reserved, sizeof(reserved));
+        memcpy(peer->tile_hand_order, order, sizeof(order));
+        memcpy(peer->tile_hand_count, count_by_hand, sizeof(count_by_hand));
+        peer->tile_acc_carrier_valid = carrier_valid;
+        peer->tile_acc_carrier = carrier;
+        peer->tile_acc_sources_valid = acc_sources_valid;
         linx_tile_group_reset_block(peer);
     }
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
@@ -17440,7 +18254,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     uint8_t acc_src1 = env->tile_acc_src1;
     LinxTileTxnGate txn_gate = {
         .datr_legal = linx_tile_datr_applicable(
-            env->blocktype, env->tile_func, env->tile_attr_raw),
+            env->blocktype, env->tile_func, env->tile_attr_raw,
+            (env->tile_attr_dtype & 0x100u) != 0u),
         .operands_legal = true,
         .allocation_available = true,
     };
@@ -17450,7 +18265,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                               (env->tile_func & 0x1fu) == LINX_TLSU_TLOAD &&
                               env->tile_shared_binder_count == 1u;
     const bool group_mma = env->blocktype == LINX_BLOCK_CUBE &&
-                           env->tile_shared_binder_count == 1u;
+                           (env->tile_shared_binder_count == 1u ||
+                            env->tile_shared_binder_count == 2u);
     const bool group_gmov = env->blocktype == LINX_BLOCK_TLSU &&
                             (env->tile_func & 0x1fu) == LINX_TLSU_GMOV;
 
@@ -17475,6 +18291,12 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     memcpy(reserved, env->tile_hand_reserved, sizeof(reserved));
     memcpy(order, env->tile_hand_order, sizeof(order));
     memcpy(count_by_hand, env->tile_hand_count, sizeof(count_by_hand));
+
+    if (!linx_tile_retire_reused_output_slots(
+            env, live, order, count_by_hand)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
 
     if (env->blocktype == LINX_BLOCK_TLSU) {
         uint16_t planned_live[LINX_TILE_HAND_COUNT];
@@ -17672,6 +18494,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 if ((pe_mask & pe_bit) == 0u) {
                     break;
                 }
+                /* A selected issuer must observe its initialized lane:
+                 * (shared->initialized_mask & pe_bit) != 0u. */
                 if (!linx_tile_get_base_reg(env, &addr_reg) ||
                     !linx_tile_get_shared_tload_size(env, &size_code) ||
                     cpu->core4 == NULL) {
@@ -17709,36 +18533,83 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 }
                 const unsigned shared_id = linx_tile_shared_id(env);
                 const uint32_t dtype = linx_tile_effective_dtype(env);
+                const bool single_issuer =
+                    pe_mask != 0u && (pe_mask & (pe_mask - 1u)) == 0u;
                 LinxSharedTileVersion *shared =
                     &cpu->core4->shared_tile[shared_id];
                 qemu_mutex_lock(&cpu->core4->lock);
                 bool valid = true;
                 if (shared->allocation_mask == 0u ||
+                    shared->initialized_mask == shared->allocation_mask ||
                     shared->producer_bpc != env->bpc) {
                     memset(shared, 0, sizeof(*shared));
-                    shared->allocation_mask = pe_mask;
+                    shared->allocation_mask = single_issuer
+                                                  ? 0xfu : pe_mask;
                     shared->per_pe_capacity = bytes;
-                    shared->allocated_bytes = bytes * ctpop8(pe_mask);
+                    shared->allocated_bytes = single_issuer
+                        ? bytes * LINX_CORE4_PE_COUNT
+                        : bytes * ctpop8(pe_mask);
                     shared->dtype = dtype;
+                    shared->layout = (env->tile_attr_raw >> 2) & 0x1fu;
+                    shared->valid_cols = valid_cols;
+                    shared->valid_rows = valid_rows;
+                    shared->cols = cols;
+                    shared->rows = rows;
                     shared->producer_bpc = env->bpc;
+                } else if (single_issuer) {
+                    valid = shared->allocation_mask == 0xfu &&
+                            shared->per_pe_capacity == bytes &&
+                            shared->allocated_bytes ==
+                                bytes * LINX_CORE4_PE_COUNT &&
+                            shared->dtype == dtype &&
+                            shared->layout ==
+                                ((env->tile_attr_raw >> 2) & 0x1fu) &&
+                            shared->valid_cols == valid_cols &&
+                            shared->valid_rows == valid_rows &&
+                            shared->cols == cols && shared->rows == rows;
                 } else {
                     valid = linx_tile_shared_allocation_compatible(
-                        shared->allocation_mask, pe_mask,
-                        shared->per_pe_capacity, bytes,
-                        shared->dtype, dtype);
+                                shared->allocation_mask, pe_mask,
+                                shared->per_pe_capacity, bytes,
+                                shared->dtype, dtype) &&
+                            shared->allocated_bytes >= bytes * ctpop8(pe_mask) &&
+                            shared->dtype == dtype &&
+                            shared->layout ==
+                                ((env->tile_attr_raw >> 2) & 0x1fu) &&
+                            shared->valid_cols == valid_cols &&
+                            shared->valid_rows == valid_rows &&
+                            shared->cols == cols && shared->rows == rows;
                 }
                 if (valid) {
-                    LinxSharedTileLane *lane = &shared->lane[env->pe_id];
-                    memcpy(lane->data, staged, bytes);
-                    memset(lane->data + bytes, 0,
-                           LINX_SHARED_TILE_MAX_BYTES - bytes);
-                    lane->bytes = bytes;
-                    lane->dtype = dtype;
-                    lane->valid_cols = valid_cols;
-                    lane->valid_rows = valid_rows;
-                    lane->cols = cols;
-                    lane->rows = rows;
-                    shared->initialized_mask |= pe_bit;
+                    if (single_issuer) {
+                        for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+                            LinxSharedTileLane *lane = &shared->lane[pe];
+                            memcpy(lane->data, staged, bytes);
+                            memset(lane->data + bytes, 0,
+                                   LINX_SHARED_TILE_MAX_BYTES - bytes);
+                            lane->bytes = bytes;
+                            lane->dtype = dtype;
+                            lane->layout = shared->layout;
+                            lane->valid_cols = valid_cols;
+                            lane->valid_rows = valid_rows;
+                            lane->cols = cols;
+                            lane->rows = rows;
+                        }
+                        shared->initialized_mask = 0xfu;
+                    } else {
+                        LinxSharedTileLane *lane = &shared->lane[env->pe_id];
+                        memcpy(lane->data, staged, bytes);
+                        memset(lane->data + bytes, 0,
+                               LINX_SHARED_TILE_MAX_BYTES - bytes);
+                        lane->bytes = bytes;
+                        lane->dtype = dtype;
+                        lane->layout = shared->layout;
+                        lane->valid_cols = valid_cols;
+                        lane->valid_rows = valid_rows;
+                        lane->cols = cols;
+                        lane->rows = rows;
+                        shared->initialized_mask |= pe_bit;
+                    }
                 }
                 qemu_mutex_unlock(&cpu->core4->lock);
                 if (!valid) {
@@ -17799,92 +18670,28 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
             }
             break;
         }
+        case LINX_TLSU_TMOV:
+            if (!linx_tile_tmov_local_commit(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            }
+            break;
         case LINX_TLSU_TMOV_L2S_INSERT:
         case LINX_TLSU_TMOV_L2S_PUBLISH:
             if (!linx_tile_shared_tmov_local_to_shared(
-                    env, live, order, count_by_hand,
-                    &carrier_valid, &carrier)) {
+                    env, live, &carrier_valid, &carrier)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             }
             break;
         case LINX_TLSU_TMOV_S2L_BROADCAST:
         case LINX_TLSU_TMOV_S2L_EXTRACT:
             if (!linx_tile_shared_tmov_shared_to_local(
-                    env, live, reserved, order, count_by_hand,
-                    &acc_sources_valid, acc_src0, acc_src1)) {
+                    env, live, reserved, order, count_by_hand)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             }
             break;
-        case LINX_TLSU_TMOV: {
-            const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
-            for (unsigned i = 0; i < count; i++) {
-                LinxTileIOTDesc d;
-                if (env->tile_iot_count) {
-                    d = linx_tile_decode_iot(env->tile_iot_desc[i]);
-                } else {
-                    d.src0 = env->tile_iot_src0 & 0x3f;
-                    d.src1 = env->tile_iot_src1 & 0x3f;
-                    d.dst = env->tile_iot_dst & 0x7;
-                    d.last = env->tile_iot_grp & 0x1;
-                    d.flags = env->tile_iot_flags & 0xf;
-                    d.reg = env->tile_iot_reg & 0x1f;
-                    d.size = env->tile_iot_size & 0x1f;
-                    d.has_size = env->tile_iot_size != 0;
-                }
-                const bool src0_present = (d.flags & LINX_IOT_S0V) == 0;
-                const bool src1_present = (d.flags & LINX_IOT_S1V) == 0;
-                unsigned src_tile = 0;
-                unsigned dst_tile = 0;
-                if (src0_present) {
-                    if (!linx_tile_get_bound_source(env, i, 0, &src_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else if (src1_present) {
-                    if (!linx_tile_get_bound_source(env, i, 1, &src_tile)) {
-                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                        break;
-                    }
-                } else {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                    break;
-                }
-                if (!linx_tile_get_bound_output(env, i, &dst_tile)) {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                    break;
-                }
-                const unsigned size_code = d.has_size ? (d.size & 0x1f)
-                                                      : (env->tile_iot_size & 0x1f);
-                const uint64_t bytes64 = (size_code < 60u) ? (1ull << (size_code + 4u)) : 0ull;
-                if (bytes64 == 0 || bytes64 > LINX_TILE_MAX_BYTES ||
-                    src_tile >= LINX_TILE_SLOT_COUNT ||
-                    dst_tile >= LINX_TILE_SLOT_COUNT ||
-                    env->tile_reg_bytes[src_tile] < bytes64) {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                    break;
-                }
-                linx_tile_invalidate_acc_sources_on_output(
-                    dst_tile, &acc_sources_valid, acc_src0, acc_src1);
-                memcpy(env->tile_reg[dst_tile], env->tile_reg[src_tile],
-                       (size_t)bytes64);
-                memset((uint8_t *)env->tile_reg[dst_tile] + bytes64, 0,
-                       LINX_TILE_MAX_BYTES - (size_t)bytes64);
-                env->tile_reg_bytes[dst_tile] = (uint32_t)bytes64;
-                linx_tile_set_elem_bytes(env, dst_tile,
-                                         env->tile_reg_elem_bytes[src_tile]);
-                linx_tile_set_dtype(env, dst_tile,
-                                    env->tile_reg_dtype[src_tile]);
-                linx_tile_copy_shape(env, dst_tile, src_tile);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
-                if (!linx_tile_complete_bound_output(
-                        env, live, reserved, order, count_by_hand, i)) {
-                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                }
-            }
-            break;
-        }
         case LINX_TLSU_TPREFETCH: {
             const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
             for (unsigned i = 0; i < count; i++) {
@@ -17902,7 +18709,18 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
             }
             break;
         }
-        case LINX_TLSU_TSTORE: {
+        case LINX_TLSU_TSTORE:
+        case LINX_TLSU_TSTORE_SPART: {
+            if (env->tile_shared_binder_count != 0u) {
+                if (!linx_tile_shared_tstore_commit(env)) {
+                    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                }
+                break;
+            }
+            if ((env->tile_func & 0x1fu) == LINX_TLSU_TSTORE_SPART) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                break;
+            }
             const unsigned count = env->tile_iot_count ? env->tile_iot_count : 1u;
             for (unsigned i = 0; i < count; i++) {
                 LinxTileIOTDesc d;
@@ -18054,19 +18872,14 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 break;
             }
             if (!linx_tile_cube_compute(env, sources[0], sources[1], 0, 0, 0,
-                                        size_code, false, false, false)) {
+                                        size_code, false, false, false) ||
+                !linx_tile_cube_publish_explicit_output(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1, size_code)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                const LinxTileIOTDesc d =
-                    linx_tile_decode_iot(env->tile_iot_desc[i]);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
-            }
-            carrier_valid = 0;
-            acc_sources_valid = 0;
             break;
         }
         case LINX_CUBE_TMATMUL_BIAS:
@@ -18077,19 +18890,14 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                                                 &size_code) ||
                 !linx_tile_cube_compute(env, sources[0], sources[1], 0, 0,
                                         sources[2], size_code, false, true,
-                                        false)) {
+                                        false) ||
+                !linx_tile_cube_publish_explicit_output(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1, size_code)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                const LinxTileIOTDesc d =
-                    linx_tile_decode_iot(env->tile_iot_desc[i]);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
-            }
-            carrier_valid = 0;
-            acc_sources_valid = 0;
             break;
         }
         case LINX_CUBE_TMATMUL_MX:
@@ -18104,81 +18912,123 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
             const unsigned required = with_bias ? 5u : 4u;
             if (!linx_tile_collect_cube_sources(env, required, sources,
                                                 &size_code) ||
-                !linx_tile_cube_scale_legal(env, sources[2], sources[3]) ||
+                !linx_tile_cube_scale_legal(env, sources[1], sources[3]) ||
                 (with_bias &&
                  !linx_tile_cube_bias_legal(env, sources[4]))) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            if (!linx_tile_cube_compute(env, sources[0], sources[1],
-                                        sources[2], sources[3],
+            if (!linx_tile_cube_compute(env, sources[0], sources[2],
+                                        sources[1], sources[3],
                                         with_bias ? sources[4] : 0u,
                                         size_code, true, with_bias, false)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                const LinxTileIOTDesc d =
-                    linx_tile_decode_iot(env->tile_iot_desc[i]);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
+            if (!linx_tile_cube_publish_explicit_output(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1, size_code)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             }
-            carrier_valid = 0;
-            acc_sources_valid = 0;
             break;
         }
         case LINX_CUBE_TMATMUL_MX_ACC:
         case LINX_CUBE_TGEMV_MX_ACC: {
             unsigned sources[LINX_TILE_MAX_IOT * 2];
             unsigned size_code = 0;
-            if (!linx_tile_collect_cube_sources(env, 4u, sources,
+            if (!linx_tile_collect_cube_sources(env, 5u, sources,
                                                 &size_code) ||
-                env->tile_acc_bytes == 0u ||
-                !linx_tile_cube_scale_legal(env, sources[2], sources[3])) {
+                !linx_tile_cube_stage_accumulator(env, sources[0],
+                                                   size_code, true) ||
+                !linx_tile_cube_scale_legal(env, sources[2], sources[4])) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            if (!linx_tile_cube_compute(env, sources[0], sources[1],
-                                        sources[2], sources[3], 0u, size_code,
+            if (!linx_tile_cube_compute(env, sources[1], sources[3],
+                                        sources[2], sources[4], 0u, size_code,
                                         true, false, true)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                const LinxTileIOTDesc d =
-                    linx_tile_decode_iot(env->tile_iot_desc[i]);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
+            if (!linx_tile_cube_publish_explicit_output(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1, size_code)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
             }
-            carrier_valid = 0;
-            acc_sources_valid = 0;
             break;
         }
         case LINX_CUBE_TMATMUL_ACC:
         case LINX_CUBE_TGEMV_ACC: {
             unsigned sources[LINX_TILE_MAX_IOT * 2];
             unsigned size_code = 0;
-            if (!linx_tile_collect_cube_sources(env, 2u, sources,
+            if (!linx_tile_collect_cube_sources(env, 3u, sources,
                                                 &size_code) ||
-                env->tile_acc_bytes == 0u) {
+                !linx_tile_cube_stage_accumulator(env, sources[0],
+                                                   size_code, false)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            if (!linx_tile_cube_compute(env, sources[0], sources[1], 0, 0, 0,
-                                        size_code, false, false, true)) {
+            if (!linx_tile_cube_compute(env, sources[1], sources[2], 0, 0, 0,
+                                        size_code, false, false, true) ||
+                !linx_tile_cube_publish_explicit_output(
+                    env, live, reserved, order, count_by_hand,
+                    &carrier_valid, &carrier, &acc_sources_valid,
+                    acc_src0, acc_src1, size_code)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            for (unsigned i = 0; i < env->tile_iot_count; i++) {
-                const LinxTileIOTDesc d =
-                    linx_tile_decode_iot(env->tile_iot_desc[i]);
-                linx_tile_consume_bound_sources(env, live, i, &d,
-                                                order, count_by_hand,
-                                                &carrier_valid, &carrier);
+            break;
+        }
+        case LINX_CUBE_ACCCVT: {
+            LinxTileIOTDesc d;
+            if (env->tile_iot_count) {
+                d = linx_tile_decode_iot(env->tile_iot_desc[0]);
+            } else {
+                d.src0 = env->tile_iot_src0 & 0x3f;
+                d.src1 = env->tile_iot_src1 & 0x3f;
+                d.flags = env->tile_iot_flags & 0xf;
+                d.dst = env->tile_iot_dst & 0x7;
+                d.last = env->tile_iot_grp & 0x1;
+                d.reg = env->tile_iot_reg & 0x1f;
+                d.size = env->tile_iot_size & 0x1f;
+                d.has_size = env->tile_iot_size != 0;
             }
-            carrier_valid = 0;
+
+            unsigned dst_tile = 0;
+            if (!linx_tile_get_bound_output(env, 0, &dst_tile)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                break;
+            }
+            linx_tile_invalidate_acc_sources_on_output(
+                dst_tile, &acc_sources_valid, acc_src0, acc_src1);
+            const unsigned size_code = d.has_size ? (d.size & 0x1f)
+                                                  : (env->tile_iot_size & 0x1f);
+            if (!linx_tile_size_code_valid(size_code)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            }
+            if (!linx_tile_acccvt(env, dst_tile, size_code)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                break;
+            }
+            if (carrier_valid) {
+                linx_tile_release_source(live, order, count_by_hand,
+                                         carrier, false,
+                                         &carrier_valid, &carrier);
+            }
+            if (!linx_tile_complete_bound_output(
+                    env, live, reserved, order, count_by_hand, 0)) {
+                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            }
+            carrier_valid = 1;
+            carrier = dst_tile;
+            memset(env->tile_acc, 0, sizeof(env->tile_acc));
+            env->tile_acc_bytes = 0;
+            env->tile_acc_dtype = 0;
+            env->tile_acc_valid = 0;
+            env->tile_acc_cols = 0;
+            env->tile_acc_rows = 0;
             acc_sources_valid = 0;
             break;
         }
@@ -18511,23 +19361,14 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
     memcpy(order, env->tile_hand_order, sizeof(order));
     memcpy(count_by_hand, env->tile_hand_count, sizeof(count_by_hand));
 
-    /* Consume the header-frozen physical inputs before publishing outputs. */
+    /* Complete the reader bindings before publishing outputs. */
     for (unsigned i = 0; i < env->tile_iot_count; i++) {
-        const LinxTileIOTDesc d = linx_tile_decode_iot(env->tile_iot_desc[i]);
-
-        if ((env->tile_iot_src_valid[i] & 1u) != 0 &&
-            (d.flags & LINX_IOT_S0R) == 0) {
-            linx_tile_release_source(live, order, count_by_hand,
-                                     env->tile_iot_src_phys[i][0], false,
-                                     &env->tile_acc_carrier_valid,
-                                     &env->tile_acc_carrier);
-        }
-        if ((env->tile_iot_src_valid[i] & 2u) != 0 &&
-            (d.flags & LINX_IOT_S1R) == 0) {
-            linx_tile_release_source(live, order, count_by_hand,
-                                     env->tile_iot_src_phys[i][1], false,
-                                     &env->tile_acc_carrier_valid,
-                                     &env->tile_acc_carrier);
+        for (unsigned source = 0; source < 2; source++) {
+            if ((env->tile_iot_src_valid[i] & (1u << source)) != 0) {
+                linx_tile_preserve_v058_source_lifetime(
+                    live, order, count_by_hand,
+                    env->tile_iot_src_phys[i][source]);
+            }
         }
     }
 

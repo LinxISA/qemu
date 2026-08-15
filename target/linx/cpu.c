@@ -3772,7 +3772,9 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_bpc = 0;
     core4->collective_func = 0;
     core4->collective_dtype = 0;
-    core4->collective_shared_id = 0;
+    memset(core4->collective_shared_id, 0,
+           sizeof(core4->collective_shared_id));
+    core4->collective_shared_count = 0;
     core4->collective_m = 0;
     core4->collective_n = 0;
     core4->collective_k = 0;

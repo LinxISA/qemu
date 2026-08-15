@@ -20,6 +20,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.decode32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
         cls.tile_isa = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
         cls.tile_cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
@@ -86,6 +87,98 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("const float fused = fmaf(", self.helper)
         self.assertIn('.mnemonic="bstart_tfma"', self.meta)
         self.assertIn(".match=UINT64_C(0x1c19181)", self.meta)
+
+    def test_mx_cube_uses_normative_operand_order(self) -> None:
+        # PTO v0.58: [A, row-scale, B, column-scale, bias?], with an
+        # accumulator prepended for the ACC forms.
+        self.assertIn(
+            "? (accumulate ? sources[3] : sources[2])",
+            self.helper,
+        )
+        self.assertIn(
+            "accumulate ? sources[2] : sources[1]",
+            self.helper,
+        )
+        self.assertRegex(
+            self.helper,
+            r"linx_tile_cube_compute\(env, sources\[0\], sources\[2\],\s*"
+            r"sources\[1\], sources\[3\]",
+        )
+        self.assertRegex(
+            self.helper,
+            r"linx_tile_cube_compute\(env, sources\[1\], sources\[3\],\s*"
+            r"sources\[2\], sources\[4\]",
+        )
+
+    def test_tmatmul_dimensions_are_m_n_k(self) -> None:
+        self.assertRegex(
+            self.cube,
+            r"if \(cube_is_tmatmul_family\(env\)\) \{\s*"
+            r"return \(LinxTileCubeDimensions\) \{\s*"
+            r"\.m = cube_dimension\(env->lb\[0\]\),\s*"
+            r"\.n = cube_dimension\(env->lb\[1\]\),\s*"
+            r"\.k = cube_dimension\(env->lb\[2\]\),",
+        )
+        self.assertRegex(
+            self.cube,
+            r"physical_cols = cube_is_tmatmul_family\(env\)\s*"
+            r"\? env->tile_acc_cols",
+        )
+        self.assertNotIn("LB2 is destination Col", self.cube)
+
+    def test_addtpc_uses_mainline_page_relative_displacement(self) -> None:
+        addtpc = re.search(
+            r"static bool trans_addtpc\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        hl_addtpc = re.search(
+            r"static bool trans_hl_addtpc\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        for body in (addtpc, hl_addtpc):
+            self.assertIn("page_pc + offset", body)
+            self.assertRegex(body, r"page_pc\s*=.*& ~")
+            self.assertRegex(body, r"offset\s*=.*<< 12")
+            self.assertNotIn("current_pc + offset", body)
+            self.assertNotRegex(body, r"offset\s*<<=\s*1")
+
+    def test_scalar_right_modifier_mapping_matches_asl(self) -> None:
+        arithmetic = re.search(
+            r"static TCGv_i64 linx_srcR_addsub\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        logical = re.search(
+            r"static TCGv_i64 linx_srcR_logic\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        compare = re.search(
+            r"static TCGv_i64 linx_srcR_compare\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        select = re.search(
+            r"static TCGv_i64 linx_srcR_select\(.*?\n\}", self.translate, re.S
+        ).group(0)
+
+        for body in (arithmetic, logical):
+            self.assertRegex(body, r"case 0: /\* no modifier \*/")
+            self.assertRegex(body, r"case 1: /\* \.sw \*/")
+            self.assertRegex(body, r"case 2: /\* \.uw \*/")
+        self.assertRegex(arithmetic, r"case 3: /\* \.neg \*/")
+        self.assertRegex(logical, r"case 3: /\* \.not \*/")
+        self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
+        self.assertIn("(srcRType & 0x3) == 3", select)
+
+        for name in ("trans_cmp_eq", "trans_cmp_ne", "trans_setc_eq", "trans_setc_ne"):
+            body = re.search(
+                rf"static bool {name}\(.*?\n\}}", self.translate, re.S
+            ).group(0)
+            self.assertIn("linx_srcR_compare", body)
+        csel = re.search(
+            r"static bool trans_csel\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        self.assertIn("linx_srcR_select", csel)
+
+    def test_shared_tstore_profiles_are_executable(self) -> None:
+        self.assertIn("bstart_tstore_spart", self.decode32)
+        self.assertIn("trans_bstart_tstore_spart", self.translate)
+        self.assertIn("LINX_TLSU_TSTORE_SPART = 14", self.helper)
+        self.assertIn("linx_tile_shared_tstore_legal", self.helper)
+        self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)

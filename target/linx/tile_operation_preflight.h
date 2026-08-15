@@ -8,6 +8,168 @@
 
 #include "cpu.h"
 
+static inline bool linx_tile_value_reduction_axis(uint32_t impl,
+                                                  bool *row_reduce)
+{
+    if ((impl >= 0x012u && impl <= 0x014u) || impl == 0x035u) {
+        if (row_reduce != NULL) {
+            *row_reduce = true;
+        }
+        return true;
+    }
+    if ((impl >= 0x015u && impl <= 0x017u) || impl == 0x038u) {
+        if (row_reduce != NULL) {
+            *row_reduce = false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Reduction validity follows the source descriptor; TSize supplies capacity. */
+static inline bool linx_tile_value_reduction_descriptor(
+    uint32_t impl, uint32_t source_cols, uint32_t source_rows,
+    uint32_t bytes, unsigned elem_bytes, uint32_t *valid_cols,
+    uint32_t *valid_rows, uint32_t *cols, uint32_t *rows)
+{
+    bool row_reduce;
+    uint32_t output_count;
+
+    if (!linx_tile_value_reduction_axis(impl, &row_reduce)) {
+        return false;
+    }
+    source_cols = source_cols == 0u ? 1u : source_cols;
+    source_rows = source_rows == 0u ? 1u : source_rows;
+    output_count = row_reduce ? source_rows : source_cols;
+    if (elem_bytes == 0u || output_count == 0u ||
+        bytes < output_count * elem_bytes ||
+        bytes % (output_count * elem_bytes) != 0u) {
+        return false;
+    }
+
+    if (row_reduce) {
+        *valid_cols = 1u;
+        *valid_rows = source_rows;
+        *cols = bytes / (output_count * elem_bytes);
+        *rows = source_rows;
+    } else {
+        *valid_cols = source_cols;
+        *valid_rows = 1u;
+        *cols = source_cols;
+        *rows = bytes / (source_cols * elem_bytes);
+    }
+    return *cols != 0u && *rows != 0u;
+}
+
+/*
+ * TTRANS swaps the source valid rectangle.  Destination physical columns are
+ * supplied by B.DIM LB2, while physical rows derive exactly from capacity.
+ * Keep this pure so output binding can reject an illegal descriptor before
+ * publishing any Tile state.
+ */
+static inline bool linx_tile_transpose_descriptor(
+    uint32_t source_valid_cols, uint32_t source_valid_rows,
+    uint32_t source_cols, uint32_t source_rows, uint32_t bytes,
+    unsigned elem_bytes, uint32_t destination_cols,
+    uint32_t *destination_valid_cols, uint32_t *destination_valid_rows,
+    uint32_t *destination_cols_out, uint32_t *destination_rows)
+{
+    const uint64_t destination_row_bytes =
+        (uint64_t)destination_cols * elem_bytes;
+
+    if (destination_valid_cols == NULL || destination_valid_rows == NULL ||
+        destination_cols_out == NULL || destination_rows == NULL ||
+        source_valid_cols == 0u || source_valid_rows == 0u ||
+        source_valid_cols > source_cols || source_valid_rows > source_rows ||
+        elem_bytes == 0u || bytes == 0u || destination_cols == 0u ||
+        destination_row_bytes > bytes ||
+        bytes % destination_row_bytes != 0u) {
+        return false;
+    }
+
+    const uint32_t rows = bytes / destination_row_bytes;
+    if (source_valid_rows > destination_cols ||
+        source_valid_cols > rows || destination_cols > UINT16_MAX ||
+        rows > UINT16_MAX) {
+        return false;
+    }
+
+    *destination_valid_cols = source_valid_rows;
+    *destination_valid_rows = source_valid_cols;
+    *destination_cols_out = destination_cols;
+    *destination_rows = rows;
+    return true;
+}
+
+/*
+ * PTO TCVT keeps the complete logical shape of its source while changing the
+ * element type.  A missing bundle dimension inherits the corresponding
+ * source field; destination rows still derive from its own byte capacity.
+ */
+static inline bool linx_tile_tcvt_descriptor(
+    uint32_t source_valid_cols, uint32_t source_valid_rows,
+    uint32_t source_cols, uint32_t source_rows, uint32_t bytes,
+    unsigned elem_bytes, uint32_t bundle_valid_cols,
+    uint32_t bundle_valid_rows, uint32_t bundle_cols,
+    uint32_t *destination_valid_cols, uint32_t *destination_valid_rows,
+    uint32_t *destination_cols, uint32_t *destination_rows)
+{
+    const uint32_t valid_cols = bundle_valid_cols != 0u
+                                    ? bundle_valid_cols : source_valid_cols;
+    const uint32_t valid_rows = bundle_valid_rows != 0u
+                                    ? bundle_valid_rows : source_valid_rows;
+    const uint32_t cols = bundle_cols != 0u ? bundle_cols : source_cols;
+    const uint64_t row_bytes = (uint64_t)cols * elem_bytes;
+
+    if (destination_valid_cols == NULL || destination_valid_rows == NULL ||
+        destination_cols == NULL || destination_rows == NULL ||
+        source_valid_cols == 0u || source_valid_rows == 0u ||
+        source_cols == 0u || source_rows == 0u ||
+        source_valid_cols > source_cols || source_valid_rows > source_rows ||
+        elem_bytes == 0u || bytes == 0u || row_bytes == 0u ||
+        row_bytes > bytes || bytes % row_bytes != 0u) {
+        return false;
+    }
+
+    const uint32_t rows = bytes / row_bytes;
+    if (valid_cols != source_valid_cols || valid_rows != source_valid_rows ||
+        cols != source_cols || rows != source_rows ||
+        valid_cols > cols || valid_rows > rows || cols > UINT16_MAX ||
+        rows > UINT16_MAX) {
+        return false;
+    }
+
+    *destination_valid_cols = valid_cols;
+    *destination_valid_rows = valid_rows;
+    *destination_cols = cols;
+    *destination_rows = rows;
+    return true;
+}
+
+/* TSTORE walks the source Tile descriptor; bundle LB dimensions do not
+ * redefine its valid rectangle or physical row stride. */
+static inline bool linx_tile_tstore_descriptor_shape(
+    uint32_t source_valid_cols, uint32_t source_valid_rows,
+    uint32_t source_cols, uint32_t source_rows, uint32_t bytes,
+    unsigned elem_bytes, uint32_t *tile_outer, uint32_t *tile_inner,
+    uint32_t *memory_outer, uint32_t *memory_inner)
+{
+    if (tile_outer == NULL || tile_inner == NULL || memory_outer == NULL ||
+        memory_inner == NULL || source_valid_cols == 0u ||
+        source_valid_rows == 0u || source_cols == 0u || source_rows == 0u ||
+        source_valid_cols > source_cols || source_valid_rows > source_rows ||
+        elem_bytes == 0u ||
+        (uint64_t)source_cols * source_rows * elem_bytes != bytes) {
+        return false;
+    }
+
+    *tile_outer = source_rows;
+    *tile_inner = source_cols;
+    *memory_outer = source_valid_rows;
+    *memory_inner = source_valid_cols;
+    return true;
+}
+
 static inline bool linx_tile_operation_preflight_resolve_ior(
     const CPULinxState *env, unsigned slot, unsigned *reg_out)
 {
@@ -129,7 +291,8 @@ static inline bool linx_tile_operation_pre_publish_legal(
     const bool custom_shape = impl == 0x00du || impl == 0x01cu ||
                               impl == 0x087u ||
                               impl == 0x089u || impl == 0x085u ||
-                              impl == 0x084u ||
+                              impl == 0x084u || impl == 0x105u ||
+                              impl == 0x01du ||
                               (impl >= 0x102u && impl <= 0x10bu);
 
     if (impl == 0x02cu) {
@@ -177,11 +340,65 @@ static inline bool linx_tile_operation_pre_publish_legal(
                env->tile_reg_dtype[src1] == dtype &&
                env->tile_reg_dtype[src2] == dtype;
     }
+    if (impl == 0x085u) { /* TEXTRACT */
+        unsigned row_reg;
+        unsigned col_reg;
+
+        if (!has_src0 || has_src1 || src0 >= LINX_TILE_SLOT_COUNT ||
+            !linx_tile_operation_preflight_resolve_ior(env, 0u, &row_reg) ||
+            !linx_tile_operation_preflight_resolve_ior(env, 1u, &col_reg)) {
+            return false;
+        }
+        return env->tile_reg_dtype[src0] == dtype &&
+               env->tile_reg_elem_bytes[src0] == elem_bytes &&
+               (env->gpr[row_reg] & UINT64_C(0xffff)) + valid_rows <=
+                   env->tile_reg_valid_rows[src0] &&
+               (env->gpr[col_reg] & UINT64_C(0xffff)) + valid_cols <=
+                   env->tile_reg_valid_cols[src0] &&
+               env->tile_reg_cols[src0] >= env->tile_reg_valid_cols[src0];
+    }
+    if (impl == 0x105u) { /* THISTOGRAM */
+        const unsigned selected_byte = (env->tile_attr_raw >> 12) & 0x3u;
+        const uint32_t source_dtype = has_src0
+                                          ? env->tile_reg_dtype[src0] & 0x1fu
+                                          : UINT32_MAX;
+        const uint32_t required_index_rows =
+            selected_byte <= 2u ? 3u - selected_byte : 0u;
+
+        if (!has_src0 || !has_src1 || has_src2 ||
+            src0 >= LINX_TILE_SLOT_COUNT || src1 >= LINX_TILE_SLOT_COUNT ||
+            dtype != 25u || elem_bytes != sizeof(uint32_t) ||
+            valid_cols < 256u ||
+            (source_dtype != 25u && source_dtype != 26u) ||
+            (source_dtype == 26u && selected_byte > 1u) ||
+            env->tile_reg_valid_rows[src0] != valid_rows ||
+            env->tile_reg_cols[src0] < env->tile_reg_valid_cols[src0]) {
+            return false;
+        }
+        if (source_dtype == 26u && selected_byte == 0u) {
+            return env->tile_reg_valid_rows[src1] >=
+                       env->tile_reg_valid_rows[src0] &&
+                   env->tile_reg_valid_cols[src1] >= 1u;
+        }
+        return source_dtype != 25u || required_index_rows == 0u ||
+               (env->tile_reg_valid_rows[src1] >= required_index_rows &&
+                env->tile_reg_valid_cols[src1] >= 1u);
+    }
     if (impl == 0x00du) { /* TCVT */
         return has_src0 && !has_src1 && src0 < LINX_TILE_SLOT_COUNT &&
-               env->tile_reg_valid_cols[src0] >= valid_cols &&
-               env->tile_reg_valid_rows[src0] >= valid_rows &&
-               env->tile_reg_cols[src0] == cols;
+               env->tile_reg_valid_cols[src0] == valid_cols &&
+               env->tile_reg_valid_rows[src0] == valid_rows &&
+               env->tile_reg_cols[src0] == cols &&
+               env->tile_reg_rows[src0] == rows;
+    }
+    if (impl == 0x01du) { /* TTRANS */
+        return has_src0 && !has_src1 && src0 < LINX_TILE_SLOT_COUNT &&
+               env->tile_reg_valid_rows[src0] != 0u &&
+               env->tile_reg_valid_cols[src0] != 0u &&
+               env->tile_reg_valid_rows[src0] <= env->tile_reg_rows[src0] &&
+               env->tile_reg_valid_cols[src0] <= env->tile_reg_cols[src0] &&
+               env->tile_reg_dtype[src0] == dtype &&
+               env->tile_reg_elem_bytes[src0] == elem_bytes;
     }
     if (impl == 0x030u) { /* TREM */
         return has_src1 && linx_tile_operation_remainder_tile_divisors_legal(

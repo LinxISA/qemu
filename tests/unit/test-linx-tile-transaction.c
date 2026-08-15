@@ -180,6 +180,37 @@ static void test_invalid_datr_is_atomic(void)
     assert_rejected_without_state_change(&gate, LINX_TILE_TXN_ILLEGAL);
 }
 
+static void test_datr_must_zero_pad_is_unconsumed(void)
+{
+    const uint32_t tcmp_cmode0 = 0u;
+    const uint32_t tcmp_cmode2 = 2u << 22;
+    const uint32_t fp16_zero = (4u << 7) | (1u << 12);
+    const uint32_t fp32_max = (1u << 7) | (2u << 12);
+
+    g_assert_true(linx_tile_datr_applicable(6u, 0u, 0u, false));
+    g_assert_true(linx_tile_datr_applicable(7u, 0x00du, tcmp_cmode0, true));
+    g_assert_true(linx_tile_datr_applicable(7u, 0x00du, tcmp_cmode2, true));
+    g_assert_true(linx_tile_datr_applicable(7u, 0x01bu, fp16_zero, true));
+    g_assert_false(linx_tile_datr_applicable(6u, 0u, fp32_max, true));
+}
+
+static void test_v058_source_binding_preserves_producer_age(void)
+{
+    uint16_t live[LINX_TILE_HAND_COUNT] = { 0x3u };
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH] = {
+        { 1u, 0u },
+    };
+    uint8_t count[LINX_TILE_HAND_COUNT] = { 2u };
+
+    linx_tile_preserve_v058_source_lifetime(live, order, count, 1u);
+
+    g_assert_cmphex(live[0], ==, 0x3u);
+    g_assert_cmpuint(count[0], ==, 2u);
+    g_assert_cmpuint(order[0][0], ==, 1u);
+    g_assert_cmpuint(order[0][1], ==, 0u);
+    g_assert_true((live[0] & LINX_TILE_HAND_BIT(order[0][1])) != 0u);
+}
+
 static void test_invalid_cube_operand_is_atomic(void)
 {
     const LinxTileTxnGate gate = { true, false, true };
@@ -254,6 +285,26 @@ static void test_tstore_size_comes_from_source_footprint(void)
     g_free(env);
 }
 
+static void test_tstore_shape_comes_from_source_descriptor(void)
+{
+    uint32_t tile_outer = UINT32_MAX;
+    uint32_t tile_inner = UINT32_MAX;
+    uint32_t memory_outer = UINT32_MAX;
+    uint32_t memory_inner = UINT32_MAX;
+
+    g_assert_true(linx_tile_tstore_descriptor_shape(
+        4u, 2u, 8u, 16u, 256u, 2u, &tile_outer, &tile_inner,
+        &memory_outer, &memory_inner));
+    g_assert_cmpuint(tile_outer, ==, 16u);
+    g_assert_cmpuint(tile_inner, ==, 8u);
+    g_assert_cmpuint(memory_outer, ==, 2u);
+    g_assert_cmpuint(memory_inner, ==, 4u);
+
+    g_assert_false(linx_tile_tstore_descriptor_shape(
+        4u, 2u, 8u, 16u, 512u, 2u, &tile_outer, &tile_inner,
+        &memory_outer, &memory_inner));
+}
+
 static void test_operation_invalid_shape_is_atomic(void)
 {
     CPULinxState *env = new_atomicity_env();
@@ -291,7 +342,7 @@ static void test_operation_missing_tquant_scale_is_atomic(void)
     g_free(env);
 }
 
-static void test_operation_tcvt_accepts_different_carrier_rows(void)
+static void test_operation_tcvt_requires_matching_shape(void)
 {
     CPULinxState *env = new_atomicity_env();
     const unsigned sources[1] = { 0u };
@@ -305,11 +356,101 @@ static void test_operation_tcvt_accepts_different_carrier_rows(void)
     env->tile_reg_rows[0] = 32u;
 
     g_assert_true(linx_tile_operation_pre_publish_legal(
+        env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 32u));
+    g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
     env->tile_reg_valid_rows[0] = 31u;
     g_assert_false(linx_tile_operation_pre_publish_legal(
         env, 0x00du, sources, 1u, 19u, 1u, 32u, 32u, 32u, 128u));
     g_free(env);
+}
+
+static void test_tcvt_destination_descriptor(void)
+{
+    uint32_t valid_cols = UINT32_MAX;
+    uint32_t valid_rows = UINT32_MAX;
+    uint32_t cols = UINT32_MAX;
+    uint32_t rows = UINT32_MAX;
+
+    g_assert_true(linx_tile_tcvt_descriptor(
+        4u, 2u, 8u, 16u, 256u, 2u, 4u, 2u, 0u,
+        &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, 4u);
+    g_assert_cmpuint(valid_rows, ==, 2u);
+    g_assert_cmpuint(cols, ==, 8u);
+    g_assert_cmpuint(rows, ==, 16u);
+
+    valid_cols = valid_rows = cols = rows = UINT32_MAX;
+    g_assert_false(linx_tile_tcvt_descriptor(
+        4u, 2u, 8u, 16u, 256u, 2u, 4u, 2u, 4u,
+        &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, UINT32_MAX);
+    g_assert_cmpuint(valid_rows, ==, UINT32_MAX);
+    g_assert_cmpuint(cols, ==, UINT32_MAX);
+    g_assert_cmpuint(rows, ==, UINT32_MAX);
+
+    g_assert_false(linx_tile_tcvt_descriptor(
+        4u, 2u, 8u, 16u, 512u, 2u, 4u, 2u, 0u,
+        &valid_cols, &valid_rows, &cols, &rows));
+}
+
+static void test_value_reduction_destination_descriptors(void)
+{
+    uint32_t valid_cols;
+    uint32_t valid_rows;
+    uint32_t cols;
+    uint32_t rows;
+
+    g_assert_true(linx_tile_value_reduction_descriptor(
+        0x012u, 8u, 8u, 128u, 4u, &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, 1u);
+    g_assert_cmpuint(valid_rows, ==, 8u);
+    g_assert_cmpuint(cols, ==, 4u);
+    g_assert_cmpuint(rows, ==, 8u);
+
+    g_assert_true(linx_tile_value_reduction_descriptor(
+        0x015u, 8u, 8u, 128u, 4u, &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, 8u);
+    g_assert_cmpuint(valid_rows, ==, 1u);
+    g_assert_cmpuint(cols, ==, 8u);
+    g_assert_cmpuint(rows, ==, 4u);
+
+    g_assert_true(linx_tile_value_reduction_axis(0x035u, NULL));
+    g_assert_true(linx_tile_value_reduction_axis(0x038u, NULL));
+
+    g_assert_false(linx_tile_value_reduction_descriptor(
+        0x012u, 8u, 8u, 16u, 4u, &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_false(linx_tile_value_reduction_descriptor(
+        0x000u, 8u, 8u, 128u, 4u, &valid_cols, &valid_rows, &cols, &rows));
+}
+
+static void test_transpose_destination_descriptor(void)
+{
+    uint32_t valid_cols = UINT32_MAX;
+    uint32_t valid_rows = UINT32_MAX;
+    uint32_t cols = UINT32_MAX;
+    uint32_t rows = UINT32_MAX;
+
+    g_assert_true(linx_tile_transpose_descriptor(
+        32u, 16u, 64u, 16u, 1024u, 2u, 16u,
+        &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, 16u);
+    g_assert_cmpuint(valid_rows, ==, 32u);
+    g_assert_cmpuint(cols, ==, 16u);
+    g_assert_cmpuint(rows, ==, 32u);
+
+    valid_cols = valid_rows = cols = rows = UINT32_MAX;
+    g_assert_false(linx_tile_transpose_descriptor(
+        32u, 16u, 64u, 16u, 512u, 2u, 16u,
+        &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(valid_cols, ==, UINT32_MAX);
+    g_assert_cmpuint(valid_rows, ==, UINT32_MAX);
+    g_assert_cmpuint(cols, ==, UINT32_MAX);
+    g_assert_cmpuint(rows, ==, UINT32_MAX);
+
+    g_assert_false(linx_tile_transpose_descriptor(
+        65u, 16u, 64u, 16u, 1024u, 2u, 16u,
+        &valid_cols, &valid_rows, &cols, &rows));
 }
 
 static void test_operation_zero_tquant_scale_is_atomic(void)
@@ -443,6 +584,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/tile-transaction/invalid-datr",
                     test_invalid_datr_is_atomic);
+    g_test_add_func("/linx/tile-transaction/datr-must-zero-pad",
+                    test_datr_must_zero_pad_is_unconsumed);
+    g_test_add_func("/linx/tile-transaction/v058-source-lifetime",
+                    test_v058_source_binding_preserves_producer_age);
     g_test_add_func("/linx/tile-transaction/invalid-cube-operand",
                     test_invalid_cube_operand_is_atomic);
     g_test_add_func("/linx/tile-transaction/allocation-failure",
@@ -453,12 +598,20 @@ int main(int argc, char **argv)
                     test_shared_allocation_accepts_only_compatible_subsets);
     g_test_add_func("/linx/tile-transaction/tstore-source-footprint",
                     test_tstore_size_comes_from_source_footprint);
+    g_test_add_func("/linx/tile-transaction/tstore-source-shape",
+                    test_tstore_shape_comes_from_source_descriptor);
     g_test_add_func("/linx/tile-transaction/operation-invalid-shape",
                     test_operation_invalid_shape_is_atomic);
     g_test_add_func("/linx/tile-transaction/operation-missing-tquant-scale",
                     test_operation_missing_tquant_scale_is_atomic);
     g_test_add_func("/linx/tile-transaction/operation-tcvt-carrier-shape",
-                    test_operation_tcvt_accepts_different_carrier_rows);
+                    test_operation_tcvt_requires_matching_shape);
+    g_test_add_func("/linx/tile-transaction/tcvt-descriptor",
+                    test_tcvt_destination_descriptor);
+    g_test_add_func("/linx/tile-transaction/value-reduction-descriptors",
+                    test_value_reduction_destination_descriptors);
+    g_test_add_func("/linx/tile-transaction/transpose-descriptor",
+                    test_transpose_destination_descriptor);
     g_test_add_func("/linx/tile-transaction/operation-zero-tquant-scale",
                     test_operation_zero_tquant_scale_is_atomic);
     g_test_add_func("/linx/tile-transaction/operation-trem-zero-tile-divisor",

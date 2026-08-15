@@ -36,6 +36,7 @@ typedef struct LinxSharedTileLane {
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
     uint32_t bytes;
     uint32_t dtype;
+    uint8_t layout;
     uint16_t valid_cols;
     uint16_t valid_rows;
     uint16_t cols;
@@ -47,6 +48,11 @@ typedef struct LinxSharedTileVersion {
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;
+    uint8_t layout;
+    uint16_t valid_cols;
+    uint16_t valid_rows;
+    uint16_t cols;
+    uint16_t rows;
     uint64_t producer_bpc;
     uint8_t allocation_mask;
     uint8_t initialized_mask;
@@ -60,7 +66,8 @@ typedef struct LinxCore4State {
     uint64_t collective_bpc;
     uint32_t collective_func;
     uint32_t collective_dtype;
-    uint32_t collective_shared_id;
+    uint32_t collective_shared_id[2];
+    uint8_t collective_shared_count;
     uint32_t collective_m;
     uint32_t collective_n;
     uint32_t collective_k;
