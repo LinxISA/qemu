@@ -28,7 +28,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn(".mttcg_supported = false", self.cpu)
 
     def test_vmstate_v19_does_not_claim_backward_compatibility(self) -> None:
-        self.assertIn(".version_id = 19", self.cpu)
+        self.assertIn(".version_id = 21", self.cpu)
         self.assertIn(".minimum_version_id = 19", self.cpu)
         vmstate = self.cpu[
             self.cpu.index("static const VMStateDescription vmstate_linx_cpu") :
@@ -47,6 +47,44 @@ class V058ReviewContractTests(unittest.TestCase):
             r"LINX_TILE_SLOT_COUNT, 19\),\s*VMSTATE_END_OF_LIST",
         )
         self.assertNotIn("if (version_id < 19)", self.cpu)
+
+    def test_fpatr_is_consumed_and_inactive_acr_migration_is_rejected(self) -> None:
+        cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
+        convert = cube.split("bool linx_tile_accumulator_convert", 1)[1]
+        self.assertIn("linx_tile_fpatr_postprocess", convert)
+        self.assertIn("tile_fpatr_raw", cube)
+        self.assertIn("tile_fpatr_valid", cube)
+        pre_save = self.cpu.split("static int linx_cpu_pre_save", 1)[1]
+        pre_save = pre_save.split("static bool linx_cpu_post_load", 1)[0]
+        self.assertIn("acr_block_state[acr].tile_fpatr_valid", pre_save)
+        vmstate = self.cpu.split("static const VMStateDescription vmstate_linx_cpu", 1)[1]
+        self.assertIn("VMSTATE_UINT32_V(env.tile_fpatr_raw, LinxCPU, 20)", vmstate)
+
+    def test_fpatr_position_is_fail_closed_and_executable(self) -> None:
+        helper = self.helper[
+            self.helper.index("HELPER(linx_validate_fpatr_position)") :
+            self.helper.index("HELPER(linx_tile_reset_block)")
+        ]
+        self.assertIn("env->blocktype == LINX_BLOCK_CUBE", helper)
+        self.assertIn("env->tile_fpatr_valid", helper)
+        self.assertIn("env->tile_ior_count", helper)
+        self.assertIn("env->tile_iot_count", helper)
+        self.assertIn("env->tile_iot_valid", helper)
+        fpatr = self.translate.split("static bool trans_b_fpatr", 1)[1]
+        fpatr = fpatr.split("static bool trans_b_hint", 1)[0]
+        self.assertLess(
+            fpatr.index("gen_helper_linx_validate_fpatr_position"),
+            fpatr.index("tile_fpatr_raw"),
+        )
+        pre_save = self.cpu.split("static int linx_cpu_pre_save", 1)[1]
+        pre_save = pre_save.split("static bool linx_cpu_post_load", 1)[0]
+        self.assertIn("acr_block_state[acr].tile_ior_count", pre_save)
+        fixture = (ROOT / "tests/linxisa/fpatr_position_contract.s").read_text()
+        runner = (ROOT / "scripts/linxisa/run-fpatr-position-contract.sh").read_text()
+        for name in ("non_cube", "duplicate", "post_ior", "post_iot", "post_ios"):
+            self.assertIn(name, fixture)
+        self.assertIn("fpatr_position_cross_tb", fixture)
+        self.assertIn("illegal B.FPATR position", runner)
 
     def test_signed_divrem_overflow_remainder_is_zero(self) -> None:
         scalar = self.translate[

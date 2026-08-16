@@ -16,6 +16,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.insn16 = (TARGET / "insn16.decode").read_text(encoding="utf-8")
         cls.insn32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
+        cls.insn64 = (TARGET / "insn64.decode").read_text(encoding="utf-8")
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
@@ -109,6 +110,23 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertIn("LINX_BLOCK_OPERATION", self.helper)
         self.assertNotIn("LINX_BLOCK_TMA", self.helper)
         self.assertNotIn('return "tma"', self.helper)
+
+    def test_v0581_new_exact_forms_are_decoded(self) -> None:
+        expected = {
+            "b_fpatr": ("0x7fff", "0x2023"),
+            "start_call_32": ("0xf83f000f", "0x50160002"),
+            "start_icall_32": ("0xf83fffff", "0x50166001"),
+            "l_bstop": ("0xffffffffffffffff", "0x10000000f"),
+        }
+        for decode_name, (mask, match) in expected.items():
+            with self.subTest(decode_name=decode_name):
+                self.assertIn(f'.mnemonic="{decode_name}"', self.meta)
+                self.assertIn(f".mask=UINT64_C({mask})", self.meta)
+                self.assertIn(f".match=UINT64_C({match})", self.meta)
+
+        self.assertRegex(self.insn32, r"(?m)^b_fpatr\s+")
+        self.assertRegex(self.insn32, r"(?m)^start_icall_32\s+")
+        self.assertRegex(self.insn64, r"(?m)^l_bstop\s+")
 
 
 if __name__ == "__main__":

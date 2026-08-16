@@ -175,6 +175,148 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define R_LINX_TLSDESC 31
 #define R_LINX_IRELATIVE 32
 
+#define PTO_NT_ISA_IDENTITY 1
+static const char linx_pto_isa_identity[] =
+    "{\"encoding_abi\":\"pto-isa-0.58.1-mode-function-v1\","
+    "\"encoding_projection_sha256\":"
+    "\"89b872d6eaf0252200bc9349d49b9346e2a69d894cdcc2dcd0fd71911c1e0b8c\","
+    "\"release\":\"0.58.1\"}";
+
+static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
+{
+    return offset <= len && size <= (uint64_t)len - offset;
+}
+
+static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
+                                         unsigned *identity_count,
+                                         Error **errp)
+{
+    size_t offset = 0;
+
+    while (offset < size) {
+        uint32_t namesz, descsz, type;
+        size_t name_offset, desc_offset, next;
+
+        if (size - offset < 3u * sizeof(uint32_t)) {
+            error_setg(errp, "malformed .note.pto.isa header");
+            return false;
+        }
+        memcpy(&namesz, notes + offset, sizeof(namesz));
+        memcpy(&descsz, notes + offset + 4, sizeof(descsz));
+        memcpy(&type, notes + offset + 8, sizeof(type));
+        name_offset = offset + 12;
+        if (namesz > size - name_offset) {
+            error_setg(errp, "malformed .note.pto.isa owner");
+            return false;
+        }
+        desc_offset = name_offset + QEMU_ALIGN_UP(namesz, 4);
+        if (desc_offset > size || descsz > size - desc_offset) {
+            error_setg(errp, "malformed .note.pto.isa descriptor");
+            return false;
+        }
+        next = desc_offset + QEMU_ALIGN_UP(descsz, 4);
+        if (next > size) {
+            error_setg(errp, "malformed .note.pto.isa alignment");
+            return false;
+        }
+
+        if (namesz >= 3 && memcmp(notes + name_offset, "PTO", 3) == 0) {
+            if (namesz != 4 || notes[name_offset + 3] != '\0' ||
+                type != PTO_NT_ISA_IDENTITY ||
+                descsz != sizeof(linx_pto_isa_identity) - 1 ||
+                memcmp(notes + desc_offset, linx_pto_isa_identity,
+                       sizeof(linx_pto_isa_identity) - 1) != 0) {
+                error_setg(errp,
+                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.1");
+                return false;
+            }
+            (*identity_count)++;
+        }
+        offset = next;
+    }
+    return true;
+}
+
+static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
+                                           Error **errp)
+{
+    unsigned identity_count = 0;
+
+    if (len < EI_NIDENT || memcmp(buf, ELFMAG, SELFMAG) != 0) {
+        error_setg(errp, "not an ELF file");
+        return false;
+    }
+    if (buf[EI_DATA] != ELFDATA2LSB) {
+        error_setg(errp, "unsupported ELF endianness");
+        return false;
+    }
+
+    if (buf[EI_CLASS] == ELFCLASS32) {
+        const Elf32_Ehdr *eh;
+
+        if (len < sizeof(*eh)) {
+            error_setg(errp, "file too small for ELF32 header");
+            return false;
+        }
+        eh = (const Elf32_Ehdr *)buf;
+        if (eh->e_shentsize != sizeof(Elf32_Shdr) ||
+            !linx_file_range_valid(eh->e_shoff,
+                                   (uint64_t)eh->e_shnum * eh->e_shentsize,
+                                   len)) {
+            error_setg(errp, "malformed ELF32 section table");
+            return false;
+        }
+        for (unsigned i = 0; i < eh->e_shnum; i++) {
+            const Elf32_Shdr *sh = (const Elf32_Shdr *)(
+                buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
+            if (sh->sh_type == SHT_NOTE) {
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
+                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                  sh->sh_size,
+                                                  &identity_count, errp)) {
+                    return false;
+                }
+            }
+        }
+    } else if (buf[EI_CLASS] == ELFCLASS64) {
+        const Elf64_Ehdr *eh;
+
+        if (len < sizeof(*eh)) {
+            error_setg(errp, "file too small for ELF64 header");
+            return false;
+        }
+        eh = (const Elf64_Ehdr *)buf;
+        if (eh->e_shentsize != sizeof(Elf64_Shdr) ||
+            !linx_file_range_valid(eh->e_shoff,
+                                   (uint64_t)eh->e_shnum * eh->e_shentsize,
+                                   len)) {
+            error_setg(errp, "malformed ELF64 section table");
+            return false;
+        }
+        for (unsigned i = 0; i < eh->e_shnum; i++) {
+            const Elf64_Shdr *sh = (const Elf64_Shdr *)(
+                buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
+            if (sh->sh_type == SHT_NOTE) {
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
+                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                  sh->sh_size,
+                                                  &identity_count, errp)) {
+                    return false;
+                }
+            }
+        }
+    } else {
+        error_setg(errp, "unsupported ELF class");
+        return false;
+    }
+
+    if (identity_count == 0) {
+        error_setg(errp, "missing required .note.pto.isa identity for 0.58.1");
+        return false;
+    }
+    return true;
+}
+
 static inline uint32_t linx_set_lo12_i(uint32_t insn, uint32_t imm)
 {
     return (insn & 0x000fffffU) | (imm << 20);
@@ -3186,6 +3328,11 @@ static bool linx_load_elf(const char *filename,
     if (!g_file_get_contents(filename, (gchar **)&buf, &len, &gerr)) {
         error_setg(errp, "unable to read %s: %s", filename, gerr->message);
         g_clear_error(&gerr);
+        return false;
+    }
+
+    if (!linx_validate_pto_isa_identity(buf, len, errp)) {
+        g_free(buf);
         return false;
     }
 

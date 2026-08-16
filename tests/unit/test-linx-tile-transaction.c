@@ -399,6 +399,45 @@ static void test_operation_trems_zero_scalar_is_atomic(void)
     g_free(env);
 }
 
+static void test_acr_snapshot_preserves_fpatr_and_fused_icall_state(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+
+    env->tile_fpatr_raw = 1u << 23;
+    env->tile_fpatr_valid = 1u;
+    env->blocktype = 6u;
+    env->tile_ior_count = 1u;
+    env->tile_ior_desc[0] = UINT64_C(0x55aa);
+    env->tile_iot_count = 1u;
+    env->tile_iot_desc[0] = UINT64_C(0xaa55);
+    env->fused_icall_target = UINT64_C(0x123456789abcdef0);
+    env->fused_icall_target_valid = 1u;
+    linx_acr_save_block_state(env, 3u);
+
+    env->tile_fpatr_raw = 0;
+    env->tile_fpatr_valid = 0;
+    env->blocktype = 0;
+    env->tile_ior_count = 0;
+    env->tile_ior_desc[0] = 0;
+    env->tile_iot_count = 0;
+    env->tile_iot_desc[0] = 0;
+    env->fused_icall_target = 0;
+    env->fused_icall_target_valid = 0;
+    linx_acr_restore_block_state(env, 3u);
+
+    g_assert_cmphex(env->tile_fpatr_raw, ==, 1u << 23);
+    g_assert_cmpuint(env->tile_fpatr_valid, ==, 1u);
+    g_assert_cmpuint(env->blocktype, ==, 6u);
+    g_assert_cmpuint(env->tile_ior_count, ==, 1u);
+    g_assert_cmphex(env->tile_ior_desc[0], ==, UINT64_C(0x55aa));
+    g_assert_cmpuint(env->tile_iot_count, ==, 1u);
+    g_assert_cmphex(env->tile_iot_desc[0], ==, UINT64_C(0xaa55));
+    g_assert_cmphex(env->fused_icall_target, ==,
+                    UINT64_C(0x123456789abcdef0));
+    g_assert_cmpuint(env->fused_icall_target_valid, ==, 1u);
+    g_free(env);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -426,5 +465,7 @@ int main(int argc, char **argv)
                     test_operation_trem_zero_tile_divisor_is_atomic);
     g_test_add_func("/linx/tile-transaction/operation-trems-zero-scalar",
                     test_operation_trems_zero_scalar_is_atomic);
+    g_test_add_func("/linx/tile-transaction/acr-snapshot-fpatr-fused-icall",
+                    test_acr_snapshot_preserves_fpatr_and_fused_icall_state);
     return g_test_run();
 }

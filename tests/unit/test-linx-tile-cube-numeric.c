@@ -457,6 +457,51 @@ static void test_accumulator_convert_is_host_fenv_independent(void)
     g_free(env);
 }
 
+static void test_accumulator_convert_requested_rounding_and_subnormal(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    const double fp32_min_subnormal = ldexp(1.0, -149);
+    const double fp16_halfway = 1.0 + ldexp(1.0, -11);
+
+    g_assert_cmphex(run_accumulator_convert(env, 1, fp32_min_subnormal, 1,
+                                            false), ==, 0x00000001);
+    g_assert_cmphex(run_accumulator_convert(env, 4, fp16_halfway, 1, false),
+                    ==, 0x3c00);
+    g_assert_cmphex(run_accumulator_convert(env, 4, fp16_halfway, 4, false),
+                    ==, 0x3c01);
+    g_free(env);
+}
+
+static void test_fpatr_relu_postprocess_and_fail_closed(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    float negative = -2.0f;
+    uint32_t raw = UINT32_MAX;
+
+    memset(env->tile_acc, 0, sizeof(env->tile_acc));
+    memcpy(env->tile_acc, &negative, sizeof(negative));
+    env->tile_acc_bytes = sizeof(negative);
+    env->tile_acc_dtype = LINX_TILE_ACC_FP32;
+    env->tile_acc_valid = 1;
+    env->tile_acc_rows = 1;
+    env->tile_acc_cols = 1;
+    env->tile_dtype = 1;
+    env->tile_reg_capacity[31] = 16;
+    env->tile_fpatr_valid = 1;
+    env->tile_fpatr_raw = 1u << 23; /* ReluMode=ReLU, PreQuant=None. */
+    g_assert_true(linx_tile_accumulator_convert(env, 31, 0));
+    memcpy(&raw, env->tile_reg[31], sizeof(raw));
+    g_assert_cmphex(raw, ==, 0x00000000);
+
+    memset(env->tile_reg[31], 0xa5, sizeof(env->tile_reg[31]));
+    env->tile_fpatr_raw = 2u << 23; /* Parameterized LReLU is unavailable. */
+    g_assert_false(linx_tile_accumulator_convert(env, 31, 0));
+    for (unsigned i = 0; i < G_N_ELEMENTS(env->tile_reg[31]); i++) {
+        g_assert_cmphex(env->tile_reg[31][i], ==, 0xa5a5a5a5);
+    }
+    g_free(env);
+}
+
 static void test_accumulator_convert_saturates_every_float_target(void)
 {
     static const struct {
@@ -655,6 +700,10 @@ int main(int argc, char **argv)
                     test_accumulator_convert_all_rounding_modes);
     g_test_add_func("/linx/cube/accumulator_convert-host-fenv",
                     test_accumulator_convert_is_host_fenv_independent);
+    g_test_add_func("/linx/cube/accumulator_convert-requested-rounding-subnormal",
+                    test_accumulator_convert_requested_rounding_and_subnormal);
+    g_test_add_func("/linx/cube/fpatr-postprocess",
+                    test_fpatr_relu_postprocess_and_fail_closed);
     g_test_add_func("/linx/cube/accumulator_convert-saturation",
                     test_accumulator_convert_saturates_every_float_target);
     g_test_add_func("/linx/cube/accumulator_convert-signed-zero",
