@@ -9,7 +9,7 @@ QEMU_BIN="${QEMU_BIN:-${QEMU_BUILD:-$ROOT/build-linx}/qemu-system-linx64}"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/linxisa-fpatr-position.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
-for case_id in 0 1 2 3; do
+for case_id in 0 1 2 3 4; do
   elf="$tmp/fpatr-position-$case_id.o"
   log="$tmp/fpatr-position-$case_id.log"
   "$LLVM_MC" -triple=linx64 -filetype=obj --defsym="CASE=$case_id" \

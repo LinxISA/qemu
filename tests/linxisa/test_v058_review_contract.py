@@ -69,6 +69,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn("env->tile_fpatr_valid", helper)
         self.assertIn("env->tile_ior_count", helper)
         self.assertIn("env->tile_iot_count", helper)
+        self.assertIn("env->tile_iot_valid", helper)
         fpatr = self.translate.split("static bool trans_b_fpatr", 1)[1]
         fpatr = fpatr.split("static bool trans_b_hint", 1)[0]
         self.assertLess(
@@ -80,7 +81,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn("acr_block_state[acr].tile_ior_count", pre_save)
         fixture = (ROOT / "tests/linxisa/fpatr_position_contract.s").read_text()
         runner = (ROOT / "scripts/linxisa/run-fpatr-position-contract.sh").read_text()
-        for name in ("non_cube", "duplicate", "post_ior", "post_iot"):
+        for name in ("non_cube", "duplicate", "post_ior", "post_iot", "post_ios"):
             self.assertIn(name, fixture)
         self.assertIn("fpatr_position_cross_tb", fixture)
         self.assertIn("illegal B.FPATR position", runner)

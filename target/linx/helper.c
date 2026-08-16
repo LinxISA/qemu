@@ -16207,15 +16207,17 @@ void HELPER(linx_validate_fpatr_position)(CPULinxState *env,
     if (env->blocktype == LINX_BLOCK_CUBE &&
         !env->tile_fpatr_valid &&
         env->tile_ior_count == 0u &&
-        env->tile_iot_count == 0u) {
+        env->tile_iot_count == 0u &&
+        env->tile_iot_valid == 0u) {
         return;
     }
 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "Linx: illegal B.FPATR position @ 0x%" VADDR_PRIx
-                  " (blocktype=%u fpatr=%u ior=%u iot=%u)\n",
+                  " (blocktype=%u fpatr=%u ior=%u iot=%u iot_valid=%u)\n",
                   (vaddr)pc, env->blocktype, env->tile_fpatr_valid,
-                  env->tile_ior_count, env->tile_iot_count);
+                  env->tile_ior_count, env->tile_iot_count,
+                  env->tile_iot_valid);
     env->pending_trap_arg0 = linx_blockfmt_traparg_make(
         LINX_BLOCKFMT_FAMILY_FPATR, LINX_BLOCKFMT_DETAIL_ILLEGAL_COMBO);
     env->pending_trap_cause = linx_eblock_blockfmt_cause();

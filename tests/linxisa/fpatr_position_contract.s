@@ -35,6 +35,21 @@ fpatr_position_post_iot:
   .4byte 0x00031181
   .4byte 0x0000c013
   .4byte 0x00002023
+.elseif CASE == 4
+  C.BSTART DIRECT, .Lfpatr_post_ios
+  C.BSTOP
+  .p2align 12
+.Lfpatr_post_ios_page:
+  .space 4088
+.globl fpatr_position_post_ios
+fpatr_position_post_ios:
+.Lfpatr_post_ios:
+  .4byte 0x00031181
+  .4byte 0x00009013
+.if ((. - .Lfpatr_post_ios_page) & 4095) != 0
+  .error "post-B.IOS B.FPATR must start at a page boundary"
+.endif
+  .4byte 0x00002023
 .else
   .error "unknown B.FPATR placement case"
 .endif
