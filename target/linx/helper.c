@@ -16215,6 +16215,7 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
     env->tile_arg_format = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_fpatr_raw = 0;
     env->tile_ior_count = 0;
     env->vec_ri_count = 0;
     env->tile_iot_count = 0;

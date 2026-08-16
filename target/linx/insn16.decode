@@ -27,18 +27,10 @@ c_bstop         0000 0000 0000 0000
 c_bstart_direct .... .... .... 0010 %simm12
 c_bstart_cond   .... .... .... 0100 %simm12
 c_bstart_fp     0000 1000 1000 0000
-c_bstart_fp     0001 0000 1000 0000
-c_bstart_fp     0001 1000 1000 0000
-c_bstart_fp     0010 0000 1000 0000
 c_bstart_fp     0010 1000 1000 0000
-c_bstart_fp     0011 0000 1000 0000
 c_bstart_fp     0011 1000 1000 0000
 c_bstart_std_fall   0000 1000 0000 0000
-c_bstart_std_direct 0001 0000 0000 0000
-c_bstart_std_cond   0001 1000 0000 0000
-c_bstart_std_call   0010 0000 0000 0000
 c_bstart_std_ind    0010 1000 0000 0000
-c_bstart_std_icall  0011 0000 0000 0000
 c_bstart_std_ret    0011 1000 0000 0000
 c_bstart_sys    0000 1000 0100 0000
 c_bstart_mpar   0000 1000 1100 0000

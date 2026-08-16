@@ -1,17 +1,16 @@
 {
   "schema_version": 2,
-  "release": "0.58",
-  "profile_id": "pto-hardware-numeric-0.58-inherited-ieee-v1",
+  "release": "0.58.1",
+  "profile_id": "pto-hardware-numeric-0.58.1-ieee-v1",
   "status": "implementation-conformance-proven",
-  "inherited_numeric_baseline": "0.57.1",
   "truth_identity": {
-    "pto_spec_commit": "2f3f605e289b09d56ef5a9ba39fc80b52948a5f5",
-    "hardware_profile_sha256": "becfbefcc7a31408e5e5293802493f833f68a2fccebb3f9e8008d8b9f4e7658c",
-    "numeric_vectors_sha256": "b9f908deb9cfec412388e95f4532563cf4e462032b43d15996f0f7b4b93b4ec9"
+    "pto_spec_commit": "c381465b2b8e457e162a4246ee58bb9a2c5b49fd",
+    "hardware_profile_sha256": "170deadacb174c933c287231fb67da1046d7989f84b6852bf353d68a495d1755",
+    "numeric_vectors_sha256": "59c96cc2f45f8e8f3eebb8230338b21ec3a77a99e8fb5e1c7c7b391819a6aa81"
   },
   "truth_sources": {
     "hardware_profile": "spec/hardware-conformance-profile.json",
-    "numeric_vectors": "spec/evidence/pto-isa-0571-hardware-numeric-vectors.json"
+    "numeric_vectors": "spec/evidence/pto-isa-0581-hardware-numeric-vectors.json"
   },
   "normative_contract": {
     "ordinary_type_rows": 24,
@@ -20,7 +19,7 @@
     "mx_acc_type": "FP32",
     "mx_scale_type": "E8M0",
     "mx_scale_block_logical_k": 32,
-    "numeric_vector_cases": 75
+    "numeric_vector_cases": 104
   },
   "qemu_implementation_gap": {
     "currently_executable_cube_profile": "all 24 ordinary rows and all 8 ordered MX operand pairs",
@@ -28,7 +27,7 @@
     "conformance_claim": "proven",
     "implementation_conformance": "proven",
     "evidence": {
-      "canonical_contract_vectors_executed": 75,
+      "canonical_contract_vectors_executed": 104,
       "vector_executor": "tests/linxisa/test_v058_hardware_numeric_vectors.py",
       "shared_numeric_helpers": "target/linx/tile_numeric_058.h",
       "production_core": "target/linx/tile_cube_058.c",

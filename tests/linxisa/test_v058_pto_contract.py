@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -144,6 +145,64 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.iommu_runner)
         self.assertIn("subprocess.run", self.iommu_runner)
         self.assertIn("timeout=timeout", self.iommu_runner)
+
+    def test_engine_and_datr_tables_match_the_v0581_catalog(self) -> None:
+        catalog = json.loads(
+            (ROOT.parents[1] / "isa/v0.58/state/pto_ops.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            catalog["engine_counts"],
+            {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12},
+        )
+        field_bits = {
+            "Sat": 1 << 0, "Canonicalize": 1 << 1,
+            "DataType": 1 << 2, "RMode": 1 << 3,
+            "Layout": 1 << 4, "PadValueOrByteId": 1 << 5,
+            "CMode": 1 << 6,
+        }
+        expected = {"TEPL": [0] * 128, "TLSU": [0] * 32, "CUBE": [0] * 32}
+        for operation in catalog["operations"]:
+            raw_selector = operation.get("selector", operation["function"])
+            selector = int(raw_selector, 0) if isinstance(raw_selector, str) else raw_selector
+            expected[operation["family"]][selector] = sum(
+                field_bits[name]
+                for name in operation["datr_contract"]["allowed_nonzero_fields"]
+            )
+
+        for family, function_name in (
+            ("TEPL", "linx_tile_operation_datr_allowed"),
+            ("TLSU", "linx_tile_tlsu_datr_allowed"),
+            ("CUBE", "linx_tile_cube_datr_allowed"),
+        ):
+            body = self.tile_isa.split(f"{function_name}(uint32_t selector)", 1)[1]
+            body = body.split("};", 1)[0]
+            actual = [int(value, 16) for value in re.findall(r"0x([0-9a-f]{2})", body)]
+            self.assertEqual(actual, expected[family], family)
+
+    def test_v0581_elf_identity_is_validated_before_any_load(self) -> None:
+        virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
+        self.assertIn("linx_validate_pto_isa_identity", virt)
+        self.assertIn("pto-isa-0.58.1-mode-function-v1", virt)
+        self.assertIn(
+            "89b872d6eaf0252200bc9349d49b9346e2a69d894cdcc2dcd0fd71911c1e0b8c",
+            virt,
+        )
+        dispatch = virt.split("static bool linx_load_elf(", 1)[1]
+        validate = dispatch.index("linx_validate_pto_isa_identity")
+        first_loader = min(
+            dispatch.index("linx_load_elf32_rel"),
+            dispatch.index("linx_load_elf32_exec"),
+            dispatch.index("linx_load_elf64_rel"),
+            dispatch.index("linx_load_elf64_exec"),
+        )
+        self.assertLess(validate, first_loader)
+
+    def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
+        self.assertIn("if (brtype == LINX_BR_ICALL)", self.translate)
+        self.assertIn("ctx->tgt_modified = true;", self.translate)
+        self.assertIn("trans_start_icall_32", self.translate)
 
 
 if __name__ == "__main__":

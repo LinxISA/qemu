@@ -683,7 +683,7 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     tcg_gen_movi_i64(cpu_lb[0], 0);
     tcg_gen_movi_i64(cpu_lb[1], 0);
     tcg_gen_movi_i64(cpu_lb[2], 0);
-    ctx->tgt_modified = false;
+    ctx->tgt_modified = brtype == LINX_BR_ICALL;
     ctx->decoupled_header = false;
     ctx->ra_set = false;
     ctx->call_ra_target = 0;
@@ -698,8 +698,13 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     /* For FALL blocks: cpu_tgt remains 0 (unused) */
     if (brtype == LINX_BR_COND || brtype == LINX_BR_DIRECT || brtype == LINX_BR_CALL) {
         tcg_gen_movi_i64(cpu_tgt, initial_target);
-    } else {
+    } else if (brtype != LINX_BR_ICALL) {
         tcg_gen_movi_i64(cpu_tgt, 0);
+    }
+
+    if (brtype == LINX_BR_ICALL) {
+        /* Snapshot the existing BARG.BPCN target across the fused boundary. */
+        ctx->tgt_modified = true;
     }
 
     if (brtype == LINX_BR_CALL || brtype == LINX_BR_ICALL) {
@@ -2030,34 +2035,10 @@ static bool trans_c_bstart_std_fall(DisasContext *ctx, arg_c_bstart_std_fall *a)
     return linx_trans_c_bstart_std(ctx, LINX_BR_FALL);
 }
 
-static bool trans_c_bstart_std_direct(DisasContext *ctx, arg_c_bstart_std_direct *a)
-{
-    (void)a;
-    return linx_trans_c_bstart_std(ctx, LINX_BR_DIRECT);
-}
-
-static bool trans_c_bstart_std_cond(DisasContext *ctx, arg_c_bstart_std_cond *a)
-{
-    (void)a;
-    return linx_trans_c_bstart_std(ctx, LINX_BR_COND);
-}
-
-static bool trans_c_bstart_std_call(DisasContext *ctx, arg_c_bstart_std_call *a)
-{
-    (void)a;
-    return linx_trans_c_bstart_std(ctx, LINX_BR_CALL);
-}
-
 static bool trans_c_bstart_std_ind(DisasContext *ctx, arg_c_bstart_std_ind *a)
 {
     (void)a;
     return linx_trans_c_bstart_std(ctx, LINX_BR_IND);
-}
-
-static bool trans_c_bstart_std_icall(DisasContext *ctx, arg_c_bstart_std_icall *a)
-{
-    (void)a;
-    return linx_trans_c_bstart_std(ctx, LINX_BR_ICALL);
 }
 
 static bool trans_c_bstart_std_ret(DisasContext *ctx, arg_c_bstart_std_ret *a)
@@ -2179,6 +2160,11 @@ static bool trans_bstop(DisasContext *ctx, arg_bstop *a)
     /* pc_next has already been advanced, so fallthrough is just pc_next */
     linx_gen_block_end(ctx, ctx->base.pc_next);
     return true;
+}
+
+static bool trans_l_bstop(DisasContext *ctx, arg_l_bstop *a)
+{
+    return trans_bstop(ctx, (arg_bstop *)a);
 }
 
 static bool trans_bstart_call(DisasContext *ctx, arg_bstart_call *a)
@@ -2508,6 +2494,12 @@ static bool trans_bstart_tload(DisasContext *ctx, arg_bstart_tload *a)
 }
 
 static bool trans_bstart_tstore(DisasContext *ctx, arg_bstart_tstore *a)
+{
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
+}
+
+static bool trans_bstart_tstore_spart(DisasContext *ctx,
+                                      arg_bstart_tstore_spart *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
 }
@@ -2882,6 +2874,30 @@ static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
     tcg_gen_ori_i32(cpu_tile_attr_raw, cpu_tile_attr_raw, packed);
     tcg_gen_movi_i32(cpu_tile_attr_dtype, 0x100u | (a->dtype & 0x1fu));
     tcg_gen_movi_i32(cpu_tile_attr_pad, a->pad & 0x3u);
+    return true;
+}
+
+static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
+{
+    static const uint64_t prequant_mask = UINT64_C(0x000000ff1f9f303f);
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
+    }
+    if (a->prequant >= 64u ||
+        (prequant_mask & (UINT64_C(1) << a->prequant)) == 0u ||
+        a->relu > 3u || a->groupn > 9u) {
+        return linx_illegal(ctx);
+    }
+    tcg_gen_st_i32(
+        tcg_constant_i32((a->prequant << 26) | (a->relu << 23) |
+                         (a->groupn << 19) | (a->rowmax << 18) |
+                         (a->groupmax << 17) | (a->rowinit << 16) |
+                         (a->maxabs << 15)),
+        tcg_env, offsetof(CPULinxState, tile_fpatr_raw));
     return true;
 }
 
@@ -8922,7 +8938,6 @@ static bool trans_hl_qpush(DisasContext *ctx, arg_hl_qpush *a)
 static bool trans_hl_qpop(DisasContext *ctx, arg_hl_qpop *a)
 {
     (void)a->SrcL;
-    (void)a->SrcR;
     (void)a->e;
     (void)a->r;
     linx_set_dest(a->RegDst0, tcg_constant_i64(0));
@@ -9166,6 +9181,29 @@ static bool linx_trans_fused_bstart_call(DisasContext *ctx,
 static bool trans_start_call_32(DisasContext *ctx, arg_start_call_32 *a)
 {
     return linx_trans_fused_bstart_call(ctx, a->simm12, a->uimm5, 2);
+}
+
+static bool trans_start_icall_32(DisasContext *ctx, arg_start_icall_32 *a)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr ret_target = current_pc + 2u + ((vaddr)a->uimm5 << 1);
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+    linx_block_begin(ctx, LINX_BR_ICALL, 0);
+    linx_set_dest(LINX_REG_RA, tcg_constant_i64(ret_target));
+    ctx->ra_set = true;
+    ctx->call_ra_target = ret_target;
+    tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
+                   offsetof(CPULinxState, call_ra_set));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, call_setret_pending));
+    return true;
 }
 
 static bool trans_start_call_48(DisasContext *ctx, arg_start_call_48 *a)

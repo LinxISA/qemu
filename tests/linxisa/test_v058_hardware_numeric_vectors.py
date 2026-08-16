@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the 75 numeric vectors inherited unchanged by LinxISA 0.58."""
+"""Execute the official PTO ISA 0.58.1 numeric vectors."""
 
 import ctypes
 import json
@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VECTORS = ROOT / "tests/linxisa/pto-isa-0571-hardware-numeric-vectors.json"
+VECTORS = ROOT / "tests/linxisa/pto-isa-0581-hardware-numeric-vectors.json"
 DTYPE = {
     "FP64": 0, "FP32": 1, "TF32": 2, "HF32": 3, "FP16": 4,
     "BF16": 5, "HiF8": 6, "E4M3": 7, "E5M2": 8, "E3M2": 9,
@@ -150,7 +150,7 @@ class HardwareNumericVectors(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_all_75_canonical_vectors_execute(self):
+    def test_all_104_canonical_vectors_execute(self):
         groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
         executed = 0
 
@@ -202,6 +202,32 @@ class HardwareNumericVectors(unittest.TestCase):
             self.assertTrue(math.isnan(got) if isinstance(expected, float) and math.isnan(expected) else got == expected); executed += 1
         for v in groups["rounding"]:
             self.assertEqual(self.lib.v_round(float(v["input"]), RMODE[v["mode"]]), int(v["expected"])); executed += 1
+        for v in groups["rounding_before_saturation"]:
+            self.assertEqual(
+                self.lib.v_sat_int(float(v["input"]), DTYPE[v["destination"]]),
+                int(v["expected"]),
+            ); executed += 1
+        scalar_frm = {0: "RNE", 1: "RTM", 2: "RTP", 3: "RTZ", 4: "RNE", 7: "RNE"}
+        public_conversion = {
+            0: ("CAST_NONE", 0), 1: ("CAST_RINT", 1),
+            2: ("CAST_ROUND", 5), 3: ("CAST_FLOOR", 3),
+            4: ("CAST_CEIL", 4), 5: ("CAST_TRUNC", 2),
+            6: ("CAST_ODD", 6),
+        }
+        for v in groups["rounding_selection"]:
+            namespace = v["namespace"]
+            if namespace == "scalar-core-state-frm":
+                self.assertEqual(scalar_frm[v["raw"]], v["expected_mode"])
+            elif namespace == "bundle-rmode":
+                self.assertEqual((v["raw"], v["expected_mode"]), (0, "RTZ"))
+            elif v["raw"] == 7:
+                self.assertEqual(v["expected"], "reject-before-effects")
+            else:
+                self.assertEqual(
+                    public_conversion[v["raw"]],
+                    (v["public_name"], v["bundle_rmode"]),
+                )
+            executed += 1
         for v in groups["saturation"]:
             expected = int(v["expected"], 16) if v["expected"].startswith("0x") else int(v["expected"])
             got = self.lib.v_sat_fp16(number(v["input"])) if v["destination"] == "FP16" else self.lib.v_sat_int(number(v["input"]), DTYPE[v["destination"]])
@@ -213,8 +239,22 @@ class HardwareNumericVectors(unittest.TestCase):
             vals = (ctypes.c_double * 32)(*[number(x) for x in v["input_values"]]); out = (ctypes.c_uint * 32)()
             self.lib.v_sort(vals, out, 32, 0); self.assertEqual(list(out), v["ascending_expected_original_indices"])
             self.lib.v_sort(vals, out, 32, 1); self.assertEqual(list(out), v["descending_expected_original_indices"]); executed += 1
+        for v in groups["subnormal_policy"]:
+            if "raw" in v:
+                got = self.lib.v_decode(DTYPE[v["data_type"]], int(v["raw"], 16), 0)
+                if v["expected_class"] == "positive-subnormal":
+                    self.assertGreater(got, 0.0); self.assertLess(got, 2.0 ** -126)
+                else:
+                    self.assertGreaterEqual(got, 2.0 ** -126)
+            else:
+                unsupported = v["ftz"] or v["daz"] or v["operation_override"]
+                self.assertEqual(
+                    v["expected"],
+                    "reject-before-effects" if unsupported else "accept",
+                )
+            executed += 1
 
-        self.assertEqual(executed, 75)
+        self.assertEqual(executed, 104)
 
     def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):
         ordinary = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14,

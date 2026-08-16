@@ -739,6 +739,10 @@ typedef enum LinxOpcodeId {
     LINX_OP_C_BSTART_VSEQ = 734,
     LINX_OP_V_QPOP = 735,
     LINX_OP_V_QPUSH = 736,
+    LINX_OP_B_FPATR = 737,
+    LINX_OP_START_ICALL_32 = 738,
+    LINX_OP_L_BSTOP = 739,
+    LINX_OP_BSTART_TSTORE_SPART = 740,
 } LinxOpcodeId;
 
 #endif /* LINX_OPCODE_IDS_GEN_H */

@@ -153,3 +153,11 @@ _start:
   addi zero, 102, ->a1
   c.setc.tgt ra
   C.BSTOP
+
+  # Exact 0.58.1 BSTART.ICALL carrier.  This unreachable probe keeps the
+  # fused independent-return encoding under the native MC/runtime fixture;
+  # uimm5=0 records ra=P+2 while the indirect target comes from BARG.BPCN.
+.globl __linx_v0581_bstart_icall_probe
+__linx_v0581_bstart_icall_probe:
+  .4byte 0x50166001
+  C.BSTOP
