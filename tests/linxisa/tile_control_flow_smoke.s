@@ -8,7 +8,7 @@ _start:
 
 .Lloop:
   C.BSTART
-  BSTART.TLOAD INT32
+  BSTART.TLOAD S32
   C.BSTOP
 
   C.BSTART
