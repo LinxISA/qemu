@@ -44,7 +44,7 @@ for row in writebacks:
     if not isinstance(pc, int) or not isinstance(value, int):
         continue
     for displacement, name in expected:
-        if value == ((pc & ~0xFFF) + displacement) & ((1 << 64) - 1):
+        if value == (pc + displacement) & ((1 << 64) - 1):
             matched[name] += 1
 
 missing = [name for _, name in expected if matched[name] != 2]
@@ -52,5 +52,5 @@ if missing:
     print(f"error: missing ADDTPC ASL writeback(s): {', '.join(missing)}", file=sys.stderr)
     print(json.dumps(writebacks, indent=2), file=sys.stderr)
     sys.exit(1)
-print("ok: ADDTPC and HL.ADDTPC page-relative positive and negative displacements")
+print("ok: ADDTPC and HL.ADDTPC PTO #77 positive and negative page displacements")
 PY

@@ -126,7 +126,7 @@ class PtoV058ContractTests(unittest.TestCase):
         )
         self.assertNotIn("LB2 is destination Col", self.cube)
 
-    def test_addtpc_uses_mainline_page_relative_displacement(self) -> None:
+    def test_addtpc_uses_pto_signed_page_displacement_from_tpc(self) -> None:
         addtpc = re.search(
             r"static bool trans_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -134,10 +134,10 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static bool trans_hl_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
         for body in (addtpc, hl_addtpc):
-            self.assertIn("page_pc + offset", body)
-            self.assertRegex(body, r"page_pc\s*=.*& ~")
+            self.assertIn("current_pc + offset", body)
+            self.assertNotIn("page_pc", body)
+            self.assertNotRegex(body, r"&\s*~.*0xFFF")
             self.assertRegex(body, r"offset\s*=.*<< 12")
-            self.assertNotIn("current_pc + offset", body)
             self.assertNotRegex(body, r"offset\s*<<=\s*1")
 
     def test_scalar_right_modifier_mapping_matches_asl(self) -> None:

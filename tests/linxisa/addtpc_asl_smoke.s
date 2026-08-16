@@ -3,7 +3,7 @@
 _start:
   C.BSTART
 
-  # Mainline toolchain ADDTPC: destination = (TPC & ~0xFFF) + (SignExtend(imm) << 12).
+  # PTO #77: destination = TPC + (SignExtend(imm) << 12).
   addtpc 2, ->a1
   addtpc -2, ->a2
   hl.addtpc 2, ->a3
