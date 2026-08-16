@@ -1759,6 +1759,9 @@ static TCGTBCPUState linx_get_tb_cpu_state(CPUState *cs)
     if (env->tb_cosim_precheck) {
         flags |= LINX_TB_FLAG_COSIM_PRECHECK;
     }
+    if (env->fused_icall_target_valid) {
+        flags |= LINX_TB_FLAG_FUSED_ICALL;
+    }
     return (TCGTBCPUState){ .pc = env->pc, .flags = flags };
 }
 
@@ -4013,7 +4016,9 @@ static int linx_cpu_pre_save(void *opaque)
     for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
         if (acr != (env->acr & 0xfu) &&
             (env->acr_block_state[acr].tile_iot_valid ||
-             env->acr_block_state[acr].tile_iot_count)) {
+             env->acr_block_state[acr].tile_iot_count ||
+             env->acr_block_state[acr].tile_fpatr_valid ||
+             env->acr_block_state[acr].fused_icall_target_valid)) {
             return -EINVAL;
         }
     }
@@ -4037,6 +4042,12 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
 
+    if (version_id < 21) {
+        env->fused_icall_target = 0;
+        env->fused_icall_target_valid = 0;
+        env->tile_fpatr_valid = 0;
+    }
+
     if (version_id >= 12 && version_id < 16) {
         memcpy(env->tile_reg_capacity, env->tile_reg_bytes,
                sizeof(env->tile_reg_capacity));
@@ -4059,6 +4070,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->tile_attr_pad = 0;
         env->tile_attr_dtype = 0;
         env->tile_fpatr_raw = 0;
+        env->tile_fpatr_valid = 0;
         env->tile_ior_count = 0;
         memset(env->tile_ior_desc, 0, sizeof(env->tile_ior_desc));
         env->vec_ri_count = 0;
@@ -4328,7 +4340,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 20,
+    .version_id = 21,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4340,6 +4352,8 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32(env.carg, LinxCPU),
         VMSTATE_UINT32(env.brtype, LinxCPU),
         VMSTATE_UINT32(env.blocktype, LinxCPU),
+        VMSTATE_UINT64_V(env.fused_icall_target, LinxCPU, 21),
+        VMSTATE_UINT32_V(env.fused_icall_target_valid, LinxCPU, 21),
         VMSTATE_UINT64(env.body_tpc, LinxCPU),
         VMSTATE_UINT64(env.return_pc, LinxCPU),
         VMSTATE_UINT32(env.in_body, LinxCPU),
@@ -4377,6 +4391,7 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_V(env.tile_attr_pad, LinxCPU, 12),
         VMSTATE_UINT32_V(env.tile_attr_dtype, LinxCPU, 12),
         VMSTATE_UINT32_V(env.tile_fpatr_raw, LinxCPU, 20),
+        VMSTATE_UINT32_V(env.tile_fpatr_valid, LinxCPU, 21),
         VMSTATE_UINT32_V(env.tile_ior_count, LinxCPU, 12),
         VMSTATE_UINT64_ARRAY_V(env.tile_ior_desc, LinxCPU,
                                LINX_TILE_MAX_IOR, 12),

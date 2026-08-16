@@ -263,6 +263,7 @@ typedef enum LinxTemplateKind {
 #define LINX_TB_FLAG_USER_MMU (1u << 1)
 #define LINX_TB_FLAG_DBG_ACTIVE (1u << 2)
 #define LINX_TB_FLAG_COSIM_PRECHECK (1u << 3)
+#define LINX_TB_FLAG_FUSED_ICALL (1u << 4)
 
 /*
  * EBARG preservation stack (bring-up).
@@ -307,6 +308,8 @@ typedef struct LinxAcrBlockState {
     uint32_t blocktype;
     uint32_t call_ra_set;
     uint32_t call_setret_pending;
+    uint64_t fused_icall_target;
+    uint32_t fused_icall_target_valid;
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
@@ -347,6 +350,7 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
     uint32_t tile_fpatr_raw;
+    uint32_t tile_fpatr_valid;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
@@ -425,6 +429,8 @@ typedef struct CPUArchState {
     uint32_t blocktype;
     uint32_t call_ra_set;
     uint32_t call_setret_pending;
+    uint64_t fused_icall_target;
+    uint32_t fused_icall_target_valid;
 
     /* Decoupled-block state (B.TEXT out-of-line bodies). */
     uint64_t body_tpc;
@@ -477,6 +483,7 @@ typedef struct CPUArchState {
     uint32_t tile_attr_pad;
     uint32_t tile_attr_dtype;
     uint32_t tile_fpatr_raw;
+    uint32_t tile_fpatr_valid;
     uint32_t tile_ior_count;
     uint64_t tile_ior_desc[LINX_TILE_MAX_IOR];
     uint32_t vec_ri_count;
@@ -859,6 +866,8 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->blocktype = env->blocktype;
     s->call_ra_set = env->call_ra_set;
     s->call_setret_pending = env->call_setret_pending;
+    s->fused_icall_target = env->fused_icall_target;
+    s->fused_icall_target_valid = env->fused_icall_target_valid;
 
     s->body_tpc = env->body_tpc;
     s->body_end = env->body_end;
@@ -899,6 +908,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
     s->tile_attr_pad = env->tile_attr_pad;
     s->tile_attr_dtype = env->tile_attr_dtype;
     s->tile_fpatr_raw = env->tile_fpatr_raw;
+    s->tile_fpatr_valid = env->tile_fpatr_valid;
     s->tile_ior_count = env->tile_ior_count;
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         s->tile_ior_desc[i] = env->tile_ior_desc[i];
@@ -989,6 +999,8 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->blocktype = s->blocktype;
     env->call_ra_set = s->call_ra_set;
     env->call_setret_pending = s->call_setret_pending;
+    env->fused_icall_target = s->fused_icall_target;
+    env->fused_icall_target_valid = s->fused_icall_target_valid;
 
     env->body_tpc = s->body_tpc;
     env->body_end = s->body_end;
@@ -1029,6 +1041,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
     env->tile_attr_pad = s->tile_attr_pad;
     env->tile_attr_dtype = s->tile_attr_dtype;
     env->tile_fpatr_raw = s->tile_fpatr_raw;
+    env->tile_fpatr_valid = s->tile_fpatr_valid;
     env->tile_ior_count = s->tile_ior_count;
     for (i = 0; i < LINX_TILE_MAX_IOR; i++) {
         env->tile_ior_desc[i] = s->tile_ior_desc[i];

@@ -7809,6 +7809,8 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
         env->blocktype = 0;
         env->call_ra_set = 0;
         env->call_setret_pending = 0;
+        env->fused_icall_target = 0;
+        env->fused_icall_target_valid = 0;
         env->vec_p = 0;
         env->body_tpc = 0;
         env->body_end = 0;
@@ -16216,6 +16218,7 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
     env->tile_fpatr_raw = 0;
+    env->tile_fpatr_valid = 0;
     env->tile_ior_count = 0;
     env->vec_ri_count = 0;
     env->tile_iot_count = 0;

@@ -200,9 +200,44 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertLess(validate, first_loader)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
-        self.assertIn("if (brtype == LINX_BR_ICALL)", self.translate)
-        self.assertIn("ctx->tgt_modified = true;", self.translate)
-        self.assertIn("trans_start_icall_32", self.translate)
+        cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")
+        cpu_c = (ROOT / "target/linx/cpu.c").read_text(encoding="utf-8")
+        self.assertIn("fused_icall_target", cpu_h)
+        self.assertIn("fused_icall_target_valid", cpu_h)
+        self.assertIn("LINX_TB_FLAG_FUSED_ICALL", cpu_h)
+        self.assertIn("flags |= LINX_TB_FLAG_FUSED_ICALL", cpu_c)
+        fused = self.translate.split("static bool trans_start_icall_32", 1)[1]
+        fused = fused.split("static bool trans_start_call_48", 1)[0]
+        self.assertLess(
+            fused.index("linx_gen_check_bstart_target"),
+            fused.index("linx_block_begin"),
+        )
+        self.assertLess(
+            fused.index("linx_gen_check_bstart_target"),
+            fused.index("linx_set_dest(LINX_REG_RA"),
+        )
+        self.assertIn("fused_icall_target_valid", fused)
+        icall_commit = self.translate.split("case LINX_BR_ICALL:", 1)[1]
+        icall_commit = icall_commit.split("default:", 1)[0]
+        self.assertIn("fused_icall_target_valid", icall_commit)
+        self.assertIn("fused_icall_target", icall_commit)
+
+    def test_fused_icall_fixture_executes_positive_invalid_and_cross_tb_cases(self) -> None:
+        fixture = (ROOT / "tests/linxisa/fused_call_contract.s").read_text(
+            encoding="utf-8"
+        )
+        invalid = (ROOT / "tests/linxisa/fused_icall_invalid_contract.s").read_text(
+            encoding="utf-8"
+        )
+        runner = (ROOT / "scripts/linxisa/run-fused-call-contract.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fused_icall_positive", fixture)
+        self.assertIn("fused_icall_cross_tb", fixture)
+        self.assertIn("fused_icall_poison", fixture)
+        self.assertIn("fused ICALL must end at a page boundary", fixture)
+        self.assertIn("fused_icall_invalid_target", invalid)
+        self.assertIn("unexpectedly accepted invalid fused ICALL target", runner)
 
 
 if __name__ == "__main__":

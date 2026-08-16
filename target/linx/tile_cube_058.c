@@ -493,6 +493,48 @@ static uint64_t cube_saturate_integer(uint64_t raw, uint8_t acc_dtype,
     return dst_signed ? (raw > smax ? smax : raw) : (raw > umax ? umax : raw);
 }
 
+static bool linx_tile_fpatr_postprocess(const CPULinxState *env,
+                                        uint32_t dst_dtype, double *value)
+{
+    const uint32_t raw = env->tile_fpatr_raw;
+    const unsigned prequant = (raw >> 26) & 0x3fu;
+    const unsigned relu = (raw >> 23) & 0x7u;
+    const unsigned group_n = (raw >> 19) & 0xfu;
+    const bool row_max = ((raw >> 18) & 1u) != 0;
+    const bool group_max = ((raw >> 17) & 1u) != 0;
+    const bool row_init = ((raw >> 16) & 1u) != 0;
+    const bool max_abs = ((raw >> 15) & 1u) != 0;
+    uint32_t expected_dtype;
+
+    if (!env->tile_fpatr_valid) {
+        return true;
+    }
+
+    /*
+     * QEMU currently implements the parameter-free postprocess subset.  The
+     * remaining modes require descriptor tiles that are not yet represented;
+     * reject them before modifying the destination rather than silently
+     * ignoring an architecturally active B.FPATR.
+     */
+    if (group_n || row_max || group_max || row_init || max_abs || relu > 1u) {
+        return false;
+    }
+    switch (prequant) {
+    case 0:  expected_dtype = 1u; break; /* keep FP32 accumulator */
+    case 1:  expected_dtype = 4u; break; /* FP32 -> FP16 */
+    case 16: expected_dtype = 5u; break; /* FP32 -> BF16 */
+    default: return false;
+    }
+    if (env->tile_acc_dtype != LINX_TILE_ACC_FP32 ||
+        dst_dtype != expected_dtype) {
+        return false;
+    }
+    if (relu == 1u && *value < 0.0) {
+        *value = 0.0;
+    }
+    return true;
+}
+
 bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
                                    unsigned size_code)
 {
@@ -518,6 +560,12 @@ bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
         env->tile_acc_rows == 0u) {
         return false;
     }
+    {
+        double probe = 0.0;
+        if (!linx_tile_fpatr_postprocess(env, dst_dtype, &probe)) {
+            return false;
+        }
+    }
     next = g_malloc0(bytes);
     for (unsigned i = 0; i < env->tile_acc_rows; i++) {
         for (unsigned j = 0; j < env->tile_acc_cols; j++) {
@@ -528,6 +576,7 @@ bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
             memcpy(&src_raw, (uint8_t *)env->tile_acc + index * src_bytes,
                    src_bytes);
             value = linx_tile_numeric_decode(env->tile_acc_dtype, src_raw, 0);
+            g_assert(linx_tile_fpatr_postprocess(env, dst_dtype, &value));
             if (dst_integer) {
                 if (env->tile_acc_dtype == LINX_TILE_ACC_S64 ||
                     env->tile_acc_dtype == LINX_TILE_ACC_U64) {

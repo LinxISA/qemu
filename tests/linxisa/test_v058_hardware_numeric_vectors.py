@@ -150,7 +150,7 @@ class HardwareNumericVectors(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_all_104_canonical_vectors_execute(self):
+    def test_all_104_canonical_reference_vectors_are_checked(self):
         groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
         executed = 0
 
@@ -255,6 +255,18 @@ class HardwareNumericVectors(unittest.TestCase):
             executed += 1
 
         self.assertEqual(executed, 104)
+
+    def test_conformance_does_not_mislabel_reference_checks_as_production(self):
+        conformance = json.loads(
+            (ROOT / "tests/linxisa/pto-v058-cube-profile-conformance.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        evidence = conformance["qemu_implementation_gap"]["evidence"]
+        self.assertEqual(conformance["status"], "reference-vector-coverage-only")
+        self.assertEqual(evidence["canonical_reference_vectors_checked"], 104)
+        self.assertEqual(evidence["production_vector_cases"], "unavailable")
+        self.assertNotIn("canonical_contract_vectors_executed", evidence)
 
     def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):
         ordinary = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14,

@@ -692,6 +692,10 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
                    offsetof(CPULinxState, call_ra_set));
     tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
                    offsetof(CPULinxState, call_setret_pending));
+    tcg_gen_st_i64(tcg_constant_i64(0), tcg_env,
+                   offsetof(CPULinxState, fused_icall_target));
+    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                   offsetof(CPULinxState, fused_icall_target_valid));
     
     /* For COND blocks: set diverted target in bpc (cpu_tgt) */
     /* For DIRECT/CALL blocks: set target in bpc (cpu_tgt) */
@@ -1722,12 +1726,33 @@ static void linx_gen_block_end(DisasContext *ctx, vaddr fallthrough)
             (void)linx_block_fault(ctx, LINX_EBLOCK_LEGACY_RET_MISSING_SETCTGT, 0);
             return;
         }
-        /* Indirect jump/call: jump to cpu_tgt (must be set by SETC.TGT) */
-        linx_gen_check_bstart_target(ctx, cpu_tgt);
+        /*
+         * A fused 0.58.1 ICALL owns a durable snapshot of the retiring
+         * BARG.BPCN. Later SETC.TGT instructions and TB splits must not
+        * redirect that call. Legacy ICALL continues to consume cpu_tgt.
+         */
+        TCGv_i64 icall_target = tcg_temp_new_i64();
+        TCGv_i32 fused_valid = tcg_temp_new_i32();
+        TCGLabel *legacy_target = gen_new_label();
+        TCGLabel *target_selected = gen_new_label();
+        tcg_gen_ld_i32(fused_valid, tcg_env,
+                       offsetof(CPULinxState, fused_icall_target_valid));
+        tcg_gen_brcondi_i32(TCG_COND_EQ, fused_valid, 0, legacy_target);
+        tcg_gen_ld_i64(icall_target, tcg_env,
+                       offsetof(CPULinxState, fused_icall_target));
+        tcg_gen_st_i64(tcg_constant_i64(0), tcg_env,
+                       offsetof(CPULinxState, fused_icall_target));
+        tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
+                       offsetof(CPULinxState, fused_icall_target_valid));
+        tcg_gen_br(target_selected);
+        gen_set_label(legacy_target);
+        tcg_gen_mov_i64(icall_target, cpu_tgt);
+        gen_set_label(target_selected);
+        linx_gen_check_bstart_target(ctx, icall_target);
         if (linx_commit_trace_enabled) {
-            gen_helper_linx_commit_trace(tcg_env, cpu_tgt);
+            gen_helper_linx_commit_trace(tcg_env, icall_target);
         }
-        tcg_gen_mov_i64(cpu_pc, cpu_tgt);
+        tcg_gen_mov_i64(cpu_pc, icall_target);
         tcg_gen_lookup_and_goto_ptr();
         ctx->base.is_jmp = DISAS_NORETURN;
         break;
@@ -2889,7 +2914,10 @@ static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
     }
     if (a->prequant >= 64u ||
         (prequant_mask & (UINT64_C(1) << a->prequant)) == 0u ||
-        a->relu > 3u || a->groupn > 9u) {
+        a->relu > 3u || a->groupn > 9u ||
+        (!a->rowmax && a->rowinit) ||
+        (a->groupmax != (a->groupn != 0u)) ||
+        (!a->rowmax && !a->groupmax && a->maxabs)) {
         return linx_illegal(ctx);
     }
     tcg_gen_st_i32(
@@ -2898,6 +2926,8 @@ static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
                          (a->groupmax << 17) | (a->rowinit << 16) |
                          (a->maxabs << 15)),
         tcg_env, offsetof(CPULinxState, tile_fpatr_raw));
+    tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
+                   offsetof(CPULinxState, tile_fpatr_valid));
     return true;
 }
 
@@ -9024,7 +9054,8 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     ctx->in_body = (ctx->base.tb->flags & LINX_TB_FLAG_IN_BODY) != 0;
     ctx->mem_idx = (ctx->base.tb->flags & LINX_TB_FLAG_USER_MMU) != 0 ? 1 : 0;
     ctx->decoupled_header = false;
-    ctx->tgt_modified = false;
+    ctx->tgt_modified =
+        (ctx->base.tb->flags & LINX_TB_FLAG_FUSED_ICALL) != 0;
     ctx->ra_set = (env->call_ra_set != 0);
     ctx->call_ra_target = ctx->ra_set ? env->gpr[LINX_REG_RA] : 0;
     ctx->block_insn_index = 0;
@@ -9187,6 +9218,7 @@ static bool trans_start_icall_32(DisasContext *ctx, arg_start_icall_32 *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
     vaddr ret_target = current_pc + 2u + ((vaddr)a->uimm5 << 1);
+    TCGv_i64 snapshot = tcg_temp_new_i64();
 
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
@@ -9195,8 +9227,16 @@ static bool trans_start_icall_32(DisasContext *ctx, arg_start_icall_32 *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
+    tcg_gen_mov_i64(snapshot, cpu_tgt);
+    /* Validate the retiring BARG target before changing BPC, RA, or BARG. */
+    linx_gen_check_bstart_target(ctx, snapshot);
     linx_block_begin(ctx, LINX_BR_ICALL, 0);
+    tcg_gen_st_i64(snapshot, tcg_env,
+                   offsetof(CPULinxState, fused_icall_target));
+    tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
+                   offsetof(CPULinxState, fused_icall_target_valid));
     linx_set_dest(LINX_REG_RA, tcg_constant_i64(ret_target));
+    ctx->tgt_modified = true;
     ctx->ra_set = true;
     ctx->call_ra_target = ret_target;
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,

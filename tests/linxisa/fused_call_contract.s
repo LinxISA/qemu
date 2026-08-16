@@ -146,6 +146,41 @@ _start:
   .2byte 0xffff
 .Lret48_page_m2:
   CHECK_MARKER
+
+  # The exact 0.58.1 fused ICALL snapshots the retiring FALL block's BPCN.
+  # A later SETC.TGT deliberately installs a poison target; both the normal
+  # path and the page-boundary TB split must still call .Lcallee119.
+  C.BSTART DIRECT, fused_icall_setup
+  C.BSTOP
+
+  # Put the four-byte fused ICALL at the end of a page. Its body starts in a
+  # different TB, making the durable snapshot requirement executable without
+  # relying on a debug accelerator mode that splits every architectural block.
+  .p2align 12
+.Lfused_page:
+  .space 4070
+.globl fused_icall_setup
+fused_icall_setup:
+  SET_EXPECT 119
+  C.BSTART
+  addtpc %tpcrel_hi(.Lcallee119), ->a2
+  addi a2, %tpcrel_lo(.Lcallee119), ->a2
+  c.setc.tgt a2
+  C.BSTOP
+.globl fused_icall_positive
+.globl fused_icall_cross_tb
+fused_icall_positive:
+fused_icall_cross_tb:
+  .4byte 0x50166001 | (((.Lfused_icall_return - (fused_icall_positive + 2)) / 2 & 0x1f) << 22)
+.if ((fused_icall_positive - .Lfused_page + 4) & 4095) != 0
+  .error "fused ICALL must end at a page boundary"
+.endif
+  addtpc %tpcrel_hi(fused_icall_poison), ->a2
+  addi a2, %tpcrel_lo(fused_icall_poison), ->a2
+  c.setc.tgt a2
+  C.BSTOP
+.Lfused_icall_return:
+  CHECK_MARKER
   C.BSTART DIRECT, .Lpass
   C.BSTOP
 .Lcallee102:
@@ -154,10 +189,14 @@ _start:
   c.setc.tgt ra
   C.BSTOP
 
-  # Exact 0.58.1 BSTART.ICALL carrier.  This unreachable probe keeps the
-  # fused independent-return encoding under the native MC/runtime fixture;
-  # uimm5=0 records ra=P+2 while the indirect target comes from BARG.BPCN.
-.globl __linx_v0581_bstart_icall_probe
-__linx_v0581_bstart_icall_probe:
-  .4byte 0x50166001
+fused_icall_poison:
+  C.BSTART.STD RET
+  addi zero, 1, ->a1
+  c.setc.tgt ra
+  C.BSTOP
+
+.Lcallee119:
+  C.BSTART.STD RET
+  addi zero, 119, ->a1
+  c.setc.tgt ra
   C.BSTOP
