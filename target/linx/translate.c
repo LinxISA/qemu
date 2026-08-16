@@ -2905,6 +2905,7 @@ static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
 static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
 {
     static const uint64_t prequant_mask = UINT64_C(0x000000ff1f9f303f);
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
 
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
@@ -2920,6 +2921,8 @@ static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
         (!a->rowmax && !a->groupmax && a->maxabs)) {
         return linx_illegal(ctx);
     }
+    /* Sail requires CUBE and FPATR before every B.IOR/B.IOT descriptor. */
+    gen_helper_linx_validate_fpatr_position(tcg_env, tcg_constant_tl(pc));
     tcg_gen_st_i32(
         tcg_constant_i32((a->prequant << 26) | (a->relu << 23) |
                          (a->groupn << 19) | (a->rowmax << 18) |

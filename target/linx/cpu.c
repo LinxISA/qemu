@@ -4017,6 +4017,7 @@ static int linx_cpu_pre_save(void *opaque)
         if (acr != (env->acr & 0xfu) &&
             (env->acr_block_state[acr].tile_iot_valid ||
              env->acr_block_state[acr].tile_iot_count ||
+             env->acr_block_state[acr].tile_ior_count ||
              env->acr_block_state[acr].tile_fpatr_valid ||
              env->acr_block_state[acr].fused_icall_target_valid)) {
             return -EINVAL;
