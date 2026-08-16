@@ -3655,6 +3655,7 @@ static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
     g_autofree char *tmp_path = NULL;
     g_autoptr(GError) err = NULL;
     ShutdownCause cause = *(ShutdownCause *)opaque;
+    bool dump_failed = false;
 
     if (cause != SHUTDOWN_CAUSE_GUEST_SHUTDOWN ||
         ((!s->cross_model_dump_pending || !s->cross_model_dump) &&
@@ -3673,6 +3674,7 @@ static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
                          s->cross_model_dump,
                          err ? err->message : strerror(errno));
             unlink(tmp_path);
+            dump_failed = true;
         }
     }
     if (s->cross_model_tile_dump) {
@@ -3681,7 +3683,11 @@ static void linx_cross_model_shutdown(Notifier *notifier, void *opaque)
             error_report("linx virt: cannot write tile-state dump '%s': %s",
                          s->cross_model_tile_dump,
                          err ? err->message : strerror(errno));
+            dump_failed = true;
         }
+    }
+    if (dump_failed) {
+        qemu_system_shutdown_set_exit_code(EXIT_FAILURE);
     }
 }
 
