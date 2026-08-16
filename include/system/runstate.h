@@ -136,6 +136,8 @@ void qemu_system_wakeup_request(WakeupReason reason, Error **errp);
 void qemu_system_wakeup_enable(WakeupReason reason, bool enabled);
 void qemu_register_wakeup_notifier(Notifier *notifier);
 void qemu_register_wakeup_support(void);
+/* Set the status for an active shutdown without queuing another request. */
+void qemu_system_shutdown_set_exit_code(int exit_code);
 void qemu_system_shutdown_request_with_code(ShutdownCause reason,
                                             int exit_code);
 void qemu_system_shutdown_request(ShutdownCause reason);
@@ -157,4 +159,3 @@ void qemu_system_guest_pvshutdown(void);
 bool qemu_system_dump_in_progress(void);
 
 #endif
-

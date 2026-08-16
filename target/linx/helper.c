@@ -6387,7 +6387,9 @@ static LinxMinstCanonicalInfo linx_minst_canonical_info(const LinxOpcodeMeta *me
         return (LinxMinstCanonicalInfo){ "ADDI", "2decd0a93a0a", "int", NULL };
     }
     if (strcmp(mnemonic, "b_text") == 0) {
-        return (LinxMinstCanonicalInfo){ "B.TEXT", "1ce09f50e5dd", "system", "tlsu" };
+        return (LinxMinstCanonicalInfo){
+            "B.TEXT", "6f2fe6f95841", "system", "tlsu"
+        };
     }
     if (strcmp(mnemonic, "bstart_split_direct") == 0) {
         return (LinxMinstCanonicalInfo){ "BSTART", "7eb93b649748", "system", NULL };
@@ -6565,6 +6567,8 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
     bool is_macro_template;
     uint32_t src0_valid;
     uint32_t src1_valid;
+    uint32_t src0_reg;
+    uint32_t src1_reg;
     uint32_t mem_valid;
     uint32_t mem_is_load;
     uint32_t mem_is_store;
@@ -6632,8 +6636,18 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
     is_macro_template = meta && meta->major_cat == LINX_CAT_MACRO_TEMPLATE;
     src0_valid = env->trace_src0_valid;
     src1_valid = env->trace_src1_valid;
+    src0_reg = env->trace_src0_reg;
+    src1_reg = env->trace_src1_reg;
+    if (strcmp(info.mnemonic, "MCOPY") == 0 ||
+        strcmp(info.mnemonic, "MSET") == 0) {
+        src0_valid = 1;
+        src1_valid = 1;
+        src0_reg = (canonical_insn >> 15) & 0x1fu;
+        src1_reg = (canonical_insn >> 20) & 0x1fu;
+    }
     if (strcmp(info.mnemonic, "SWI") == 0) {
         src1_valid = 1;
+        src1_reg = trace_rs2;
     }
     mem_valid = is_macro_template ? 0u : env->trace_mem_valid;
     mem_is_load = mem_valid && !env->trace_mem_is_store;
@@ -6687,9 +6701,9 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
             info.opcode_class,
             block_kind,
             src0_valid, src0_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
-            src0_valid ? env->trace_src0_reg : 0u, 0ull,
+            src0_valid ? src0_reg : 0u, 0ull,
             src1_valid, src1_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
-            src1_valid ? (strcmp(info.mnemonic, "SWI") == 0 ? trace_rs2 : env->trace_src1_reg) : 0u, 0ull,
+            src1_valid ? src1_reg : 0u, 0ull,
             dst_valid, dst_valid ? LINX_MINST_OPERAND_REGISTER : LINX_MINST_OPERAND_INVALID,
             dst_valid ? dst_reg : 0u, dst_data,
             mem_valid, mem_is_load, mem_is_store, mem_addr,

@@ -783,10 +783,15 @@ void qemu_system_killed(int signal, pid_t pid)
     qemu_notify_event();
 }
 
+void qemu_system_shutdown_set_exit_code(int exit_code)
+{
+    shutdown_exit_code = exit_code;
+}
+
 void qemu_system_shutdown_request_with_code(ShutdownCause reason,
                                             int exit_code)
 {
-    shutdown_exit_code = exit_code;
+    qemu_system_shutdown_set_exit_code(exit_code);
     qemu_system_shutdown_request(reason);
 }
 
