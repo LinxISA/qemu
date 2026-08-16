@@ -6617,6 +6617,10 @@ static void linx_emit_minst_trace(CPULinxState *env, uint64_t next_pc)
         env->minst_trace.pending_block_kind != 0) {
         block_kind = linx_minst_block_kind_name_from_code(env->minst_trace.pending_block_kind);
         consume_pending_non_scalar = true;
+    } else if (strcmp(info.mnemonic, "C.BSTOP") == 0 &&
+               env->minst_trace.pending_block_kind != 0) {
+        block_kind = linx_minst_block_kind_name_from_code(
+            env->minst_trace.pending_block_kind);
     } else if (strcmp(block_kind, "scalar") == 0 &&
                env->minst_trace.active_block_kind == 1) {
         block_kind = "sys";

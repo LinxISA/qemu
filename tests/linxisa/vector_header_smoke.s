@@ -1,6 +1,9 @@
 .text
 .globl _start
 _start:
+  # ET_EXEC entry points must begin at a loader-recognized block header.
+  C.BSTART
+
   # Header-only vector lane-control smoke using fixed compressed forms.
   .2byte 0x88c0  # C.BSTART.VPAR FALL
   C.BSTOP

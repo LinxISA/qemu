@@ -3,7 +3,7 @@
 _start:
   C.BSTART
   # Minimal tile descriptor/header path that both QEMU and pyCircuit can run.
-  BSTART.TLOAD INT32
+  BSTART.TLOAD S32
   B.TEXT __linx_tile_empty_body
   C.BSTART
 
