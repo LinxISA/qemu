@@ -20,6 +20,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
 
     def test_final_tlsu_surface_is_present(self) -> None:
         for decode_name in (
@@ -127,6 +128,25 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertRegex(self.insn32, r"(?m)^b_fpatr\s+")
         self.assertRegex(self.insn32, r"(?m)^start_icall_32\s+")
         self.assertRegex(self.insn64, r"(?m)^l_bstop\s+")
+
+    def test_retired_32bit_bare_call_forms_are_illegal(self) -> None:
+        retired = (
+            "bstart_call",
+            "bstart_icall",
+            "bstart_fp_call",
+            "bstart_fp_icall",
+        )
+        for decode_name in retired:
+            with self.subTest(decode_name=decode_name):
+                self.assertNotRegex(self.insn32, rf"(?m)^{decode_name}\s+")
+                self.assertNotIn(f'.mnemonic="{decode_name}"', self.meta)
+                self.assertNotIn(f"trans_{decode_name}(", self.translate)
+
+        self.assertNotIn("LINX_OP_BSTART_FP_CALL", self.ids)
+        self.assertNotIn("LINX_OP_BSTART_FP_ICALL", self.ids)
+        self.assertNotIn("LINX_OP_BSTART_ICALL", self.ids)
+        self.assertIn("LINX_OP_BSTART_STD_CALL = 17", self.ids)
+        self.assertIn('.mnemonic="hl_bstart_std_call"', self.meta)
 
 
 if __name__ == "__main__":

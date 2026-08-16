@@ -109,16 +109,12 @@ start_icall_32 0101 0... ..01 0110 0110 0000 0000 0001 uimm5=%fused_call_uimm5
 bstart_fall   0000 0000 0000 0000 0001 0000 0000 0001
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
 bstart_cond   .... .... .... .... .011 0000 0000 0001 %simm17
-bstart_call   .... .... .... .... .100 0000 0000 0001 %simm17
 bstart_ind    0000 0000 0000 0000 0101 0000 0000 0001
-bstart_icall  0000 0000 0000 0000 0110 0000 0000 0001
 bstart_ret    0000 0000 0000 0000 0111 0000 0000 0001
 bstart_fp_fall    0000 0000 0000 0000 0001 0001 0000 0001
 bstart_fp_direct  .... .... .... .... .010 0001 0000 0001 %simm17
 bstart_fp_cond    .... .... .... .... .011 0001 0000 0001 %simm17
-bstart_fp_call    .... .... .... .... .100 0001 0000 0001 %simm17
 bstart_fp_ind     0000 0000 0000 0000 0101 0001 0000 0001
-bstart_fp_icall   0000 0000 0000 0000 0110 0001 0000 0001
 bstart_fp_ret     0000 0000 0000 0000 0111 0001 0000 0001
 bstart_sys        0000 0000 0000 0000 0001 0000 1000 0001
 # PTO ISA 0.58 direct VEC/SFU operation headers.  TEPL is only the unchanged

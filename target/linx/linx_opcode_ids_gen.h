@@ -1,4 +1,9 @@
-/* AUTO-GENERATED FILE. DO NOT EDIT. */
+/*
+ * QEMU-owned stable opcode IDs.
+ *
+ * Keep numeric assignments stable and synchronize this checked-in table with
+ * LinxISA through the superproject's strict opcode metadata gate.
+ */
 #ifndef LINX_OPCODE_IDS_GEN_H
 #define LINX_OPCODE_IDS_GEN_H
 
@@ -6,14 +11,11 @@ typedef enum LinxOpcodeId {
     LINX_OP_INVALID = 0,
     LINX_OP_BSTART_CUBE = 1,
     LINX_OP_BSTART_FALL = 2,
-    LINX_OP_BSTART_FP_CALL = 3,
     LINX_OP_BSTART_FP_COND = 4,
     LINX_OP_BSTART_FP_DIRECT = 5,
     LINX_OP_BSTART_FP_FALL = 6,
-    LINX_OP_BSTART_FP_ICALL = 7,
     LINX_OP_BSTART_FP_IND = 8,
     LINX_OP_BSTART_FP_RET = 9,
-    LINX_OP_BSTART_ICALL = 10,
     LINX_OP_BSTART_IND = 11,
     LINX_OP_BSTART_MPAR = 12,
     LINX_OP_BSTART_MSEQ = 13,

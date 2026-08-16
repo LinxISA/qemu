@@ -2192,20 +2192,6 @@ static bool trans_l_bstop(DisasContext *ctx, arg_l_bstop *a)
     return trans_bstop(ctx, (arg_bstop *)a);
 }
 
-static bool trans_bstart_call(DisasContext *ctx, arg_bstart_call *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    linx_block_begin(ctx, LINX_BR_CALL, linx_pcrel_target(current_pc, a->simm17));
-    return true;
-}
-
 static bool trans_bstart_fall(DisasContext *ctx, arg_bstart_fall *a)
 {
     (void)a;
@@ -2255,21 +2241,6 @@ static bool trans_bstart_ind(DisasContext *ctx, arg_bstart_ind *a)
     return true;
 }
 
-static bool trans_bstart_icall(DisasContext *ctx, arg_bstart_icall *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    (void)a;
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-    linx_block_begin(ctx, LINX_BR_ICALL, 0);
-    return true;
-}
-
 static bool trans_bstart_ret(DisasContext *ctx, arg_bstart_ret *a)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -2305,23 +2276,10 @@ static bool trans_bstart_fp_cond(DisasContext *ctx, arg_bstart_fp_cond *a)
                                     linx_pcrel_target(current_pc, a->simm17));
 }
 
-static bool trans_bstart_fp_call(DisasContext *ctx, arg_bstart_fp_call *a)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    return linx_begin_header_target(ctx, LINX_BR_CALL,
-                                    linx_pcrel_target(current_pc, a->simm17));
-}
-
 static bool trans_bstart_fp_ind(DisasContext *ctx, arg_bstart_fp_ind *a)
 {
     (void)a;
     return linx_begin_header_target(ctx, LINX_BR_IND, 0);
-}
-
-static bool trans_bstart_fp_icall(DisasContext *ctx, arg_bstart_fp_icall *a)
-{
-    (void)a;
-    return linx_begin_header_target(ctx, LINX_BR_ICALL, 0);
 }
 
 static bool trans_bstart_fp_ret(DisasContext *ctx, arg_bstart_fp_ret *a)
