@@ -177,10 +177,10 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 #define PTO_NT_ISA_IDENTITY 1
 static const char linx_pto_isa_identity[] =
-    "{\"encoding_abi\":\"pto-isa-0.58.1-mode-function-v1\","
+    "{\"encoding_abi\":\"pto-isa-0.58.0-mode-function-v1\","
     "\"encoding_projection_sha256\":"
-    "\"89b872d6eaf0252200bc9349d49b9346e2a69d894cdcc2dcd0fd71911c1e0b8c\","
-    "\"release\":\"0.58.1\"}";
+    "\"0cad2272ada8f53fc8354e22568099fe8d6bd4b7832c837260cd370b0fc76ffa\","
+    "\"release\":\"0.58.0\"}";
 
 static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 {
@@ -227,7 +227,7 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                 memcmp(notes + desc_offset, linx_pto_isa_identity,
                        sizeof(linx_pto_isa_identity) - 1) != 0) {
                 error_setg(errp,
-                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.1");
+                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.0");
                 return false;
             }
             (*identity_count)++;
@@ -311,7 +311,7 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
     }
 
     if (identity_count == 0) {
-        error_setg(errp, "missing required .note.pto.isa identity for 0.58.1");
+        error_setg(errp, "missing required .note.pto.isa identity for 0.58.0");
         return false;
     }
     return true;

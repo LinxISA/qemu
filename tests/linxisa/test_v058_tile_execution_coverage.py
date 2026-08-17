@@ -76,13 +76,20 @@ class TileExecutionCoverage(unittest.TestCase):
         accepted_mask = int(re.search(r"0x([0-9a-f]+)", cube_body).group(1), 16)
         accepted = {bit for bit in range(32) if accepted_mask & (1 << bit)}
         enum_body = re.search(r"enum \{\s*LINX_CUBE_TMATMUL(.*?)\n\};", HELPER, re.S).group(0)
+        # ACCCVT is a block-level accumulator conversion helper and is not a
+        # CUBE tile-operation selector in the PTO 0.58 catalog.
         enum_values = {
             int(value)
-            for value in re.findall(r"LINX_CUBE_[A-Z0-9_]+\s*=\s*(\d+)", enum_body)
+            for name, value in re.findall(
+                r"(LINX_CUBE_[A-Z0-9_]+)\s*=\s*(\d+)", enum_body
+            )
+            if name != "LINX_CUBE_ACCCVT"
         }
         self.assertEqual({0, 1, 2, 4, 5, 6, 16, 17, 18, 20, 21, 22}, accepted)
         self.assertEqual(accepted, enum_values)
         for name in re.findall(r"(LINX_CUBE_[A-Z0-9_]+)\s*=", enum_body):
+            if name == "LINX_CUBE_ACCCVT":
+                continue
             self.assertRegex(HELPER, rf"case {name}:")
 
     def test_explicit_acc_and_catalog_datr_guards_are_executable_contracts(self):
