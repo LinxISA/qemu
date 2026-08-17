@@ -32,23 +32,11 @@
 #define LINX_SHARED_TILE_COUNT 256
 #define LINX_SHARED_TILE_MAX_BYTES (8 * 1024)
 
-typedef struct LinxSharedTileLane {
-    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    uint32_t bytes;
-    uint32_t dtype;
-    uint8_t layout;
-    uint16_t valid_cols;
-    uint16_t valid_rows;
-    uint16_t cols;
-    uint16_t rows;
-} LinxSharedTileLane;
-
 typedef struct LinxSharedTileVersion {
     /* The architectural Shared register is one aggregate tile payload.  The
      * four mask bits select fixed-offset regions in this payload; they are not
      * four independent full-tile lanes. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    LinxSharedTileLane lane[LINX_CORE4_PE_COUNT];
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;

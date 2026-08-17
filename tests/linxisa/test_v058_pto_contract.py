@@ -47,7 +47,8 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
-        self.assertIn("LinxSharedTileLane lane[LINX_CORE4_PE_COUNT]", self.cpu)
+        self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
+        self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
         self.assertIn("initialized_mask", self.cpu)
         self.assertIn("allocated_bytes", self.cpu)
