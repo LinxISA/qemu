@@ -15706,11 +15706,11 @@ static inline unsigned linx_tile_shared_tsize(const CPULinxState *env)
     return (env->tile_shared_binder[0] >> 12) & 0x7u;
 }
 
-/* PE_MASK bit 0 names the fourth PE and bit 3 names the first PE. */
+/* ASL PE_MASK indexing: bit 0 names PE0, bit 1 names PE1, etc. */
 static inline uint8_t linx_tile_shared_current_pe_bit(const CPULinxState *env)
 {
     return env->pe_id < LINX_CORE4_PE_COUNT
-           ? (uint8_t)(1u << (LINX_CORE4_PE_COUNT - 1u - env->pe_id))
+           ? (uint8_t)(1u << env->pe_id)
            : 0u;
 }
 
@@ -15755,7 +15755,7 @@ static bool linx_tile_shared_tstore_legal(CPULinxState *env)
                  (uint64_t)shared->rows * shared->cols * elem_bytes <=
                      shared->per_pe_capacity;
     for (unsigned pe = 0; valid && pe < LINX_CORE4_PE_COUNT; pe++) {
-        const uint8_t pe_bit = (uint8_t)(1u << (3u - pe));
+        const uint8_t pe_bit = (uint8_t)(1u << pe);
         if ((mask & pe_bit) == 0u) {
             continue;
         }
@@ -15802,7 +15802,7 @@ static bool linx_tile_shared_tstore_commit(CPULinxState *env)
     }
 
     for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
-        const uint8_t pe_bit = (uint8_t)(1u << (3u - pe));
+        const uint8_t pe_bit = (uint8_t)(1u << pe);
         if ((mask & pe_bit) == 0u) {
             continue;
         }
@@ -17812,7 +17812,7 @@ static bool linx_tile_shared_tmov_shared_to_local(
         for (uint32_t element = 0; element < elements; element++) {
             const uint32_t byte_offset = element * elem_bytes;
             const unsigned region = (byte_offset * 4u) / bytes;
-            const uint8_t region_bit = (uint8_t)(1u << (3u - region));
+            const uint8_t region_bit = (uint8_t)(1u << region);
             if ((mask & region_bit) == 0u) {
                 continue;
             }
@@ -18533,8 +18533,6 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 }
                 const unsigned shared_id = linx_tile_shared_id(env);
                 const uint32_t dtype = linx_tile_effective_dtype(env);
-                const bool single_issuer =
-                    pe_mask != 0u && (pe_mask & (pe_mask - 1u)) == 0u;
                 LinxSharedTileVersion *shared =
                     &cpu->core4->shared_tile[shared_id];
                 qemu_mutex_lock(&cpu->core4->lock);
@@ -18543,12 +18541,9 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     shared->initialized_mask == shared->allocation_mask ||
                     shared->producer_bpc != env->bpc) {
                     memset(shared, 0, sizeof(*shared));
-                    shared->allocation_mask = single_issuer
-                                                  ? 0xfu : pe_mask;
+                    shared->allocation_mask = pe_mask;
                     shared->per_pe_capacity = bytes;
-                    shared->allocated_bytes = single_issuer
-                        ? bytes * LINX_CORE4_PE_COUNT
-                        : bytes * ctpop8(pe_mask);
+                    shared->allocated_bytes = bytes * ctpop8(pe_mask);
                     shared->dtype = dtype;
                     shared->layout = (env->tile_attr_raw >> 2) & 0x1fu;
                     shared->valid_cols = valid_cols;
@@ -18556,17 +18551,6 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     shared->cols = cols;
                     shared->rows = rows;
                     shared->producer_bpc = env->bpc;
-                } else if (single_issuer) {
-                    valid = shared->allocation_mask == 0xfu &&
-                            shared->per_pe_capacity == bytes &&
-                            shared->allocated_bytes ==
-                                bytes * LINX_CORE4_PE_COUNT &&
-                            shared->dtype == dtype &&
-                            shared->layout ==
-                                ((env->tile_attr_raw >> 2) & 0x1fu) &&
-                            shared->valid_cols == valid_cols &&
-                            shared->valid_rows == valid_rows &&
-                            shared->cols == cols && shared->rows == rows;
                 } else {
                     valid = linx_tile_shared_allocation_compatible(
                                 shared->allocation_mask, pe_mask,
@@ -18581,35 +18565,18 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                             shared->cols == cols && shared->rows == rows;
                 }
                 if (valid) {
-                    if (single_issuer) {
-                        for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
-                            LinxSharedTileLane *lane = &shared->lane[pe];
-                            memcpy(lane->data, staged, bytes);
-                            memset(lane->data + bytes, 0,
-                                   LINX_SHARED_TILE_MAX_BYTES - bytes);
-                            lane->bytes = bytes;
-                            lane->dtype = dtype;
-                            lane->layout = shared->layout;
-                            lane->valid_cols = valid_cols;
-                            lane->valid_rows = valid_rows;
-                            lane->cols = cols;
-                            lane->rows = rows;
-                        }
-                        shared->initialized_mask = 0xfu;
-                    } else {
-                        LinxSharedTileLane *lane = &shared->lane[env->pe_id];
-                        memcpy(lane->data, staged, bytes);
-                        memset(lane->data + bytes, 0,
-                               LINX_SHARED_TILE_MAX_BYTES - bytes);
-                        lane->bytes = bytes;
-                        lane->dtype = dtype;
-                        lane->layout = shared->layout;
-                        lane->valid_cols = valid_cols;
-                        lane->valid_rows = valid_rows;
-                        lane->cols = cols;
-                        lane->rows = rows;
-                        shared->initialized_mask |= pe_bit;
-                    }
+                    LinxSharedTileLane *lane = &shared->lane[env->pe_id];
+                    memcpy(lane->data, staged, bytes);
+                    memset(lane->data + bytes, 0,
+                           LINX_SHARED_TILE_MAX_BYTES - bytes);
+                    lane->bytes = bytes;
+                    lane->dtype = dtype;
+                    lane->layout = shared->layout;
+                    lane->valid_cols = valid_cols;
+                    lane->valid_rows = valid_rows;
+                    lane->cols = cols;
+                    lane->rows = rows;
+                    shared->initialized_mask |= pe_bit;
                 }
                 qemu_mutex_unlock(&cpu->core4->lock);
                 if (!valid) {
