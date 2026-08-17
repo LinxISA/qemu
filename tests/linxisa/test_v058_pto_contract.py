@@ -191,7 +191,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("collective_pe_mask", self.cpu)
         self.assertIn("linx_tile_gmov_source_matches_destination", self.helper)
 
-    def test_shared_tmov_uses_architectural_functions_and_atomic_lanes(self) -> None:
+    def test_shared_tmov_uses_architectural_functions_and_aggregate_payload(self) -> None:
         for name, function in (
             ("LINX_TLSU_TMOV_L2S_INSERT", 9),
             ("LINX_TLSU_TMOV_L2S_PUBLISH", 10),
@@ -201,7 +201,14 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(f"{name} = {function}", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        self.assertIn("shared->initialized_mask |= pe_bit", self.helper)
+        # PTO ASL models Shared Tile as one aggregate payload.  PE_MASK selects
+        # fixed element regions in that payload; it is not four independent
+        # full-tile lane buffers.
+        self.assertIn("shared->initialized_mask |= mask", self.helper)
+        self.assertIn("memcpy(shared->data + byte_offset, payload + byte_offset",
+                      self.helper)
+        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
+                      self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
         self.assertNotIn("LinxSharedTileLane descriptor", self.helper)
@@ -219,7 +226,7 @@ class PtoV058ContractTests(unittest.TestCase):
             "dims.m == 32u && dims.n == 32u && dims.k == 32u", self.tile_cube
         )
         self.assertIn("env->tile_reg_bytes[src_a] != 32u * 32u * 4u", self.helper)
-        self.assertIn("(shared->initialized_mask & pe_bit) != 0u", self.helper)
+        self.assertIn("(shared->initialized_mask & mask) == mask", self.helper)
         self.assertIn("shared->initialized_mask == 0xfu", self.helper)
 
     def test_trace_classification_uses_the_four_engine_contract(self) -> None:

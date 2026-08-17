@@ -44,6 +44,10 @@ typedef struct LinxSharedTileLane {
 } LinxSharedTileLane;
 
 typedef struct LinxSharedTileVersion {
+    /* The architectural Shared register is one aggregate tile payload.  The
+     * four mask bits select fixed-offset regions in this payload; they are not
+     * four independent full-tile lanes. */
+    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
     LinxSharedTileLane lane[LINX_CORE4_PE_COUNT];
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
