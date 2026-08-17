@@ -209,6 +209,17 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
+    def test_shared_tload_one_hot_issuer_publishes_full_aggregate(self) -> None:
+        self.assertIn("const bool single_issuer", self.helper)
+        self.assertIn("(unsigned)__builtin_ctz((unsigned)pe_mask)", self.helper)
+        self.assertIn(
+            "if (single_issuer && env->pe_id != issuer_pe)", self.helper
+        )
+        self.assertIn("bytes * (single_issuer ? LINX_CORE4_PE_COUNT", self.helper)
+        self.assertIn(": ctpop8(pe_mask));", self.helper)
+        self.assertIn("shared->initialized_mask = 0xfu", self.helper)
+        self.assertIn("cpu_ldub_data(env, (abi_ptr)(source + byte))", self.helper)
+
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
         self.assertIn("trans_bstart_gmov", self.translate)

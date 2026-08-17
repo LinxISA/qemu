@@ -111,6 +111,15 @@ publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity
 but does not add cross-PE ordering; software must prevent conflicting accesses.
 
+For a one-hot mask, PTO-ISA #75 defines a single-issuer form: the selected PE
+loads the complete logical object from its own `B.IOR` base/stride, while the
+published Shared version has Core4-wide capacity and can be consumed by all
+four PEs at a later cooperative CUBE rendezvous. Non-issuer PEs perform no
+second memory read. A multi-bit mask retains the element-region form above;
+the selected PE bases contribute their corresponding regions to the same
+aggregate version. The focused current-encoding regression is
+`v058_group_mma_fp32_4pe_single_issuer` in SuperScalarModel.
+
 ## Fail-closed execution
 
 QEMU validates the complete block schema before pinning sources, allocating an

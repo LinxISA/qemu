@@ -18469,6 +18469,15 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 unsigned size_code;
                 LinxCPU *cpu = env_archcpu(env);
                 const uint8_t pe_mask = linx_tile_shared_pe_mask(env);
+                const bool single_issuer =
+                    pe_mask != 0u && (pe_mask & (pe_mask - 1u)) == 0u;
+                const unsigned issuer_pe = single_issuer
+                    ? (unsigned)__builtin_ctz((unsigned)pe_mask) : 0u;
+                /* PTO-ISA #75: a one-hot B.IOS identifies the sole issuer;
+                 * the other PEs do not perform another memory read. */
+                if (single_issuer && env->pe_id != issuer_pe) {
+                    break;
+                }
                 if (!linx_tile_get_base_reg(env, &addr_reg) ||
                     !linx_tile_get_shared_tload_size(env, &size_code) ||
                     cpu->core4 == NULL || pe_mask == 0u) {
@@ -18490,38 +18499,74 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 qemu_mutex_lock(&cpu->core4->lock);
                 bool valid = elem_bytes != 0u && rows != 0u &&
                              valid_rows <= rows && valid_cols <= cols;
-                if (valid && shared->allocation_mask == 0u) {
-                    memset(shared, 0, sizeof(*shared));
-                    shared->allocation_mask = pe_mask;
-                    shared->per_pe_capacity = bytes;
-                    shared->allocated_bytes = bytes * ctpop8(pe_mask);
-                    shared->dtype = dtype;
-                    shared->layout = layout;
-                    shared->valid_cols = valid_cols;
-                    shared->valid_rows = valid_rows;
-                    shared->cols = cols;
-                    shared->rows = rows;
-                    shared->producer_bpc = env->bpc;
-                } else if (valid) {
-                    valid = (pe_mask & (uint8_t)~shared->allocation_mask) == 0u &&
-                            shared->per_pe_capacity == bytes &&
-                            shared->dtype == dtype && shared->layout == layout &&
-                            shared->valid_cols == valid_cols &&
-                            shared->valid_rows == valid_rows &&
-                            shared->cols == cols && shared->rows == rows;
+                if (valid) {
+                    const uint8_t allocation_mask =
+                        single_issuer ? 0xfu : pe_mask;
+                    const bool completed =
+                        shared->allocation_mask != 0u &&
+                        shared->initialized_mask == shared->allocation_mask;
+                    const bool new_version =
+                        shared->allocation_mask == 0u || completed ||
+                        shared->producer_bpc != env->bpc;
+                    if (new_version) {
+                        memset(shared, 0, sizeof(*shared));
+                        shared->allocation_mask = allocation_mask;
+                        shared->per_pe_capacity = bytes;
+                        shared->allocated_bytes =
+                            bytes * (single_issuer ? LINX_CORE4_PE_COUNT
+                                                   : ctpop8(pe_mask));
+                        shared->dtype = dtype;
+                        shared->layout = layout;
+                        shared->valid_cols = valid_cols;
+                        shared->valid_rows = valid_rows;
+                        shared->cols = cols;
+                        shared->rows = rows;
+                        shared->producer_bpc = env->bpc;
+                    } else {
+                        valid = shared->allocation_mask == allocation_mask &&
+                                shared->per_pe_capacity == bytes &&
+                                shared->allocated_bytes ==
+                                    bytes * (single_issuer
+                                                 ? LINX_CORE4_PE_COUNT
+                                                 : ctpop8(pe_mask)) &&
+                                shared->dtype == dtype &&
+                                shared->layout == layout &&
+                                shared->valid_cols == valid_cols &&
+                                shared->valid_rows == valid_rows &&
+                                shared->cols == cols && shared->rows == rows;
+                    }
                 }
                 /* A block is seen by each PE in gfrun/QEMU's Core4 front end;
-                 * the first invocation performs the aggregate ASL operation,
-                 * later invocations of the same bundle are idempotent. */
+                 * a completed same-BPC version is an idempotent invocation. */
                 if (valid && shared->producer_bpc == env->bpc &&
-                    (shared->initialized_mask & pe_mask) == pe_mask) {
-                    valid = true;
+                    shared->initialized_mask == shared->allocation_mask) {
+                    /* The one-hot issuer has already published the full
+                     * aggregate object; selected-region bundles likewise
+                     * have no remaining region to materialize. */
+                } else if (valid && single_issuer) {
+                    const uint64_t base = env->gpr[addr_reg];
+                    const uint64_t stride = linx_tile_get_stride_elements(env);
+                    for (uint32_t row = 0; row < valid_rows; row++) {
+                        for (uint32_t col = 0; col < valid_cols; col++) {
+                            const size_t destination =
+                                ((size_t)row * cols + col) * elem_bytes;
+                            const uint64_t source =
+                                base + ((uint64_t)row * stride + col) * elem_bytes;
+                            for (unsigned byte = 0; byte < elem_bytes; byte++) {
+                                shared->data[destination + byte] =
+                                    cpu_ldub_data(env, (abi_ptr)(source + byte));
+                            }
+                        }
+                    }
+                    shared->initialized_mask = 0xfu;
+                    shared->producer_bpc = env->bpc;
                 } else if (valid) {
                     for (uint32_t row = 0; row < valid_rows; row++) {
                         for (uint32_t col = 0; col < valid_cols; col++) {
                             const size_t destination =
                                 ((size_t)row * cols + col) * elem_bytes;
-                            const unsigned region = (unsigned)((destination * 4u) / bytes);
+                            const unsigned region =
+                                (unsigned)((destination * 4u) / bytes);
                             if (region >= LINX_CORE4_PE_COUNT ||
                                 (pe_mask & (uint8_t)(1u << region)) == 0u ||
                                 cpu->core4->cpu[region] == NULL) {
@@ -18529,8 +18574,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                             }
                             CPULinxState *peer = &cpu->core4->cpu[region]->env;
                             const uint64_t base = peer->gpr[addr_reg];
-                            const uint64_t stride = env->tile_ior_count == 0u
-                                                        ? cols : peer->gpr[(env->tile_ior_desc[0] >> 10) & 0x1fu];
+                            const uint64_t stride =
+                                linx_tile_get_stride_elements(peer);
                             const uint64_t source =
                                 base + ((uint64_t)row * stride + col) * elem_bytes;
                             for (unsigned byte = 0; byte < elem_bytes; byte++) {
