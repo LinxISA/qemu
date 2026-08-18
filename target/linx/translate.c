@@ -5093,6 +5093,22 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
 
     linx_lr_invalidate();
     tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
+#if TARGET_LONG_BITS == 32
+    TCGv_i64 raw_transport_addr = tcg_temp_new_i64();
+    tcg_gen_extu_tl_i64(raw_transport_addr, addr);
+#else
+    TCGv_i64 raw_transport_addr = (TCGv_i64)addr;
+#endif
+    TCGv_i32 raw_transport_active = tcg_temp_new_i32();
+    TCGLabel *raw_transport_done = gen_new_label();
+    tcg_gen_ld8u_i32(raw_transport_active, tcg_env,
+                     offsetof(CPULinxState, raw_tile_transport_active));
+    tcg_gen_brcondi_i32(TCG_COND_EQ, raw_transport_active, 0,
+                        raw_transport_done);
+    gen_helper_linx_invalidate_raw_tile_transport(
+        tcg_env, raw_transport_addr,
+        tcg_constant_i64((int64_t)memop_size(mop)));
+    gen_set_label(raw_transport_done);
     return true;
 }
 

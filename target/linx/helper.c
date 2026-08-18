@@ -55,6 +55,10 @@ static uint64_t linx_bstart_cache_stat_resets;
 static uint64_t linx_bstart_cache_stat_page_resets;
 static uint64_t linx_bstart_cache_stat_page_reset_entries;
 
+static void linx_tile_invalidate_raw_transports(CPULinxState *env,
+                                                uint64_t address,
+                                                uint64_t size);
+
 static inline size_t linx_bstart_cache_slot(uint64_t target)
 {
     uint64_t key = target >> 1;
@@ -11248,6 +11252,7 @@ static inline void linx_tile_mem_write(CPULinxState *env, uint64_t addr,
         env->pending_trap_cause = (uint32_t)((LINX_TRAPCAUSE_CAT_IOMMU_PF << 4) | LINX_TRAPCAUSE_ACC_STORE);
         helper_raise_exception(env, LINX_EXCP_STORE_ACCESS_FAULT);
     }
+    linx_tile_invalidate_raw_transports(env, addr, elem_bytes);
 }
 
 static inline void linx_tile_mem_write64(CPULinxState *env, uint64_t addr,
@@ -11274,6 +11279,7 @@ static inline void linx_tile_mem_write64(CPULinxState *env, uint64_t addr,
             (LINX_TRAPCAUSE_CAT_IOMMU_PF << 4) | LINX_TRAPCAUSE_ACC_STORE;
         helper_raise_exception(env, LINX_EXCP_STORE_ACCESS_FAULT);
     }
+    linx_tile_invalidate_raw_transports(env, addr, 8u);
 }
 
 static inline uint32_t linx_tile_mem_cmpxchg(CPULinxState *env, uint64_t addr,
@@ -15675,6 +15681,293 @@ static uint64_t linx_tile_get_stride_elements(const CPULinxState *env)
     return src1 < LINX_GPR_COUNT ? env->gpr[src1] : 0;
 }
 
+static bool linx_tile_raw_transfer_shape(const CPULinxState *env,
+                                         unsigned addr_reg,
+                                         unsigned size_code,
+                                         uint64_t *base_out,
+                                         uint64_t *rows_out,
+                                         uint64_t *row_bytes_out,
+                                         uint64_t *stride_bytes_out,
+                                         uint64_t *span_bytes_out)
+{
+    const LinxTileFormatDesc fmt =
+        linx_tile_effective_transfer_format(env, LINX_TLSU_GM_TO_TR);
+    const uint64_t carrier_bytes =
+        size_code < 60u ? (UINT64_C(1) << (size_code + 4u)) : 0u;
+    const uint64_t row_elements = env->lb[0];
+    const uint64_t rows = env->lb[1];
+    uint64_t stride_elements = linx_tile_get_stride_elements(env);
+    uint64_t row_bytes;
+    uint64_t stride_bytes;
+    uint64_t span_bytes;
+
+    if (addr_reg >= LINX_GPR_COUNT ||
+        linx_tile_effective_dtype(env) != 16u || !fmt.valid ||
+        fmt.src != LINX_TILE_LAYOUT_ND || fmt.dst != LINX_TILE_LAYOUT_ND ||
+        row_elements == 0u || rows == 0u || carrier_bytes == 0u ||
+        row_elements > UINT64_MAX / 8u) {
+        return false;
+    }
+    if (stride_elements == 0u) {
+        stride_elements = env->lb[2];
+    }
+    if (stride_elements < row_elements ||
+        stride_elements > UINT64_MAX / 8u) {
+        return false;
+    }
+    row_bytes = row_elements * 8u;
+    stride_bytes = stride_elements * 8u;
+    if (rows > 1u &&
+        (rows - 1u) > (UINT64_MAX - row_bytes) / stride_bytes) {
+        return false;
+    }
+    span_bytes = (rows - 1u) * stride_bytes + row_bytes;
+    if (span_bytes > carrier_bytes) {
+        return false;
+    }
+    *base_out = env->gpr[addr_reg];
+    *rows_out = rows;
+    *row_bytes_out = row_bytes;
+    *stride_bytes_out = stride_bytes;
+    *span_bytes_out = span_bytes;
+    return true;
+}
+
+static bool linx_tile_raw_record_matches(const CPULinxState *env,
+                                         uint64_t base, uint64_t rows,
+                                         uint64_t row_bytes,
+                                         uint64_t stride_bytes,
+                                         unsigned *record_out)
+{
+    for (unsigned i = 0; i < LINX_RAW_TILE_TRANSPORT_MAX; i++) {
+        const LinxRawTileTransport *record = &env->raw_tile_transport[i];
+        if (record->valid && record->base == base &&
+            record->transfer_rows == rows && record->row_bytes == row_bytes &&
+            record->stride_bytes == stride_bytes) {
+            if (record_out != NULL) {
+                *record_out = i;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool linx_tile_raw_tstore_legal(const CPULinxState *env,
+                                       unsigned source, unsigned addr_reg,
+                                       unsigned size_code,
+                                       uint64_t *base_out,
+                                       uint64_t *rows_out,
+                                       uint64_t *row_bytes_out,
+                                       uint64_t *stride_bytes_out,
+                                       uint64_t *span_bytes_out)
+{
+    uint64_t base;
+    uint64_t rows;
+    uint64_t row_bytes;
+    uint64_t stride_bytes;
+    uint64_t span_bytes;
+    const unsigned source_elem_bytes =
+        source < LINX_TILE_SLOT_COUNT ? env->tile_reg_elem_bytes[source] : 0u;
+    const uint64_t source_stride = source < LINX_TILE_SLOT_COUNT
+                                       ? (uint64_t)env->tile_reg_cols[source] *
+                                             source_elem_bytes
+                                       : 0u;
+
+    if (source >= LINX_TILE_SLOT_COUNT || source_elem_bytes == 0u ||
+        source_elem_bytes == 8u || env->tile_reg_dtype[source] == 16u ||
+        env->tile_reg_layout[source] != LINX_TILE_LAYOUT_ND ||
+        source_stride < 8u ||
+        !linx_tile_raw_transfer_shape(env, addr_reg, size_code, &base, &rows,
+                                       &row_bytes, &stride_bytes,
+                                       &span_bytes) ||
+        env->tile_reg_valid_rows[source] < rows ||
+        source_stride < row_bytes ||
+        (rows > 1u &&
+         (rows - 1u) > (UINT64_MAX - row_bytes) / source_stride) ||
+        (rows - 1u) * source_stride + row_bytes >
+            env->tile_reg_capacity[source] ||
+        env->tile_reg_capacity[source] > sizeof(env->tile_reg[source])) {
+        return false;
+    }
+    if (base_out != NULL) {
+        *base_out = base;
+    }
+    if (rows_out != NULL) {
+        *rows_out = rows;
+    }
+    if (row_bytes_out != NULL) {
+        *row_bytes_out = row_bytes;
+    }
+    if (stride_bytes_out != NULL) {
+        *stride_bytes_out = stride_bytes;
+    }
+    if (span_bytes_out != NULL) {
+        *span_bytes_out = span_bytes;
+    }
+    return true;
+}
+
+static void linx_tile_invalidate_raw_transports(CPULinxState *env,
+                                                uint64_t address,
+                                                uint64_t size)
+{
+    bool active = false;
+
+    if (size == 0u) {
+        return;
+    }
+    for (unsigned i = 0; i < LINX_RAW_TILE_TRANSPORT_MAX; i++) {
+        LinxRawTileTransport *record = &env->raw_tile_transport[i];
+        const uint64_t record_end =
+            record->span_bytes > UINT64_MAX - record->base
+                ? UINT64_MAX : record->base + record->span_bytes;
+        const uint64_t write_end =
+            size > UINT64_MAX - address ? UINT64_MAX : address + size;
+        if (record->valid && address < record_end && record->base < write_end) {
+            record->valid = 0u;
+        }
+        active |= record->valid != 0u;
+    }
+    env->raw_tile_transport_active = active;
+}
+
+void HELPER(linx_invalidate_raw_tile_transport)(CPULinxState *env,
+                                                uint64_t address,
+                                                uint64_t size)
+{
+    linx_tile_invalidate_raw_transports(env, address, size);
+}
+
+static void linx_tile_record_raw_transport(CPULinxState *env, unsigned source,
+                                           uint64_t base, uint64_t rows,
+                                           uint64_t row_bytes,
+                                           uint64_t stride_bytes,
+                                           uint64_t span_bytes)
+{
+    LinxRawTileTransport *record = NULL;
+    for (unsigned i = 0; i < LINX_RAW_TILE_TRANSPORT_MAX; i++) {
+        if (env->raw_tile_transport[i].valid &&
+            env->raw_tile_transport[i].base == base &&
+            env->raw_tile_transport[i].transfer_rows == rows &&
+            env->raw_tile_transport[i].row_bytes == row_bytes &&
+            env->raw_tile_transport[i].stride_bytes == stride_bytes) {
+            record = &env->raw_tile_transport[i];
+            break;
+        }
+    }
+    if (record == NULL) {
+        for (unsigned i = 0; i < LINX_RAW_TILE_TRANSPORT_MAX; i++) {
+            if (!env->raw_tile_transport[i].valid) {
+                record = &env->raw_tile_transport[i];
+                break;
+            }
+        }
+    }
+    if (record == NULL) {
+        record = &env->raw_tile_transport[0];
+    }
+    record->valid = 1u;
+    record->elem_bytes = env->tile_reg_elem_bytes[source];
+    record->dtype = env->tile_reg_dtype[source] & 0x1fu;
+    record->layout = env->tile_reg_layout[source];
+    record->valid_cols = env->tile_reg_valid_cols[source];
+    record->valid_rows = env->tile_reg_valid_rows[source];
+    record->cols = env->tile_reg_cols[source];
+    record->rows = env->tile_reg_rows[source];
+    record->capacity = env->tile_reg_capacity[source];
+    record->bytes = env->tile_reg_bytes[source];
+    record->base = base;
+    record->transfer_rows = rows;
+    record->row_bytes = row_bytes;
+    record->stride_bytes = stride_bytes;
+    record->span_bytes = span_bytes;
+    env->raw_tile_transport_active = 1u;
+}
+
+static bool linx_tile_raw_store(CPULinxState *env, unsigned source,
+                                unsigned addr_reg, unsigned size_code)
+{
+    uint64_t base;
+    uint64_t rows;
+    uint64_t row_bytes;
+    uint64_t stride_bytes;
+    uint64_t span_bytes;
+    if (!linx_tile_raw_tstore_legal(env, source, addr_reg, size_code,
+                                    &base, &rows,
+                                    &row_bytes, &stride_bytes, &span_bytes)) {
+        return false;
+    }
+    const uint8_t *source_data = (const uint8_t *)env->tile_reg[source];
+    const uint64_t source_stride =
+        (uint64_t)env->tile_reg_cols[source] * env->tile_reg_elem_bytes[source];
+    for (uint64_t row = 0; row < rows; row++) {
+        for (uint64_t byte = 0; byte < row_bytes; byte++) {
+            linx_tile_mem_write(env, base + row * stride_bytes + byte, 1u,
+                                source_data[row * source_stride + byte]);
+        }
+    }
+    linx_tile_record_raw_transport(env, source, base, rows, row_bytes,
+                                   stride_bytes, span_bytes);
+    return true;
+}
+
+static bool linx_tile_raw_load(CPULinxState *env, unsigned destination,
+                               unsigned addr_reg, unsigned size_code)
+{
+    uint64_t base;
+    uint64_t rows;
+    uint64_t row_bytes;
+    uint64_t stride_bytes;
+    uint64_t span_bytes;
+    unsigned record_index;
+    if (destination >= LINX_TILE_SLOT_COUNT ||
+        !linx_tile_raw_transfer_shape(env, addr_reg, size_code, &base, &rows,
+                                       &row_bytes, &stride_bytes,
+                                       &span_bytes) ||
+        !linx_tile_raw_record_matches(env, base, rows, row_bytes, stride_bytes,
+                                      &record_index)) {
+        return false;
+    }
+    const LinxRawTileTransport record = env->raw_tile_transport[record_index];
+    const uint64_t destination_stride =
+        (uint64_t)record.cols * record.elem_bytes;
+    if (record.elem_bytes == 0u || record.elem_bytes == 8u ||
+        record.cols == 0u || destination_stride < row_bytes ||
+        record.capacity > sizeof(env->tile_reg[destination]) ||
+        (rows > 1u &&
+         (rows - 1u) > (UINT64_MAX - row_bytes) / destination_stride) ||
+        (rows - 1u) * destination_stride + row_bytes > record.capacity) {
+        return false;
+    }
+    uint8_t *destination_data = (uint8_t *)env->tile_reg[destination];
+    for (uint64_t row = 0; row < rows; row++) {
+        for (uint64_t byte = 0; byte < row_bytes; byte++) {
+            destination_data[row * destination_stride + byte] =
+                (uint8_t)linx_tile_mem_read(env,
+                                            base + row * stride_bytes + byte,
+                                            1u);
+        }
+    }
+    env->tile_reg_capacity[destination] = record.capacity;
+    env->tile_reg_bytes[destination] = record.bytes;
+    env->tile_reg_elem_bytes[destination] = record.elem_bytes;
+    env->tile_reg_dtype[destination] = record.dtype;
+    env->tile_reg_layout[destination] = record.layout;
+    env->tile_reg_valid_cols[destination] = record.valid_cols;
+    env->tile_reg_valid_rows[destination] = record.valid_rows;
+    env->tile_reg_cols[destination] = record.cols;
+    env->tile_reg_rows[destination] = record.rows;
+    env->raw_tile_transport[record_index].valid = 0u;
+    env->raw_tile_transport_active = 0u;
+    for (unsigned i = 0; i < LINX_RAW_TILE_TRANSPORT_MAX; i++) {
+        env->raw_tile_transport_active |=
+            env->raw_tile_transport[i].valid != 0u;
+    }
+    (void)span_bytes;
+    return true;
+}
+
 static bool linx_tile_get_shared_tload_size(const CPULinxState *env,
                                             unsigned *size_code_out)
 {
@@ -16562,6 +16855,22 @@ static bool linx_tile_preflight_tlsu(
 
         switch (env->tile_func & 0x1f) {
         case LINX_TLSU_TLOAD:
+            {
+            uint64_t raw_base;
+            uint64_t raw_rows;
+            uint64_t raw_row_bytes;
+            uint64_t raw_stride_bytes;
+            uint64_t raw_span_bytes;
+            if (linx_tile_raw_transfer_shape(
+                    env, addr_reg, size_code, &raw_base, &raw_rows,
+                    &raw_row_bytes, &raw_stride_bytes, &raw_span_bytes) &&
+                linx_tile_raw_record_matches(
+                    env, raw_base, raw_rows, raw_row_bytes, raw_stride_bytes,
+                    NULL) &&
+                linx_tile_get_bound_output(env, i, &tile)) {
+                linx_tile_publish_output(planned_live, tile);
+                break;
+            }
             if (!linx_tile_transfer_preflight(env, size_code,
                                               LINX_TLSU_GM_TO_TR) ||
                 !linx_tile_get_bound_output(env, i, &tile)) {
@@ -16569,12 +16878,16 @@ static bool linx_tile_preflight_tlsu(
             }
             linx_tile_publish_output(planned_live, tile);
             break;
+            }
         case LINX_TLSU_TSTORE: {
             if (!linx_tile_tstore_resolve_binding(
                     &d, env->tile_iot_src_valid[i],
                     env->tile_iot_src_phys[i], env->tile_reg_bytes,
                     &tile, &size_code) ||
-                !linx_tile_tstore_preflight(env, tile, size_code)) {
+                (!linx_tile_raw_tstore_legal(
+                     env, tile, addr_reg, size_code, NULL, NULL, NULL, NULL,
+                     NULL) &&
+                 !linx_tile_tstore_preflight(env, tile, size_code))) {
                 return false;
             }
             linx_tile_consume_bound_sources(env, planned_live, i, &d,
@@ -17524,11 +17837,30 @@ static bool linx_tile_materialize_planned_outputs(
             env->blocktype == LINX_BLOCK_TLSU &&
             (tlsu_func == LINX_TLSU_TMOV_S2L_BROADCAST ||
              tlsu_func == LINX_TLSU_TMOV_S2L_EXTRACT);
+        bool raw_tload = false;
 
         if (local_tmov || shared_to_local_tmov) {
             output_dtype = linx_tile_tmov_effective_dtype(env, i);
         }
         const unsigned elem_bytes = linx_tile_dtype_elem_bytes(output_dtype);
+
+        if (env->blocktype == LINX_BLOCK_TLSU &&
+            tlsu_func == LINX_TLSU_TLOAD &&
+            env->tile_shared_binder_count == 0u) {
+            unsigned addr_reg;
+            uint64_t raw_base;
+            uint64_t raw_rows;
+            uint64_t raw_row_bytes;
+            uint64_t raw_stride_bytes;
+            uint64_t raw_span_bytes;
+            raw_tload = linx_tile_get_base_reg(env, &addr_reg) &&
+                linx_tile_raw_transfer_shape(
+                    env, addr_reg, desc.size & 0x1fu, &raw_base, &raw_rows,
+                    &raw_row_bytes, &raw_stride_bytes, &raw_span_bytes) &&
+                linx_tile_raw_record_matches(
+                    env, raw_base, raw_rows, raw_row_bytes, raw_stride_bytes,
+                    NULL);
+        }
 
         if (shared_to_local_tmov &&
             (linx_tile_shared_pe_mask(env) &
@@ -17567,6 +17899,10 @@ static bool linx_tile_materialize_planned_outputs(
                 !linx_tile_value_reduction_output_shape(
                     env, dst_tile, shape_source, bytes, elem_bytes,
                     operation_impl, true) :
+                raw_tload ?
+                !linx_tile_set_shape(
+                    env, dst_tile, bytes / elem_bytes, 1u,
+                    bytes / elem_bytes, 1u) :
                 !linx_tile_set_block_shape(
                     env, dst_tile, bytes, elem_bytes))) {
             return false;
@@ -18631,6 +18967,13 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     /* A fault may leave a non-atomic backing prefix. */
                     env->tile_acc_sources_valid = 0;
                 }
+                if (linx_tile_raw_load(env, dst_tile, addr_reg, size_code)) {
+                    if (!linx_tile_complete_bound_output(
+                            env, live, reserved, order, count_by_hand, i)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                    }
+                    continue;
+                }
                 /*
                  * TLOAD may update a backing prefix before a data fault, as
                  * permitted for non-atomic tile-memory beats.  Retry selects
@@ -18726,6 +19069,19 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                         &src_tile, &size_code)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                     break;
+                }
+                if (linx_tile_raw_tstore_legal(
+                        env, src_tile, addr_reg, size_code, NULL, NULL, NULL,
+                        NULL, NULL)) {
+                    if (!linx_tile_raw_store(env, src_tile, addr_reg,
+                                             size_code)) {
+                        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+                        break;
+                    }
+                    linx_tile_consume_bound_sources(
+                        env, live, i, &d, order, count_by_hand,
+                        &carrier_valid, &carrier);
+                    continue;
                 }
                 /*
                  * TLSU's Normal-memory domain permits one TSTORE operation to

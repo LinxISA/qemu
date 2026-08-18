@@ -66,6 +66,16 @@ uses the instruction-defined dense default; an explicitly encoded zero remains
 a zero stride. TSTORE has no destination TSize field and obtains its transfer
 extent from the bound source Tile.
 
+The model also recognizes the compiler-private spill transport used by current
+PTO kernels: an `S64/NORM` TSTORE may carry the raw bytes of a non-S64 Tile, and
+an immediately matching `S64/NORM` TLOAD restores the saved dtype, logical
+valid rectangle, physical shape, layout, and capacity. This shadow path is
+strictly keyed by the same PE-local base, row count, row-byte count, and byte
+stride; ordinary typed transfers continue to require the ASL descriptor and
+dtype match. The shadow record is invalidated by overlapping successful
+guest-memory writes, including ordinary scalar stores, and is deliberately
+dropped across migration because it is not architectural state.
+
 ### CUBE operations
 
 ```text
