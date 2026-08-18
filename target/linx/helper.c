@@ -12316,10 +12316,10 @@ static inline uint32_t linx_tile_canonicalize_nan(uint32_t value,
     case 5u:
         return ((value & 0x7f80u) == 0x7f80u &&
                 (value & 0x007fu) != 0u) ? 0x7fc0u : value;
-    case 6u: /* HiF8/e4m3 */
-    case 7u: /* E4M3 */
-        return ((value & 0x78u) == 0x78u && (value & 0x07u) != 0u)
-                   ? 0x7fu : value;
+    case 6u: /* HiF8: only 0x80 is the canonical NaN. */
+        return (value & 0xffu) == 0x80u ? 0x80u : value;
+    case 7u: /* OCP E4M3: only exp=0xf, fraction=0x7 is NaN. */
+        return (value & 0x7fu) == 0x7fu ? 0x7fu : value;
     case 8u: /* E5M2 */
         return ((value & 0x7cu) == 0x7cu && (value & 0x03u) != 0u)
                    ? 0x7eu : value;

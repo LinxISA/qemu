@@ -640,6 +640,29 @@ static void test_accumulator_convert_canonicalizes_nan(void)
     g_free(env);
 }
 
+static void test_e4m3_ocp_all_ones_exponent_is_finite(void)
+{
+    static const struct {
+        double value;
+        uint8_t raw;
+    } finite[] = {
+        {192.0, 0x74},
+        {288.0, 0x79},
+        {320.0, 0x7a},
+        {384.0, 0x7c},
+        {448.0, 0x7e},
+    };
+    CPULinxState *env = g_new0(CPULinxState, 1);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(finite); i++) {
+        g_assert_cmphex(run_accumulator_convert(env, 7, finite[i].value, 1,
+                                                false), ==, finite[i].raw);
+        g_assert_true(isfinite(linx_tile_numeric_decode(7, finite[i].raw, 0)));
+    }
+    g_assert_true(isnan(linx_tile_numeric_decode(7, 0x7f, 0)));
+    g_free(env);
+}
+
 static void test_failures_preserve_acc_and_destination(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -749,6 +772,8 @@ int main(int argc, char **argv)
                     test_accumulator_convert_preserves_signed_zero);
     g_test_add_func("/linx/cube/accumulator_convert-canonical-nan",
                     test_accumulator_convert_canonicalizes_nan);
+    g_test_add_func("/linx/cube/e4m3-ocp-exponent-range",
+                    test_e4m3_ocp_all_ones_exponent_is_finite);
     g_test_add_func("/linx/cube/fault-preservation",
                     test_failures_preserve_acc_and_destination);
     return g_test_run();
