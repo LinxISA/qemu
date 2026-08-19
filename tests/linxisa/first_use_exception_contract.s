@@ -89,6 +89,10 @@ first_use_handler_resume:
   addtpc %tpcrel_hi(first_use_retry_complete), ->a6
   addi a6, %tpcrel_lo(first_use_retry_complete), ->a6
   hl.ssrset a6, 0x1f01
+  .elseif HANDLER_MODE == 2
+  addtpc %tpcrel_hi(first_use_cross_handler), ->a6
+  addi a6, %tpcrel_lo(first_use_cross_handler), ->a6
+  hl.ssrset a6, 0x1f01
   .endif
   hl.ssrset a4, 0x1f41
   hl.ssrset a4, 0x1f43
@@ -103,6 +107,37 @@ first_use_fail:
   C.BSTOP
 
 first_use_retry_complete:
+  C.BSTART
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
+  swi a0, [t#1, 0]
+  C.BSTOP
+
+first_use_cross_handler:
+  C.BSTART COND, first_use_fail
+  hl.ssrget 0x1f02, ->a0
+  addi zero, 3, ->a1
+  slli a1, 62, ->a1
+  addi zero, 4, ->a6
+  slli a6, 24, ->a6
+  or a1, a6, ->a1
+  xor a0, a1, ->a0
+  hl.ssrget 0x1f03, ->a2
+  xori a2, 1 - EXPECTED_KIND, ->a2
+  hl.ssrget 0x1f00, ->a3
+  xori a3, 2, ->a3
+  hl.ssrget 0x1f41, ->a4
+  hl.ssrget 0x1f43, ->a5
+  xor a4, a5, ->a4
+  hl.ssrget 0x1f40, ->a6
+  or a0, a2, ->a0
+  or a0, a3, ->a0
+  or a0, a4, ->a0
+  or a0, a6, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+
+first_use_cross_pass:
   C.BSTART
   hl.lui 21845, ->a0
   hl.lui 268472320, ->t

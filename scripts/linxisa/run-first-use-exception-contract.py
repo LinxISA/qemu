@@ -270,12 +270,18 @@ def main() -> int:
                 expected_kind=retry_kind,
                 handler_mode=2,
             )
-            _, output = run_qemu(args.qemu, image, stop_after_traces=2)
+            returncode, output = run_qemu(
+                args.qemu, image, stop_after_traces=None
+            )
+            if returncode != 0:
+                raise AssertionError(
+                    f"{name}: opposite-kind architectural state was rejected\n{output}"
+                )
             lines = first_use_lines(output)
-            if len(lines) < 2:
+            if len(lines) != 2:
                 raise AssertionError(f"{name}: expected two first-use traps\n{output}")
             for index, (line, kind) in enumerate(
-                zip(lines[:2], expected_kinds, strict=True)
+                zip(lines, expected_kinds, strict=True)
             ):
                 assert_first_use(line, kind, pristine=index == 0)
 
