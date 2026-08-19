@@ -41,12 +41,19 @@ Run the guest-ISA matrix against an exact QEMU build and Linx assembler:
 python3 scripts/linxisa/run-first-use-exception-contract.py \
   --llvm-mc /path/to/llvm-mc \
   --qemu /path/to/qemu-system-linx64
+
+python3 scripts/linxisa/run-first-use-vmstate-contract.py \
+  --llvm-mc /path/to/llvm-mc \
+  --qemu /path/to/qemu-system-linx64
 ```
 
 The runner executes all eight VECTOR headers and all twelve canonical CUBE
 headers from ACR2. It validates the precise `E_INST`/`EC_PERM` trap envelope,
 the VECTOR/CUBE argument, pre-effect block/queue state, retry after clearing
 the matching enable, decode priority, and the ACR0/ACR1 and TEPL negatives.
+The VMState runner writes distinct values to all four ECONFIG banks, exercises
+reserved-bit masking, migrates through QEMU's production CPU VMState, and
+requires the restored guest to validate every bank before reporting success.
 
 ## Linux source tree setup
 
