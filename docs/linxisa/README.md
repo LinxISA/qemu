@@ -33,6 +33,21 @@ You can pass extra QEMU args (for example `-append` to populate
 scripts/linxisa/run-linux-bootstub.sh -append "linxisa=1"
 ```
 
+## VECTOR/CUBE first-use exception contract
+
+Run the guest-ISA matrix against an exact QEMU build and Linx assembler:
+
+```bash
+python3 scripts/linxisa/run-first-use-exception-contract.py \
+  --llvm-mc /path/to/llvm-mc \
+  --qemu /path/to/qemu-system-linx64
+```
+
+The runner executes all eight VECTOR headers and all twelve canonical CUBE
+headers from ACR2. It validates the precise `E_INST`/`EC_PERM` trap envelope,
+the VECTOR/CUBE argument, pre-effect block/queue state, retry after clearing
+the matching enable, decode priority, and the ACR0/ACR1 and TEPL negatives.
+
 ## Linux source tree setup
 
 To (re)create a `~/linux` working tree based on the latest stable kernel tarball
