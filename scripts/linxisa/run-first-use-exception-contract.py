@@ -122,6 +122,8 @@ def assemble(
     source_acr: int,
     retry_kind: int,
     cross_kind: int,
+    expected_kind: int,
+    handler_mode: int,
 ) -> None:
     subprocess.run(
         [
@@ -132,6 +134,8 @@ def assemble(
             f"--defsym=SOURCE_ACR={source_acr}",
             f"--defsym=RETRY_KIND={retry_kind}",
             f"--defsym=CROSS_KIND={cross_kind}",
+            f"--defsym=EXPECTED_KIND={expected_kind}",
+            f"--defsym=HANDLER_MODE={handler_mode}",
             str(source),
             "-o",
             str(output),
@@ -211,8 +215,16 @@ def main() -> int:
                 source_acr=2,
                 retry_kind=-1,
                 cross_kind=0,
+                expected_kind=0 if test_case < len(VECTOR_HEADERS) else 1,
+                handler_mode=0,
             )
-            _, output = run_qemu(args.qemu, image, stop_after_traces=1)
+            returncode, output = run_qemu(
+                args.qemu, image, stop_after_traces=None
+            )
+            if returncode != 0:
+                raise AssertionError(
+                    f"{name}: guest rejected delivered architectural state\n{output}"
+                )
             lines = first_use_lines(output)
             if len(lines) != 1:
                 raise AssertionError(f"{name}: expected one first-use trap\n{output}")
@@ -231,6 +243,8 @@ def main() -> int:
                 source_acr=2,
                 retry_kind=retry_kind,
                 cross_kind=0,
+                expected_kind=retry_kind,
+                handler_mode=1,
             )
             returncode, output = run_qemu(args.qemu, image, stop_after_traces=None)
             if returncode != 0:
@@ -253,13 +267,21 @@ def main() -> int:
                 source_acr=2,
                 retry_kind=retry_kind,
                 cross_kind=1,
+                expected_kind=retry_kind,
+                handler_mode=2,
             )
-            _, output = run_qemu(args.qemu, image, stop_after_traces=2)
+            returncode, output = run_qemu(
+                args.qemu, image, stop_after_traces=None
+            )
+            if returncode != 0:
+                raise AssertionError(
+                    f"{name}: opposite-kind architectural state was rejected\n{output}"
+                )
             lines = first_use_lines(output)
-            if len(lines) < 2:
+            if len(lines) != 2:
                 raise AssertionError(f"{name}: expected two first-use traps\n{output}")
             for index, (line, kind) in enumerate(
-                zip(lines[:2], expected_kinds, strict=True)
+                zip(lines, expected_kinds, strict=True)
             ):
                 assert_first_use(line, kind, pristine=index == 0)
 
@@ -277,6 +299,8 @@ def main() -> int:
                 source_acr=source_acr,
                 retry_kind=-1,
                 cross_kind=0,
+                expected_kind=0,
+                handler_mode=-1,
             )
             returncode, output = run_qemu(args.qemu, image, stop_after_traces=None)
             if returncode != 0 or first_use_lines(output):
@@ -291,6 +315,8 @@ def main() -> int:
             source_acr=2,
             retry_kind=-1,
             cross_kind=0,
+            expected_kind=0,
+            handler_mode=-1,
         )
         _, output = run_qemu(args.qemu, image, stop_after_traces=1)
         traces = [line for line in output.splitlines() if line.startswith(TRACE_PREFIX)]

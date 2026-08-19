@@ -36,6 +36,12 @@ class FirstUseExceptionContractTests(unittest.TestCase):
         cls.executable_runner = (
             ROOT / "scripts/linxisa/run-first-use-exception-contract.py"
         ).read_text(encoding="utf-8")
+        cls.vmstate_fixture = (
+            ROOT / "tests/linxisa/first_use_vmstate_contract.s"
+        ).read_text(encoding="utf-8")
+        cls.vmstate_runner = (
+            ROOT / "scripts/linxisa/run-first-use-vmstate-contract.py"
+        ).read_text(encoding="utf-8")
 
     def test_econfig_layout_reset_and_mask_are_exact(self) -> None:
         self.assertTrue(self.first_use_h, "target/linx/first_use.h is missing")
@@ -171,6 +177,19 @@ class FirstUseExceptionContractTests(unittest.TestCase):
         self.assertIn('(\"ACR1 VECTOR\", 6, 1)', self.executable_runner)
         self.assertIn("first-use took priority over illegal decode", self.executable_runner)
         self.assertIn(".4byte 0x78031181", self.executable_fixture)
+        for ssrid in ("0x1f00", "0x1f02", "0x1f03", "0x1f40", "0x1f41", "0x1f43"):
+            self.assertIn(ssrid, self.executable_fixture)
+        self.assertIn("guest rejected delivered architectural state", self.executable_runner)
+
+    def test_econfig_vmstate_round_trip_is_executable(self) -> None:
+        for ssrid in ("0x0f07", "0x1f07", "0x2f07", "0x3f07"):
+            self.assertIn(ssrid, self.vmstate_fixture)
+        self.assertIn("addi zero, 7, ->a3", self.vmstate_fixture)
+        self.assertIn("slli a3, 32, ->a3", self.vmstate_fixture)
+        self.assertIn('qmp(source_stream, "migrate"', self.vmstate_runner)
+        self.assertIn('qmp(destination_stream, "cont")', self.vmstate_runner)
+        self.assertIn('"-incoming"', self.vmstate_runner)
+        self.assertIn("migration.state", self.vmstate_runner)
 
 
 if __name__ == "__main__":

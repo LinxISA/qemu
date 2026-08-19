@@ -10,7 +10,7 @@ _start:
   C.BSTOP
 .else
   C.BSTART
-  .if RETRY_KIND >= 0
+  .if HANDLER_MODE >= 0
   addtpc %tpcrel_hi(first_use_handler), ->a2
   addi a2, %tpcrel_lo(first_use_handler), ->a2
   hl.ssrset a2, 0x1f01
@@ -25,11 +25,48 @@ _start:
   C.BSTOP
 .endif
 
-.if RETRY_KIND >= 0
+.if HANDLER_MODE >= 0
 .p2align 3
 first_use_handler:
+  C.BSTART COND, first_use_fail
+  # Validate the architectural trap state written before EVBASE dispatch.
+  hl.ssrget 0x1f02, ->a0  # TRAPNO_ACR1
+  addi zero, 3, ->a1
+  slli a1, 62, ->a1
+  addi zero, 4, ->a6
+  slli a6, 24, ->a6
+  or a1, a6, ->a1
+  xor a0, a1, ->a0
+  hl.ssrget 0x1f03, ->a2  # TRAPARG0_ACR1
+  xori a2, EXPECTED_KIND, ->a2
+  hl.ssrget 0x1f00, ->a3  # ECSTATE_ACR1
+  xori a3, 2, ->a3
+  hl.ssrget 0x1f41, ->a4  # EBARG_BPC_CUR_ACR1
+  hl.ssrget 0x1f43, ->a5  # EBARG_TPC_ACR1
+  xor a4, a5, ->a4
+  hl.ssrget 0x1f40, ->a6  # EBARG0_ACR1: no block state allocated
+  or a0, a2, ->a0
+  or a0, a3, ->a0
+  or a0, a4, ->a0
+  or a0, a6, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+
+  .if HANDLER_MODE == 0
+first_use_handler_pass:
   C.BSTART
-  .if CROSS_KIND == 1
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
+  swi a0, [t#1, 0]
+  C.BSTOP
+
+first_use_handler_pass_hang:
+  C.BSTART DIRECT, first_use_handler_pass_hang
+  C.BSTOP
+  .else
+first_use_handler_resume:
+  C.BSTART
+    .if CROSS_KIND == 1
     .if RETRY_KIND == 0
   addtpc %tpcrel_hi(first_use_opposite_cube), ->a4
   addi a4, %tpcrel_lo(first_use_opposite_cube), ->a4
@@ -48,9 +85,64 @@ first_use_handler:
   slli a5, 32, ->a5
   addi a5, 8, ->a5
   hl.ssrset a5, 0x1f07
+  .if HANDLER_MODE == 1
+  addtpc %tpcrel_hi(first_use_retry_complete), ->a6
+  addi a6, %tpcrel_lo(first_use_retry_complete), ->a6
+  hl.ssrset a6, 0x1f01
+  .elseif HANDLER_MODE == 2
+  addtpc %tpcrel_hi(first_use_cross_handler), ->a6
+  addi a6, %tpcrel_lo(first_use_cross_handler), ->a6
+  hl.ssrset a6, 0x1f01
+  .endif
   hl.ssrset a4, 0x1f41
   hl.ssrset a4, 0x1f43
   acre 0
+  .endif
+
+first_use_fail:
+  C.BSTART
+  hl.lui 13107, ->a0
+  hl.lui 268472320, ->t
+  swi a0, [t#1, 0]
+  C.BSTOP
+
+first_use_retry_complete:
+  C.BSTART
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
+  swi a0, [t#1, 0]
+  C.BSTOP
+
+first_use_cross_handler:
+  C.BSTART COND, first_use_fail
+  hl.ssrget 0x1f02, ->a0
+  addi zero, 3, ->a1
+  slli a1, 62, ->a1
+  addi zero, 4, ->a6
+  slli a6, 24, ->a6
+  or a1, a6, ->a1
+  xor a0, a1, ->a0
+  hl.ssrget 0x1f03, ->a2
+  xori a2, 1 - EXPECTED_KIND, ->a2
+  hl.ssrget 0x1f00, ->a3
+  xori a3, 2, ->a3
+  hl.ssrget 0x1f41, ->a4
+  hl.ssrget 0x1f43, ->a5
+  xor a4, a5, ->a4
+  hl.ssrget 0x1f40, ->a6
+  or a0, a2, ->a0
+  or a0, a3, ->a0
+  or a0, a4, ->a0
+  or a0, a6, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+
+first_use_cross_pass:
+  C.BSTART
+  hl.lui 21845, ->a0
+  hl.lui 268472320, ->t
+  swi a0, [t#1, 0]
+  C.BSTOP
 .endif
 
 .p2align 3
