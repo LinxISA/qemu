@@ -9593,19 +9593,6 @@ static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
-    if (env->blocktype == LINX_BLOCK_CUBE &&
-        env->tile_shared_binder_count == 2u) {
-        const LinxTileCubeDimensions dims =
-            linx_tile_cube_dimensions_058(env);
-        const uint64_t full_bytes =
-            (uint64_t)dims.m * dims.n * elem_bytes;
-        if (dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
-            (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes) {
-            return linx_tile_set_shape(
-                env, tile, dims.n, dims.m / LINX_CORE4_PE_COUNT,
-                dims.n, dims.m / LINX_CORE4_PE_COUNT);
-        }
-    }
     if (valid_cols == 0u) {
         valid_cols = elems;
     }
@@ -15524,9 +15511,7 @@ static bool linx_tile_cube_accumulator_legal(const CPULinxState *env,
 {
     LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     const uint32_t dtype = mx ? 1u : (env->tile_dtype & 31u);
-    const unsigned rows = env->tile_shared_binder_count == 2u &&
-                          dims.m % LINX_CORE4_PE_COUNT == 0u
-                              ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
+    const unsigned rows = dims.m;
 
     return (dtype == 1u || dtype == 17u) &&
            linx_tile_cube_operand_legal(env, source, dtype,
@@ -15546,9 +15531,7 @@ static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
                                           : LINX_TILE_ACC_S64;
     const uint64_t allocated = size_code < 60u
                                    ? UINT64_C(1) << (size_code + 4u) : 0u;
-    const unsigned rows = env->tile_shared_binder_count == 2u &&
-                          dims.m % LINX_CORE4_PE_COUNT == 0u
-                              ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
+    const unsigned rows = dims.m;
     const uint64_t required = (uint64_t)rows * dims.n * acc_bytes;
     uint8_t *acc = (uint8_t *)env->tile_acc;
 
@@ -17409,9 +17392,7 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
     if (accumulate) {
         LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
         const unsigned acc_bytes = (env->tile_dtype & 31u) == 1u ? 4u : 8u;
-        const unsigned rows = env->tile_shared_binder_count == 2u &&
-                              dims.m % LINX_CORE4_PE_COUNT == 0u
-                                  ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
+        const unsigned rows = dims.m;
         const uint64_t required_acc_bytes =
             (uint64_t)rows * dims.n * acc_bytes;
         if (required_acc_bytes > output_bytes) {
@@ -17522,7 +17503,8 @@ static bool linx_tile_group_cube_profile(
             &cpu->core4->shared_tile[shared_id];
 
         const bool is_left = shared_count == 2u && binder == 0u;
-        const unsigned operand_rows = is_left ? dims.m : dims.k;
+        const unsigned operand_rows = is_left
+            ? dims.m * LINX_CORE4_PE_COUNT : dims.k;
         const unsigned operand_cols = is_left ? dims.k : dims.n;
         valid = tsize == 0u && pe_mask == 0xfu &&
                 linx_tile_shared_cube_operand_legal(
