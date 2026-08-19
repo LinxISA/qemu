@@ -54,13 +54,6 @@ bool linx_tile_cube_output_shape_valid(const CPULinxState *env,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
-    const uint64_t full_bytes = (uint64_t)dims.m * dims.n * elem_bytes;
-    const bool core_shared_output = env->tile_shared_binder_count == 2u &&
-        dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
-        (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes;
-    if (core_shared_output) {
-        valid_rows = dims.m / LINX_CORE4_PE_COUNT;
-    }
     valid_cols = valid_cols == 0u ? elems : valid_cols;
     valid_rows = valid_rows == 0u ? 1u : valid_rows;
     cols = cols == 0u ? valid_cols : cols;
@@ -329,13 +322,9 @@ static bool linx_tile_cube_compute_common_058(
         mx ? LINX_TILE_ACC_FP32 : linx_tile_numeric_acc_dtype(env->tile_dtype);
     unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
     uint64_t allocated = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
-    const uint64_t full_required = (uint64_t)m * n * acc_bytes;
-    const bool core_shared_output = shared_a != NULL && shared_b != NULL &&
-        m % LINX_CORE4_PE_COUNT == 0u && allocated < full_required &&
-        allocated * LINX_CORE4_PE_COUNT >= full_required;
-    const unsigned output_m = core_shared_output
-        ? m / LINX_CORE4_PE_COUNT : m;
-    const unsigned row_base = core_shared_output ? env->pe_id * output_m : 0u;
+    const unsigned output_m = m;
+    const unsigned row_base = shared_a != NULL && shared_b != NULL
+        ? env->pe_id * output_m : 0u;
     uint64_t required = (uint64_t)output_m * n * acc_bytes;
     unsigned groups = (kdim + 31u) / 32u;
     float_status fp_status = {0};
@@ -361,7 +350,8 @@ static bool linx_tile_cube_compute_common_058(
           !cube_nonzero_power_of_two(kdim) ||
           (shared_a != NULL
                ? !cube_buffer_operand_legal(shared_a, shared_a_bytes,
-                                            left_dtype, m, kdim,
+                                            left_dtype,
+                                            m * LINX_CORE4_PE_COUNT, kdim,
                                             shared_a_cols)
                : env->tile_reg_valid_rows[src_a] != m ||
                      env->tile_reg_valid_cols[src_a] != kdim ||
