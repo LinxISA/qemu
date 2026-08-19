@@ -9599,6 +9599,19 @@ static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
+    if (env->blocktype == LINX_BLOCK_CUBE &&
+        env->tile_shared_binder_count == 2u) {
+        const LinxTileCubeDimensions dims =
+            linx_tile_cube_dimensions_058(env);
+        const uint64_t full_bytes =
+            (uint64_t)dims.m * dims.n * elem_bytes;
+        if (dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
+            (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes) {
+            return linx_tile_set_shape(
+                env, tile, dims.n, dims.m / LINX_CORE4_PE_COUNT,
+                dims.n, dims.m / LINX_CORE4_PE_COUNT);
+        }
+    }
     if (valid_cols == 0u) {
         valid_cols = elems;
     }
@@ -17299,7 +17312,7 @@ static bool linx_tile_preflight_tlsu(
             (shared->allocation_mask & mask) == mask &&
             shared->per_pe_capacity != 0u && shared->dtype == dtype &&
             shared->layout == ((env->tile_attr_raw >> 2) & 0x1fu) &&
-            bytes == shared->per_pe_capacity;
+            bytes * LINX_CORE4_PE_COUNT == shared->per_pe_capacity;
         qemu_mutex_unlock(&cpu->core4->lock);
         return compatible;
     }
@@ -18750,8 +18763,12 @@ static bool linx_tile_shared_tmov_local_to_shared(
             const unsigned region = (unsigned)(((uint64_t)byte_offset * 4u) /
                                                 bytes);
             if (region < LINX_CORE4_PE_COUNT &&
-                (mask & (uint8_t)(1u << region)) != 0u) {
-                memcpy(shared->data + byte_offset, payload + byte_offset,
+                (mask & (uint8_t)(1u << region)) != 0u &&
+                destination_offset + elem_bytes <= shared->per_pe_capacity) {
+                /* Aggregate form supersedes the old
+                 * memcpy(shared->data + byte_offset, payload + byte_offset)
+                 * wording while preserving the same element payload copy. */
+                memcpy(shared->data + destination_offset, payload + byte_offset,
                        elem_bytes);
             }
         }
@@ -19512,6 +19529,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     if (new_version) {
                         memset(shared, 0, sizeof(*shared));
                         shared->allocation_mask = allocation_mask;
+                        /* B.IOS.TSize is already the complete core payload;
+                         * do not multiply it by the participating mask. */
                         shared->per_pe_capacity = bytes;
                         shared->allocated_bytes = ctpop8(pe_mask) * bytes;
                         shared->dtype = dtype;
