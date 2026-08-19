@@ -54,6 +54,13 @@ bool linx_tile_cube_output_shape_valid(const CPULinxState *env,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
+    const uint64_t full_bytes = (uint64_t)dims.m * dims.n * elem_bytes;
+    const bool core_shared_output = env->tile_shared_binder_count == 2u &&
+        dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
+        (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes;
+    if (core_shared_output) {
+        valid_rows = dims.m / LINX_CORE4_PE_COUNT;
+    }
     valid_cols = valid_cols == 0u ? elems : valid_cols;
     valid_rows = valid_rows == 0u ? 1u : valid_rows;
     cols = cols == 0u ? valid_cols : cols;
@@ -322,7 +329,14 @@ static bool linx_tile_cube_compute_common_058(
         mx ? LINX_TILE_ACC_FP32 : linx_tile_numeric_acc_dtype(env->tile_dtype);
     unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
     uint64_t allocated = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
-    uint64_t required = (uint64_t)m * n * acc_bytes;
+    const uint64_t full_required = (uint64_t)m * n * acc_bytes;
+    const bool core_shared_output = shared_a != NULL && shared_b != NULL &&
+        m % LINX_CORE4_PE_COUNT == 0u && allocated < full_required &&
+        allocated * LINX_CORE4_PE_COUNT >= full_required;
+    const unsigned output_m = core_shared_output
+        ? m / LINX_CORE4_PE_COUNT : m;
+    const unsigned row_base = core_shared_output ? env->pe_id * output_m : 0u;
+    uint64_t required = (uint64_t)output_m * n * acc_bytes;
     unsigned groups = (kdim + 31u) / 32u;
     float_status fp_status = {0};
     uint8_t *next;
@@ -370,7 +384,7 @@ static bool linx_tile_cube_compute_common_058(
         (accumulate && env->tile_acc_bytes < required) ||
         (shared_b != NULL && accumulate &&
          (!env->tile_acc_valid || env->tile_acc_dtype != acc_dtype ||
-          env->tile_acc_rows != m || env->tile_acc_cols != n))) {
+          env->tile_acc_rows != output_m || env->tile_acc_cols != n))) {
         return false;
     }
 
@@ -381,7 +395,8 @@ static bool linx_tile_cube_compute_common_058(
     if (accumulate) {
         memcpy(next, env->tile_acc, required);
     }
-    for (unsigned i = 0; i < m; i++) {
+    for (unsigned i = 0; i < output_m; i++) {
+        const unsigned source_row = row_base + i;
         for (unsigned j = 0; j < n; j++) {
             uint64_t index = (uint64_t)i * n + j;
             if (acc_dtype == LINX_TILE_ACC_FP32) {
@@ -395,7 +410,7 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
                                                      left_dtype, shared_a_cols,
-                                                     i, k,
+                                                     source_row, k,
                                                      &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
@@ -453,7 +468,7 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
                                                      left_dtype, shared_a_cols,
-                                                     i, k,
+                                                     source_row, k,
                                                      &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
@@ -494,7 +509,7 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
                                                      left_dtype, shared_a_cols,
-                                                     i, k,
+                                                     source_row, k,
                                                      &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
@@ -530,7 +545,7 @@ static bool linx_tile_cube_compute_common_058(
     env->tile_acc_dtype = acc_dtype;
     env->tile_acc_valid = 1u;
     env->tile_acc_cols = n;
-    env->tile_acc_rows = m;
+    env->tile_acc_rows = output_m;
     g_free(next);
     return true;
 fail:
