@@ -16,6 +16,7 @@ enum {
 #endif
 #include "qemu/bswap.h"
 #include "cpu.h"
+#include "first_use.h"
 #include "tile_transaction.h"
 #include "tile_operation_preflight.h"
 #include "trace.h"
@@ -7403,6 +7404,9 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                 }
             }
 
+            if (idx == LINX_SSR_ECONFIG) {
+                value = linx_econfig_sanitize(value);
+            }
             linx_tp_trace_emit(env, "ssr_write", ssrid, bank,
                                env->ssr_acr[bank][idx], value);
             env->ssr_acr[bank][idx] = value;
@@ -7415,6 +7419,14 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
                            env->ssr[idx], value);
         env->ssr[idx] = value;
         return;
+    }
+}
+
+void HELPER(linx_extension_first_use)(CPULinxState *env, uint32_t kind,
+                                      uint64_t pc)
+{
+    if (linx_first_use_prepare(env, (LinxFirstUseKind)kind, pc)) {
+        helper_raise_exception(env, LINX_EXCP_EXTENSION_FIRST_USE);
     }
 }
 
@@ -9192,7 +9204,6 @@ enum {
     LINX_CUBE_TMATMUL_MX = 4,
     LINX_CUBE_TMATMUL_MX_BIAS = 5,
     LINX_CUBE_TMATMUL_MX_ACC = 6,
-    LINX_CUBE_ACCCVT = 8,
     LINX_CUBE_TGEMV = 16,
     LINX_CUBE_TGEMV_BIAS = 17,
     LINX_CUBE_TGEMV_ACC = 18,
@@ -9371,29 +9382,6 @@ static void linx_tile_invalidate_acc_sources_on_output(
 {
     if (*acc_sources_valid && (tile == acc_src0 || tile == acc_src1)) {
         *acc_sources_valid = 0;
-    }
-}
-
-static void linx_tile_release_source(uint16_t live[LINX_TILE_HAND_COUNT],
-                                     uint8_t order[LINX_TILE_HAND_COUNT]
-                                                  [LINX_TILE_HAND_DEPTH],
-                                     uint8_t count_by_hand[LINX_TILE_HAND_COUNT],
-                                     unsigned tile, bool reuse,
-                                     uint8_t *carrier_valid,
-                                     uint8_t *carrier)
-{
-    const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
-    const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
-
-    if (reuse || hand >= LINX_TILE_HAND_COUNT) {
-        return;
-    }
-    live[hand] &= ~LINX_TILE_HAND_BIT(depth);
-    if (order) {
-        linx_tile_remove_order_state(order, count_by_hand, tile);
-    }
-    if (*carrier_valid && *carrier == tile) {
-        *carrier_valid = 0;
     }
 }
 
@@ -15501,8 +15489,9 @@ static bool linx_tile_cube_compute(CPULinxState *env, unsigned src_a,
                                       with_bias, accumulate);
 }
 
-static bool linx_tile_acccvt(CPULinxState *env, unsigned dst_tile,
-                             unsigned size_code)
+static bool linx_tile_publish_accumulator(CPULinxState *env,
+                                          unsigned dst_tile,
+                                          unsigned size_code)
 {
     return linx_tile_accumulator_convert(env, dst_tile, size_code);
 }
@@ -16247,7 +16236,7 @@ static bool linx_tile_cube_publish_explicit_output(
 
     if (env->tile_iot_count == 0u ||
         !linx_tile_get_bound_output(env, output_index, &output) ||
-        !linx_tile_acccvt(env, output, size_code)) {
+        !linx_tile_publish_accumulator(env, output, size_code)) {
         return false;
     }
     linx_tile_invalidate_acc_sources_on_output(
@@ -17339,25 +17328,6 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
         accumulate = true;
         with_scale = true;
         break;
-    case LINX_CUBE_ACCCVT: {
-        unsigned dst_tile;
-        LinxTileIOTDesc desc;
-        uint64_t bytes;
-
-        if (env->tile_iot_count != 1u ||
-            !linx_tile_get_bound_output(env, 0, &dst_tile)) {
-            return false;
-        }
-        desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
-        if (!desc.has_size || !linx_tile_size_code_valid(desc.size & 0x1fu)) {
-            return false;
-        }
-        bytes = 1ull << ((desc.size & 0x1fu) + 4u);
-        return env->tile_acc_valid &&
-               linx_tile_numeric_ordinary(env->tile_dtype) &&
-               bytes <= LINX_TILE_MAX_BYTES &&
-               env->tile_reg_capacity[dst_tile] >= bytes;
-    }
     default:
         return false;
     }
@@ -17498,8 +17468,6 @@ static bool linx_tile_group_cube_profile(
             return false;
         }
     }
-    /* Canonical guard env->tile_reg_bytes[src_a] != 32u * 32u * 4u. */
-
     qemu_mutex_lock(&cpu->core4->lock);
     valid = true;
     for (unsigned binder = 0; valid && binder < shared_count; binder++) {
@@ -19311,57 +19279,6 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
-            break;
-        }
-        case LINX_CUBE_ACCCVT: {
-            LinxTileIOTDesc d;
-            if (env->tile_iot_count) {
-                d = linx_tile_decode_iot(env->tile_iot_desc[0]);
-            } else {
-                d.src0 = env->tile_iot_src0 & 0x3f;
-                d.src1 = env->tile_iot_src1 & 0x3f;
-                d.flags = env->tile_iot_flags & 0xf;
-                d.dst = env->tile_iot_dst & 0x7;
-                d.last = env->tile_iot_grp & 0x1;
-                d.reg = env->tile_iot_reg & 0x1f;
-                d.size = env->tile_iot_size & 0x1f;
-                d.has_size = env->tile_iot_size != 0;
-            }
-
-            unsigned dst_tile = 0;
-            if (!linx_tile_get_bound_output(env, 0, &dst_tile)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                break;
-            }
-            linx_tile_invalidate_acc_sources_on_output(
-                dst_tile, &acc_sources_valid, acc_src0, acc_src1);
-            const unsigned size_code = d.has_size ? (d.size & 0x1f)
-                                                  : (env->tile_iot_size & 0x1f);
-            if (!linx_tile_size_code_valid(size_code)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            }
-            if (!linx_tile_acccvt(env, dst_tile, size_code)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-                break;
-            }
-            if (carrier_valid) {
-                linx_tile_release_source(live, order, count_by_hand,
-                                         carrier, false,
-                                         &carrier_valid, &carrier);
-            }
-            if (!linx_tile_complete_bound_output(
-                    env, live, reserved, order, count_by_hand, 0)) {
-                helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
-            }
-            carrier_valid = 1;
-            carrier = dst_tile;
-            memset(env->tile_acc, 0, sizeof(env->tile_acc));
-            env->tile_acc_bytes = 0;
-            env->tile_acc_dtype = 0;
-            env->tile_acc_valid = 0;
-            env->tile_acc_cols = 0;
-            env->tile_acc_rows = 0;
-            acc_sources_valid = 0;
             break;
         }
         default:

@@ -14,6 +14,10 @@ linx_tile_cube_test_target = declare_dependency(
     '../../fpu/softfloat.c',
   ],
 )
+linx_first_use_test_target = declare_dependency(
+  dependencies: [linx_tile_test_target],
+  sources: ['../../target/linx/first_use.c'],
+)
 
 tests = {
   'check-block-qdict': [],
@@ -65,6 +69,7 @@ tests = {
   'test-linx-tile-transaction': [linx_tile_test_target],
   'test-linx-tile-cube-numeric': [linx_tile_cube_test_target],
   'test-linx-tile-state-dump': ['../../hw/linx/tile-state-dump.c'],
+  'test-linx-first-use': [linx_first_use_test_target],
 }
 
 if have_system or have_tools

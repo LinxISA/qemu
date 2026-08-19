@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "cpu.h"
+#include "first_use.h"
 #include "tcg/tcg-op.h"
 #include "tcg/tcg.h"
 #include "exec/helper-proto.h"
@@ -1780,17 +1781,17 @@ static TCGv_i64 linx_srcR_addsub(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* no modifier */
-        tcg_gen_mov_i64(tmp, r);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 3: /* .neg */
+    case 2: /* .neg */
         tcg_gen_neg_i64(tmp, r);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -1806,17 +1807,17 @@ static TCGv_i64 linx_srcR_logic(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* no modifier */
-        tcg_gen_mov_i64(tmp, r);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 3: /* .not */
+    case 2: /* .not */
         tcg_gen_not_i64(tmp, r);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -2006,6 +2007,15 @@ static bool trans_bstart_tile_common(DisasContext *ctx, uint32_t dtype, uint32_t
 static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
                                           uint32_t blocktype, uint32_t func);
 
+static void linx_gen_extension_first_use(DisasContext *ctx,
+                                         LinxFirstUseKind kind,
+                                         vaddr current_pc)
+{
+    gen_helper_linx_extension_first_use(tcg_env,
+                                        tcg_constant_i32(kind),
+                                        tcg_constant_i64(current_pc));
+}
+
 static bool linx_begin_header_target(DisasContext *ctx, uint8_t brtype, vaddr target)
 {
     /* pc_next has already been advanced past the current insn, so we need to
@@ -2174,6 +2184,7 @@ static bool trans_c_bstart_mpar(DisasContext *ctx, arg_c_bstart_mpar *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
+    linx_gen_extension_first_use(ctx, LINX_FIRST_USE_VECTOR, current_pc);
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_blocktype, 0);
     ctx->decoupled_header = true;
@@ -2191,6 +2202,7 @@ static bool trans_c_bstart_mseq(DisasContext *ctx, arg_c_bstart_mseq *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
+    linx_gen_extension_first_use(ctx, LINX_FIRST_USE_VECTOR, current_pc);
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_blocktype, 1);
     ctx->decoupled_header = true;
@@ -2472,6 +2484,7 @@ static bool trans_bstart_mseq(DisasContext *ctx, arg_bstart_mseq *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
+    linx_gen_extension_first_use(ctx, LINX_FIRST_USE_VECTOR, current_pc);
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_blocktype, 1); /* MSEQ: sequential vector with memory */
     ctx->decoupled_header = true;
@@ -2489,6 +2502,7 @@ static bool trans_bstart_mpar(DisasContext *ctx, arg_bstart_mpar *a)
         linx_gen_block_end(ctx, current_pc);
         return true;
     }
+    linx_gen_extension_first_use(ctx, LINX_FIRST_USE_VECTOR, current_pc);
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_blocktype, 0); /* MPAR: parallel vector with memory */
     ctx->decoupled_header = true;
@@ -2670,6 +2684,9 @@ static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
     if (current_pc != ctx->base.pc_first) {
         linx_gen_block_end(ctx, current_pc);
         return true;
+    }
+    if (blocktype == LINX_FIRST_USE_BLOCK_CUBE) {
+        linx_gen_extension_first_use(ctx, LINX_FIRST_USE_CUBE, current_pc);
     }
     linx_block_begin(ctx, LINX_BR_FALL, 0);
     tcg_gen_movi_i32(cpu_blocktype, blocktype);
@@ -4189,17 +4206,17 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
     TCGv_i64 addr = tcg_temp_new_i64();
 
     switch (idx_type & 0x3) {
-    case 0: /* no modifier */
-        tcg_gen_mov_i64(t, i);
-        break;
-    case 1: /* .sw */
+    case 0: /* .sw */
         tcg_gen_ext32s_i64(t, i);
         break;
-    case 2: /* .uw */
+    case 1: /* .uw */
         tcg_gen_ext32u_i64(t, i);
         break;
-    case 3: /* .neg */
+    case 2: /* .neg */
         tcg_gen_neg_i64(t, i);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(t, i);
         break;
     }
     if (shamt) {
@@ -6656,12 +6673,13 @@ static bool trans_xb(DisasContext *ctx, arg_xb *a)
 
 static bool trans_addtpc(DisasContext *ctx, arg_addtpc *a)
 {
-    /* PTO #77: destination = TPC + (SignExtend(imm20) << 12). */
+    /* LinxISA 0.58.1: page-aligned TPC plus a signed page displacement. */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+    vaddr pc_page = current_pc & ~(vaddr)0xfff;
     int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12;
-    uint64_t offset = (uint64_t)imm << 12;
+    imm <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, current_pc + offset);
+    tcg_gen_movi_i64(out, pc_page + imm);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -7553,11 +7571,13 @@ static bool trans_hl_addtpc(DisasContext *ctx, arg_hl_addtpc *a)
         return linx_setret_common(ctx, (int64_t)(int32_t)a->imm);
     }
 
-    /* PTO #77: destination = TPC + (SignExtend(imm32) << 12). */
+    /* LinxISA 0.58.1: page-aligned TPC plus a signed page displacement. */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    uint64_t offset = (uint64_t)(int64_t)(int32_t)a->imm << 12;
+    vaddr pc_page = current_pc & ~(vaddr)0xfff;
+    int64_t offset = (int64_t)(int32_t)a->imm;
+    offset <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, current_pc + offset);
+    tcg_gen_movi_i64(out, pc_page + offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }

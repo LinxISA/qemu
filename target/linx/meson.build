@@ -9,6 +9,7 @@ linx_ss = ss.source_set()
 linx_ss.add(gen)
 linx_ss.add(files(
   'cpu.c',
+  'first_use.c',
   'helper.c',
   'tile_cube_058.c',
   'translate.c',

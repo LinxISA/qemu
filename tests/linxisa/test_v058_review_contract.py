@@ -165,7 +165,12 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertNotIn("linx_tile_pad_value64", load)
         self.assertRegex(load, r"stride_elements \+ ti\) \* elem_bytes")
         self.assertRegex(store, r"stride_elements \+ gi\) \* elem_bytes")
-        self.assertIn("(uint64_t)row * stride_elements + col", self.helper)
+        self.assertIn(
+            "((uint64_t)to * stride_elements + ti) * elem_bytes", load
+        )
+        self.assertIn(
+            "((uint64_t)go * stride_elements + gi) * elem_bytes", store
+        )
         self.assertIn("linx_tile_state_encode(out", self.virt)
         self.assertIn("row < record->valid_rows", self.tile_state_dump)
         self.assertIn("col < record->valid_cols", self.tile_state_dump)

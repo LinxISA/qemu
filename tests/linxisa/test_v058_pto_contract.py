@@ -155,7 +155,7 @@ class PtoV058ContractTests(unittest.TestCase):
         )
         self.assertNotIn("LB2 is destination Col", self.cube)
 
-    def test_addtpc_uses_pto_signed_page_displacement_from_tpc(self) -> None:
+    def test_addtpc_uses_linxisa_0581_page_base(self) -> None:
         addtpc = re.search(
             r"static bool trans_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -163,13 +163,12 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static bool trans_hl_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
         for body in (addtpc, hl_addtpc):
-            self.assertIn("current_pc + offset", body)
-            self.assertNotIn("page_pc", body)
-            self.assertNotRegex(body, r"&\s*~.*0xFFF")
-            self.assertRegex(body, r"offset\s*=.*<< 12")
-            self.assertNotRegex(body, r"offset\s*<<=\s*1")
+            self.assertIn("pc_page", body)
+            self.assertRegex(body, r"current_pc\s*&\s*~\(vaddr\)0xfff")
+            self.assertRegex(body, r"(?:imm|offset)\s*<<=\s*12")
+            self.assertNotRegex(body, r"offset\s*<<=\s*1(?![0-9])")
 
-    def test_scalar_right_modifier_mapping_matches_asl(self) -> None:
+    def test_scalar_right_modifier_mapping_matches_linxisa_0581(self) -> None:
         arithmetic = re.search(
             r"static TCGv_i64 linx_srcR_addsub\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -184,11 +183,11 @@ class PtoV058ContractTests(unittest.TestCase):
         ).group(0)
 
         for body in (arithmetic, logical):
-            self.assertRegex(body, r"case 0: /\* no modifier \*/")
-            self.assertRegex(body, r"case 1: /\* \.sw \*/")
-            self.assertRegex(body, r"case 2: /\* \.uw \*/")
-        self.assertRegex(arithmetic, r"case 3: /\* \.neg \*/")
-        self.assertRegex(logical, r"case 3: /\* \.not \*/")
+            self.assertRegex(body, r"case 0: /\* \.sw \*/")
+            self.assertRegex(body, r"case 1: /\* \.uw \*/")
+            self.assertIn("default: /* no modifier */", body)
+        self.assertRegex(arithmetic, r"case 2: /\* \.neg \*/")
+        self.assertRegex(logical, r"case 2: /\* \.not \*/")
         self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
         self.assertIn("(srcRType & 0x3) == 3", select)
 
@@ -201,6 +200,16 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static bool trans_csel\(.*?\n\}", self.translate, re.S
         ).group(0)
         self.assertIn("linx_srcR_select", csel)
+
+        addressing = re.search(
+            r"static TCGv_i64 linx_addr_add_reg\(.*?\n\}",
+            self.translate,
+            re.S,
+        ).group(0)
+        self.assertRegex(addressing, r"case 0: /\* \.sw \*/")
+        self.assertRegex(addressing, r"case 1: /\* \.uw \*/")
+        self.assertRegex(addressing, r"case 2: /\* \.neg \*/")
+        self.assertIn("default: /* no modifier */", addressing)
 
     def test_shared_tstore_profiles_are_executable(self) -> None:
         self.assertIn("bstart_tstore_spart", self.decode32)
@@ -265,7 +274,11 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn(
             "dims.m == 32u && dims.n == 32u && dims.k == 32u", self.tile_cube
         )
-        self.assertIn("env->tile_reg_bytes[src_a] != 32u * 32u * 4u", self.helper)
+        self.assertNotIn("32u * 32u * 4u", self.helper)
+        self.assertIn(
+            "linx_tile_cube_operand_legal(env, src_a, dtype,",
+            self.helper,
+        )
         self.assertIn("(shared->initialized_mask & mask) == mask", self.helper)
         self.assertIn("shared->initialized_mask == 0xfu", self.helper)
 
@@ -294,7 +307,7 @@ class PtoV058ContractTests(unittest.TestCase):
         )
         self.assertEqual(
             catalog["engine_counts"],
-            {"VEC": 35, "SFU": 52, "TLSU": 10, "CUBE": 12},
+            {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12},
         )
         for family, function_name in (
             ("TEPL", "linx_tile_operation_datr_allowed"),
@@ -319,9 +332,9 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_validated_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.0-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.1-mode-function-v1", virt)
         self.assertIn(
-            "0cad2272ada8f53fc8354e22568099fe8d6bd4b7832c837260cd370b0fc76ffa",
+            "89b872d6eaf0252200bc9349d49b9346e2a69d894cdcc2dcd0fd71911c1e0b8c",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]

@@ -8,6 +8,7 @@
 #include "qemu/qemu-print.h"
 #include "qapi/error.h"
 #include "cpu.h"
+#include "first_use.h"
 #include "trace.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -2196,6 +2197,15 @@ static void linx_cpu_do_interrupt(CPUState *cs)
                                );
         return;
 
+    case LINX_EXCP_EXTENSION_FIRST_USE:
+        linx_deliver_sync_trap(cs, env, last_pc, env->insn_pc_next,
+                               LINX_TRAPNUM_INSN_EXP,
+                               true,  /* argv */
+                               false, /* fault */
+                               false  /* BI */
+                               );
+        return;
+
     case LINX_EXCP_INST_ACCESS_FAULT:
     case LINX_EXCP_LOAD_ACCESS_FAULT:
     case LINX_EXCP_STORE_ACCESS_FAULT:
@@ -3812,6 +3822,7 @@ static void linx_cpu_reset_hold(Object *obj, ResetType type)
     CPULinxState *env = cpu_env(cs);
 
     memset(env, 0, offsetof(CPULinxState, end_reset_fields));
+    linx_first_use_reset(env);
 
     env->gpr[LINX_REG_ZERO] = 0;
     env->pc = cpu->boot_pc;
