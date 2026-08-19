@@ -30,6 +30,12 @@ class FirstUseExceptionContractTests(unittest.TestCase):
             first_use_c.read_text(encoding="utf-8") if first_use_c.is_file() else ""
         )
         cls.unit_meson = (ROOT / "tests/unit/meson.build").read_text(encoding="utf-8")
+        cls.executable_fixture = (
+            ROOT / "tests/linxisa/first_use_exception_contract.s"
+        ).read_text(encoding="utf-8")
+        cls.executable_runner = (
+            ROOT / "scripts/linxisa/run-first-use-exception-contract.py"
+        ).read_text(encoding="utf-8")
 
     def test_econfig_layout_reset_and_mask_are_exact(self) -> None:
         self.assertTrue(self.first_use_h, "target/linx/first_use.h is missing")
@@ -123,6 +129,45 @@ class FirstUseExceptionContractTests(unittest.TestCase):
             "VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT)",
             self.cpu,
         )
+
+    def test_guest_isa_matrix_is_executable_and_fail_closed(self) -> None:
+        for header in (
+            "BSTART.MPAR 0",
+            "BSTART.MSEQ 0",
+            "BSTART.VPAR 0",
+            "BSTART.VSEQ 0",
+            "BSTART.TMATMUL FP16",
+            "BSTART.TMATMUL.BIAS FP16",
+            "BSTART.TMATMUL.ACC FP16",
+            "BSTART.TMATMULMX FP16",
+            "BSTART.TMATMULMX.BIAS FP16",
+            "BSTART.TMATMULMX.ACC FP16",
+            "BSTART.TGEMV FP16",
+            "BSTART.TGEMV.BIAS FP16",
+            "BSTART.TGEMV.ACC FP16",
+            "BSTART.TGEMVMX FP16",
+            "BSTART.TGEMVMX.BIAS FP16",
+            "BSTART.TGEMVMX.ACC FP16",
+        ):
+            self.assertIn(header, self.executable_fixture)
+        for raw in ("0x08c0", "0x48c0", "0x88c0", "0xc8c0"):
+            self.assertIn(raw, self.executable_fixture)
+        self.assertIn("VECTOR_HEADERS", self.executable_runner)
+        self.assertIn("CUBE_HEADERS", self.executable_runner)
+        self.assertIn("assert_first_use", self.executable_runner)
+        self.assertIn('"cause": "0x4"', self.executable_runner)
+        self.assertIn('"pending_arg0": hex(kind)', self.executable_runner)
+        self.assertIn('"src_blocktype": "0"', self.executable_runner)
+        self.assertIn('"src_tq0": "0x0"', self.executable_runner)
+        self.assertIn('"src_uq0": "0x0"', self.executable_runner)
+        self.assertIn('"src_lb": "0x0:0:0"', self.executable_runner)
+        self.assertIn('"src_lc": "0x0:0:0"', self.executable_runner)
+        self.assertIn('(\"VECTOR retry\", 6, 0)', self.executable_runner)
+        self.assertIn('(\"CUBE retry\", 8, 1)', self.executable_runner)
+        self.assertIn('(\"TEPL carrier\", 20, 2)', self.executable_runner)
+        self.assertIn('(\"ACR0 VECTOR\", 6, 0)', self.executable_runner)
+        self.assertIn('(\"ACR1 VECTOR\", 6, 1)', self.executable_runner)
+        self.assertIn("first-use took priority over illegal decode", self.executable_runner)
 
 
 if __name__ == "__main__":
