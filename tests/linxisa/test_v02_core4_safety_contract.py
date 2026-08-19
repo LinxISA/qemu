@@ -63,6 +63,21 @@ class V02Core4SafetyContractTest(unittest.TestCase):
         self.assertIn("linx_tile_group_reset_block(env)", profile_failure)
         self.assertIn("env->pc = env->bpc", profile_failure)
 
+    def test_shared_cube_preserves_versions_and_uses_descriptors(self) -> None:
+        profile = HELPER[
+            HELPER.index("static bool linx_tile_shared_cube_operand_legal") :
+            HELPER.index("typedef struct LinxTileRegSnapshot")
+        ]
+        self.assertIn("shared->valid_rows != rows", profile)
+        self.assertIn("shared->valid_cols != cols", profile)
+        self.assertNotIn("32u * 32u", profile)
+        commit = HELPER[
+            HELPER.index("static bool linx_tile_group_mma_commit") :
+            HELPER.index("void HELPER(linx_tile_commit)")
+        ]
+        self.assertNotIn("memset(shared_right", commit)
+        self.assertNotIn("memset(shared_left", commit)
+
     def test_reset_clears_machine_owned_core4_state(self) -> None:
         reset = CPU[
             CPU.index("void linx_core4_reset") :

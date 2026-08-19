@@ -61,6 +61,7 @@ static uint64_t run_accumulator_convert(CPULinxState *env, unsigned dtype, doubl
                            unsigned rmode, bool sat)
 {
     uint64_t raw = 0;
+    unsigned row_bytes = dtype >= 11 && dtype <= 14 ? 1 : dtype_bytes(dtype);
     set_fp64_acc(env, &value, 1, 1);
     env->tile_dtype = dtype;
     env->tile_attr_raw = (rmode << 25) | ((unsigned)sat << 28);
@@ -70,7 +71,7 @@ static uint64_t run_accumulator_convert(CPULinxState *env, unsigned dtype, doubl
     g_assert_cmpuint(env->tile_reg_valid_cols[31], ==, 1);
     g_assert_cmpuint(env->tile_reg_valid_rows[31], ==, 1);
     g_assert_cmpuint(env->tile_reg_cols[31], ==, 1);
-    g_assert_cmpuint(env->tile_reg_rows[31], ==, 1);
+    g_assert_cmpuint(env->tile_reg_rows[31], ==, 16 / row_bytes);
     return raw;
 }
 
@@ -229,8 +230,8 @@ static void test_non_square_loop_bound_mapping(void)
 
     memset(left, 1, sizeof(left));
     memset(right, 1, sizeof(right));
-    env->lb[0] = 4;
-    env->lb[1] = 2;
+    env->lb[0] = 2;
+    env->lb[1] = 4;
     env->lb[2] = 64;
     env->tile_dtype = 27;
     set_tile(env, 0, 27, 2, 64, left, sizeof(left));
@@ -242,8 +243,8 @@ static void test_non_square_loop_bound_mapping(void)
     g_assert_cmpuint(dims.k, ==, 64);
     g_assert_true(linx_tile_cube_primary_legal_058(env, 0, 1, false, false));
 
-    env->lb[0] = 2;
-    env->lb[1] = 4;
+    env->lb[0] = 4;
+    env->lb[1] = 2;
     g_assert_false(linx_tile_cube_primary_legal_058(env, 0, 1, false, false));
     g_free(env);
 }
@@ -252,13 +253,49 @@ static void test_group_profile_dimension_contract(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
 
-    env->lb[0] = 32;
-    env->lb[1] = 32;
-    env->lb[2] = 32;
+    env->lb[0] = 16;
+    env->lb[1] = 16;
+    env->lb[2] = 128;
     g_assert_true(linx_tile_cube_group_dimensions_legal_058(env));
 
     env->lb[1] = 8;
+    env->lb[0] = 12;
     g_assert_false(linx_tile_cube_group_dimensions_legal_058(env));
+    g_free(env);
+}
+
+static void test_shared_ab_non_square_strides(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    float left[2 * 10], right[8 * 6], result[2 * 4];
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(left); i++) {
+        left[i] = 100.0f;
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(right); i++) {
+        right[i] = 100.0f;
+    }
+    for (unsigned row = 0; row < 2; row++) {
+        for (unsigned col = 0; col < 8; col++) {
+            left[row * 10 + col] = 1.0f;
+        }
+    }
+    for (unsigned row = 0; row < 8; row++) {
+        for (unsigned col = 0; col < 4; col++) {
+            right[row * 6 + col] = 1.0f;
+        }
+    }
+    env->lb[0] = 2;
+    env->lb[1] = 4;
+    env->lb[2] = 8;
+    env->tile_dtype = 1;
+    g_assert_true(linx_tile_cube_compute_shared_ab_058(
+        env, (const uint8_t *)left, sizeof(left), 1, 10,
+        (const uint8_t *)right, sizeof(right), 1, 6, 1, false));
+    memcpy(result, env->tile_acc, sizeof(result));
+    for (unsigned i = 0; i < G_N_ELEMENTS(result); i++) {
+        g_assert_cmpfloat(result[i], ==, 8.0f);
+    }
     g_free(env);
 }
 
@@ -603,6 +640,29 @@ static void test_accumulator_convert_canonicalizes_nan(void)
     g_free(env);
 }
 
+static void test_e4m3_ocp_all_ones_exponent_is_finite(void)
+{
+    static const struct {
+        double value;
+        uint8_t raw;
+    } finite[] = {
+        {192.0, 0x74},
+        {288.0, 0x79},
+        {320.0, 0x7a},
+        {384.0, 0x7c},
+        {448.0, 0x7e},
+    };
+    CPULinxState *env = g_new0(CPULinxState, 1);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(finite); i++) {
+        g_assert_cmphex(run_accumulator_convert(env, 7, finite[i].value, 1,
+                                                false), ==, finite[i].raw);
+        g_assert_true(isfinite(linx_tile_numeric_decode(7, finite[i].raw, 0)));
+    }
+    g_assert_true(isnan(linx_tile_numeric_decode(7, 0x7f, 0)));
+    g_free(env);
+}
+
 static void test_failures_preserve_acc_and_destination(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -691,6 +751,8 @@ int main(int argc, char **argv)
                     test_non_square_loop_bound_mapping);
     g_test_add_func("/linx/cube/group-profile-dimensions",
                     test_group_profile_dimension_contract);
+    g_test_add_func("/linx/cube/shared-ab-non-square-strides",
+                    test_shared_ab_non_square_strides);
     g_test_add_func("/linx/cube/mx-k64", test_mx_k64);
     g_test_add_func("/linx/cube/reject-non-power-of-two-k",
                     test_reject_non_power_of_two_k);
@@ -710,6 +772,8 @@ int main(int argc, char **argv)
                     test_accumulator_convert_preserves_signed_zero);
     g_test_add_func("/linx/cube/accumulator_convert-canonical-nan",
                     test_accumulator_convert_canonicalizes_nan);
+    g_test_add_func("/linx/cube/e4m3-ocp-exponent-range",
+                    test_e4m3_ocp_all_ones_exponent_is_finite);
     g_test_add_func("/linx/cube/fault-preservation",
                     test_failures_preserve_acc_and_destination);
     return g_test_run();

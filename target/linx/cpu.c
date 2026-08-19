@@ -3772,7 +3772,9 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_bpc = 0;
     core4->collective_func = 0;
     core4->collective_dtype = 0;
-    core4->collective_shared_id = 0;
+    memset(core4->collective_shared_id, 0,
+           sizeof(core4->collective_shared_id));
+    core4->collective_shared_count = 0;
     core4->collective_m = 0;
     core4->collective_n = 0;
     core4->collective_k = 0;
@@ -4007,6 +4009,12 @@ static int linx_cpu_pre_save(void *opaque)
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
 
+    /* Raw spill records are compiler-private shadow state and are not part of
+     * the architectural migration contract.  Invalidate them on migration so
+     * a post-load TLOAD cannot consume stale metadata. */
+    memset(env->raw_tile_transport, 0, sizeof(env->raw_tile_transport));
+    env->raw_tile_transport_active = 0u;
+
     /* Machine-owned Core4 Shared Tile/rendezvous state is not serialized. */
     if ((cpu->core4 != NULL && cpu->core4->cpu[1] != NULL) ||
         env->tile_shared_binder_count != 0u) {
@@ -4108,6 +4116,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
                sizeof(env->tile_reg_valid_rows));
         memset(env->tile_reg_cols, 0, sizeof(env->tile_reg_cols));
         memset(env->tile_reg_rows, 0, sizeof(env->tile_reg_rows));
+        memset(env->raw_tile_transport, 0,
+               sizeof(env->raw_tile_transport));
+        env->raw_tile_transport_active = 0u;
         memset(env->tile_acc, 0, sizeof(env->tile_acc));
         env->tile_acc_bytes = 0;
         env->tile_acc_dtype = 0;

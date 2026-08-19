@@ -18,6 +18,7 @@ class V058ReviewContractTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.cpu = (TARGET / "cpu.c").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.helper_h = (TARGET / "helper.h").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         cls.tile_state_dump = (
@@ -128,6 +129,25 @@ class V058ReviewContractTests(unittest.TestCase):
             self.helper.index("static inline unsigned linx_tile_shared_id")
         ]
         self.assertIn("env->tile_ior_count > 1u", shared_size)
+
+    def test_scalar_store_invalidates_raw_tile_transport_after_success(self) -> None:
+        store = self.translate[
+            self.translate.index("static bool linx_store_from_reg") :
+            self.translate.index("static bool trans_sbi")
+        ]
+        self.assertIn(
+            "DEF_HELPER_3(linx_invalidate_raw_tile_transport, void, env, i64, i64)",
+            self.helper_h,
+        )
+        self.assertLess(
+            store.index("tcg_gen_qemu_st_i64"),
+            store.index("gen_helper_linx_invalidate_raw_tile_transport"),
+        )
+        invalidation = self.helper[
+            self.helper.index("HELPER(linx_invalidate_raw_tile_transport)") :
+            self.helper.index("static void linx_tile_record_raw_transport")
+        ]
+        self.assertIn("linx_tile_invalidate_raw_transports", invalidation)
 
     def test_regular_transfer_uses_valid_rectangle_and_element_stride(
         self,

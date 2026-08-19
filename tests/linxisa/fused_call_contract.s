@@ -13,6 +13,24 @@
 .text
 .globl _start
 _start:
+  # PTO v0.58 B.HINT records non-functional guidance and does not require an
+  # active bundle. This is also a legal explicit CALL continuation prefix.
+  B.HINT TRACE.begin
+
+  # FRET.RA consumes the CALL return address directly. The encoded return
+  # label may begin with a header command rather than a BSTART marker.
+  FENTRY [a2 ~ a2], sp!, 8
+.Lcall32_hint_return:
+  .4byte 0x50160002 | (((.Lcallee_hint_return - .Lcall32_hint_return) / 2 & 0xfff) << 4) | (((.Lret32_hint_return - (.Lcall32_hint_return + 2)) / 2 & 0x1f) << 22)
+  C.BSTOP
+.Lret32_hint_return:
+  B.HINT TRACE.begin
+  C.BSTART DIRECT, .Lafter_hint_return
+  C.BSTOP
+.Lcallee_hint_return:
+  FRET.RA [a2 ~ a2], sp!, 8
+.Lafter_hint_return:
+
   # 32-bit baseline: call=P+simm12*2, ra=P+2+uimm5*2.
   SET_EXPECT 17
 .Lcall32_base:

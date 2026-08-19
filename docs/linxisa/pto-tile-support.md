@@ -66,6 +66,16 @@ uses the instruction-defined dense default; an explicitly encoded zero remains
 a zero stride. TSTORE has no destination TSize field and obtains its transfer
 extent from the bound source Tile.
 
+The model also recognizes the compiler-private spill transport used by current
+PTO kernels: an `S64/NORM` TSTORE may carry the raw bytes of a non-S64 Tile, and
+an immediately matching `S64/NORM` TLOAD restores the saved dtype, logical
+valid rectangle, physical shape, layout, and capacity. This shadow path is
+strictly keyed by the same PE-local base, row count, row-byte count, and byte
+stride; ordinary typed transfers continue to require the ASL descriptor and
+dtype match. The shadow record is invalidated by overlapping successful
+guest-memory writes, including ordinary scalar stores, and is deliberately
+dropped across migration because it is not architectural state.
+
 ### CUBE operations
 
 ```text
@@ -110,6 +120,15 @@ base and offset. A write allocates a new shared-register version and atomically
 publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity
 but does not add cross-PE ordering; software must prevent conflicting accesses.
+
+For a one-hot mask, PTO-ISA #75 defines a single-issuer form: the selected PE
+loads the complete logical object from its own `B.IOR` base/stride, while the
+published Shared version has Core4-wide capacity and can be consumed by all
+four PEs at a later cooperative CUBE rendezvous. Non-issuer PEs perform no
+second memory read. A multi-bit mask retains the element-region form above;
+the selected PE bases contribute their corresponding regions to the same
+aggregate version. The focused current-encoding regression is
+`v058_group_mma_fp32_4pe_single_issuer` in SuperScalarModel.
 
 ## Fail-closed execution
 

@@ -8,8 +8,30 @@ static unsigned cube_dimension(uint32_t value)
     return value ? value : 8u;
 }
 
+static bool cube_is_tmatmul_family(const CPULinxState *env)
+{
+    switch (env->tile_func & 0x1fu) {
+    case 0u:  /* TMATMUL */
+    case 1u:  /* TMATMUL.BIAS */
+    case 2u:  /* TMATMUL.ACC */
+    case 4u:  /* TMATMUL.MX */
+    case 5u:  /* TMATMUL.MX.BIAS */
+    case 6u:  /* TMATMUL.MX.ACC */
+        return true;
+    default:
+        return false;
+    }
+}
+
 LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
 {
+    if (cube_is_tmatmul_family(env)) {
+        return (LinxTileCubeDimensions) {
+            .m = cube_dimension(env->lb[0]),
+            .n = cube_dimension(env->lb[1]),
+            .k = cube_dimension(env->lb[2]),
+        };
+    }
     return (LinxTileCubeDimensions) {
         .m = cube_dimension(env->lb[1]),
         .n = cube_dimension(env->lb[0]),
@@ -17,16 +39,44 @@ LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
     };
 }
 
-bool linx_tile_cube_group_dimensions_legal_058(const CPULinxState *env)
+bool linx_tile_cube_output_shape_valid(const CPULinxState *env,
+                                       uint32_t bytes,
+                                       unsigned elem_bytes)
 {
     LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    uint32_t valid_cols = dims.n;
+    uint32_t valid_rows = dims.m;
+    uint32_t cols = cube_is_tmatmul_family(env)
+                        ? dims.n
+                        : (env->lb[2] != 0u ? env->lb[2] : dims.n);
 
-    return dims.m == 32u && dims.n == 32u && dims.k == 32u;
+    if (elem_bytes == 0u || bytes == 0u || bytes % elem_bytes != 0u) {
+        return false;
+    }
+    const uint32_t elems = bytes / elem_bytes;
+    valid_cols = valid_cols == 0u ? elems : valid_cols;
+    valid_rows = valid_rows == 0u ? 1u : valid_rows;
+    cols = cols == 0u ? valid_cols : cols;
+    return cols != 0u && elems % cols == 0u &&
+           valid_cols <= cols && valid_rows <= elems / cols &&
+           valid_cols <= UINT16_MAX && valid_rows <= UINT16_MAX &&
+           cols <= UINT16_MAX && elems / cols <= UINT16_MAX;
 }
 
 static bool cube_nonzero_power_of_two(unsigned value)
 {
     return value != 0u && (value & (value - 1u)) == 0u;
+}
+
+bool linx_tile_cube_group_dimensions_legal_058(const CPULinxState *env)
+{
+    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+
+    /* Canonical profile dims.m == 32u && dims.n == 32u && dims.k == 32u; */
+
+    return cube_nonzero_power_of_two(dims.m) &&
+           cube_nonzero_power_of_two(dims.n) &&
+           cube_nonzero_power_of_two(dims.k);
 }
 
 static unsigned cube_dtype_bytes(uint32_t dtype)
@@ -115,6 +165,11 @@ bool linx_tile_cube_primary_legal_058(const CPULinxState *env,
     uint8_t acc_dtype = mx ? LINX_TILE_ACC_FP32
                            : linx_tile_numeric_acc_dtype(env->tile_dtype);
 
+    if (!cube_is_tmatmul_family(env) && src_a < LINX_TILE_SLOT_COUNT) {
+        /* TGEMV retains its source-descriptor inner dimension. */
+        dims.k = env->tile_reg_valid_cols[src_a];
+    }
+
     if (src_a >= LINX_TILE_SLOT_COUNT || src_b >= LINX_TILE_SLOT_COUNT ||
         !cube_nonzero_power_of_two(dims.m) ||
         !cube_nonzero_power_of_two(dims.n) ||
@@ -160,17 +215,21 @@ static bool cube_read_raw(const CPULinxState *env, unsigned tile, unsigned row,
 
 static bool cube_buffer_operand_legal(const uint8_t *data, uint32_t bytes,
                                       uint32_t dtype, unsigned rows,
-                                      unsigned cols)
+                                      unsigned cols, unsigned stride)
 {
     unsigned elem_bytes = cube_dtype_bytes(dtype);
-    uint64_t row_bytes;
+    uint64_t row_bytes, required;
 
-    if (data == NULL || elem_bytes == 0u || rows == 0u || cols == 0u) {
+    if (data == NULL || elem_bytes == 0u || rows == 0u || cols == 0u ||
+        stride < cols) {
         return false;
     }
-    row_bytes = linx_tile_numeric_is_packed(dtype) ? (cols + 1u) / 2u
-                                                    : (uint64_t)cols * elem_bytes;
-    return (uint64_t)rows * row_bytes <= bytes;
+    row_bytes = linx_tile_numeric_is_packed(dtype) ? (stride + 1u) / 2u
+                                                    : (uint64_t)stride * elem_bytes;
+    required = (uint64_t)(rows - 1u) * row_bytes +
+               (linx_tile_numeric_is_packed(dtype) ? (cols + 1u) / 2u
+                                                    : (uint64_t)cols * elem_bytes);
+    return required <= bytes;
 }
 
 static bool cube_read_buffer_raw(const uint8_t *data, uint32_t bytes,
@@ -237,8 +296,11 @@ static uint64_t cube_unsigned(uint32_t dtype, uint64_t raw,
 
 static bool linx_tile_cube_compute_common_058(
     CPULinxState *env, unsigned src_a, unsigned src_b,
+    const uint8_t *shared_a, uint32_t shared_a_bytes,
+    uint32_t shared_a_dtype, uint32_t shared_a_cols,
     const uint8_t *shared_b, uint32_t shared_b_bytes,
-    uint32_t shared_b_dtype, unsigned row_scale, unsigned column_scale,
+    uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    unsigned row_scale, unsigned column_scale,
     unsigned bias, unsigned size_code, bool mx, bool with_bias,
     bool accumulate)
 {
@@ -246,10 +308,11 @@ static bool linx_tile_cube_compute_common_058(
     unsigned m = dims.m;
     unsigned n = dims.n;
     unsigned kdim = dims.k;
-    uint32_t left_dtype =
-        src_a < LINX_TILE_SLOT_COUNT
-            ? env->tile_reg_dtype[src_a] & 31u
-            : UINT32_MAX;
+    uint32_t left_dtype = shared_a != NULL
+                              ? shared_a_dtype & 31u
+                              : src_a < LINX_TILE_SLOT_COUNT
+                                    ? env->tile_reg_dtype[src_a] & 31u
+                                    : UINT32_MAX;
     uint32_t right_dtype = shared_b != NULL
                                ? shared_b_dtype & 31u
                                : src_b < LINX_TILE_SLOT_COUNT
@@ -264,8 +327,14 @@ static bool linx_tile_cube_compute_common_058(
     float_status fp_status = {0};
     uint8_t *next;
 
-    if (src_a >= LINX_TILE_SLOT_COUNT ||
-        (shared_b == NULL &&
+    if (!cube_is_tmatmul_family(env) && src_a < LINX_TILE_SLOT_COUNT) {
+        /* TGEMV retains its source-descriptor inner dimension. */
+        dims.k = env->tile_reg_valid_cols[src_a];
+        kdim = dims.k;
+    }
+
+    if ((shared_a == NULL && src_a >= LINX_TILE_SLOT_COUNT) ||
+        (shared_a == NULL && shared_b == NULL &&
          !linx_tile_cube_primary_legal_058(env, src_a, src_b, mx,
                                            accumulate)) ||
         m > UINT16_MAX || n > UINT16_MAX ||
@@ -276,11 +345,16 @@ static bool linx_tile_cube_compute_common_058(
          (!cube_nonzero_power_of_two(m) ||
           !cube_nonzero_power_of_two(n) ||
           !cube_nonzero_power_of_two(kdim) ||
-          env->tile_reg_valid_rows[src_a] != m ||
-          env->tile_reg_valid_cols[src_a] != kdim ||
-          !cube_operand_legal(env, src_a, left_dtype, m, kdim) ||
+          (shared_a != NULL
+               ? !cube_buffer_operand_legal(shared_a, shared_a_bytes,
+                                            left_dtype, m, kdim,
+                                            shared_a_cols)
+               : env->tile_reg_valid_rows[src_a] != m ||
+                     env->tile_reg_valid_cols[src_a] != kdim ||
+                     !cube_operand_legal(env, src_a, left_dtype, m, kdim)) ||
           !cube_buffer_operand_legal(shared_b, shared_b_bytes,
-                                     right_dtype, kdim, n) ||
+                                     right_dtype, kdim, n,
+                                     shared_b_cols) ||
           !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx))) ||
         (mx && (!cube_operand_legal(env, row_scale, 13u, m, groups) ||
                 !cube_operand_legal(env, column_scale, 13u, groups, n))) ||
@@ -318,10 +392,16 @@ static bool linx_tile_cube_compute_common_058(
                 for (unsigned k = 0; k < kdim; k++) {
                     uint64_t ar, br;
                     uint32_t av, bv;
-                    if (!cube_read_raw(env, src_a, i, k, &ar) ||
+                    if ((shared_a != NULL
+                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
+                                                     left_dtype, shared_a_cols,
+                                                     i, k,
+                                                     &ar)
+                             : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
                              ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, n, k, j,
+                                                     right_dtype, shared_b_cols,
+                                                     k, j,
                                                      &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
@@ -370,10 +450,16 @@ static bool linx_tile_cube_compute_common_058(
                 }
                 for (unsigned k = 0; k < kdim; k++) {
                     uint64_t ar, br;
-                    if (!cube_read_raw(env, src_a, i, k, &ar) ||
+                    if ((shared_a != NULL
+                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
+                                                     left_dtype, shared_a_cols,
+                                                     i, k,
+                                                     &ar)
+                             : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
                              ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, n, k, j,
+                                                     right_dtype, shared_b_cols,
+                                                     k, j,
                                                      &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
@@ -405,10 +491,16 @@ static bool linx_tile_cube_compute_common_058(
                 }
                 for (unsigned k = 0; k < kdim; k++) {
                     uint64_t ar, br;
-                    if (!cube_read_raw(env, src_a, i, k, &ar) ||
+                    if ((shared_a != NULL
+                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
+                                                     left_dtype, shared_a_cols,
+                                                     i, k,
+                                                     &ar)
+                             : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
                              ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, n, k, j,
+                                                     right_dtype, shared_b_cols,
+                                                     k, j,
                                                      &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
@@ -453,18 +545,33 @@ bool linx_tile_cube_compute_058(CPULinxState *env, unsigned src_a,
                                 bool accumulate)
 {
     return linx_tile_cube_compute_common_058(
-        env, src_a, src_b, NULL, 0u, 0u, row_scale, column_scale, bias,
+        env, src_a, src_b, NULL, 0u, 0u, 0u, NULL, 0u, 0u, 0u,
+        row_scale, column_scale, bias,
         size_code, mx, with_bias, accumulate);
 }
 
 bool linx_tile_cube_compute_shared_b_058(
     CPULinxState *env, unsigned src_a, const uint8_t *shared_b,
-    uint32_t shared_b_bytes, uint32_t shared_b_dtype, unsigned size_code,
-    bool accumulate)
+    uint32_t shared_b_bytes, uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    unsigned size_code, bool accumulate)
 {
     return linx_tile_cube_compute_common_058(
-        env, src_a, UINT_MAX, shared_b, shared_b_bytes, shared_b_dtype, 0u,
-        0u, 0u, size_code, false, false, accumulate);
+        env, src_a, UINT_MAX, NULL, 0u, 0u, 0u, shared_b, shared_b_bytes,
+        shared_b_dtype, shared_b_cols, 0u, 0u, 0u, size_code, false, false,
+        accumulate);
+}
+
+bool linx_tile_cube_compute_shared_ab_058(
+    CPULinxState *env, const uint8_t *shared_a, uint32_t shared_a_bytes,
+    uint32_t shared_a_dtype, uint32_t shared_a_cols,
+    const uint8_t *shared_b, uint32_t shared_b_bytes,
+    uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    unsigned size_code, bool accumulate)
+{
+    return linx_tile_cube_compute_common_058(
+        env, UINT_MAX, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
+        shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype, shared_b_cols,
+        0u, 0u, 0u, size_code, false, false, accumulate);
 }
 
 static uint64_t cube_saturate_integer(uint64_t raw, uint8_t acc_dtype,
@@ -541,9 +648,13 @@ bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
     uint32_t dst_dtype = env->tile_dtype & 31u;
     unsigned elem_bytes = cube_dtype_bytes(dst_dtype);
     uint64_t bytes = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
+    unsigned physical_cols = cube_is_tmatmul_family(env)
+                                 ? env->tile_acc_cols
+                                 : (env->lb[2] != 0u
+                                        ? env->lb[2] : env->tile_acc_cols);
     uint64_t row_bytes = linx_tile_numeric_is_packed(dst_dtype)
-                             ? (env->tile_acc_cols + 1u) / 2u
-                             : (uint64_t)env->tile_acc_cols * elem_bytes;
+                             ? (physical_cols + 1u) / 2u
+                             : (uint64_t)physical_cols * elem_bytes;
     uint64_t used = (uint64_t)env->tile_acc_rows * row_bytes;
     unsigned src_bytes = env->tile_acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
     bool sat = ((env->tile_attr_raw >> 28) & 1u) != 0u;
@@ -614,7 +725,13 @@ bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
     env->tile_reg_dtype[dst_tile] = dst_dtype;
     env->tile_reg_valid_cols[dst_tile] = env->tile_acc_cols;
     env->tile_reg_valid_rows[dst_tile] = env->tile_acc_rows;
-    env->tile_reg_cols[dst_tile] = env->tile_acc_cols;
-    env->tile_reg_rows[dst_tile] = env->tile_acc_rows;
+    env->tile_reg_cols[dst_tile] = physical_cols;
+    env->tile_reg_rows[dst_tile] = bytes / row_bytes;
     return true;
+}
+
+bool linx_tile_acccvt_058(CPULinxState *env, unsigned dst_tile,
+                          unsigned size_code)
+{
+    return linx_tile_accumulator_convert(env, dst_tile, size_code);
 }

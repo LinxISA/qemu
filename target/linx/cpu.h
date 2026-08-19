@@ -31,22 +31,41 @@
 #define LINX_CORE4_PE_COUNT 4
 #define LINX_SHARED_TILE_COUNT 256
 #define LINX_SHARED_TILE_MAX_BYTES (8 * 1024)
+#define LINX_RAW_TILE_TRANSPORT_MAX 8
 
-typedef struct LinxSharedTileLane {
-    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    uint32_t bytes;
-    uint32_t dtype;
+/* Compiler-generated S64/NORM spill metadata.  This is a model-internal
+ * transport record; ordinary typed TLOAD/TSTORE never consults it. */
+typedef struct LinxRawTileTransport {
+    uint8_t valid;
+    uint8_t elem_bytes;
+    uint8_t dtype;
+    uint8_t layout;
     uint16_t valid_cols;
     uint16_t valid_rows;
     uint16_t cols;
     uint16_t rows;
-} LinxSharedTileLane;
+    uint32_t capacity;
+    uint32_t bytes;
+    uint64_t base;
+    uint64_t transfer_rows;
+    uint64_t row_bytes;
+    uint64_t stride_bytes;
+    uint64_t span_bytes;
+} LinxRawTileTransport;
 
 typedef struct LinxSharedTileVersion {
-    LinxSharedTileLane lane[LINX_CORE4_PE_COUNT];
+    /* The architectural Shared register is one aggregate tile payload.  The
+     * four mask bits select fixed-offset regions in this payload; they are not
+     * four independent full-tile lanes. */
+    uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;
+    uint8_t layout;
+    uint16_t valid_cols;
+    uint16_t valid_rows;
+    uint16_t cols;
+    uint16_t rows;
     uint64_t producer_bpc;
     uint8_t allocation_mask;
     uint8_t initialized_mask;
@@ -60,7 +79,8 @@ typedef struct LinxCore4State {
     uint64_t collective_bpc;
     uint32_t collective_func;
     uint32_t collective_dtype;
-    uint32_t collective_shared_id;
+    uint32_t collective_shared_id[2];
+    uint8_t collective_shared_count;
     uint32_t collective_m;
     uint32_t collective_n;
     uint32_t collective_k;
@@ -528,6 +548,9 @@ typedef struct CPUArchState {
     uint16_t tile_reg_valid_rows[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_cols[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_rows[LINX_TILE_SLOT_COUNT];
+
+    LinxRawTileTransport raw_tile_transport[LINX_RAW_TILE_TRANSPORT_MAX];
+    uint8_t raw_tile_transport_active;
 
     /* Accumulator backing store (separate scratch). */
     uint32_t tile_acc[LINX_TILE_MAX_WORDS];

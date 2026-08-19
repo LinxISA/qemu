@@ -1780,17 +1780,17 @@ static TCGv_i64 linx_srcR_addsub(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* .sw */
+    case 0: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 2: /* .neg */
+    case 3: /* .neg */
         tcg_gen_neg_i64(tmp, r);
-        break;
-    default: /* no modifier */
-        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
@@ -1806,21 +1806,55 @@ static TCGv_i64 linx_srcR_logic(DisasContext *ctx, unsigned srcR,
     TCGv_i64 tmp = tcg_temp_new_i64();
 
     switch (srcRType & 0x3) {
-    case 0: /* .sw */
+    case 0: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(tmp, r);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(tmp, r);
         break;
-    case 2: /* .not */
+    case 3: /* .not */
         tcg_gen_not_i64(tmp, r);
-        break;
-    default: /* no modifier */
-        tcg_gen_mov_i64(tmp, r);
         break;
     }
     if (shamt) {
         tcg_gen_shli_i64(tmp, tmp, shamt & 0x3f);
+    }
+    return tmp;
+}
+
+static TCGv_i64 linx_srcR_compare(DisasContext *ctx, unsigned srcR,
+                                  unsigned srcRType)
+{
+    TCGv_i64 r = linx_get_reg(srcR);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+
+    switch (srcRType & 0x3) {
+    case 1: /* .sw */
+        tcg_gen_ext32s_i64(tmp, r);
+        break;
+    case 2: /* .uw */
+        tcg_gen_ext32u_i64(tmp, r);
+        break;
+    default: /* 0 and 3 are unmodified aliases */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    }
+    return tmp;
+}
+
+static TCGv_i64 linx_srcR_select(DisasContext *ctx, unsigned srcR,
+                                 unsigned srcRType)
+{
+    TCGv_i64 r = linx_get_reg(srcR);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+
+    if ((srcRType & 0x3) == 3) {
+        tcg_gen_neg_i64(tmp, r);
+    } else {
+        tcg_gen_mov_i64(tmp, r);
     }
     return tmp;
 }
@@ -2484,7 +2518,7 @@ static bool trans_bstart_tstore(DisasContext *ctx, arg_bstart_tstore *a)
 static bool trans_bstart_tstore_spart(DisasContext *ctx,
                                       arg_bstart_tstore_spart *a)
 {
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
+    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 14);
 }
 
 static bool trans_bstart_tmov(DisasContext *ctx, arg_bstart_tmov *a)
@@ -2627,7 +2661,7 @@ static bool trans_bstart_tile_func_common(DisasContext *ctx, uint32_t dtype,
                                           uint32_t blocktype, uint32_t func)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    if (!linx_tile_data_type_accepted(dtype & 0x1fu)) {
+    if (!linx_tile_data_type_field_accepted(dtype & 0x1fu)) {
         return linx_illegal(ctx);
     }
     if (ctx->in_body) {
@@ -2840,7 +2874,7 @@ static bool trans_b_datr(DisasContext *ctx, arg_b_datr *a)
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
     }
     if (a->cmode > 5u ||
-        !linx_tile_data_type_accepted(a->dtype & 0x1fu) ||
+        !linx_tile_data_type_field_accepted(a->dtype & 0x1fu) ||
         !linx_tile_layout_accepted(a->layout & 0x1fu)) {
         return linx_illegal(ctx);
     }
@@ -2897,9 +2931,6 @@ static bool trans_b_hint(DisasContext *ctx, arg_b_hint *a)
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
     }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
-    }
     (void)a;
     return true;
 }
@@ -2908,9 +2939,6 @@ static bool trans_b_hint_trace(DisasContext *ctx, arg_b_hint_trace *a)
 {
     if (ctx->in_body) {
         return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (ctx->brtype == 0) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK, 0);
     }
     (void)a;
     return true;
@@ -3015,7 +3043,7 @@ static bool trans_c_setc_ne(DisasContext *ctx, arg_c_setc_ne *a)
 static bool trans_setc_eq(DisasContext *ctx, arg_setc_eq *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_EQ, l, r);
 }
 
@@ -3029,7 +3057,7 @@ static bool trans_setc_eqi(DisasContext *ctx, arg_setc_eqi *a)
 static bool trans_setc_ne(DisasContext *ctx, arg_setc_ne *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_NE, l, r);
 }
 
@@ -3099,7 +3127,7 @@ static bool trans_setc_cmp(DisasContext *ctx, TCGCond c, TCGv_i64 l, TCGv_i64 r)
 static bool trans_setc_lt(DisasContext *ctx, arg_setc_lt *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_LT, l, r);
 }
 
@@ -3113,7 +3141,7 @@ static bool trans_setc_lti(DisasContext *ctx, arg_setc_lti *a)
 static bool trans_setc_ltu(DisasContext *ctx, arg_setc_ltu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_LTU, l, r);
 }
 
@@ -3127,7 +3155,7 @@ static bool trans_setc_ltui(DisasContext *ctx, arg_setc_ltui *a)
 static bool trans_setc_ge(DisasContext *ctx, arg_setc_ge *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_GE, l, r);
 }
 
@@ -3141,7 +3169,7 @@ static bool trans_setc_gei(DisasContext *ctx, arg_setc_gei *a)
 static bool trans_setc_geu(DisasContext *ctx, arg_setc_geu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_setc_cmp(ctx, TCG_COND_GEU, l, r);
 }
 
@@ -3832,14 +3860,14 @@ static bool trans_cmp_out(DisasContext *ctx, unsigned dst,
 static bool trans_cmp_eq(DisasContext *ctx, arg_cmp_eq *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_EQ, l, r);
 }
 
 static bool trans_cmp_ne(DisasContext *ctx, arg_cmp_ne *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, l, r);
 }
 
@@ -3864,28 +3892,28 @@ static bool trans_cmp_or(DisasContext *ctx, arg_cmp_or *a)
 static bool trans_cmp_lt(DisasContext *ctx, arg_cmp_lt *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_LT, l, r);
 }
 
 static bool trans_cmp_ltu(DisasContext *ctx, arg_cmp_ltu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_LTU, l, r);
 }
 
 static bool trans_cmp_ge(DisasContext *ctx, arg_cmp_ge *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_GE, l, r);
 }
 
 static bool trans_cmp_geu(DisasContext *ctx, arg_cmp_geu *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare(ctx, a->SrcR, a->SrcRType);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_GEU, l, r);
 }
 
@@ -3897,7 +3925,7 @@ static bool trans_csel(DisasContext *ctx, arg_csel *a)
      */
     TCGv_i64 pred = linx_get_reg(a->SrcP);
     TCGv_i64 tval = linx_get_reg(a->SrcL);
-    TCGv_i64 fval = linx_srcR_addsub(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 fval = linx_srcR_select(ctx, a->SrcR, a->SrcRType);
     TCGv_i64 out = tcg_temp_new_i64();
     TCGLabel *done = gen_new_label();
 
@@ -4161,17 +4189,17 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
     TCGv_i64 addr = tcg_temp_new_i64();
 
     switch (idx_type & 0x3) {
-    case 0: /* .sw */
+    case 0: /* no modifier */
+        tcg_gen_mov_i64(t, i);
+        break;
+    case 1: /* .sw */
         tcg_gen_ext32s_i64(t, i);
         break;
-    case 1: /* .uw */
+    case 2: /* .uw */
         tcg_gen_ext32u_i64(t, i);
         break;
-    case 2: /* .neg */
+    case 3: /* .neg */
         tcg_gen_neg_i64(t, i);
-        break;
-    default: /* no modifier */
-        tcg_gen_mov_i64(t, i);
         break;
     }
     if (shamt) {
@@ -5065,6 +5093,22 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
 
     linx_lr_invalidate();
     tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
+#if TARGET_LONG_BITS == 32
+    TCGv_i64 raw_transport_addr = tcg_temp_new_i64();
+    tcg_gen_extu_tl_i64(raw_transport_addr, addr);
+#else
+    TCGv_i64 raw_transport_addr = (TCGv_i64)addr;
+#endif
+    TCGv_i32 raw_transport_active = tcg_temp_new_i32();
+    TCGLabel *raw_transport_done = gen_new_label();
+    tcg_gen_ld8u_i32(raw_transport_active, tcg_env,
+                     offsetof(CPULinxState, raw_tile_transport_active));
+    tcg_gen_brcondi_i32(TCG_COND_EQ, raw_transport_active, 0,
+                        raw_transport_done);
+    gen_helper_linx_invalidate_raw_tile_transport(
+        tcg_env, raw_transport_addr,
+        tcg_constant_i64((int64_t)memop_size(mop)));
+    gen_set_label(raw_transport_done);
     return true;
 }
 
@@ -6612,14 +6656,12 @@ static bool trans_xb(DisasContext *ctx, arg_xb *a)
 
 static bool trans_addtpc(DisasContext *ctx, arg_addtpc *a)
 {
-    /* ADDTPC: PC-relative page base
-     * rd = (PC & ~0xFFF) + (sext(imm20) << 12) */
+    /* PTO #77: destination = TPC + (SignExtend(imm20) << 12). */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr pc_page = current_pc & ~(vaddr)0xfff;
-    int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12; /* sign-extend 20-bit */
-    imm <<= 12;
+    int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12;
+    uint64_t offset = (uint64_t)imm << 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, pc_page + imm);
+    tcg_gen_movi_i64(out, current_pc + offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -7511,13 +7553,11 @@ static bool trans_hl_addtpc(DisasContext *ctx, arg_hl_addtpc *a)
         return linx_setret_common(ctx, (int64_t)(int32_t)a->imm);
     }
 
-    /* HL.ADDTPC: PC-relative with 32-bit offset */
+    /* PTO #77: destination = TPC + (SignExtend(imm32) << 12). */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr pc_page = current_pc & ~(vaddr)0xfff;
-    int64_t offset = (int64_t)(int32_t)a->imm;
-    offset <<= 12;
+    uint64_t offset = (uint64_t)(int64_t)(int32_t)a->imm << 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, pc_page + offset);
+    tcg_gen_movi_i64(out, current_pc + offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }
