@@ -29,18 +29,39 @@ _start:
 .p2align 3
 first_use_handler:
   C.BSTART
-  hl.ssrget 0x1f43, ->a4
-  .if RETRY_KIND == 0
-  hl.lui 8589934592, ->a5
+  .if CROSS_KIND == 1
+    .if RETRY_KIND == 0
+  addtpc %tpcrel_hi(first_use_opposite_cube), ->a4
+  addi a4, %tpcrel_lo(first_use_opposite_cube), ->a4
+    .else
+  addtpc %tpcrel_hi(first_use_opposite_vector), ->a4
+  addi a4, %tpcrel_lo(first_use_opposite_vector), ->a4
+    .endif
   .else
-  hl.lui 4294967296, ->a5
+  hl.ssrget 0x1f43, ->a4
   .endif
+  .if RETRY_KIND == 0
+  addi zero, 2, ->a5
+  .else
+  addi zero, 1, ->a5
+  .endif
+  slli a5, 32, ->a5
   addi a5, 8, ->a5
   hl.ssrset a5, 0x1f07
   hl.ssrset a4, 0x1f41
   hl.ssrset a4, 0x1f43
   acre 0
 .endif
+
+.p2align 3
+first_use_opposite_cube:
+  BSTART.TMATMUL FP16
+  C.BSTOP
+
+.p2align 3
+first_use_opposite_vector:
+  .2byte 0x88c0  # C.BSTART.VPAR FALL
+  C.BSTOP
 
 .p2align 3
 first_use_target:
@@ -87,15 +108,9 @@ first_use_target:
 .elseif TEST_CASE == 20
   BSTART.TEPL 0, 1, FP16
 .elseif TEST_CASE == 21
-  .4byte 0xffffffff
-.elseif TEST_CASE == 22
-  .2byte 0x88c0  # C.BSTART.VPAR FALL
-  C.BSTOP
-  BSTART.TMATMUL FP16
-.elseif TEST_CASE == 23
-  BSTART.TMATMUL FP16
-  C.BSTOP
-  .2byte 0x88c0  # C.BSTART.VPAR FALL
+  # BSTART.TMATMUL family with forbidden DataType=15. Decode legality must
+  # reject it before the first-use check.
+  .4byte 0x78031181
 .else
   .error "unknown first-use executable TEST_CASE"
 .endif
@@ -106,4 +121,9 @@ first_use_pass:
   hl.lui 21845, ->a0
   hl.lui 268472320, ->t
   swi a0, [t#1, 0]
+  C.BSTOP
+
+.p2align 3
+first_use_halt:
+  C.BSTART DIRECT, first_use_halt
   C.BSTOP

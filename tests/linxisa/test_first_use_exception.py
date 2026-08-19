@@ -164,10 +164,13 @@ class FirstUseExceptionContractTests(unittest.TestCase):
         self.assertIn('"src_lc": "0x0:0:0"', self.executable_runner)
         self.assertIn('(\"VECTOR retry\", 6, 0)', self.executable_runner)
         self.assertIn('(\"CUBE retry\", 8, 1)', self.executable_runner)
+        self.assertIn('(\"VECTOR preserves CUBE\", 6, 0, (0, 1))', self.executable_runner)
+        self.assertIn('(\"CUBE preserves VECTOR\", 8, 1, (1, 0))', self.executable_runner)
         self.assertIn('(\"TEPL carrier\", 20, 2)', self.executable_runner)
         self.assertIn('(\"ACR0 VECTOR\", 6, 0)', self.executable_runner)
         self.assertIn('(\"ACR1 VECTOR\", 6, 1)', self.executable_runner)
         self.assertIn("first-use took priority over illegal decode", self.executable_runner)
+        self.assertIn(".4byte 0x78031181", self.executable_fixture)
 
 
 if __name__ == "__main__":
