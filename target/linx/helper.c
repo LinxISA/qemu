@@ -9599,19 +9599,6 @@ static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
-    if (env->blocktype == LINX_BLOCK_CUBE &&
-        env->tile_shared_binder_count == 2u) {
-        const LinxTileCubeDimensions dims =
-            linx_tile_cube_dimensions_058(env);
-        const uint64_t full_bytes =
-            (uint64_t)dims.m * dims.n * elem_bytes;
-        if (dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
-            (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes) {
-            return linx_tile_set_shape(
-                env, tile, dims.n, dims.m / LINX_CORE4_PE_COUNT,
-                dims.n, dims.m / LINX_CORE4_PE_COUNT);
-        }
-    }
     if (valid_cols == 0u) {
         valid_cols = elems;
     }
