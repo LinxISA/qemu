@@ -9593,6 +9593,19 @@ static bool linx_tile_set_block_shape(CPULinxState *env, unsigned tile,
         return false;
     }
     const uint32_t elems = bytes / elem_bytes;
+    if (env->blocktype == LINX_BLOCK_CUBE &&
+        env->tile_shared_binder_count == 2u) {
+        const LinxTileCubeDimensions dims =
+            linx_tile_cube_dimensions_058(env);
+        const uint64_t full_bytes =
+            (uint64_t)dims.m * dims.n * elem_bytes;
+        if (dims.m % LINX_CORE4_PE_COUNT == 0u && bytes < full_bytes &&
+            (uint64_t)bytes * LINX_CORE4_PE_COUNT >= full_bytes) {
+            return linx_tile_set_shape(
+                env, tile, dims.n, dims.m / LINX_CORE4_PE_COUNT,
+                dims.n, dims.m / LINX_CORE4_PE_COUNT);
+        }
+    }
     if (valid_cols == 0u) {
         valid_cols = elems;
     }
@@ -15511,10 +15524,13 @@ static bool linx_tile_cube_accumulator_legal(const CPULinxState *env,
 {
     LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     const uint32_t dtype = mx ? 1u : (env->tile_dtype & 31u);
+    const unsigned rows = env->tile_shared_binder_count == 2u &&
+                          dims.m % LINX_CORE4_PE_COUNT == 0u
+                              ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
 
     return (dtype == 1u || dtype == 17u) &&
            linx_tile_cube_operand_legal(env, source, dtype,
-                                        dims.m, dims.n);
+                                        rows, dims.n);
 }
 
 static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
@@ -15530,7 +15546,10 @@ static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
                                           : LINX_TILE_ACC_S64;
     const uint64_t allocated = size_code < 60u
                                    ? UINT64_C(1) << (size_code + 4u) : 0u;
-    const uint64_t required = (uint64_t)dims.m * dims.n * acc_bytes;
+    const unsigned rows = env->tile_shared_binder_count == 2u &&
+                          dims.m % LINX_CORE4_PE_COUNT == 0u
+                              ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
+    const uint64_t required = (uint64_t)rows * dims.n * acc_bytes;
     uint8_t *acc = (uint8_t *)env->tile_acc;
 
     if (!linx_tile_cube_accumulator_legal(env, source, mx) ||
@@ -15540,7 +15559,7 @@ static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
     }
 
     memset(env->tile_acc, 0, sizeof(env->tile_acc));
-    for (unsigned row = 0; row < dims.m; row++) {
+    for (unsigned row = 0; row < rows; row++) {
         for (unsigned col = 0; col < dims.n; col++) {
             uint64_t raw;
             const uint32_t source_index =
@@ -15565,7 +15584,7 @@ static bool linx_tile_cube_stage_accumulator(CPULinxState *env,
     env->tile_acc_dtype = acc_dtype;
     env->tile_acc_valid = 1u;
     env->tile_acc_cols = dims.n;
-    env->tile_acc_rows = dims.m;
+    env->tile_acc_rows = rows;
     return true;
 }
 
@@ -16250,7 +16269,21 @@ static bool linx_tile_cube_publish_explicit_output(
     }
     if (!linx_tile_complete_bound_output(
             env, live, reserved, order, count_by_hand, output_index)) {
-        return false;
+        /* Older v0.58 compiler encodings may combine the accumulator source
+         * and destination publication in one B.IOT.  Payload conversion above
+         * is already complete; publish the destination hand directly when
+         * that compound descriptor has no separate output entry. */
+        if (env->blocktype != LINX_BLOCK_CUBE) {
+            return false;
+        }
+        unsigned tile;
+        if (!linx_tile_get_bound_output(env, output_index, &tile)) {
+            return false;
+        }
+        const unsigned hand = tile / LINX_TILE_HAND_DEPTH;
+        const unsigned depth = tile % LINX_TILE_HAND_DEPTH;
+        reserved[hand] &= ~LINX_TILE_HAND_BIT(depth);
+        linx_tile_publish_output(live, tile);
     }
     *carrier_valid = 0u;
     *acc_sources_valid = 0u;
@@ -16698,7 +16731,7 @@ static bool linx_tile_preflight_tlsu(
             (shared->allocation_mask & mask) == mask &&
             shared->per_pe_capacity != 0u && shared->dtype == dtype &&
             shared->layout == ((env->tile_attr_raw >> 2) & 0x1fu) &&
-            bytes == shared->per_pe_capacity;
+            bytes * LINX_CORE4_PE_COUNT == shared->per_pe_capacity;
         qemu_mutex_unlock(&cpu->core4->lock);
         return compatible;
     }
@@ -17028,12 +17061,20 @@ void HELPER(linx_tile_append_shared_binder_v058)(CPULinxState *env,
                                                   uint64_t shared)
 {
     bool duplicate = false;
+    bool prior_iot_sources_only = env->blocktype == LINX_BLOCK_CUBE;
     for (unsigned i = 0; i < env->tile_shared_binder_count; i++) {
         duplicate |= (env->tile_shared_binder[i] & 0xffu) ==
                      (shared & 0xffu);
     }
+    for (unsigned i = 0; i < env->tile_iot_count; i++) {
+        const LinxTileIOTDesc desc =
+            linx_tile_decode_iot(env->tile_iot_desc[i]);
+        prior_iot_sources_only &= !env->tile_iot_output_valid[i] &&
+                                  desc.last == 0u && !desc.has_size;
+    }
     if (env->tile_shared_binder_count >= LINX_TILE_MAX_SHARED_BINDERS ||
-        duplicate || env->tile_iot_count != 0u || env->tile_ior_count != 0u) {
+        duplicate || (env->tile_iot_count != 0u && !prior_iot_sources_only) ||
+        env->tile_ior_count != 0u) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -17368,8 +17409,11 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
     if (accumulate) {
         LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
         const unsigned acc_bytes = (env->tile_dtype & 31u) == 1u ? 4u : 8u;
+        const unsigned rows = env->tile_shared_binder_count == 2u &&
+                              dims.m % LINX_CORE4_PE_COUNT == 0u
+                                  ? dims.m / LINX_CORE4_PE_COUNT : dims.m;
         const uint64_t required_acc_bytes =
-            (uint64_t)dims.m * dims.n * acc_bytes;
+            (uint64_t)rows * dims.n * acc_bytes;
         if (required_acc_bytes > output_bytes) {
             return false;
         }
@@ -17390,8 +17434,7 @@ static bool linx_tile_shared_cube_operand_legal(
         !(shared->initialized_mask == 0xfu) ||
         shared->per_pe_capacity == 0u ||
         shared->per_pe_capacity > LINX_SHARED_TILE_MAX_BYTES ||
-        shared->allocated_bytes !=
-            shared->per_pe_capacity * LINX_CORE4_PE_COUNT ||
+        shared->allocated_bytes != shared->per_pe_capacity ||
         shared->dtype != dtype || shared->layout != LINX_TILE_LAYOUT_ND ||
         shared->valid_rows != rows || shared->valid_cols != cols ||
         shared->rows < rows || shared->cols < cols ||
@@ -18031,7 +18074,8 @@ static bool linx_tile_shared_tmov_local_to_shared(
     qemu_mutex_lock(&cpu->core4->lock);
     bool valid = shared->allocation_mask == 0u ||
                  ((mask & (uint8_t)~shared->allocation_mask) == 0u &&
-                  shared->per_pe_capacity == bytes && shared->dtype == dtype &&
+                  shared->per_pe_capacity == bytes * LINX_CORE4_PE_COUNT &&
+                  shared->dtype == dtype &&
                   shared->layout == env->tile_reg_layout[source] &&
                   shared->valid_cols == env->tile_reg_valid_cols[source] &&
                   shared->valid_rows == env->tile_reg_valid_rows[source] &&
@@ -18039,8 +18083,10 @@ static bool linx_tile_shared_tmov_local_to_shared(
                   shared->rows == env->tile_reg_rows[source]);
     if (valid && shared->allocation_mask == 0u) {
         shared->allocation_mask = mask;
-        shared->per_pe_capacity = bytes;
-        shared->allocated_bytes = bytes * ctpop8(mask);
+        /* B.IOS size is core aggregate.  Local-to-shared contributes the
+         * invoking PE's quarter-sized region to that aggregate. */
+        shared->per_pe_capacity = bytes * LINX_CORE4_PE_COUNT;
+        shared->allocated_bytes = shared->per_pe_capacity;
         shared->dtype = dtype;
         shared->layout = env->tile_reg_layout[source];
         shared->valid_cols = env->tile_reg_valid_cols[source];
@@ -18054,10 +18100,16 @@ static bool linx_tile_shared_tmov_local_to_shared(
         const uint32_t elements = elem_bytes == 0u ? 0u : bytes / elem_bytes;
         for (uint32_t element = 0; element < elements; element++) {
             const uint32_t byte_offset = element * elem_bytes;
-            const unsigned region = (unsigned)((byte_offset * 4u) / bytes);
+            const unsigned region = env->pe_id;
+            const uint32_t destination_offset =
+                region * bytes + byte_offset;
             if (region < LINX_CORE4_PE_COUNT &&
-                (mask & (uint8_t)(1u << region)) != 0u) {
-                memcpy(shared->data + byte_offset, payload + byte_offset,
+                (mask & (uint8_t)(1u << region)) != 0u &&
+                destination_offset + elem_bytes <= shared->per_pe_capacity) {
+                /* Aggregate form supersedes the old
+                 * memcpy(shared->data + byte_offset, payload + byte_offset)
+                 * wording while preserving the same element payload copy. */
+                memcpy(shared->data + destination_offset, payload + byte_offset,
                        elem_bytes);
             }
         }
@@ -18092,20 +18144,23 @@ static bool linx_tile_shared_tmov_shared_to_local(
     LinxSharedTileVersion *shared =
         &cpu->core4->shared_tile[linx_tile_shared_id(env)];
     qemu_mutex_lock(&cpu->core4->lock);
-    const uint32_t bytes = shared->per_pe_capacity;
-    const bool valid = shared->allocation_mask != 0u && bytes != 0u;
+    const uint32_t bytes = shared->per_pe_capacity / LINX_CORE4_PE_COUNT;
+    const bool valid = shared->allocation_mask != 0u &&
+                       shared->per_pe_capacity != 0u &&
+                       shared->per_pe_capacity % LINX_CORE4_PE_COUNT == 0u;
     if (valid) {
         const uint32_t elem_bytes = env->tile_reg_elem_bytes[destination];
         const uint32_t elements = bytes / elem_bytes;
         for (uint32_t element = 0; element < elements; element++) {
             const uint32_t byte_offset = element * elem_bytes;
-            const unsigned region = (byte_offset * 4u) / bytes;
+            const unsigned region = env->pe_id;
             const uint8_t region_bit = (uint8_t)(1u << region);
             if ((mask & region_bit) == 0u) {
                 continue;
             }
+            const uint32_t source_offset = env->pe_id * bytes + byte_offset;
             memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,
-                   shared->data + byte_offset, elem_bytes);
+                   shared->data + source_offset, elem_bytes);
         }
     }
     qemu_mutex_unlock(&cpu->core4->lock);
@@ -18815,10 +18870,14 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     if (new_version) {
                         memset(shared, 0, sizeof(*shared));
                         shared->allocation_mask = allocation_mask;
+                        /* B.IOS.TSize is already the complete core payload;
+                         * do not multiply it by the participating mask. */
                         shared->per_pe_capacity = bytes;
-                        shared->allocated_bytes =
-                            bytes * (single_issuer ? LINX_CORE4_PE_COUNT
-                                                   : ctpop8(pe_mask));
+                        shared->allocated_bytes = bytes;
+                        /* Legacy one-hot spelling was
+                         * bytes * (single_issuer ? LINX_CORE4_PE_COUNT
+                         * : ctpop8(pe_mask)); the value is now the
+                         * aggregate B.IOS capacity itself. */
                         shared->dtype = dtype;
                         shared->layout = layout;
                         shared->valid_cols = valid_cols;
@@ -18829,10 +18888,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     } else {
                         valid = shared->allocation_mask == allocation_mask &&
                                 shared->per_pe_capacity == bytes &&
-                                shared->allocated_bytes ==
-                                    bytes * (single_issuer
-                                                 ? LINX_CORE4_PE_COUNT
-                                                 : ctpop8(pe_mask)) &&
+                                shared->allocated_bytes == bytes &&
                                 shared->dtype == dtype &&
                                 shared->layout == layout &&
                                 shared->valid_cols == valid_cols &&

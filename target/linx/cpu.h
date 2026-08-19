@@ -58,6 +58,9 @@ typedef struct LinxSharedTileVersion {
      * four mask bits select fixed-offset regions in this payload; they are not
      * four independent full-tile lanes. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
+    /* B.IOS.TSize is the aggregate payload capacity for the core.  The
+     * historical field name is retained for migration compatibility; it no
+     * longer denotes a single-PE allocation. */
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;
