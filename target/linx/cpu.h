@@ -30,7 +30,7 @@
 
 #define LINX_CORE4_PE_COUNT 4
 #define LINX_SHARED_TILE_COUNT 256
-#define LINX_SHARED_TILE_MAX_BYTES (8 * 1024)
+#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
 
 /* Compiler-generated S64/NORM spill metadata.  This is a model-internal

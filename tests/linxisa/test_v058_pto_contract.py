@@ -48,6 +48,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
+        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -219,6 +220,8 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
     def test_shared_tload_one_hot_issuer_publishes_full_aggregate(self) -> None:
+        self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
+        self.assertIn("size_code < 5u || size_code > 11u", self.helper)
         self.assertIn("const bool single_issuer", self.helper)
         self.assertIn("(unsigned)__builtin_ctz((unsigned)pe_mask)", self.helper)
         self.assertIn(
