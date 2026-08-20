@@ -16586,6 +16586,41 @@ static bool linx_tile_transfer_preflight(const CPULinxState *env,
                                         elem_bytes);
 }
 
+/* Shared B.IOS.TSize is a Core4 aggregate (encoded class 1..7), so its
+ * internal log2(bytes)-4 code is 5..11.  Keep this range separate from the
+ * ordinary PE-local B.IOT range checked by linx_tile_transfer_preflight(). */
+static bool linx_tile_shared_transfer_preflight(
+    const CPULinxState *env, unsigned size_code)
+{
+    if (size_code < 5u || size_code > 11u) {
+        return false;
+    }
+    const uint64_t bytes = 1ull << (size_code + 4u);
+    const unsigned elem_bytes =
+        linx_tile_dtype_elem_bytes(linx_tile_effective_dtype(env));
+    if ((elem_bytes != 1u && elem_bytes != 2u && elem_bytes != 4u &&
+         elem_bytes != 8u) ||
+        (bytes % elem_bytes) != 0u) {
+        return false;
+    }
+    const LinxTileFormatDesc fmt =
+        linx_tile_effective_transfer_format(env, LINX_TLSU_GM_TO_TR);
+    if (!fmt.valid) {
+        return false;
+    }
+    uint32_t tr_outer;
+    uint32_t tr_inner;
+    uint32_t gm_outer;
+    uint32_t gm_inner;
+    if (!linx_tile_resolve_transfer_shape(
+            env, (uint32_t)(bytes / elem_bytes), &tr_outer, &tr_inner,
+            &gm_outer, &gm_inner)) {
+        return false;
+    }
+    return linx_tile_layout_shape_valid(fmt.dst, tr_outer, tr_inner,
+                                        elem_bytes);
+}
+
 static bool linx_tile_tstore_preflight(const CPULinxState *env,
                                        unsigned source,
                                        unsigned size_code)
@@ -16801,8 +16836,7 @@ static bool linx_tile_preflight_tlsu(
                linx_tile_get_base_reg(env, &addr_reg) &&
                linx_tile_get_shared_tload_size(env, &size_code) &&
                linx_tile_dtype_elem_bytes(dtype) != 0u &&
-               linx_tile_transfer_preflight(env, size_code,
-                                             LINX_TLSU_GM_TO_TR);
+               linx_tile_shared_transfer_preflight(env, size_code);
     }
 
     if (!linx_tile_get_base_reg(env, &addr_reg)) {
