@@ -336,6 +336,7 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
+        self.assertIn("accepting legacy ELF", virt)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
         cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")

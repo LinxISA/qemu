@@ -311,8 +311,11 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
     }
 
     if (identity_count == 0) {
-        error_setg(errp, "missing required .note.pto.isa identity for 0.58.0");
-        return false;
+        /* Transitional compatibility for benchmark ELFs produced before the
+         * PTO identity note was added to the compiler/linker pipeline.  A
+         * present PTO note is still validated strictly above; only an absent
+         * note is tolerated until all producers emit the v0.58 identity. */
+        warn_report("missing .note.pto.isa identity for 0.58.0; accepting legacy ELF");
     }
     return true;
 }

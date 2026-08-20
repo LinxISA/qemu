@@ -1,7 +1,0 @@
-config LINX_VIRT
-    bool
-    default y
-    depends on LINX
-    select DEVICE_TREE
-    select SERIAL
-    select VIRTIO_MMIO
