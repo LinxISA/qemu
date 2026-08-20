@@ -18581,7 +18581,8 @@ static bool linx_tile_materialize_planned_outputs(
                 &cpu->core4->shared_tile[linx_tile_shared_id(env)];
             qemu_mutex_lock(&cpu->core4->lock);
             const bool valid = shared->allocation_mask != 0u &&
-                               shared->per_pe_capacity == bytes;
+                               shared->per_pe_capacity ==
+                                   bytes * LINX_CORE4_PE_COUNT;
             if (valid) {
                 env->tile_reg_valid_cols[dst_tile] = shared->valid_cols;
                 env->tile_reg_valid_rows[dst_tile] = shared->valid_rows;
