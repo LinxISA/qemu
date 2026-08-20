@@ -14998,7 +14998,7 @@ static bool linx_tile_resolve_transfer_shape(const CPULinxState *env,
 
 static void linx_tile_load(CPULinxState *env, unsigned dst_tile,
                            unsigned addr_reg, unsigned size_code,
-                           uint64_t stride_elements)
+                           uint64_t stride_bytes, bool has_stride)
 {
     if (dst_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -15056,10 +15056,16 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile,
                 return;
             }
             uint64_t src_off = (uint64_t)src_idx * elem_bytes;
+            const uint64_t dense_stride_bytes =
+                (fmt.src == LINX_TILE_LAYOUT_ND ? gm_inner : gm_outer) * elem_bytes;
+            const uint64_t effective_stride_bytes =
+                has_stride ? stride_bytes : dense_stride_bytes;
             if (fmt.src == LINX_TILE_LAYOUT_ND) {
-                src_off = ((uint64_t)to * stride_elements + ti) * elem_bytes;
+                src_off = (uint64_t)to * effective_stride_bytes +
+                          (uint64_t)ti * elem_bytes;
             } else if (fmt.src == LINX_TILE_LAYOUT_DN) {
-                src_off = ((uint64_t)ti * stride_elements + to) * elem_bytes;
+                src_off = (uint64_t)ti * effective_stride_bytes +
+                          (uint64_t)to * elem_bytes;
             }
             value = linx_tile_mem_read64(env, base + src_off, elem_bytes);
             if (!linx_tile_set_elem64(env, dst_tile, dst_idx, elem_bytes,
@@ -15080,7 +15086,7 @@ static void linx_tile_load(CPULinxState *env, unsigned dst_tile,
 
 static void linx_tile_store(CPULinxState *env, unsigned src_tile,
                             unsigned addr_reg, unsigned size_code,
-                            uint64_t stride_elements)
+                            uint64_t stride_bytes, bool has_stride)
 {
     if (src_tile >= LINX_TILE_SLOT_COUNT || addr_reg >= LINX_GPR_COUNT) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -15150,10 +15156,16 @@ static void linx_tile_store(CPULinxState *env, unsigned src_tile,
                 return;
             }
             uint64_t dst_off = (uint64_t)dst_idx * elem_bytes;
+            const uint64_t dense_stride_bytes =
+                (fmt.dst == LINX_TILE_LAYOUT_ND ? gm_inner : gm_outer) * elem_bytes;
+            const uint64_t effective_stride_bytes =
+                has_stride ? stride_bytes : dense_stride_bytes;
             if (fmt.dst == LINX_TILE_LAYOUT_ND) {
-                dst_off = ((uint64_t)go * stride_elements + gi) * elem_bytes;
+                dst_off = (uint64_t)go * effective_stride_bytes +
+                          (uint64_t)gi * elem_bytes;
             } else if (fmt.dst == LINX_TILE_LAYOUT_DN) {
-                dst_off = ((uint64_t)gi * stride_elements + go) * elem_bytes;
+                dst_off = (uint64_t)gi * effective_stride_bytes +
+                          (uint64_t)go * elem_bytes;
             }
             linx_tile_mem_write64(env, base + dst_off, elem_bytes, value);
         }
@@ -15673,10 +15685,10 @@ static bool linx_tile_get_base_reg(const CPULinxState *env, unsigned *addr_reg_o
     return true;
 }
 
-static uint64_t linx_tile_get_stride_elements(const CPULinxState *env)
+static uint64_t linx_tile_get_stride_bytes(const CPULinxState *env)
 {
     if (env->tile_ior_count == 0) {
-        return env->lb[2];
+        return 0;
     }
     const uint64_t desc = env->tile_ior_desc[env->tile_ior_count - 1u];
     const unsigned src1 = (unsigned)((desc >> 10) & 0x1fu);
@@ -15698,10 +15710,11 @@ static bool linx_tile_raw_transfer_shape(const CPULinxState *env,
         size_code < 60u ? (UINT64_C(1) << (size_code + 4u)) : 0u;
     const uint64_t row_elements = env->lb[0];
     const uint64_t rows = env->lb[1];
-    uint64_t stride_elements = linx_tile_get_stride_elements(env);
-    uint64_t row_bytes;
     uint64_t stride_bytes;
+    uint64_t row_bytes;
     uint64_t span_bytes;
+
+    stride_bytes = linx_tile_get_stride_bytes(env);
 
     if (addr_reg >= LINX_GPR_COUNT ||
         linx_tile_effective_dtype(env) != 16u || !fmt.valid ||
@@ -15710,15 +15723,13 @@ static bool linx_tile_raw_transfer_shape(const CPULinxState *env,
         row_elements > UINT64_MAX / 8u) {
         return false;
     }
-    if (stride_elements == 0u) {
-        stride_elements = env->lb[2];
+    row_bytes = row_elements * 8u;
+    if (env->tile_ior_count == 0u) {
+        stride_bytes = row_bytes;
     }
-    if (stride_elements < row_elements ||
-        stride_elements > UINT64_MAX / 8u) {
+    if (stride_bytes < row_bytes) {
         return false;
     }
-    row_bytes = row_elements * 8u;
-    stride_bytes = stride_elements * 8u;
     if (rows > 1u &&
         (rows - 1u) > (UINT64_MAX - row_bytes) / stride_bytes) {
         return false;
@@ -16100,10 +16111,10 @@ static bool linx_tile_shared_tstore_commit(CPULinxState *env)
             CPULinxState *peer = &cpu->core4->cpu[region]->env;
             const uint64_t base = peer->gpr[base_reg];
             const uint64_t stride = env->tile_ior_count == 0u
-                                        ? snapshot.cols
+                                        ? (uint64_t)snapshot.cols * elem_bytes
                                         : peer->gpr[stride_reg];
             const uint64_t destination =
-                base + ((uint64_t)row * stride + col) * elem_bytes;
+                base + (uint64_t)row * stride + (uint64_t)col * elem_bytes;
             for (unsigned byte = 0; byte < elem_bytes; byte++) {
                 cpu_stb_data(peer, (abi_ptr)(destination + byte),
                              snapshot.data[source + byte]);
@@ -18958,13 +18969,16 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                      * have no remaining region to materialize. */
                 } else if (valid && single_issuer) {
                     const uint64_t base = env->gpr[addr_reg];
-                    const uint64_t stride = linx_tile_get_stride_elements(env);
+                    const uint64_t stride = env->tile_ior_count == 0u
+                                                ? (uint64_t)cols * elem_bytes
+                                                : linx_tile_get_stride_bytes(env);
                     for (uint32_t row = 0; row < valid_rows; row++) {
                         for (uint32_t col = 0; col < valid_cols; col++) {
                             const size_t destination =
                                 ((size_t)row * cols + col) * elem_bytes;
                             const uint64_t source =
-                                base + ((uint64_t)row * stride + col) * elem_bytes;
+                                base + (uint64_t)row * stride +
+                                (uint64_t)col * elem_bytes;
                             for (unsigned byte = 0; byte < elem_bytes; byte++) {
                                 shared->data[destination + byte] =
                                     cpu_ldub_data(env, (abi_ptr)(source + byte));
@@ -18987,10 +19001,12 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                             }
                             CPULinxState *peer = &cpu->core4->cpu[region]->env;
                             const uint64_t base = peer->gpr[addr_reg];
-                            const uint64_t stride =
-                                linx_tile_get_stride_elements(peer);
+                            const uint64_t stride = peer->tile_ior_count == 0u
+                                                        ? (uint64_t)cols * elem_bytes
+                                                        : linx_tile_get_stride_bytes(peer);
                             const uint64_t source =
-                                base + ((uint64_t)row * stride + col) * elem_bytes;
+                                base + (uint64_t)row * stride +
+                                (uint64_t)col * elem_bytes;
                             for (unsigned byte = 0; byte < elem_bytes; byte++) {
                                 shared->data[destination + byte] =
                                     cpu_ldub_data(peer, (abi_ptr)(source + byte));
@@ -19058,7 +19074,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                  * only full success publishes hand liveness.
                  */
                 linx_tile_load(env, dst_tile, addr_reg, size_code,
-                               linx_tile_get_stride_elements(env));
+                               linx_tile_get_stride_bytes(env),
+                               env->tile_ior_count != 0u);
                 if (!linx_tile_complete_bound_output(
                         env, live, reserved, order, count_by_hand, i)) {
                     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -19167,7 +19184,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                  * allocator/source consumption publishes only after success.
                  */
                 linx_tile_store(env, src_tile, addr_reg, size_code,
-                                linx_tile_get_stride_elements(env));
+                                linx_tile_get_stride_bytes(env),
+                                env->tile_ior_count != 0u);
                 linx_tile_consume_bound_sources(env, live, i, &d,
                                                 order, count_by_hand,
                                                 &carrier_valid, &carrier);
