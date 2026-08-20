@@ -12744,6 +12744,8 @@ static bool linx_tile_operation_partial_binary(CPULinxState *env,
 
 static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
                                   unsigned *addr_reg_out);
+static bool linx_tile_resolve_tci_ior(const CPULinxState *env, unsigned slot,
+                                      unsigned *addr_reg_out);
 
 static G_NORETURN void linx_tile_raise_allocation_fault(CPULinxState *env)
 {
@@ -14548,8 +14550,8 @@ static bool linx_tile_operation(CPULinxState *env, unsigned dst_tile,
     } else if (op == 0x080u) {
         unsigned start_reg = 0;
         unsigned descending_reg = 0;
-        if (!linx_tile_resolve_ior(env, 0, &start_reg) ||
-            !linx_tile_resolve_ior(env, 1, &descending_reg) ||
+        if (!linx_tile_resolve_tci_ior(env, 0, &start_reg) ||
+            !linx_tile_resolve_tci_ior(env, 1, &descending_reg) ||
             env->gpr[descending_reg] > 1u) {
             return false;
         }
@@ -15844,6 +15846,24 @@ static bool linx_tile_resolve_ior(const CPULinxState *env, unsigned slot,
     return false;
 }
 
+/* TCI's canonical form has an explicit ordered RI list.  Register x0 is a
+ * valid operand (the broadcast case commonly uses B.IOR [aN, zero, zero]),
+ * whereas the legacy generic resolver treats zero fields as omitted. */
+static bool linx_tile_resolve_tci_ior(const CPULinxState *env, unsigned slot,
+                                      unsigned *addr_reg_out)
+{
+    if (slot >= 3u || env->tile_ior_count == 0u) {
+        return false;
+    }
+    const unsigned reg = linx_ior_desc_reg_in_authored_order(
+        env->tile_ior_desc[0], slot);
+    if (reg >= LINX_GPR_COUNT) {
+        return false;
+    }
+    *addr_reg_out = reg;
+    return true;
+}
+
 static void linx_vec_capture_ri_values(CPULinxState *env)
 {
     env->vec_ri_count = 0;
@@ -15905,6 +15925,8 @@ static bool linx_tile_raw_transfer_shape(const CPULinxState *env,
         size_code < 60u ? (UINT64_C(1) << (size_code + 4u)) : 0u;
     const uint64_t row_elements = env->lb[0];
     const uint64_t rows = env->lb[1];
+    const bool raw_tstore = env->blocktype == LINX_BLOCK_TLSU &&
+                            (env->tile_func & 0x1fu) == LINX_TLSU_TSTORE;
     uint64_t stride_bytes;
     uint64_t row_bytes;
     uint64_t span_bytes;
@@ -15912,13 +15934,21 @@ static bool linx_tile_raw_transfer_shape(const CPULinxState *env,
     stride_bytes = linx_tile_get_stride_bytes(env);
 
     if (addr_reg >= LINX_GPR_COUNT ||
-        linx_tile_effective_dtype(env) != 16u || !fmt.valid ||
+        (!raw_tstore && linx_tile_effective_dtype(env) != 16u) || !fmt.valid ||
         fmt.src != LINX_TILE_LAYOUT_ND || fmt.dst != LINX_TILE_LAYOUT_ND ||
         row_elements == 0u || rows == 0u || carrier_bytes == 0u ||
         row_elements > UINT64_MAX / 8u) {
         return false;
     }
     row_bytes = row_elements * 8u;
+    /* A zero B.IOR stride denotes the dense physical row stride. */
+    if (stride_bytes == 0u) {
+        const uint64_t physical_cols = env->lb[2];
+        if (physical_cols == 0u || physical_cols > UINT64_MAX / 8u) {
+            return false;
+        }
+        stride_bytes = physical_cols * 8u;
+    }
     if (env->tile_ior_count == 0u) {
         stride_bytes = row_bytes;
     }
