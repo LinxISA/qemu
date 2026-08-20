@@ -23,6 +23,8 @@ static bool cube_is_tmatmul_family(const CPULinxState *env)
     }
 }
 
+static unsigned cube_dtype_bytes(uint32_t dtype);
+
 LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
 {
     if (cube_is_tmatmul_family(env)) {
@@ -39,28 +41,108 @@ LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
     };
 }
 
-bool linx_tile_cube_output_shape_valid(const CPULinxState *env,
-                                       uint32_t bytes,
-                                       unsigned elem_bytes)
+static uint32_t cube_accumulator_dtype(uint32_t selected_dtype)
 {
-    LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    selected_dtype &= 31u;
+    if (selected_dtype == 0u) {
+        return 0u;
+    }
+    if (selected_dtype >= 16u && selected_dtype <= 20u) {
+        return 16u;
+    }
+    if (selected_dtype >= 24u && selected_dtype <= 28u) {
+        return 24u;
+    }
+    return 1u;
+}
+
+static bool cube_fpatr_output_dtype(unsigned prequant, uint32_t *dtype)
+{
+    switch (prequant) {
+    case 0u: case 27u: case 38u: *dtype = 1u; return true;
+    case 1u: case 4u: case 5u: case 32u: case 33u:
+        *dtype = 4u; return true;
+    case 2u: case 3u: case 23u: case 24u:
+        *dtype = 19u; return true;
+    case 12u: case 13u: case 19u: case 20u:
+        *dtype = 18u; return true;
+    case 16u: case 34u: case 35u: case 36u: case 39u:
+        *dtype = 5u; return true;
+    case 17u: case 18u: *dtype = 20u; return true;
+    case 25u: case 28u: *dtype = 6u; return true;
+    case 26u: case 37u: *dtype = 7u; return true;
+    default: return false;
+    }
+}
+
+static bool cube_output_dtype(const CPULinxState *env, unsigned ordinal,
+                              uint32_t *dtype)
+{
+    const unsigned prequant = (env->tile_fpatr_raw >> 26) & 0x3fu;
+
+    if (ordinal == 0u && env->tile_fpatr_valid && prequant != 0u) {
+        return cube_fpatr_output_dtype(prequant, dtype);
+    }
+    *dtype = cube_accumulator_dtype(env->tile_dtype);
+    return true;
+}
+
+bool linx_tile_cube_output_descriptor_058(
+    const CPULinxState *env, unsigned ordinal, uint32_t bytes,
+    uint32_t *dtype, uint32_t *valid_cols_out, uint32_t *valid_rows_out,
+    uint32_t *cols_out, uint32_t *rows_out)
+{
+    const LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
+    const bool row_max = ((env->tile_fpatr_raw >> 18) & 1u) != 0u;
+    const bool group_max = ((env->tile_fpatr_raw >> 17) & 1u) != 0u;
+    const unsigned group_code = (env->tile_fpatr_raw >> 19) & 0xfu;
+    const unsigned group_n = group_code == 0u ? 0u : group_code * 16u - 8u;
+    const bool auxiliary_row = ordinal > 0u && row_max &&
+        (ordinal == 1u || !group_max);
     uint32_t valid_cols = dims.n;
     uint32_t valid_rows = dims.m;
     uint32_t cols = cube_is_tmatmul_family(env)
                         ? dims.n
                         : (env->lb[2] != 0u ? env->lb[2] : dims.n);
+    uint32_t output_dtype;
 
-    if (elem_bytes == 0u || bytes == 0u || bytes % elem_bytes != 0u) {
+    if (!cube_output_dtype(env, ordinal, &output_dtype)) {
         return false;
     }
-    const uint32_t elems = bytes / elem_bytes;
-    valid_cols = valid_cols == 0u ? elems : valid_cols;
-    valid_rows = valid_rows == 0u ? 1u : valid_rows;
-    cols = cols == 0u ? valid_cols : cols;
-    return cols != 0u && elems % cols == 0u &&
-           valid_cols <= cols && valid_rows <= elems / cols &&
-           valid_cols <= UINT16_MAX && valid_rows <= UINT16_MAX &&
-           cols <= UINT16_MAX && elems / cols <= UINT16_MAX;
+    if (auxiliary_row) {
+        valid_cols = 1u;
+        cols = 1u;
+    } else if (ordinal > 0u && group_max) {
+        if (group_n == 0u) {
+            return false;
+        }
+        valid_cols = (valid_cols + group_n - 1u) / group_n;
+        cols = (cols + group_n - 1u) / group_n;
+    }
+    const unsigned elem_bytes = cube_dtype_bytes(output_dtype);
+    const bool packed = output_dtype == 11u || output_dtype == 12u ||
+                        output_dtype == 14u || output_dtype == 20u ||
+                        output_dtype == 28u;
+    const uint32_t row_bytes = packed ? (cols + 1u) / 2u
+                                      : cols * elem_bytes;
+
+    if (dtype == NULL || valid_cols_out == NULL || valid_rows_out == NULL ||
+        cols_out == NULL || rows_out == NULL || elem_bytes == 0u ||
+        bytes == 0u || row_bytes == 0u || bytes % row_bytes != 0u) {
+        return false;
+    }
+    const uint32_t rows = bytes / row_bytes;
+    if (valid_cols > cols || valid_rows > rows ||
+        valid_cols > UINT16_MAX || valid_rows > UINT16_MAX ||
+        cols > UINT16_MAX || rows > UINT16_MAX) {
+        return false;
+    }
+    *dtype = output_dtype;
+    *valid_cols_out = valid_cols;
+    *valid_rows_out = valid_rows;
+    *cols_out = cols;
+    *rows_out = rows;
+    return true;
 }
 
 static bool cube_nonzero_power_of_two(unsigned value)
@@ -343,7 +425,7 @@ static bool linx_tile_cube_compute_common_058(
         m > UINT16_MAX || n > UINT16_MAX ||
         acc_dtype == UINT8_MAX || allocated == 0u ||
         allocated > LINX_TILE_MAX_BYTES || required == 0u ||
-        required > allocated ||
+        required > sizeof(env->tile_acc) ||
         (shared_b != NULL &&
          (!cube_nonzero_power_of_two(m) ||
           !cube_nonzero_power_of_two(n) ||
@@ -381,7 +463,7 @@ static bool linx_tile_cube_compute_common_058(
     set_float_rounding_mode(float_round_nearest_even, &fp_status);
     set_default_nan_mode(true, &fp_status);
     set_float_default_nan_pattern(0b01000000, &fp_status);
-    next = g_malloc0(allocated);
+    next = g_malloc0(required);
     if (accumulate) {
         memcpy(next, env->tile_acc, required);
     }
@@ -530,8 +612,8 @@ static bool linx_tile_cube_compute_common_058(
         }
     }
     memset(env->tile_acc, 0, sizeof(env->tile_acc));
-    memcpy(env->tile_acc, next, allocated);
-    env->tile_acc_bytes = allocated;
+    memcpy(env->tile_acc, next, required);
+    env->tile_acc_bytes = required;
     env->tile_acc_dtype = acc_dtype;
     env->tile_acc_valid = 1u;
     env->tile_acc_cols = n;
@@ -651,6 +733,10 @@ bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
                                    unsigned size_code)
 {
     uint32_t dst_dtype = env->tile_dtype & 31u;
+    if (env->tile_fpatr_valid &&
+        !cube_output_dtype(env, 0u, &dst_dtype)) {
+        return false;
+    }
     unsigned elem_bytes = cube_dtype_bytes(dst_dtype);
     uint64_t bytes = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
     unsigned physical_cols = cube_is_tmatmul_family(env)
