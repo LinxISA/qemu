@@ -11,9 +11,10 @@ typedef struct LinxTileCubeDimensions {
 } LinxTileCubeDimensions;
 
 LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env);
-bool linx_tile_cube_output_shape_valid(const CPULinxState *env,
-                                       uint32_t bytes,
-                                       unsigned elem_bytes);
+bool linx_tile_cube_output_descriptor_058(
+    const CPULinxState *env, unsigned ordinal, uint32_t bytes,
+    uint32_t *dtype, uint32_t *valid_cols, uint32_t *valid_rows,
+    uint32_t *cols, uint32_t *rows);
 bool linx_tile_cube_group_dimensions_legal_058(const CPULinxState *env);
 bool linx_tile_cube_primary_legal_058(const CPULinxState *env,
                                       unsigned src_a, unsigned src_b,

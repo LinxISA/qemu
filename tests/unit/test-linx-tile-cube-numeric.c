@@ -267,7 +267,8 @@ static void test_group_profile_dimension_contract(void)
 static void test_shared_ab_non_square_strides(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
-    float left[2 * 10], right[8 * 6], result[2 * 4];
+    /* Shared A is a core-level aggregate: four PE-local M rows. */
+    float left[4 * 2 * 10], right[8 * 6], result[2 * 4];
 
     for (unsigned i = 0; i < G_N_ELEMENTS(left); i++) {
         left[i] = 100.0f;
@@ -539,6 +540,34 @@ static void test_fpatr_relu_postprocess_and_fail_closed(void)
     g_free(env);
 }
 
+static void test_fpatr_output_descriptor_capacity(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    uint32_t dtype, valid_cols, valid_rows, cols, rows;
+
+    env->lb[0] = env->lb[1] = env->lb[2] = 32;
+    env->tile_dtype = 4; /* FP16 input, FP32 accumulator. */
+    env->tile_fpatr_valid = 1;
+    env->tile_fpatr_raw = 1u << 26; /* PreQuantMode=1 -> FP16 output. */
+    g_assert_true(linx_tile_cube_output_descriptor_058(
+        env, 0, 2048, &dtype, &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(dtype, ==, 4);
+    g_assert_cmpuint(valid_cols, ==, 32);
+    g_assert_cmpuint(valid_rows, ==, 32);
+    g_assert_cmpuint(cols, ==, 32);
+    g_assert_cmpuint(rows, ==, 32);
+
+    env->tile_fpatr_raw = (1u << 19) | (1u << 17); /* GroupN=8, GroupMax. */
+    g_assert_true(linx_tile_cube_output_descriptor_058(
+        env, 1, 1024, &dtype, &valid_cols, &valid_rows, &cols, &rows));
+    g_assert_cmpuint(dtype, ==, 1); /* Auxiliary output remains accumulator. */
+    g_assert_cmpuint(valid_cols, ==, 4);
+    g_assert_cmpuint(valid_rows, ==, 32);
+    g_assert_cmpuint(cols, ==, 4);
+    g_assert_cmpuint(rows, ==, 64);
+    g_free(env);
+}
+
 static void test_accumulator_convert_saturates_every_float_target(void)
 {
     static const struct {
@@ -766,6 +795,8 @@ int main(int argc, char **argv)
                     test_accumulator_convert_requested_rounding_and_subnormal);
     g_test_add_func("/linx/cube/fpatr-postprocess",
                     test_fpatr_relu_postprocess_and_fail_closed);
+    g_test_add_func("/linx/cube/fpatr-output-descriptor",
+                    test_fpatr_output_descriptor_capacity);
     g_test_add_func("/linx/cube/accumulator_convert-saturation",
                     test_accumulator_convert_saturates_every_float_target);
     g_test_add_func("/linx/cube/accumulator_convert-signed-zero",
