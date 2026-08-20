@@ -15981,8 +15981,10 @@ static bool linx_tile_get_shared_tload_size(const CPULinxState *env,
     if (size_class == 0u || size_class > 7u) {
         return false;
     }
-    /* Shared class 1 is 128 B; TLSU uses log2(bytes)-4 internally. */
-    *size_code_out = size_class + 2u;
+    /* B.IOS.TSize is a Core4 aggregate: class 1 is 512 B.  TLSU stores
+     * log2(bytes)-4 internally, hence the +4 conversion from the encoded
+     * class (1..7). */
+    *size_code_out = size_class + 4u;
     return true;
 }
 
@@ -17950,7 +17952,8 @@ static bool linx_tile_materialize_planned_outputs(
                 &cpu->core4->shared_tile[linx_tile_shared_id(env)];
             qemu_mutex_lock(&cpu->core4->lock);
             const bool valid = shared->allocation_mask != 0u &&
-                               shared->per_pe_capacity == bytes;
+                               shared->per_pe_capacity ==
+                                   bytes * LINX_CORE4_PE_COUNT;
             if (valid) {
                 env->tile_reg_valid_cols[dst_tile] = shared->valid_cols;
                 env->tile_reg_valid_rows[dst_tile] = shared->valid_rows;
