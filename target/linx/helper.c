@@ -13729,7 +13729,6 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
     case 0x101u: /* TAXPY */
     case 0x103u: /* TINSERT */
     case 0x104u: /* TIMG2COL */
-    case 0x106u: /* TSORT */
     case 0x107u: /* TMRGSORT */
     case 0x108u: /* TPUSH */
     case 0x109u: /* TPOP */
@@ -13737,6 +13736,9 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
     case 0x10bu: /* TFREE */
     case 0x10cu: /* TFMA */
         supported = standard;
+        break;
+    case 0x106u: /* TSORT: PTO TSORT.asl accepts only FP32/FP16/BF16 */
+        supported = fp32 | fp16 | bf16;
         break;
     case 0x102u: /* TQUANT */
         supported = integers;
@@ -16685,6 +16687,104 @@ static bool linx_tile_collect_sort_bindings(
     return output_count == 2u;
 }
 
+/* PTO TileSortLeftBefore and TileSortValueIsSignalingNaN (sorting.asl):
+ * numerics precede NaNs in both directions, NaNs retain source order, signed
+ * zeros compare equal, and the order key is the sign-flipped unsigned key. */
+static bool linx_tile_sort_value_is_signaling_nan(uint32_t dtype,
+                                                  uint32_t value)
+{
+    switch (dtype & 0x1fu) {
+    case 1u: /* FP32 */
+        return (value & 0x7f800000u) == 0x7f800000u &&
+               (value & 0x007fffffu) != 0u &&
+               (value & 0x00400000u) == 0u;
+    case 4u: /* FP16 */
+        return (value & 0x7c00u) == 0x7c00u &&
+               (value & 0x03ffu) != 0u &&
+               (value & 0x0200u) == 0u;
+    case 5u: /* BF16 */
+        return (value & 0x7f80u) == 0x7f80u &&
+               (value & 0x007fu) != 0u &&
+               (value & 0x0040u) == 0u;
+    default:
+        return false;
+    }
+}
+
+static bool linx_tile_sort_value_is_zero(uint32_t dtype, uint32_t value)
+{
+    switch (dtype & 0x1fu) {
+    case 1u: /* FP32 */
+        return (value & 0x7fffffffu) == 0u;
+    case 4u: /* FP16 */
+    case 5u: /* BF16 */
+        return (value & 0x7fffu) == 0u;
+    default:
+        return false;
+    }
+}
+
+static bool linx_tile_sort_left_before(uint32_t left, uint32_t right,
+                                       bool descending, uint32_t dtype)
+{
+    const uint32_t dt = dtype & 0x1fu;
+    uint64_t left_key = 0;
+    uint64_t right_key = 0;
+    bool left_nan = false;
+    bool right_nan = false;
+
+    switch (dt) {
+    case 1u: { /* FP32 */
+        const uint32_t l = left;
+        const uint32_t r = right;
+        left_nan = (l & 0x7f800000u) == 0x7f800000u &&
+                   (l & 0x007fffffu) != 0u;
+        right_nan = (r & 0x7f800000u) == 0x7f800000u &&
+                    (r & 0x007fffffu) != 0u;
+        left_key = (l & 0x80000000u) != 0u
+                       ? ((~l) & 0xffffffffu)
+                       : (l | 0x80000000u);
+        right_key = (r & 0x80000000u) != 0u
+                        ? ((~r) & 0xffffffffu)
+                        : (r | 0x80000000u);
+        break;
+    }
+    case 4u: { /* FP16 */
+        const uint16_t l = (uint16_t)left;
+        const uint16_t r = (uint16_t)right;
+        left_nan = (l & 0x7c00u) == 0x7c00u && (l & 0x03ffu) != 0u;
+        right_nan = (r & 0x7c00u) == 0x7c00u && (r & 0x03ffu) != 0u;
+        left_key = (l & 0x8000u) != 0u ? ((~l) & 0xffffu) : (l | 0x8000u);
+        right_key = (r & 0x8000u) != 0u ? ((~r) & 0xffffu) : (r | 0x8000u);
+        break;
+    }
+    case 5u: /* BF16 */
+    default: {
+        const uint16_t l = (uint16_t)left;
+        const uint16_t r = (uint16_t)right;
+        left_nan = (l & 0x7f80u) == 0x7f80u && (l & 0x007fu) != 0u;
+        right_nan = (r & 0x7f80u) == 0x7f80u && (r & 0x007fu) != 0u;
+        left_key = (l & 0x8000u) != 0u ? ((~l) & 0xffffu) : (l | 0x8000u);
+        right_key = (r & 0x8000u) != 0u ? ((~r) & 0xffffu) : (r | 0x8000u);
+        break;
+    }
+    }
+
+    if (left_nan) {
+        return right_nan;
+    }
+    if (right_nan) {
+        return true;
+    }
+    /* Signed zeros compare equal; identical encodings are equal. */
+    if (left == right ||
+        (linx_tile_sort_value_is_zero(dtype, left) &&
+         linx_tile_sort_value_is_zero(dtype, right))) {
+        return true;
+    }
+    return descending ? left_key > right_key : left_key < right_key;
+}
+
 static bool linx_tile_sort(CPULinxState *env, unsigned value_dst,
                            unsigned index_dst, unsigned source,
                            unsigned value_size, unsigned index_size)
@@ -16692,16 +16792,27 @@ static bool linx_tile_sort(CPULinxState *env, unsigned value_dst,
     unsigned descending_reg = 0;
     const unsigned elem_bytes = env->tile_reg_elem_bytes[source];
     const uint32_t dtype = env->tile_reg_dtype[source];
-    const uint32_t extent = env->tile_reg_valid_rows[source] *
-                            env->tile_reg_valid_cols[source];
+    const uint32_t valid_cols = env->tile_reg_valid_cols[source];
+    const uint32_t valid_rows = env->tile_reg_valid_rows[source];
+    const uint32_t extent = valid_rows * valid_cols;
     const uint32_t value_bytes = 1u << (value_size + 4u);
     const uint32_t index_bytes = 1u << (index_size + 4u);
+    uint32_t sort_width = env->lb[0] & 0xffffu;
+    bool source_has_signaling_nan = false;
 
+    if (sort_width == 0u) {
+        sort_width = 32u;
+    }
     if (!linx_tile_resolve_ior(env, 0, &descending_reg) ||
         env->gpr[descending_reg] > 1u ||
         value_dst >= LINX_TILE_SLOT_COUNT ||
         index_dst >= LINX_TILE_SLOT_COUNT ||
         source >= LINX_TILE_SLOT_COUNT || elem_bytes == 0u ||
+        value_dst == index_dst || value_dst == source ||
+        index_dst == source ||
+        valid_rows == 0u || valid_cols == 0u ||
+        sort_width == 0u || sort_width > 64u ||
+        (env->lb[1] & 0xffffu) != 0u || (env->lb[2] & 0xffffu) != 0u ||
         (uint64_t)extent * elem_bytes > value_bytes ||
         (uint64_t)extent * sizeof(uint32_t) > index_bytes) {
         return false;
@@ -16709,39 +16820,72 @@ static bool linx_tile_sort(CPULinxState *env, unsigned value_dst,
     const bool descending = env->gpr[descending_reg] != 0u;
     memset(env->tile_reg[value_dst], 0, value_bytes);
     memset(env->tile_reg[index_dst], 0, index_bytes);
+
+    /* Sort a snapshot of the source payload; the source persists. */
+    uint32_t *values = g_new(uint32_t, extent);
+    uint32_t *indices = g_new(uint32_t, extent);
     for (uint32_t i = 0; i < extent; i++) {
         uint32_t value = 0;
-        if (!linx_tile_get_elem(env, source, i, elem_bytes, &value) ||
-            !linx_tile_set_elem(env, value_dst, i, elem_bytes, value) ||
+        if (!linx_tile_get_elem(env, source, i, elem_bytes, &value)) {
+            g_free(values);
+            g_free(indices);
+            return false;
+        }
+        values[i] = value;
+        /* PTO TSORT.asl: each result is the original zero-based column
+         * offset within its row group. */
+        indices[i] = (i % valid_cols) % sort_width;
+        if (linx_tile_sort_value_is_signaling_nan(dtype, value)) {
+            source_has_signaling_nan = true;
+        }
+    }
+    for (uint32_t row = 0; row < valid_rows; row++) {
+        const uint32_t row_base = row * valid_cols;
+        const uint32_t group_count =
+            (valid_cols - 1u) / sort_width + 1u;
+        for (uint32_t group = 0; group < group_count; group++) {
+            const uint32_t group_begin = group * sort_width;
+            const uint32_t group_end =
+                MIN(group_begin + sort_width, valid_cols);
+            /* ASL TSORT performs 64 adjacent-swap passes; width <= 64
+             * guarantees a fully sorted, stable group. */
+            for (unsigned pass = 0; pass < 64; pass++) {
+                for (uint32_t offset = 0;
+                     offset + 1u < group_end - group_begin; offset++) {
+                    const uint32_t left = row_base + group_begin + offset;
+                    const uint32_t right = left + 1u;
+                    if (right >= row_base + group_end) {
+                        continue;
+                    }
+                    if (!linx_tile_sort_left_before(
+                            values[left], values[right], descending, dtype)) {
+                        const uint32_t tmp_v = values[left];
+                        values[left] = values[right];
+                        values[right] = tmp_v;
+                        const uint32_t tmp_i = indices[left];
+                        indices[left] = indices[right];
+                        indices[right] = tmp_i;
+                    }
+                }
+            }
+        }
+    }
+    for (uint32_t i = 0; i < extent; i++) {
+        if (!linx_tile_set_elem(env, value_dst, i, elem_bytes, values[i]) ||
             !linx_tile_set_elem(env, index_dst, i, sizeof(uint32_t),
-                                i & 31u)) {
+                                indices[i])) {
+            g_free(values);
+            g_free(indices);
             return false;
         }
     }
-    for (uint32_t group = 0; group < extent; group += 32u) {
-        const uint32_t end = MIN(group + 32u, extent);
-        for (unsigned pass = 0; pass < 32u; pass++) {
-            for (uint32_t i = group; i + 1u < end; i++) {
-                uint32_t left = 0, right = 0, left_index = 0, right_index = 0;
-                linx_tile_get_elem(env, value_dst, i, elem_bytes, &left);
-                linx_tile_get_elem(env, value_dst, i + 1u, elem_bytes, &right);
-                const uint32_t preferred = linx_tile_operation_binary_word(
-                    env, descending ? 0x004u : 0x005u, dtype, left, right);
-                if (preferred == left || left == right) {
-                    continue;
-                }
-                linx_tile_get_elem(env, index_dst, i, sizeof(uint32_t),
-                                   &left_index);
-                linx_tile_get_elem(env, index_dst, i + 1u,
-                                   sizeof(uint32_t), &right_index);
-                linx_tile_set_elem(env, value_dst, i, elem_bytes, right);
-                linx_tile_set_elem(env, value_dst, i + 1u, elem_bytes, left);
-                linx_tile_set_elem(env, index_dst, i, sizeof(uint32_t),
-                                   right_index);
-                linx_tile_set_elem(env, index_dst, i + 1u,
-                                   sizeof(uint32_t), left_index);
-            }
-        }
+    g_free(values);
+    g_free(indices);
+
+    /* Signaling-NaN observation ORs the sticky invalid status. */
+    if (source_has_signaling_nan) {
+        env->fcsr |= 1u;
+        float_raise(float_flag_invalid, &env->fp_status);
     }
     env->tile_reg_bytes[value_dst] = value_bytes;
     linx_tile_set_elem_bytes(env, value_dst, elem_bytes);
@@ -16750,13 +16894,14 @@ static bool linx_tile_sort(CPULinxState *env, unsigned value_dst,
     env->tile_reg_bytes[index_dst] = index_bytes;
     linx_tile_set_elem_bytes(env, index_dst, sizeof(uint32_t));
     linx_tile_set_dtype(env, index_dst, 25u);
-    return linx_tile_set_shape(env, index_dst,
-                               env->tile_reg_valid_cols[source],
-                               env->tile_reg_valid_rows[source],
-                               env->tile_reg_cols[source],
-                               env->tile_reg_rows[source]);
+    /* The U32 index tile keeps the source logical shape but its physical
+     * row count follows its own 4-byte elements and TSize capacity. */
+    const uint32_t index_cols = env->tile_reg_cols[source];
+    const uint32_t index_rows =
+        index_cols == 0u ? 0u : index_bytes / (index_cols * sizeof(uint32_t));
+    return linx_tile_set_shape(env, index_dst, valid_cols, valid_rows,
+                               index_cols, index_rows);
 }
-
 static bool linx_tile_collect_interleave_bindings(
     const CPULinxState *env, unsigned sources[2], unsigned outputs[2],
     unsigned output_indices[2], unsigned *size_code_out)
