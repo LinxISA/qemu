@@ -75,7 +75,7 @@ static inline void linx_tile_preserve_v058_source_lifetime(
 static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
                                                   unsigned *size_code)
 {
-    for (unsigned size = 3u; size <= 9u; size++) {
+    for (unsigned size = 3u; size <= 12u; size++) {
         if (bytes == (UINT32_C(1) << (size + 4u))) {
             *size_code = size;
             return true;
@@ -125,7 +125,7 @@ static inline bool linx_tile_data_type_field_accepted(uint32_t data_type)
 static inline bool linx_tile_layout_accepted(uint32_t layout)
 {
     return layout < 32u &&
-           (UINT32_C(0x5816035b) & (UINT32_C(1) << layout)) != 0;
+           (UINT32_C(0x5ff6035b) & (UINT32_C(1) << layout)) != 0;
 }
 
 /* TEPL remains only the unchanged two-bit Mode/five-bit Function carrier. */
@@ -273,22 +273,18 @@ static inline bool linx_tile_datr_applicable(uint32_t blocktype,
                                              bool present)
 {
     uint32_t nonzero;
-    const uint32_t allowed = linx_tile_datr_allowed(blocktype, function);
+    uint32_t allowed = linx_tile_datr_allowed(blocktype, function);
+    const uint32_t layout = (packed >> 2) & 0x1fu;
 
     if (!present) {
         return true;
     }
-    nonzero = linx_tile_datr_nonzero_fields(packed);
-    /*
-     * The current compiler encoding names PadValueOrByteId=1 as Zero.  For
-     * operations whose schema requires this union to be semantically zero,
-     * accept that spelling without making Max/Min or a real byte selector
-     * applicable.  Operations that consume the union keep the raw value.
-     */
-    if ((allowed & LINX_DATR_PAD_OR_BYTE_ID) == 0u &&
-        ((packed >> 12) & 3u) == 1u) {
-        nonzero &= ~LINX_DATR_PAD_OR_BYTE_ID;
+    if (blocktype == 2u &&
+        ((function == 0u && layout >= 21u && layout <= 23u) ||
+         (function == 1u && layout >= 24u && layout <= 26u))) {
+        allowed |= LINX_DATR_PAD_OR_BYTE_ID;
     }
+    nonzero = linx_tile_datr_nonzero_fields(packed);
     return (nonzero & ~allowed) == 0u;
 }
 

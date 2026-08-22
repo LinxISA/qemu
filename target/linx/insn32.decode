@@ -67,6 +67,8 @@
 %FP_GroupMaxEn 17:1
 %FP_RowMaxInit 16:1
 %FP_MaxAbsEn 15:1
+%FP_TransA 7:1
+%FP_TransB 8:1
 
 # Block hint (B.HINT) fields
 %HINT_L_UL 16:1
@@ -92,12 +94,12 @@
 %IOTV5Src1 26:6
 %IOTV5Src0 20:6
 %IOTV5Last 19:1
-%IOTV5PeMask 15:4
-%IOTV5TSize 9:3
+%IOTV5SizeCode 15:4
+%IOTV5PEMode 9:3
 %IOTV5Dst 7:2
 %SharedTID 20:8
-%PE_MASK 15:4
-%TSize 9:3
+%SizeCode 15:4
+%PEMode 9:3
 
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
@@ -256,14 +258,16 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 }
 
 # DavinciOO PTO ISA v0.2/v5 Tile dependency descriptors.
-# PTO ISA 0.58 Shared binding. TSize=0 is a source; 1..7 is a destination.
-b_ios          0000 .... .... 0... .001 ...0 0001 0011 shared=%SharedTID pe_mask=%PE_MASK tsize=%TSize
+# PTO ISA 0.58 Shared binding (#119). SizeCode=0 is a source; 1..12 is a
+# destination (128 B..256 KiB per participating PE).  PEMode expands to a
+# fixed four-PE semantic mask; PEMode=000 is a strict no-op.
+b_ios          0000 .... .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode
 {
-  b_iot        0000 00.. .... .... .101 000. .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=0 dst=%IOTV5Dst func=5
-  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=5
-  b_iot        .... .... .... .... .100 000. .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=0 dst=%IOTV5Dst func=4
-  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=4
-  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last pe_mask=%IOTV5PeMask tsize=%IOTV5TSize dst=%IOTV5Dst func=6
+  b_iot        0000 00.. .... .000 0101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5
+  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5
+  b_iot        .... .... .... .000 0100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4
+  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4
+  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=6
 }
 
 # Decoupled-body pointer (decoupled block headers).
@@ -277,7 +281,7 @@ b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_catr         0000 0.00 0000 .... .000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap
 b_datr         .... .... .... 00.. .001 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat canonicalize=%BA_Canonicalize
-b_fpatr        ...... ... .... .... 010000000100011 prequant=%FP_PreQuantMode relu=%FP_ReluMode groupn=%FP_GroupNCode rowmax=%FP_RowMaxEn groupmax=%FP_GroupMaxEn rowinit=%FP_RowMaxInit maxabs=%FP_MaxAbsEn
+b_fpatr        .... .... .... .... .010 000. .010 0011 prequant=%FP_PreQuantMode relu=%FP_ReluMode groupn=%FP_GroupNCode rowmax=%FP_RowMaxEn groupmax=%FP_GroupMaxEn rowinit=%FP_RowMaxInit maxabs=%FP_MaxAbsEn transa=%FP_TransA transb=%FP_TransB
 
 # Block hints; treated as no-ops in bring-up.
 b_hint         .... .... .... 0... .000 0000 0011 0011 l_ul=%HINT_L_UL v=%HINT_V prefetch_size=%HINT_prefetch_size temp=%HINT_temp
@@ -403,14 +407,6 @@ cmp_lt        0000 0... .... .... .100 .... .100 0101 %RegDst %SrcL %SrcR %SrcRT
 cmp_ge        0000 0... .... .... .101 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
 cmp_ltu       0000 0... .... .... .110 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
 cmp_geu       0000 0... .... .... .111 .... .100 0101 %RegDst %SrcL %SrcR %SrcRType
-
-# Compare-and-branch
-b_eq          .... .... .... .... .000 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
-b_ne          .... .... .... .... .001 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
-b_lt          .... .... .... .... .010 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
-b_ge          .... .... .... .... .011 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
-b_ltu         .... .... .... .... .100 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
-b_geu         .... .... .... .... .101 .... .010 0111 %SrcL %SrcR simm12=%simm12_7_s5_25_7
 
 csel          .... .... .... .... .000 .... .111 0111 %RegDst %SrcL %SrcP %SrcR %SrcRType
 
@@ -593,8 +589,6 @@ cmp_geui      .... .... .... .... .111 .... .101 0101 %RegDst %SrcL %uimm12
 # Branch instructions (set condition, not direct branches)
 j             .... .... .... .... .000 .... .011 0111 %simm22
 jr            .... .... .... .... .110 .... .010 0111 %SrcL %SrcZero simm12=%simm12_7_s5_25_7
-b_z           .... .... .... .... .001 .... .011 0111 %simm22
-b_nz          .... .... .... .... .010 .... .011 0111 %simm22
 
 # Architecturally reserved X-block encoding.  The locked catalog classifies
 # this form as illegal, but keeping the exact decode makes that fault precise.

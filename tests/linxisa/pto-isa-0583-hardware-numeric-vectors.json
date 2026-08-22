@@ -1,12 +1,16 @@
 {
-  "hardware_profile_id": "pto-hardware-numeric-0.58.1-ieee-v1",
-  "hardware_profile_sha256": "170deadacb174c933c287231fb67da1046d7989f84b6852bf353d68a495d1755",
-  "implementation_conformance_status": "unproven-in-repository",
+  "hardware_profile_id": "pto-hardware-numeric-0.58.3-ieee-v1",
+  "hardware_profile_sha256": "117cd8e61f1e82001755cdb1ee98ef224fbd624ddf2adb8577c32d6acf833575",
+  "implementation_conformance_status": "b-fpatr-and-tcvt-e8m0-asl-proven-other-numeric-domains-unproven",
   "reference_profile": {
+    "bit_exact_surfaces": [
+      "B.FPATR matrix postprocess",
+      "TCVT FP16/BF16/FP32 to E8M0"
+    ],
     "hardware_conformance_claim": false,
     "profile_id": "pto-v0"
   },
-  "release": "0.58.1",
+  "release": "0.58.3",
   "schema_version": 1,
   "vector_groups": {
     "canonical_nan": [
@@ -362,6 +366,167 @@
         "unscaled_inputs": "all-one"
       }
     ],
+    "matrix_postprocess": [
+      {
+        "destination": "S8",
+        "expected_raw": "0x05",
+        "fp19_scale": "2.0",
+        "id": "req8-scalar-affine",
+        "input": "3",
+        "mode": 3,
+        "sat": false,
+        "signed_offset": "-1",
+        "source_type": "S32"
+      },
+      {
+        "destination": "S8",
+        "expected_flags": [
+          "OF",
+          "NX"
+        ],
+        "expected_raw": "0x8C",
+        "fp19_scale": "2.0",
+        "id": "req8-wrap",
+        "input": "70",
+        "mode": 3,
+        "sat": false,
+        "signed_offset": "0",
+        "source_type": "S32"
+      },
+      {
+        "destination": "S8",
+        "expected_flags": [
+          "OF",
+          "NX"
+        ],
+        "expected_raw": "0x7F",
+        "fp19_scale": "2.0",
+        "id": "req8-saturate",
+        "input": "70",
+        "mode": 3,
+        "sat": true,
+        "signed_offset": "0",
+        "source_type": "S32"
+      },
+      {
+        "destination": "E4M3",
+        "expected_raw": "0x3C",
+        "fp19_scale": "1.0",
+        "id": "f32-e4m3-exact",
+        "input_raw": "0x3FC00000",
+        "mode": 26,
+        "source_type": "FP32"
+      },
+      {
+        "destination": "HiF8",
+        "expected_raw": "0x0C",
+        "fp19_scale": "1.0",
+        "id": "f32-hif8-exact",
+        "input_raw": "0x3FC00000",
+        "mode": 25,
+        "source_type": "FP32"
+      },
+      {
+        "destination": "S8",
+        "expected_raw": "0xFE",
+        "fp19_alpha": "0.5",
+        "fp19_scale": "1.0",
+        "id": "post-conversion-lrelu",
+        "input_raw": "0xC0800000",
+        "mode": 24,
+        "relu_mode": 2
+      },
+      {
+        "destination": "S8",
+        "expected_flags": [
+          "NV"
+        ],
+        "expected_raw": "0x80",
+        "id": "nan-indefinite",
+        "input": "qNaN",
+        "mode": 24,
+        "sat": false
+      },
+      {
+        "destination": "S8",
+        "expected_flags": [
+          "NV"
+        ],
+        "expected_raw": "0x00",
+        "id": "nan-saturating-zero",
+        "input": "qNaN",
+        "mode": 24,
+        "sat": true
+      }
+    ],
+    "mixed_expdif": {
+      "accepted_operations": [
+        "TROWEXPANDEXPDIF",
+        "TCOLEXPANDEXPDIF"
+      ],
+      "accepted_source_destination_pairs": [
+        [
+          "FP16",
+          "FP16"
+        ],
+        [
+          "BF16",
+          "BF16"
+        ],
+        [
+          "FP32",
+          "FP32"
+        ],
+        [
+          "FP16",
+          "FP32"
+        ],
+        [
+          "BF16",
+          "FP32"
+        ]
+      ],
+      "discriminator_vectors": [
+        {
+          "a": "0x2000",
+          "b": "0x0001",
+          "source_precision_exp": "0x3F810101",
+          "source_precision_sub_then_widen": "0x3C000000",
+          "source_type": "FP16",
+          "widen_first_exp": "0x3F810100",
+          "widen_first_sub": "0x3BFFFF80"
+        },
+        {
+          "a": "0x3F80",
+          "b": "0x3B00",
+          "source_precision_exp": "0x402DF854",
+          "source_precision_sub_then_widen": "0x3F800000",
+          "source_type": "BF16",
+          "widen_first_exp": "0x402DA16E",
+          "widen_first_sub": "0x3F7F8000"
+        }
+      ],
+      "exact_widening": {
+        "BF16": {
+          "finite_zero_infinity": "ZeroExtend32(source_bits) << 16",
+          "inexact_flag": false,
+          "rounding": "none"
+        },
+        "FP16": {
+          "finite_zero_infinity": "IEEE binary16 value-preserving widening to the unique FP32 encoding",
+          "inexact_flag": false,
+          "rounding": "none",
+          "subnormals": "normalize to the unique equal-valued FP32 encoding"
+        },
+        "nan": "Use the selected profile FP32 canonical-NaN and signaling-input rule"
+      },
+      "fp32_sub_exp": {
+        "numeric_status": "Use the selected profile FP32 NV/DZ/OF/UF/NX rules",
+        "rounding": "Use the selected profile FP32 rounding rule",
+        "special_values": "Use the selected profile FP32 IEEE special-value rule"
+      },
+      "pipeline": "ExactWidenFP16ToFP32 or ExactWidenBF16ToFP32 for both sources, then FP32 SUB, then FP32 EXP"
+    },
     "packed_lane_order": [
       {
         "data_type": "E1M2X2",
@@ -852,6 +1017,187 @@
         "raw": "0x00800000",
         "tininess_detection": "after-rounding"
       }
-    ]
+    ],
+    "tcvt_e8m0": {
+      "contract": {
+        "accepted_source_types": [
+          "FP16",
+          "BF16",
+          "FP32"
+        ],
+        "canonicalize": "representation-only; it does not change the E8M0 value map",
+        "destination_type": "E8M0",
+        "encoding": "rounded_base2_exponent_plus_127",
+        "exact_range": {
+          "maximum": "2^127",
+          "minimum": "2^-127"
+        },
+        "finite_domain": "positive finite values",
+        "finite_overflow": {
+          "flags": [
+            "OF",
+            "NX"
+          ],
+          "sat0_result": "0xFF",
+          "sat1_result": "0xFE"
+        },
+        "finite_underflow": {
+          "flags": [
+            "UF",
+            "NX"
+          ],
+          "sat0_result": "0xFF",
+          "sat1_result": "0x00"
+        },
+        "inexact": "Every non-power-of-two in-range source records NX.",
+        "invalid": {
+          "flags": [
+            "NV"
+          ],
+          "inputs": [
+            "positive_zero",
+            "negative_zero",
+            "negative_finite",
+            "negative_infinity",
+            "quiet_nan",
+            "signaling_nan"
+          ],
+          "result": "0xFF"
+        },
+        "positive_infinity": {
+          "flags": [
+            "OF",
+            "NX"
+          ],
+          "sat0_result": "0xFF",
+          "sat1_result": "0xFE"
+        },
+        "rounding": "resolved B.DATR RMode in the base-two exponent domain"
+      },
+      "unsupported_source_types": [
+        "FP64",
+        "TF32",
+        "HF32",
+        "HiF8",
+        "E4M3",
+        "E5M2",
+        "E3M2",
+        "E2M3",
+        "E2M1X2",
+        "E1M2X2",
+        "E8M0",
+        "HiF4X2",
+        "S64",
+        "S32",
+        "S16",
+        "S8",
+        "S4X2",
+        "U64",
+        "U32",
+        "U16",
+        "U8",
+        "U4X2"
+      ],
+      "vectors": [
+        {
+          "expected": "0x7F",
+          "flags": [],
+          "input": "0x3F80",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "BF16"
+        },
+        {
+          "expected": "0x80",
+          "flags": [
+            "NX"
+          ],
+          "input": "0x3FC0",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "BF16"
+        },
+        {
+          "expected": "0x7F",
+          "flags": [
+            "NX"
+          ],
+          "input": "0x3FC0",
+          "rmode": "RTM",
+          "sat": false,
+          "source_type": "BF16"
+        },
+        {
+          "expected": "0x00",
+          "flags": [],
+          "input": "0x00400000",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "FP32"
+        },
+        {
+          "expected": "0xFF",
+          "flags": [
+            "UF",
+            "NX"
+          ],
+          "input": "0x00200000",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "FP32"
+        },
+        {
+          "expected": "0x00",
+          "flags": [
+            "UF",
+            "NX"
+          ],
+          "input": "0x00200000",
+          "rmode": "RNE",
+          "sat": true,
+          "source_type": "FP32"
+        },
+        {
+          "expected": "0xFE",
+          "flags": [],
+          "input": "0x7F000000",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "FP32"
+        },
+        {
+          "expected": "0xFF",
+          "flags": [
+            "OF",
+            "NX"
+          ],
+          "input": "0x7F7FFFFF",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "FP32"
+        },
+        {
+          "expected": "0xFF",
+          "flags": [
+            "NV"
+          ],
+          "input": "0x0000",
+          "rmode": "RNE",
+          "sat": false,
+          "source_type": "BF16"
+        },
+        {
+          "expected": "0xFE",
+          "flags": [
+            "OF",
+            "NX"
+          ],
+          "input": "0x7F80",
+          "rmode": "RNE",
+          "sat": true,
+          "source_type": "BF16"
+        }
+      ]
+    }
   }
 }

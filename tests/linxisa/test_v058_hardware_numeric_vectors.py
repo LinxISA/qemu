@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the official PTO ISA 0.58.1 numeric vectors."""
+"""Execute the official PTO ISA 0.58.3 numeric vectors."""
 
 import ctypes
 import json
@@ -11,7 +11,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VECTORS = ROOT / "tests/linxisa/pto-isa-0581-hardware-numeric-vectors.json"
+VECTORS = ROOT / "tests/linxisa/pto-isa-0583-hardware-numeric-vectors.json"
+MATRIX_AUTHORITY = ROOT / "tests/linxisa/pto-v0583-matrix-type-authority.json"
 DTYPE = {
     "FP64": 0, "FP32": 1, "TF32": 2, "HF32": 3, "FP16": 4,
     "BF16": 5, "HiF8": 6, "E4M3": 7, "E5M2": 8, "E3M2": 9,
@@ -32,6 +33,10 @@ uint64_t v_nan(unsigned d) { return linx_tile_numeric_canonical_nan(d); }
 int v_ordinary(unsigned d) { return linx_tile_numeric_ordinary(d); }
 unsigned v_acc_dtype(unsigned d) { return linx_tile_numeric_acc_dtype(d); }
 int v_mx_pair(unsigned a, unsigned b) { return linx_tile_numeric_mx_pair(a, b); }
+int v_matrix_pair(unsigned a, unsigned b) {
+    return linx_tile_numeric_ordinary_matrix_pair(a, b);
+}
+int v_mx_scale(unsigned d) { return linx_tile_numeric_mx_requires_scale(d); }
 double v_decode(unsigned d, uint64_t r, unsigned l) {
     return linx_tile_numeric_decode(d, r, l);
 }
@@ -43,6 +48,9 @@ int v_compare(double a, double b, unsigned mode) {
 }
 uint64_t v_invalid(unsigned d) {
     return linx_tile_numeric_float_to_integer(d, NAN, 1, false);
+}
+uint64_t v_encode(unsigned d, double value, unsigned mode, int sat) {
+    return linx_tile_numeric_encode(d, value, mode, sat != 0);
 }
 int64_t v_sat_int(double x, unsigned d) {
     uint64_t raw = linx_tile_numeric_float_to_integer(d, x, 1, true);
@@ -133,6 +141,9 @@ class HardwareNumericVectors(unittest.TestCase):
         cls.lib.v_round.restype = ctypes.c_int64
         cls.lib.v_compare.argtypes = [ctypes.c_double, ctypes.c_double, ctypes.c_uint]
         cls.lib.v_invalid.restype = ctypes.c_uint64
+        cls.lib.v_encode.argtypes = [ctypes.c_uint, ctypes.c_double,
+                                     ctypes.c_uint, ctypes.c_int]
+        cls.lib.v_encode.restype = ctypes.c_uint64
         cls.lib.v_sat_int.argtypes = [ctypes.c_double, ctypes.c_uint]
         cls.lib.v_sat_int.restype = ctypes.c_int64
         cls.lib.v_sat_fp16.argtypes = [ctypes.c_double]
@@ -150,7 +161,7 @@ class HardwareNumericVectors(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_all_104_canonical_reference_vectors_are_checked(self):
+    def test_all_114_executable_reference_vectors_are_checked(self):
         groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
         executed = 0
 
@@ -254,30 +265,85 @@ class HardwareNumericVectors(unittest.TestCase):
                 )
             executed += 1
 
-        self.assertEqual(executed, 104)
+        tcvt_modes = {"RNE": 1, "RTM": 3}
+        for v in groups["tcvt_e8m0"]["vectors"]:
+            source_type = DTYPE[v["source_type"]]
+            source = self.lib.v_decode(source_type, int(v["input"], 16), 0)
+            self.assertEqual(
+                self.lib.v_encode(13, source, tcvt_modes[v["rmode"]], v["sat"]),
+                int(v["expected"], 16),
+            )
+            executed += 1
 
-    def test_conformance_does_not_mislabel_reference_checks_as_production(self):
+        self.assertEqual(executed, 114)
+
+    def test_0583_matrix_postprocess_vectors_are_present(self):
+        groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
+        self.assertEqual(len(groups["matrix_postprocess"]), 8)
+
+    def test_conformance_separates_reference_and_production_vectors(self):
         conformance = json.loads(
             (ROOT / "tests/linxisa/pto-v058-cube-profile-conformance.json").read_text(
                 encoding="utf-8"
             )
         )
         evidence = conformance["qemu_implementation_gap"]["evidence"]
-        self.assertEqual(conformance["status"], "reference-vector-coverage-only")
-        self.assertEqual(evidence["canonical_reference_vectors_checked"], 104)
-        self.assertEqual(evidence["production_vector_cases"], "unavailable")
+        self.assertEqual(conformance["status"], "production-conformance")
+        self.assertEqual(evidence["canonical_reference_vectors_checked"], 114)
+        self.assertEqual(evidence["production_vector_cases"], 51)
         self.assertNotIn("canonical_contract_vectors_executed", evidence)
 
-    def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):
-        ordinary = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14,
-                    16, 17, 18, 19, 20, 24, 25, 26, 27, 28]
-        self.assertEqual([d for d in range(32) if self.lib.v_ordinary(d)], ordinary)
-        expected_acc = ([0] + [1] * 13 + [16] * 5 + [24] * 5)
-        self.assertEqual([self.lib.v_acc_dtype(d) for d in ordinary], expected_acc)
-        mx = [(7, 7), (7, 8), (8, 7), (8, 8),
-              (11, 11), (11, 14), (14, 11), (14, 14)]
-        self.assertEqual([(a, b) for a in range(32) for b in range(32)
-                          if self.lib.v_mx_pair(a, b)], mx)
+        contract = conformance["normative_contract"]
+        authority = json.loads(MATRIX_AUTHORITY.read_text(encoding="utf-8"))
+        ordinary_codes = [DTYPE[name] for name in contract["ordinary_side_types"]]
+        mx_codes = [DTYPE[name] for name in contract["mx_side_types"]]
+        scaled_codes = [DTYPE[name] for name in contract["mx_scaled_side_types"]]
+        self.assertEqual(len(ordinary_codes), 18)
+        self.assertEqual(contract["ordinary_ordered_operand_pairs"],
+                         12 * 12 + 3 * 3 + 3 * 3)
+        self.assertEqual(len([(a, b) for a in mx_codes for b in mx_codes]),
+                         contract["mx_ordered_operand_pairs"])
+        self.assertEqual(scaled_codes, [7, 8, 11, 12])
+        self.assertEqual(
+            contract["ordinary_side_types"],
+            [name for values in authority["ordinary_classes"].values()
+             for name in values],
+        )
+        self.assertEqual(contract["mx_side_types"], authority["mx_side_types"])
+
+    def test_cube_type_matrix_matches_locked_0583_authority(self):
+        authority = json.loads(MATRIX_AUTHORITY.read_text(encoding="utf-8"))
+        floating, signed, unsigned = [
+            [DTYPE[name] for name in authority["ordinary_classes"][kind]]
+            for kind in ("floating", "signed", "unsigned")
+        ]
+        ordinary = floating + signed + unsigned
+        expected_ordinary_pairs = [
+            (a, b) for group in (floating, signed, unsigned)
+            for a in group for b in group
+        ]
+        self.assertEqual(
+            [(a, b) for a in range(32) for b in range(32)
+             if self.lib.v_matrix_pair(a, b)],
+            expected_ordinary_pairs,
+        )
+        self.assertEqual(len(ordinary), 18)
+        self.assertNotIn(14, ordinary)
+        self.assertNotIn(17, ordinary)
+        self.assertNotIn(25, ordinary)
+
+        mx_types = [DTYPE[name] for name in authority["mx_side_types"]]
+        mx = [(a, b) for a in mx_types for b in mx_types]
+        self.assertEqual(
+            [(a, b) for a in range(32) for b in range(32)
+             if self.lib.v_mx_pair(a, b)],
+            mx,
+        )
+        self.assertEqual(len(mx), 36)
+        self.assertEqual(
+            [d for d in mx_types if self.lib.v_mx_scale(d)],
+            [DTYPE[name] for name in authority["mx_scaled_side_types"]],
+        )
 
 
 if __name__ == "__main__":

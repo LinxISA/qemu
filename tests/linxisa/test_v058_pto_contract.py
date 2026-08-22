@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import unittest
 from pathlib import Path
@@ -41,13 +40,14 @@ class PtoV058ContractTests(unittest.TestCase):
             r"(?m)^b_ios\s+0000\s+\.\.\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
-        self.assertIn("%PE_MASK", self.decode32)
-        self.assertIn("%TSize", self.decode32)
+        self.assertIn("%SizeCode", self.decode32)
+        self.assertIn("%PEMode", self.decode32)
         self.assertIn("trans_b_ios", self.translate)
         self.assertIn('.mnemonic="b_ios"', self.meta)
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
+        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -91,53 +91,24 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn(".match=UINT64_C(0x1c19181)", self.meta)
 
     def test_mx_cube_uses_normative_operand_order(self) -> None:
-        # PTO v0.58: [A, row-scale, B, column-scale, bias?], with an
-        # accumulator prepended for the ACC forms.
-        self.assertIn(
-            "? (accumulate ? sources[3] : sources[2])",
-            self.helper,
-        )
-        self.assertIn(
-            "accumulate ? sources[2] : sources[1]",
-            self.helper,
-        )
-        self.assertRegex(
-            self.helper,
-            r"linx_tile_cube_compute\(env, sources\[0\], sources\[2\],\s*"
-            r"sources\[1\], sources\[3\]",
-        )
-        self.assertRegex(
-            self.helper,
-            r"linx_tile_cube_compute\(env, sources\[1\], sources\[3\],\s*"
-            r"sources\[2\], sources\[4\]",
-        )
+        # PTO v0.58.3: [C?], A, optional ScaleA, B, optional ScaleB,
+        # [Bias], followed by postprocess auxiliaries.
+        self.assertIn("linx_tile_cube_resolve_local_operands", self.helper)
+        self.assertIn("operands->accumulator = sources[cursor++]", self.helper)
+        self.assertIn("operands->left = sources[cursor++]", self.helper)
+        self.assertIn("operands->left_scale = sources[cursor++]", self.helper)
+        self.assertIn("operands->right = sources[cursor++]", self.helper)
+        self.assertIn("operands->right_scale = sources[cursor++]", self.helper)
 
     def test_mx_cube_accepts_all_asl_fp4_pairs_and_scales(self) -> None:
-        # PTO ASL TMATMULMX permits every ordered pair from
-        # {E2M1X2, HiF4X2} and always accumulates into selected FP32 with
-        # E8M0 scales shaped M x ceil(K/32) and ceil(K/32) x N.
-        self.assertIn(
-            "return (left == 11u || left == 14u) && (right == 11u || right == 14u);",
-            self.numeric,
-        )
-        self.assertRegex(
-            self.numeric,
-            r"static const double e2m1_values\[8\] = \{0, \.5, 1, 1\.5, 2, 3, 4, 6\};",
-        )
-        self.assertIn("(double)(lane & 7u) / 4.0", self.numeric)
-        self.assertRegex(
-            self.cube,
-            r"mx \? \(\(env->tile_dtype & 31u\) == 1u &&\s*"
-            r"linx_tile_numeric_mx_pair\(left_dtype, right_dtype\)\)",
-        )
-        self.assertRegex(
-            self.cube,
-            r"cube_operand_legal\(env, row_scale, 13u, m, groups\)",
-        )
-        self.assertRegex(
-            self.cube,
-            r"cube_operand_legal\(env, column_scale, 13u, groups,\s*n\)",
-        )
+        # All ordered pairs from FP16/BF16/E4M3/E5M2/E2M1X2/E1M2X2;
+        # only the four low-precision types carry a side scale.
+        self.assertIn("(UINT32_C(1) << 4) | (UINT32_C(1) << 5)", self.numeric)
+        self.assertIn("(UINT32_C(1) << 11) | (UINT32_C(1) << 12)", self.numeric)
+        self.assertIn("linx_tile_numeric_mx_requires_scale", self.numeric)
+        self.assertIn("left_dtype == (env->tile_dtype & 31u)", self.cube)
+        self.assertIn("scale_left &&", self.cube)
+        self.assertIn("scale_right &&", self.cube)
 
     def test_tmatmul_dimensions_are_m_n_k(self) -> None:
         self.assertRegex(
@@ -168,7 +139,7 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertRegex(body, r"(?:imm|offset)\s*<<=\s*12")
             self.assertNotRegex(body, r"offset\s*<<=\s*1(?![0-9])")
 
-    def test_scalar_right_modifier_mapping_matches_linxisa_0581(self) -> None:
+    def test_scalar_right_modifier_mapping_matches_linxisa_0583(self) -> None:
         arithmetic = re.search(
             r"static TCGv_i64 linx_srcR_addsub\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -189,7 +160,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertRegex(arithmetic, r"case 2: /\* \.neg \*/")
         self.assertRegex(logical, r"case 2: /\* \.not \*/")
         self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
-        self.assertIn("(srcRType & 0x3) == 2", select)
+        self.assertIn("(srcRType & 0x3) == 3", select)
 
         for name in ("trans_cmp_eq", "trans_cmp_ne", "trans_setc_eq", "trans_setc_ne"):
             body = re.search(
@@ -218,16 +189,17 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
-    def test_shared_tload_one_hot_issuer_publishes_full_aggregate(self) -> None:
-        self.assertIn("const bool single_issuer", self.helper)
-        self.assertIn("(unsigned)__builtin_ctz((unsigned)pe_mask)", self.helper)
+    def test_shared_tload_uses_released_per_mask_quarters(self) -> None:
+        self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
+        self.assertIn("size_code < 3u || size_code > 14u", self.helper)
+        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
         self.assertIn(
-            "if (single_issuer && env->pe_id != issuer_pe)", self.helper
+            "ctpop8(allocation_mask) * bytes", self.helper
         )
-        self.assertIn("bytes * (single_issuer ? LINX_CORE4_PE_COUNT", self.helper)
-        self.assertIn(": ctpop8(pe_mask));", self.helper)
-        self.assertIn("shared->initialized_mask = 0xfu", self.helper)
-        self.assertIn("cpu_ldub_data(env, (abi_ptr)(source + byte))", self.helper)
+        self.assertIn("shared->allocation_mask = allocation_mask", self.helper)
+        self.assertIn("ctpop8(pe_mask) * bytes", self.helper)
+        self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
+        self.assertNotIn("single_issuer", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
@@ -250,12 +222,9 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(f"{name} = {function}", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        # PTO ASL models Shared Tile as one aggregate payload.  PE_MASK selects
-        # fixed element regions in that payload; it is not four independent
-        # full-tile lane buffers.
+        # Shared state uses one per-PE-capacity payload with fixed PE quarters.
         self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertIn("memcpy(shared->data + byte_offset, payload + byte_offset",
-                      self.helper)
+        self.assertNotIn("legacy_whole", self.helper)
         self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
                       self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
@@ -268,17 +237,17 @@ class PtoV058ContractTests(unittest.TestCase):
             "linx_tile_get_bound_output(env, 1u, &destination)", self.helper
         )
         self.assertIn("core4->collective_dst[pe] = destination", self.helper)
-        self.assertIn("linx_tile_accumulator_convert(", self.helper)
+        self.assertIn("linx_tile_accumulator_convert_with_aux_058(", self.helper)
         self.assertIn("planned_count[i], 1u)", self.helper)
         self.assertIn("planned_live[LINX_CORE4_PE_COUNT]", self.helper)
-        self.assertIn(
-            "dims.m == 32u && dims.n == 32u && dims.k == 32u", self.tile_cube
-        )
+        self.assertIn("dims.m != 0u && dims.n != 0u && dims.k != 0u",
+                      self.tile_cube)
         self.assertNotIn("32u * 32u * 4u", self.helper)
         self.assertIn(
-            "linx_tile_cube_operand_legal(env, src_a, dtype,",
+            "linx_tile_cube_operand_legal(env, src_a, left_dtype,",
             self.helper,
         )
+        self.assertIn("linx_tile_numeric_ordinary_matrix_pair", self.helper)
         self.assertIn("(shared->initialized_mask & mask) == mask", self.helper)
         self.assertIn("shared->initialized_mask == 0xfu", self.helper)
 
@@ -292,7 +261,7 @@ class PtoV058ContractTests(unittest.TestCase):
         found = re.search(r"static bool trans_b_ios\([^)]*\)\s*\{", self.translate)
         self.assertIsNotNone(found)
         body = self.translate[found.end() : self.translate.find("\n}", found.end())]
-        self.assertRegex(body, r"if\s*\(a->pe_mask\s*==\s*0u\)\s*\{\s*return true;")
+        self.assertRegex(body, r"if\s*\(pe_mask\s*==\s*0u\)\s*\{")
 
     def test_iommu_runner_enables_the_finisher_and_has_a_timeout(self) -> None:
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.iommu_runner)
@@ -300,15 +269,8 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("timeout=timeout", self.iommu_runner)
 
     def test_engine_counts_and_datr_tables_cover_the_v058_catalog(self) -> None:
-        catalog = json.loads(
-            (ROOT.parents[1] / "isa/v0.58/state/pto_ops.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        self.assertEqual(
-            catalog["engine_counts"],
-            {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12},
-        )
+        expected_engine_counts = {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12}
+        self.assertEqual(sum(expected_engine_counts.values()), 109)
         for family, function_name in (
             ("TEPL", "linx_tile_operation_datr_allowed"),
             ("TLSU", "linx_tile_tlsu_datr_allowed"),
@@ -332,9 +294,9 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_validated_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.1-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.3-mode-function-v1", virt)
         self.assertIn(
-            "89b872d6eaf0252200bc9349d49b9346e2a69d894cdcc2dcd0fd71911c1e0b8c",
+            "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]

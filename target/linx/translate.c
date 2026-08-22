@@ -1852,7 +1852,7 @@ static TCGv_i64 linx_srcR_select(DisasContext *ctx, unsigned srcR,
     TCGv_i64 r = linx_get_reg(srcR);
     TCGv_i64 tmp = tcg_temp_new_i64();
 
-    if ((srcRType & 0x3) == 2) {
+    if ((srcRType & 0x3) == 3) {
         tcg_gen_neg_i64(tmp, r);
     } else {
         tcg_gen_mov_i64(tmp, r);
@@ -2738,9 +2738,29 @@ static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
     return true;
 }
 
+/* PTO v0.58 #119: PEMode expands once to the fixed four-PE semantic mask.
+ * ASL PTOv0PEMaskOfPEMode keeps PE0 in the mask high bit
+ * (PTOPEMaskBitOfPEIdentity(pe) == 3 - pe); QEMU consumes masks in
+ * tid-indexed order (bit i => PE i), so the table is stored bit-reversed. */
+static uint8_t linx_pemode_to_mask(unsigned mode)
+{
+    static const uint8_t kPEModeToMask[8] = {
+        0x0u, 0x1u, 0x2u, 0x4u, 0x8u, 0x3u, 0x7u, 0xfu,
+    };
+    return kPEModeToMask[mode & 0x7u];
+}
+
 static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
 {
-    if (a->pe_mask == 0u) {
+    /* PTO v0.58 #119: SizeCode 13..15 are reserved and reject before the
+     * PEMode no-op, matching BindBundleSharedIO. */
+    if (a->size_code > 12u) {
+        return linx_illegal(ctx);
+    }
+    const uint8_t pe_mask = linx_pemode_to_mask(a->pe_mode);
+    if (pe_mask == 0u) {
+        /* PEMode=000 is a strict no-op before placement, duplicate, schema,
+         * allocation, and descriptor checks. */
         return true;
     }
     if (ctx->in_body) {
@@ -2752,8 +2772,8 @@ static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
     }
     gen_helper_linx_tile_append_shared_binder_v058(
         tcg_env, tcg_constant_i64((a->shared & 0xffu) |
-                                  ((a->pe_mask & 0xfu) << 8) |
-                                  ((a->tsize & 0x7u) << 12)));
+                                  ((pe_mask & 0xfu) << 8) |
+                                  ((a->size_code & 0xfu) << 12)));
     /* Shared bindings have no B.IOT, so the binder keeps commit pending. */
     tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
     return true;
@@ -2775,10 +2795,19 @@ static bool trans_b_dim_lb2(DisasContext *ctx, arg_b_dim_lb2 *a)
 }
 
 static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
-                             uint32_t last, uint32_t pe_mask,
-                             uint32_t src0, uint32_t src1, uint32_t tsize)
+                             uint32_t last, uint32_t size_code,
+                             uint32_t src0, uint32_t src1, uint32_t pe_mode)
 {
+    const bool has_size = size_code != 0u;
+    /* PTO v0.58 #119: destination forms accept SizeCode 1..10; codes 11..15
+     * are reserved and reject before the PEMode no-op, matching
+     * BindBundleTileIO.  Source-only forms fix SizeCode=0 in decode. */
+    if (has_size && size_code > 10u) {
+        return linx_illegal(ctx);
+    }
+    const uint8_t pe_mask = linx_pemode_to_mask(pe_mode);
     if (pe_mask == 0u) {
+        /* PEMode=000 is a strict no-op before bundle-state checks. */
         return true;
     }
     if (ctx->in_body) {
@@ -2789,23 +2818,24 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    if (func < 4u || func > 6u || tsize > 7u) {
+    if (func < 4u || func > 6u) {
         return linx_illegal(ctx);
     }
     const uint32_t flags = func == 4u ? 0u
                            : func == 5u ? LINX_IOT_S1V
                                        : LINX_IOT_S0V | LINX_IOT_S1V;
-    /* TSize is the per-PE Local Tile capacity; PE_MASK selects participants. */
-    const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
+    /* SizeCode is the per-PE Local Tile capacity; the expanded PEMode mask
+     * selects participants. */
+    const uint32_t local_size_code = size_code == 0u ? 0u : size_code + 2u;
     linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
-                            local_size_code, tsize != 0u);
+                            local_size_code, has_size);
     return true;
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
-    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->pe_mask,
-                            a->src0, a->src1, a->tsize);
+    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->size_code,
+                            a->src0, a->src1, a->pe_mode);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)
@@ -2936,7 +2966,8 @@ static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
         tcg_constant_i32((a->prequant << 26) | (a->relu << 23) |
                          (a->groupn << 19) | (a->rowmax << 18) |
                          (a->groupmax << 17) | (a->rowinit << 16) |
-                         (a->maxabs << 15)),
+                         (a->maxabs << 15) | (a->transb << 8) |
+                         (a->transa << 7)),
         tcg_env, offsetof(CPULinxState, tile_fpatr_raw));
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
                    offsetof(CPULinxState, tile_fpatr_valid));
@@ -7258,28 +7289,6 @@ static bool trans_cmp_geui(DisasContext *ctx, arg_cmp_geui *a)
 static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
                                           vaddr target);
 
-static bool linx_trans_body_pred_branch(DisasContext *ctx, TCGCond cond,
-                                        int64_t simm_hw)
-{
-    TCGLabel *taken = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr fallthrough = ctx->base.pc_next;
-    vaddr target = current_pc + (simm_hw << 1);
-    const int32_t take_on_zero = (cond == TCG_COND_EQ) ? 1 : 0;
-
-    gen_helper_linx_debug_body_pred_branch(tcg_env,
-                                           tcg_constant_i64(current_pc),
-                                           tcg_constant_i64(target),
-                                           tcg_constant_i64(fallthrough),
-                                           tcg_constant_i32(take_on_zero));
-    tcg_gen_brcondi_i64(cond, cpu_vec_p, 0, taken);
-    tcg_gen_movi_i64(cpu_pc, fallthrough);
-    tcg_gen_exit_tb(NULL, 0);
-
-    gen_set_label(taken);
-    return linx_trans_body_branch_target(ctx, current_pc, target);
-}
-
 static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
                                           vaddr target)
 {
@@ -7337,126 +7346,6 @@ static bool linx_trans_body_branch_target(DisasContext *ctx, vaddr current_pc,
     return true;
 }
 
-static bool linx_trans_body_cmp_branch(DisasContext *ctx, TCGCond cond,
-                                       uint32_t src_l, uint32_t src_r,
-                                       int64_t simm_hw)
-{
-    TCGLabel *taken = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr fallthrough = ctx->base.pc_next;
-    vaddr target = linx_pcrel_target(current_pc, simm_hw);
-    TCGv_i64 lhs = linx_get_reg(src_l);
-    TCGv_i64 rhs = linx_get_reg(src_r);
-
-    tcg_gen_brcond_i64(cond, lhs, rhs, taken);
-    tcg_gen_movi_i64(cpu_pc, fallthrough);
-    tcg_gen_lookup_and_goto_ptr();
-
-    gen_set_label(taken);
-    return linx_trans_body_branch_target(ctx, current_pc, target);
-}
-
-static bool trans_b_z(DisasContext *ctx, arg_b_z *a)
-{
-    if (ctx->in_body) {
-        return linx_trans_body_pred_branch(ctx, TCG_COND_EQ, (int64_t)a->simm22);
-    }
-    /* B.Z: Branch if condition flag is zero */
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm22 << 1);
-    
-    tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_cond, 0, taken);
-    tcg_gen_br(done);
-    
-    gen_set_label(taken);
-    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_nz(DisasContext *ctx, arg_b_nz *a)
-{
-    if (ctx->in_body) {
-        return linx_trans_body_pred_branch(ctx, TCG_COND_NE, (int64_t)a->simm22);
-    }
-    /* B.NZ: Branch if condition flag is non-zero */
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = current_pc + ((int64_t)a->simm22 << 1);
-    
-    tcg_gen_brcondi_i32(TCG_COND_NE, cpu_cond, 0, taken);
-    tcg_gen_br(done);
-    
-    gen_set_label(taken);
-    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-    
-    gen_set_label(done);
-    return true;
-}
-
-static bool linx_trans_branch_cmp(DisasContext *ctx, TCGCond cond,
-                                  uint32_t src_l, uint32_t src_r, int64_t simm_hw)
-{
-    if (ctx->in_body) {
-        return linx_trans_body_cmp_branch(ctx, cond, src_l, src_r, simm_hw);
-    }
-
-    TCGLabel *taken = gen_new_label();
-    TCGLabel *done = gen_new_label();
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr target = linx_pcrel_target(current_pc, simm_hw);
-    TCGv_i64 lhs = linx_get_reg(src_l);
-    TCGv_i64 rhs = linx_get_reg(src_r);
-
-    tcg_gen_brcond_i64(cond, lhs, rhs, taken);
-    tcg_gen_br(done);
-
-    gen_set_label(taken);
-    linx_gen_check_bstart_target(ctx, tcg_constant_i64(target));
-    tcg_gen_movi_i64(cpu_pc, target);
-    tcg_gen_exit_tb(NULL, 0);
-
-    gen_set_label(done);
-    return true;
-}
-
-static bool trans_b_eq(DisasContext *ctx, arg_b_eq *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_EQ, a->SrcL, a->SrcR, a->simm12);
-}
-
-static bool trans_b_ne(DisasContext *ctx, arg_b_ne *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_NE, a->SrcL, a->SrcR, a->simm12);
-}
-
-static bool trans_b_lt(DisasContext *ctx, arg_b_lt *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_LT, a->SrcL, a->SrcR, a->simm12);
-}
-
-static bool trans_b_ge(DisasContext *ctx, arg_b_ge *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_GE, a->SrcL, a->SrcR, a->simm12);
-}
-
-static bool trans_b_ltu(DisasContext *ctx, arg_b_ltu *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_LTU, a->SrcL, a->SrcR, a->simm12);
-}
-
-static bool trans_b_geu(DisasContext *ctx, arg_b_geu *a)
-{
-    return linx_trans_branch_cmp(ctx, TCG_COND_GEU, a->SrcL, a->SrcR, a->simm12);
-}
 
 /* ===================== 16-bit Sign/Zero Extension ===================== */
 

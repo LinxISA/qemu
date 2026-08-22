@@ -1,0 +1,23 @@
+{
+  "release": "0.58.3",
+  "source": "spec/hardware-conformance-profile.json#/matrix",
+  "source_sha256": "117cd8e61f1e82001755cdb1ee98ef224fbd624ddf2adb8577c32d6acf833575",
+  "ordinary_classes": {
+    "floating": [
+      "FP32", "TF32", "HF32", "FP16", "BF16", "HiF8",
+      "E4M3", "E5M2", "E3M2", "E2M3", "E2M1X2", "E1M2X2"
+    ],
+    "signed": ["S16", "S8", "S4X2"],
+    "unsigned": ["U16", "U8", "U4X2"]
+  },
+  "ordinary_accumulator_by_class": {
+    "floating": "FP32",
+    "signed": "S32",
+    "unsigned": "U32"
+  },
+  "mx_side_types": ["FP16", "BF16", "E4M3", "E5M2", "E2M1X2", "E1M2X2"],
+  "mx_unscaled_side_types": ["FP16", "BF16"],
+  "mx_scaled_side_types": ["E4M3", "E5M2", "E2M1X2", "E1M2X2"],
+  "mx_accumulator": "FP32",
+  "mx_scale": "E8M0"
+}

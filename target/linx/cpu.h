@@ -30,7 +30,7 @@
 
 #define LINX_CORE4_PE_COUNT 4
 #define LINX_SHARED_TILE_COUNT 256
-#define LINX_SHARED_TILE_MAX_BYTES (8 * 1024)
+#define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
 
 /* Compiler-generated S64/NORM spill metadata.  This is a model-internal
@@ -54,9 +54,9 @@ typedef struct LinxRawTileTransport {
 } LinxRawTileTransport;
 
 typedef struct LinxSharedTileVersion {
-    /* The architectural Shared register is one aggregate tile payload.  The
-     * four mask bits select fixed-offset regions in this payload; they are not
-     * four independent full-tile lanes. */
+    /* One Shared payload descriptor. PEMode selects fixed quarters within
+     * this per-PE SizeCode capacity; allocation accounting multiplies this
+     * capacity by the immutable allocation-mask population. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
@@ -261,8 +261,8 @@ typedef enum LinxTemplateKind {
 #define LINX_SSR_PEID 0x802u   /* DavinciOO v5 read-only PE identifier */
 #define LINX_ACR_COUNT 16u     /* ACR0..ACR15 */
 #define LINX_TILE_MAX_IOR 16u
-#define LINX_TILE_MAX_IOT 32u
-#define LINX_TILE_MAX_SHARED_BINDERS 2u
+#define LINX_TILE_MAX_IOT 4u
+#define LINX_TILE_MAX_SHARED_BINDERS 4u
 #define LINX_TILE_HAND_COUNT 4u
 #define LINX_TILE_HAND_DEPTH 16u
 #define LINX_TILE_SLOT_COUNT (LINX_TILE_HAND_COUNT * LINX_TILE_HAND_DEPTH)
@@ -545,6 +545,10 @@ typedef struct CPUArchState {
     uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_layout[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_cube_k_repeat[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_cube_n_repeat[LINX_TILE_SLOT_COUNT];
+    uint16_t tile_reg_cube_cell_count[LINX_TILE_SLOT_COUNT];
+    uint32_t tile_reg_cube_storage_bytes[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_valid_cols[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_valid_rows[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_cols[LINX_TILE_SLOT_COUNT];

@@ -96,21 +96,14 @@ class TileExecutionCoverage(unittest.TestCase):
         collector = re.search(
             r"linx_tile_collect_cube_sources\(.*?\n\}", HELPER, re.S
         ).group(0)
-        self.assertIn("else if (d.last != 0u || d.has_size", collector)
+        self.assertIn("output_count == expected_outputs", collector)
+        self.assertIn("final_desc && d.last == 0u", collector)
         self.assertIn("return false", collector)
-        self.assertRegex(
-            HELPER,
-            r"case LINX_CUBE_TMATMUL_ACC:\s*"
-            r"case LINX_CUBE_TGEMV_ACC:\s*required = 3u;",
-        )
-        self.assertRegex(
-            HELPER,
-            r"(?s)case LINX_CUBE_TMATMUL_ACC:\s*"
-            r"case LINX_CUBE_TGEMV_ACC:.*?"
-            r"linx_tile_collect_cube_sources\(env, 3u, sources,.*?"
-            r"linx_tile_cube_stage_accumulator\(env, sources\[0\],.*?"
-            r"linx_tile_cube_compute\(env, sources\[1\], sources\[2\]",
-        )
+        self.assertIn("linx_tile_cube_resolve_local_operands", HELPER)
+        self.assertIn("operands->accumulate = true", HELPER)
+        self.assertIn("operands->accumulator = sources[cursor++]", HELPER)
+        self.assertIn("operands.accumulate &&", HELPER)
+        self.assertIn("operands.accumulator, size_code, operands.mx", HELPER)
         self.assertIn("linx_tile_datr_applicable", HELPER)
         self.assertIn("Generated from pto-spec", HEADER)
 

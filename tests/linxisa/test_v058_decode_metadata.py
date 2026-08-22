@@ -60,9 +60,9 @@ class V058DecodeMetadataTests(unittest.TestCase):
     def test_b_iot_uses_all_exact_public_forms(self) -> None:
         patterns = (
             "0000 00.. .... .... .101 .... .001 0011",
-            ".... .... .... .... .100 000. .001 0011",
+            ".... .... .... .000 0100 .... .001 0011",
             ".... .... .... .... .100 .... .001 0011",
-            "0000 00.. .... .... .101 000. .001 0011",
+            "0000 00.. .... .000 0101 .... .001 0011",
             "0000 0000 0000 .... .110 .... .001 0011",
         )
         b_iot_lines = tuple(
@@ -114,7 +114,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
 
     def test_v0581_new_exact_forms_are_decoded(self) -> None:
         expected = {
-            "b_fpatr": ("0x7fff", "0x2023"),
+            "b_fpatr": ("0x7e7f", "0x2023"),
             "start_call_32": ("0xf83f000f", "0x50160002"),
             "start_icall_32": ("0xf83fffff", "0x50166001"),
             "l_bstop": ("0xffffffffffffffff", "0x10000000f"),
@@ -126,6 +126,12 @@ class V058DecodeMetadataTests(unittest.TestCase):
                 self.assertIn(f".match=UINT64_C({match})", self.meta)
 
         self.assertRegex(self.insn32, r"(?m)^b_fpatr\s+")
+        fpatr_meta = next(
+            line for line in self.meta.splitlines()
+            if '.mnemonic="b_fpatr"' in line
+        )
+        self.assertIn(".mask=UINT64_C(0x7e7f)", fpatr_meta)
+        self.assertIn(".match=UINT64_C(0x2023)", fpatr_meta)
         self.assertRegex(self.insn32, r"(?m)^start_icall_32\s+")
         self.assertRegex(self.insn64, r"(?m)^l_bstop\s+")
 

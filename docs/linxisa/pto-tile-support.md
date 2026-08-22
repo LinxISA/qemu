@@ -1,6 +1,6 @@
 # PTO Tile support on LinxISA 0.58
 
-The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.
+The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.3.
 The normative operation inventory is the LinxISA `engine_ops.json` projection;
 this page describes QEMU behavior and does not define a second ISA taxonomy.
 
@@ -8,8 +8,8 @@ this page describes QEMU behavior and does not define a second ISA taxonomy.
 
 | Engine | Operations | Responsibility |
 | --- | ---: | --- |
-| VEC | 35 | Elementwise Tile operations only |
-| SFU | 52 | Reductions, transforms, nonlinear functions, and other complex-hardware operations |
+| VEC | 31 | Elementwise Tile operations only |
+| SFU | 56 | Division, remainder, reductions, transforms, nonlinear functions, and other complex-hardware operations |
 | TLSU | 10 | Tile memory access and data movement |
 | CUBE | 12 | Matrix and matrix-vector operations |
 
@@ -21,9 +21,9 @@ any instruction bits.
 ### VEC operations
 
 ```text
-TADD TSUB TMUL TDIV TREM TAND TOR TXOR TSHL TSHR TMAX TMIN
+TADD TSUB TMUL TAND TOR TXOR TSHL TSHR TMAX TMIN
 TCMP TABS TNOT TNEG TRELU TSEL TCVT TFMA
-TADDS TSUBS TMULS TDIVS TREMS TANDS TORS TXORS TSHLS TSHRS
+TADDS TSUBS TMULS TANDS TORS TXORS TSHLS TSHRS
 TMAXS TMINS TCMPS TSELS TEXPANDS
 ```
 
@@ -34,7 +34,7 @@ uses the architectural wrapping result.
 ### SFU operations
 
 ```text
-TEXP TLOG TRECIP TSQRT TRSQRT
+TDIV TREM TDIVS TREMS TEXP TLOG TRECIP TSQRT TRSQRT
 TROWSUM TROWMAX TROWMIN TROWPROD TROWARGMAX TROWARGMIN
 TCOLSUM TCOLMAX TCOLMIN TCOLPROD TCOLARGMAX TCOLARGMIN
 TROWEXPAND TROWEXPANDADD TROWEXPANDSUB TROWEXPANDMUL
@@ -85,27 +85,56 @@ TGEMV TGEMV.BIAS TGEMV.ACC
 TGEMVMX TGEMVMX.BIAS TGEMVMX.ACC
 ```
 
-CUBE applies the same power-of-two row and column constraints as every other
-Tile operation. Invalid function, dtype, shape, layout, or operand schemas fail
-before architectural Tile, ACC, descriptor, or memory state is published.
+CUBE accepts arbitrary positive M, N, and K values that fit the selected
+M16/M32/N8 CELL descriptor and capacity. Invalid function, dtype, shape,
+layout, or operand schemas fail before architectural Tile, ACC, descriptor, or
+memory state is published.
+The internal accumulator capacity is independent of the final D allocation;
+ordinary floating, signed, and unsigned inputs stage as FP32, S64, and U64 and
+publish architectural FP32, S32, and U32 before any `B.FPATR` conversion.
+
+Ordinary CUBE primaries use exactly 18 side types. The floating class is
+FP32/TF32/HF32/FP16/BF16/HiF8/E4M3/E5M2/E3M2/E2M3/E2M1X2/E1M2X2; the signed
+class is S16/S8/S4X2; the unsigned class is U16/U8/U4X2. A and B may differ
+within one class. S32, U32, and HiF4X2 are not primary types. MX accepts all
+36 ordered pairs from FP16/BF16/E4M3/E5M2/E2M1X2/E1M2X2; FP16/BF16 omit their
+side scale while each lower-precision side supplies its own E8M0 scale.
+
+`B.FPATR.TransA` and `TransB` independently transpose the corresponding Shared
+matrix primary. A transpose bit with a Local primary is rejected before source
+snapshot or output effects. Shared schema checks apply to the stored transposed
+shape, while computation observes the original logical M×K or K×N shape.
+
+All assigned `B.FPATR` pre-quantization modes execute their released scalar or
+per-column vector parameter schema. Scalar LReLU and vector PReLU select the
+activation multiplier before conversion. `RowMaxInit` consumes an ordinary
+row-major accumulator-type input, `MaxAbs` applies before RowMax/GroupMax
+selection, and D plus every enabled auxiliary output publish atomically.
 
 ## Tile capacity and shape
 
-`B.IOT` and `B.IOS` use the same TSize mapping:
+`B.IOT` and `B.IOS` encode a four-bit `SizeCode`:
 
-| TSize | Bytes per selected PE |
-| ---: | ---: |
-| 1 | 128 |
-| 2 | 256 |
-| 3 | 512 |
-| 4 | 1024 |
-| 5 | 2048 |
-| 6 | 4096 |
-| 7 | 8192 |
+| SizeCode | B.IOT bytes per selected PE | B.IOS bytes per selected PE |
+| ---: | ---: | ---: |
+| 1 | 128 | 128 |
+| 2 | 256 | 256 |
+| 3 | 512 | 512 |
+| 4 | 1024 | 1024 |
+| 5 | 2048 | 2048 |
+| 6 | 4096 | 4096 |
+| 7 | 8192 | 8192 |
+| 8 | 16384 | 16384 |
+| 9 | 32768 | 32768 |
+| 10 | 65536 | 65536 |
+| 11 | reserved | 131072 |
+| 12 | reserved | 262144 |
 
-Rows are derived from `TSizeBytes / (columns * element_size)`. Rows and columns
-must both be powers of two, and the valid region must not exceed the allocated
-rows or columns. QEMU keeps the wire TSize code separate from its internal
+For ordinary layouts, rows are derived from
+`SizeCodeBytes / (columns * element_size)`. CUBE layouts instead derive aligned
+storage rows, columns, repeat counts, CELL count, and required bytes from the
+logical M/N/K dimensions; valid dimensions need only be positive and fit the
+selected M16/M32/N8 layout. QEMU keeps the wire SizeCode separate from its internal
 `log2(bytes)-4` allocation code.
 
 ## Shared Tile registers and B.IOS
@@ -114,21 +143,19 @@ Each core owns one bank of 256 shared Tile registers, assembled as `S0` through
 `S255`, visible to its four PEs. `B.IOS` uses an absolute SharedID and the former
 `B.IOD` encoding slot. `B.IOD` and `C.B.IOS` are deleted and never decoded.
 
-The four-bit PE mask is a predicate. Multiple bits may be set; zero is a strict
-no-op. Each selected PE receives its own TSize capacity and uses its own GPR
+The three-bit `PEMode` decodes to `0000`, `1000`, `0100`, `0010`, `0001`,
+`1100`, `1110`, or `1111`. Mode zero is a strict no-op. Each selected PE
+receives its own SizeCode capacity and uses its own GPR
 base and offset. A write allocates a new shared-register version and atomically
 publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity
 but does not add cross-PE ordering; software must prevent conflicting accesses.
 
-For a one-hot mask, PTO-ISA #75 defines a single-issuer form: the selected PE
-loads the complete logical object from its own `B.IOR` base/stride, while the
-published Shared version has Core4-wide capacity and can be consumed by all
-four PEs at a later cooperative CUBE rendezvous. Non-issuer PEs perform no
-second memory read. A multi-bit mask retains the element-region form above;
-the selected PE bases contribute their corresponding regions to the same
-aggregate version. The focused current-encoding regression is
-`v058_group_mma_fp32_4pe_single_issuer` in SuperScalarModel.
+Each selected PE contributes the fixed quarter identified by its decoded mask
+bit. `SizeCode` is the capacity per participating PE, while capacity accounting
+charges `popcount(mask) * SizeCodeBytes`. The first successful update freezes
+the allocation mask; later compatible updates may initialize a subset but may
+not expand that mask.
 
 ## Fail-closed execution
 

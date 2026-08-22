@@ -29,7 +29,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn(".mttcg_supported = false", self.cpu)
 
     def test_vmstate_v19_does_not_claim_backward_compatibility(self) -> None:
-        self.assertIn(".version_id = 21", self.cpu)
+        self.assertIn(".version_id = 22", self.cpu)
         self.assertIn(".minimum_version_id = 19", self.cpu)
         vmstate = self.cpu[
             self.cpu.index("static const VMStateDescription vmstate_linx_cpu") :
@@ -45,8 +45,9 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertRegex(
             vmstate,
             r"VMSTATE_UINT8_ARRAY_V\(env\.tile_reg_layout, LinxCPU,\s*"
-            r"LINX_TILE_SLOT_COUNT, 19\),\s*VMSTATE_END_OF_LIST",
+            r"LINX_TILE_SLOT_COUNT, 19\),",
         )
+        self.assertIn("env.tile_reg_cube_storage_bytes", vmstate)
         self.assertNotIn("if (version_id < 19)", self.cpu)
 
     def test_fpatr_is_consumed_and_inactive_acr_migration_is_rejected(self) -> None:
@@ -113,16 +114,16 @@ class V058ReviewContractTests(unittest.TestCase):
         )
         base = self.helper[
             self.helper.index("static bool linx_tile_get_base_reg") :
-            self.helper.index("static uint64_t linx_tile_get_stride_elements")
+            self.helper.index("static uint64_t linx_tile_get_stride_bytes")
         ]
         stride = self.helper[
-            self.helper.index("static uint64_t linx_tile_get_stride_elements") :
+            self.helper.index("static uint64_t linx_tile_get_stride_bytes") :
             self.helper.index("static bool linx_tile_get_shared_tload_size")
         ]
         self.assertIn("*addr_reg_out = 0u", base)
         self.assertIn("(desc >> 5)", base)
         self.assertNotIn("desc >> 10", base)
-        self.assertIn("return env->lb[2]", stride)
+        self.assertIn("return 0", stride)
         self.assertIn("(desc >> 10)", stride)
         shared_size = self.helper[
             self.helper.index("static bool linx_tile_get_shared_tload_size") :
@@ -149,7 +150,7 @@ class V058ReviewContractTests(unittest.TestCase):
         ]
         self.assertIn("linx_tile_invalidate_raw_transports", invalidation)
 
-    def test_regular_transfer_uses_valid_rectangle_and_element_stride(
+    def test_regular_transfer_uses_valid_rectangle_and_byte_stride(
         self,
     ) -> None:
         load = self.helper[
@@ -163,14 +164,9 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn("to < gm_outer", load)
         self.assertIn("ti < gm_inner", load)
         self.assertNotIn("linx_tile_pad_value64", load)
-        self.assertRegex(load, r"stride_elements \+ ti\) \* elem_bytes")
-        self.assertRegex(store, r"stride_elements \+ gi\) \* elem_bytes")
-        self.assertIn(
-            "((uint64_t)to * stride_elements + ti) * elem_bytes", load
-        )
-        self.assertIn(
-            "((uint64_t)go * stride_elements + gi) * elem_bytes", store
-        )
+        self.assertRegex(load, r"effective_stride_bytes")
+        self.assertRegex(store, r"effective_stride_bytes")
+        self.assertIn("(uint64_t)row * stride + (uint64_t)col * elem_bytes", self.helper)
         self.assertIn("linx_tile_state_encode(out", self.virt)
         self.assertIn("row < record->valid_rows", self.tile_state_dump)
         self.assertIn("col < record->valid_cols", self.tile_state_dump)
