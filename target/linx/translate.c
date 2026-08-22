@@ -2738,9 +2738,29 @@ static bool trans_c_b_dimi(DisasContext *ctx, arg_c_b_dimi *a)
     return true;
 }
 
+/* PTO v0.58 #119: PEMode expands once to the fixed four-PE semantic mask.
+ * ASL PTOv0PEMaskOfPEMode keeps PE0 in the mask high bit
+ * (PTOPEMaskBitOfPEIdentity(pe) == 3 - pe); QEMU consumes masks in
+ * tid-indexed order (bit i => PE i), so the table is stored bit-reversed. */
+static uint8_t linx_pemode_to_mask(unsigned mode)
+{
+    static const uint8_t kPEModeToMask[8] = {
+        0x0u, 0x1u, 0x2u, 0x4u, 0x8u, 0x3u, 0x7u, 0xfu,
+    };
+    return kPEModeToMask[mode & 0x7u];
+}
+
 static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
 {
-    if (a->pe_mask == 0u) {
+    /* PTO v0.58 #119: SizeCode 13..15 are reserved and reject before the
+     * PEMode no-op, matching BindBundleSharedIO. */
+    if (a->size_code > 12u) {
+        return linx_illegal(ctx);
+    }
+    const uint8_t pe_mask = linx_pemode_to_mask(a->pe_mode);
+    if (pe_mask == 0u) {
+        /* PEMode=000 is a strict no-op before placement, duplicate, schema,
+         * allocation, and descriptor checks. */
         return true;
     }
     if (ctx->in_body) {
@@ -2752,8 +2772,8 @@ static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
     }
     gen_helper_linx_tile_append_shared_binder_v058(
         tcg_env, tcg_constant_i64((a->shared & 0xffu) |
-                                  ((a->pe_mask & 0xfu) << 8) |
-                                  ((a->tsize & 0x7u) << 12)));
+                                  ((pe_mask & 0xfu) << 8) |
+                                  ((a->size_code & 0xfu) << 12)));
     /* Shared bindings have no B.IOT, so the binder keeps commit pending. */
     tcg_gen_movi_i32(cpu_tile_iot_valid, 1);
     return true;
@@ -2775,10 +2795,19 @@ static bool trans_b_dim_lb2(DisasContext *ctx, arg_b_dim_lb2 *a)
 }
 
 static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
-                             uint32_t last, uint32_t pe_mask,
-                             uint32_t src0, uint32_t src1, uint32_t tsize)
+                             uint32_t last, uint32_t size_code,
+                             uint32_t src0, uint32_t src1, uint32_t pe_mode)
 {
+    const bool has_size = size_code != 0u;
+    /* PTO v0.58 #119: destination forms accept SizeCode 1..10; codes 11..15
+     * are reserved and reject before the PEMode no-op, matching
+     * BindBundleTileIO.  Source-only forms fix SizeCode=0 in decode. */
+    if (has_size && size_code > 10u) {
+        return linx_illegal(ctx);
+    }
+    const uint8_t pe_mask = linx_pemode_to_mask(pe_mode);
     if (pe_mask == 0u) {
+        /* PEMode=000 is a strict no-op before bundle-state checks. */
         return true;
     }
     if (ctx->in_body) {
@@ -2789,23 +2818,24 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    if (func < 4u || func > 6u || tsize > 7u) {
+    if (func < 4u || func > 6u) {
         return linx_illegal(ctx);
     }
     const uint32_t flags = func == 4u ? 0u
                            : func == 5u ? LINX_IOT_S1V
                                        : LINX_IOT_S0V | LINX_IOT_S1V;
-    /* TSize is the per-PE Local Tile capacity; PE_MASK selects participants. */
-    const uint32_t local_size_code = tsize == 0u ? 0u : tsize + 2u;
+    /* SizeCode is the per-PE Local Tile capacity; the expanded PEMode mask
+     * selects participants. */
+    const uint32_t local_size_code = size_code == 0u ? 0u : size_code + 2u;
     linx_emit_tile_iot_desc(ctx, flags, dst, last, src0, src1, pe_mask,
-                            local_size_code, tsize != 0u);
+                            local_size_code, has_size);
     return true;
 }
 
 static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
 {
-    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->pe_mask,
-                            a->src0, a->src1, a->tsize);
+    return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->size_code,
+                            a->src0, a->src1, a->pe_mode);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)

@@ -41,21 +41,6 @@ LinxTileCubeDimensions linx_tile_cube_dimensions_058(const CPULinxState *env)
     };
 }
 
-static uint32_t cube_accumulator_dtype(uint32_t selected_dtype)
-{
-    selected_dtype &= 31u;
-    if (selected_dtype == 0u) {
-        return 0u;
-    }
-    if (selected_dtype >= 16u && selected_dtype <= 20u) {
-        return 16u;
-    }
-    if (selected_dtype >= 24u && selected_dtype <= 28u) {
-        return 24u;
-    }
-    return 1u;
-}
-
 static bool cube_fpatr_output_dtype(unsigned prequant, uint32_t *dtype)
 {
     switch (prequant) {
@@ -83,7 +68,12 @@ static bool cube_output_dtype(const CPULinxState *env, unsigned ordinal,
     if (ordinal == 0u && env->tile_fpatr_valid && prequant != 0u) {
         return cube_fpatr_output_dtype(prequant, dtype);
     }
-    *dtype = cube_accumulator_dtype(env->tile_dtype);
+    /* A zero/canonical B.FPATR is a no-op: the selected DATR dtype remains
+     * the architectural output dtype.  The accumulator uses its own staging
+     * dtype (linx_tile_numeric_acc_dtype()) and is converted at publish time;
+     * exposing that staging dtype here incorrectly turns integer CUBE outputs
+     * such as S32 into S64 and makes the no-op FPATR conversion reject them. */
+    *dtype = env->tile_dtype & 31u;
     return true;
 }
 
@@ -713,8 +703,13 @@ static bool linx_tile_fpatr_postprocess(const CPULinxState *env,
     if (group_n || row_max || group_max || row_init || max_abs || relu > 1u) {
         return false;
     }
+    /* The canonical zero B.FPATR descriptor requests no post-processing.
+     * It must preserve the DATR-selected output dtype, including integer
+     * CUBE profiles whose accumulator dtype differs from D. */
+    if (prequant == 0u) {
+        return true;
+    }
     switch (prequant) {
-    case 0:  expected_dtype = 1u; break; /* keep FP32 accumulator */
     case 1:  expected_dtype = 4u; break; /* FP32 -> FP16 */
     case 16: expected_dtype = 5u; break; /* FP32 -> BF16 */
     default: return false;

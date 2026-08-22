@@ -75,7 +75,7 @@ static inline void linx_tile_preserve_v058_source_lifetime(
 static inline bool linx_tile_size_code_from_bytes(uint32_t bytes,
                                                   unsigned *size_code)
 {
-    for (unsigned size = 3u; size <= 9u; size++) {
+    for (unsigned size = 3u; size <= 12u; size++) {
         if (bytes == (UINT32_C(1) << (size + 4u))) {
             *size_code = size;
             return true;

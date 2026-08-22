@@ -30,7 +30,7 @@
 
 #define LINX_CORE4_PE_COUNT 4
 #define LINX_SHARED_TILE_COUNT 256
-#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)
+#define LINX_SHARED_TILE_MAX_BYTES (1024 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
 
 /* Compiler-generated S64/NORM spill metadata.  This is a model-internal
@@ -54,13 +54,11 @@ typedef struct LinxRawTileTransport {
 } LinxRawTileTransport;
 
 typedef struct LinxSharedTileVersion {
-    /* The architectural Shared register is one aggregate tile payload.  The
-     * four mask bits select fixed-offset regions in this payload; they are not
-     * four independent full-tile lanes. */
+    /* Issue #112/#132: the architectural Shared register is one complete
+     * Core-level aggregate payload.  PEMode selects fixed PE regions in this
+     * payload; it never packs selected regions together. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    /* B.IOS.TSize is the aggregate payload capacity for the core.  The
-     * historical field name is retained for migration compatibility; it no
-     * longer denotes a single-PE allocation. */
+    /* B.IOS SizeCode is the Core-level aggregate capacity. */
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;

@@ -41,14 +41,14 @@ class PtoV058ContractTests(unittest.TestCase):
             r"(?m)^b_ios\s+0000\s+\.\.\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
-        self.assertIn("%PE_MASK", self.decode32)
-        self.assertIn("%TSize", self.decode32)
+        self.assertIn("%SizeCode", self.decode32)
+        self.assertIn("%PEMode", self.decode32)
         self.assertIn("trans_b_ios", self.translate)
         self.assertIn('.mnemonic="b_ios"', self.meta)
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
-        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (32 * 1024)", self.cpu)
+        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (1024 * 1024)", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -221,16 +221,16 @@ class PtoV058ContractTests(unittest.TestCase):
 
     def test_shared_tload_one_hot_issuer_publishes_full_aggregate(self) -> None:
         self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
-        self.assertIn("size_code < 5u || size_code > 11u", self.helper)
+        self.assertIn("size_code < 5u || size_code > 16u", self.helper)
         self.assertIn("const bool single_issuer", self.helper)
         self.assertIn("(unsigned)__builtin_ctz((unsigned)pe_mask)", self.helper)
         self.assertIn(
             "if (single_issuer && env->pe_id != issuer_pe)", self.helper
         )
-        self.assertIn("bytes * (single_issuer ? LINX_CORE4_PE_COUNT", self.helper)
-        self.assertIn(": ctpop8(pe_mask));", self.helper)
+        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
         self.assertIn("shared->initialized_mask = 0xfu", self.helper)
-        self.assertIn("cpu_ldub_data(env, (abi_ptr)(source + byte))", self.helper)
+        self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
+        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
@@ -253,13 +253,11 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(f"{name} = {function}", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        # PTO ASL models Shared Tile as one aggregate payload.  PE_MASK selects
-        # fixed element regions in that payload; it is not four independent
-        # full-tile lane buffers.
+        # Shared state uses one Core-level aggregate payload with fixed PE
+        # regions; selected regions are never packed.
         self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertIn("memcpy(shared->data + byte_offset, payload + byte_offset",
-                      self.helper)
-        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
+        self.assertIn("destination_offset = legacy_whole ? 0u", self.helper)
+        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination],",
                       self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
@@ -295,7 +293,7 @@ class PtoV058ContractTests(unittest.TestCase):
         found = re.search(r"static bool trans_b_ios\([^)]*\)\s*\{", self.translate)
         self.assertIsNotNone(found)
         body = self.translate[found.end() : self.translate.find("\n}", found.end())]
-        self.assertRegex(body, r"if\s*\(a->pe_mask\s*==\s*0u\)\s*\{\s*return true;")
+        self.assertRegex(body, r"if\s*\(pe_mask\s*==\s*0u\)\s*\{")
 
     def test_iommu_runner_enables_the_finisher_and_has_a_timeout(self) -> None:
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.iommu_runner)
