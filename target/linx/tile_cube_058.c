@@ -354,11 +354,18 @@ static bool cube_primary_dtype_legal(const CPULinxState *env,
                                      uint32_t left_dtype,
                                      uint32_t right_dtype, bool mx)
 {
-    return mx ? ((env->tile_dtype & 31u) == 1u &&
+    const uint32_t datr_dtype = env->tile_attr_dtype & 31u;
+    const uint32_t selected_right =
+        (env->tile_attr_dtype & 0x100u) != 0u && datr_dtype != 31u
+            ? datr_dtype : env->tile_dtype & 31u;
+
+    return mx ? (left_dtype == (env->tile_dtype & 31u) &&
+                 right_dtype == selected_right &&
                  linx_tile_numeric_mx_pair(left_dtype, right_dtype))
-              : (linx_tile_numeric_ordinary(env->tile_dtype) &&
-                 left_dtype == (env->tile_dtype & 31u) &&
-                 right_dtype == (env->tile_dtype & 31u));
+              : (left_dtype == (env->tile_dtype & 31u) &&
+                 right_dtype == selected_right &&
+                 linx_tile_numeric_ordinary_matrix_pair(left_dtype,
+                                                        right_dtype));
 }
 
 bool linx_tile_cube_primary_legal_058(const CPULinxState *env,
@@ -569,6 +576,13 @@ static bool linx_tile_cube_compute_common_058(
                                      : UINT32_MAX;
     uint8_t acc_dtype =
         mx ? LINX_TILE_ACC_FP32 : linx_tile_numeric_acc_dtype(env->tile_dtype);
+    const uint32_t bias_dtype = acc_dtype == LINX_TILE_ACC_S64 ? 17u
+                                : acc_dtype == LINX_TILE_ACC_U64 ? 25u
+                                                                : acc_dtype;
+    const bool scale_left = mx &&
+        linx_tile_numeric_mx_requires_scale(left_dtype);
+    const bool scale_right = mx &&
+        linx_tile_numeric_mx_requires_scale(right_dtype);
     unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
     uint64_t allocated = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
     const unsigned output_m = m;
@@ -618,15 +632,17 @@ static bool linx_tile_cube_compute_common_058(
                                      shared_b_logical_cols,
                                      shared_b_cols) ||
           !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx))) ||
-        (mx && (!cube_operand_legal(env, row_scale, 13u, m, groups) ||
-                !cube_operand_legal(env, column_scale, 13u, groups, n))) ||
+        (scale_left &&
+         !cube_operand_legal(env, row_scale, 13u, m, groups)) ||
+        (scale_right &&
+         !cube_operand_legal(env, column_scale, 13u, groups, n)) ||
         (with_bias &&
          (bias >= LINX_TILE_SLOT_COUNT ||
           (env->tile_reg_valid_rows[bias] != 1u &&
            env->tile_reg_valid_rows[bias] != m) ||
           (env->tile_reg_valid_cols[bias] != 1u &&
            env->tile_reg_valid_cols[bias] != n) ||
-          !cube_operand_legal(env, bias, mx ? 1u : env->tile_dtype,
+          !cube_operand_legal(env, bias, bias_dtype,
                               env->tile_reg_valid_rows[bias],
                               env->tile_reg_valid_cols[bias]))) ||
         (accumulate && env->tile_acc_bytes < required) ||
@@ -677,17 +693,24 @@ static bool linx_tile_cube_compute_common_058(
                         linx_tile_numeric_decode(right_dtype, br, b_lane));
                     if (mx) {
                         uint64_t sar, sbr;
-                        uint32_t scale_a, scale_b;
-                        if (!cube_read_raw(env, row_scale, i, k / 32u, &sar,
-                                           NULL) ||
-                            !cube_read_raw(env, column_scale, k / 32u, j,
-                                           &sbr, NULL)) {
-                            goto fail;
+                        uint32_t scale_a = linx_tile_numeric_f32_raw(1.0);
+                        uint32_t scale_b = linx_tile_numeric_f32_raw(1.0);
+                        if (scale_left) {
+                            if (!cube_read_raw(env, row_scale, i, k / 32u,
+                                               &sar, NULL)) {
+                                goto fail;
+                            }
+                            scale_a = linx_tile_numeric_f32_raw(
+                                linx_tile_numeric_decode(13u, sar, 0));
                         }
-                        scale_a = linx_tile_numeric_f32_raw(
-                            linx_tile_numeric_decode(13u, sar, 0));
-                        scale_b = linx_tile_numeric_f32_raw(
-                            linx_tile_numeric_decode(13u, sbr, 0));
+                        if (scale_right) {
+                            if (!cube_read_raw(env, column_scale, k / 32u, j,
+                                               &sbr, NULL)) {
+                                goto fail;
+                            }
+                            scale_b = linx_tile_numeric_f32_raw(
+                                linx_tile_numeric_decode(13u, sbr, 0));
+                        }
                         av = float32_mul(av, scale_a, &fp_status);
                         bv = float32_mul(bv, scale_b, &fp_status);
                     }
@@ -706,7 +729,7 @@ static bool linx_tile_cube_compute_common_058(
                     }
                     bias_raw =
                         linx_tile_numeric_f32_raw(linx_tile_numeric_decode(
-                            mx ? 1u : env->tile_dtype, raw, j));
+                            bias_dtype, raw, j));
                     acc = float32_add(acc, bias_raw, &fp_status);
                 }
                 memcpy(next + index * 4u, &acc, 4u);
@@ -750,7 +773,7 @@ static bool linx_tile_cube_compute_common_058(
                         goto fail;
                     }
                     uint64_t bias_raw = linx_tile_numeric_f64_raw(
-                        linx_tile_numeric_decode(env->tile_dtype, raw, j));
+                        linx_tile_numeric_decode(bias_dtype, raw, j));
                     acc = float64_add(acc, bias_raw, &fp_status);
                 }
                 memcpy(next + index * 8u, &acc, 8u);
@@ -790,8 +813,8 @@ static bool linx_tile_cube_compute_common_058(
                         goto fail;
                     }
                     acc += acc_dtype == LINX_TILE_ACC_S64
-                               ? (uint64_t)cube_signed(env->tile_dtype, raw, j)
-                               : cube_unsigned(env->tile_dtype, raw, j);
+                               ? (uint64_t)cube_signed(bias_dtype, raw, j)
+                               : cube_unsigned(bias_dtype, raw, j);
                 }
                 memcpy(next + index * 8u, &acc, 8u);
             }

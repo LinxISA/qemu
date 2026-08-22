@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "release": "0.58.3",
   "profile_id": "pto-hardware-numeric-0.58.3-ieee-v1",
   "status": "production-conformance",
@@ -13,29 +13,39 @@
     "numeric_vectors": "spec/evidence/pto-isa-0583-hardware-numeric-vectors.json"
   },
   "normative_contract": {
-    "ordinary_type_rows": 20,
-    "mx_ordered_operand_pairs": 5,
-    "physical_acc_types": ["FP64", "FP32", "S64", "U64"],
+    "ordinary_side_types": [
+      "FP32", "TF32", "HF32", "FP16", "BF16", "HiF8",
+      "E4M3", "E5M2", "E3M2", "E2M3", "E2M1X2", "E1M2X2",
+      "S16", "S8", "S4X2", "U16", "U8", "U4X2"
+    ],
+    "ordinary_pair_rule": "same-class ordered pairs",
+    "ordinary_ordered_operand_pairs": 162,
+    "ordinary_architectural_acc_types": ["FP32", "S32", "U32"],
+    "ordinary_internal_acc_types": ["FP32", "S64", "U64"],
+    "mx_side_types": ["FP16", "BF16", "E4M3", "E5M2", "E2M1X2", "E1M2X2"],
+    "mx_scaled_side_types": ["E4M3", "E5M2", "E2M1X2", "E1M2X2"],
+    "mx_ordered_operand_pairs": 36,
     "mx_acc_type": "FP32",
     "mx_scale_type": "E8M0",
     "mx_scale_block_logical_k": 32,
     "numeric_vector_cases": 122
   },
   "qemu_implementation_gap": {
-    "currently_executable_cube_profile": "the 20 CELL-legal ordinary rows and 5 CELL-legal ordered MX operand pairs",
+    "currently_executable_cube_profile": "the exact 18 ordinary side types with 162 same-class ordered pairs and all 36 ordered MX pairs",
     "missing": [],
     "conformance_claim": "production-conformance",
-    "implementation_conformance": "114 executable reference vectors, all 27 assigned B.FPATR modes, and decoded scalar/vector auxiliary guest vectors",
+    "implementation_conformance": "114 executable reference vectors, all 27 assigned B.FPATR modes, exact ordinary/MX matrices, and decoded optional-scale guests",
     "evidence": {
       "canonical_reference_vectors_checked": 114,
-      "production_vector_cases": 49,
+      "production_vector_cases": 51,
       "vector_executor": "tests/linxisa/test_v058_hardware_numeric_vectors.py",
       "shared_numeric_helpers": "target/linx/tile_numeric_058.h",
       "production_core": "target/linx/tile_cube_058.c",
       "production_native_test": "tests/unit/test-linx-tile-cube-numeric.c",
-      "production_native_subtests": 27,
-      "production_ordinary_type_rows": 20,
-      "production_mx_ordered_operand_pairs": 5,
+      "production_native_subtests": 28,
+      "production_ordinary_side_types": 18,
+      "production_ordinary_ordered_operand_pairs": 162,
+      "production_mx_ordered_operand_pairs": 36,
       "transaction_subtests": 19,
       "external_pto_ctests": 11
     }

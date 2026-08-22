@@ -91,53 +91,24 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn(".match=UINT64_C(0x1c19181)", self.meta)
 
     def test_mx_cube_uses_normative_operand_order(self) -> None:
-        # PTO v0.58: [A, row-scale, B, column-scale, bias?], with an
-        # accumulator prepended for the ACC forms.
-        self.assertIn(
-            "? (accumulate ? sources[3] : sources[2])",
-            self.helper,
-        )
-        self.assertIn(
-            "accumulate ? sources[2] : sources[1]",
-            self.helper,
-        )
-        self.assertRegex(
-            self.helper,
-            r"linx_tile_cube_compute\(env, sources\[0\], sources\[2\],\s*"
-            r"sources\[1\], sources\[3\]",
-        )
-        self.assertRegex(
-            self.helper,
-            r"linx_tile_cube_compute\(env, sources\[1\], sources\[3\],\s*"
-            r"sources\[2\], sources\[4\]",
-        )
+        # PTO v0.58.3: [C?], A, optional ScaleA, B, optional ScaleB,
+        # [Bias], followed by postprocess auxiliaries.
+        self.assertIn("linx_tile_cube_resolve_local_operands", self.helper)
+        self.assertIn("operands->accumulator = sources[cursor++]", self.helper)
+        self.assertIn("operands->left = sources[cursor++]", self.helper)
+        self.assertIn("operands->left_scale = sources[cursor++]", self.helper)
+        self.assertIn("operands->right = sources[cursor++]", self.helper)
+        self.assertIn("operands->right_scale = sources[cursor++]", self.helper)
 
     def test_mx_cube_accepts_all_asl_fp4_pairs_and_scales(self) -> None:
-        # PTO ASL TMATMULMX permits every ordered pair from
-        # {E2M1X2, HiF4X2} and always accumulates into selected FP32 with
-        # E8M0 scales shaped M x ceil(K/32) and ceil(K/32) x N.
-        self.assertIn(
-            "return (left == 11u || left == 14u) && (right == 11u || right == 14u);",
-            self.numeric,
-        )
-        self.assertRegex(
-            self.numeric,
-            r"static const double e2m1_values\[8\] = \{0, \.5, 1, 1\.5, 2, 3, 4, 6\};",
-        )
-        self.assertIn("(double)(lane & 7u) / 4.0", self.numeric)
-        self.assertRegex(
-            self.cube,
-            r"mx \? \(\(env->tile_dtype & 31u\) == 1u &&\s*"
-            r"linx_tile_numeric_mx_pair\(left_dtype, right_dtype\)\)",
-        )
-        self.assertRegex(
-            self.cube,
-            r"cube_operand_legal\(env, row_scale, 13u, m, groups\)",
-        )
-        self.assertRegex(
-            self.cube,
-            r"cube_operand_legal\(env, column_scale, 13u, groups,\s*n\)",
-        )
+        # All ordered pairs from FP16/BF16/E4M3/E5M2/E2M1X2/E1M2X2;
+        # only the four low-precision types carry a side scale.
+        self.assertIn("(UINT32_C(1) << 4) | (UINT32_C(1) << 5)", self.numeric)
+        self.assertIn("(UINT32_C(1) << 11) | (UINT32_C(1) << 12)", self.numeric)
+        self.assertIn("linx_tile_numeric_mx_requires_scale", self.numeric)
+        self.assertIn("left_dtype == (env->tile_dtype & 31u)", self.cube)
+        self.assertIn("scale_left &&", self.cube)
+        self.assertIn("scale_right &&", self.cube)
 
     def test_tmatmul_dimensions_are_m_n_k(self) -> None:
         self.assertRegex(
@@ -273,9 +244,10 @@ class PtoV058ContractTests(unittest.TestCase):
                       self.tile_cube)
         self.assertNotIn("32u * 32u * 4u", self.helper)
         self.assertIn(
-            "linx_tile_cube_operand_legal(env, src_a, dtype,",
+            "linx_tile_cube_operand_legal(env, src_a, left_dtype,",
             self.helper,
         )
+        self.assertIn("linx_tile_numeric_ordinary_matrix_pair", self.helper)
         self.assertIn("(shared->initialized_mask & mask) == mask", self.helper)
         self.assertIn("shared->initialized_mask == 0xfu", self.helper)
 

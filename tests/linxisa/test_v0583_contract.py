@@ -103,6 +103,7 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("cube_shared_transpose_guest_contract.s", runner)
         self.assertIn("cube_acc_packed_guest_contract.s", runner)
         self.assertIn("cube_fpatr_aux_guest_contract.s", runner)
+        self.assertIn("cube_mx_type_matrix_guest_contract.s", runner)
         shared = (ROOT / "tests/linxisa/cube_shared_transpose_guest_contract.s").read_text(
             encoding="utf-8"
         )
@@ -120,6 +121,14 @@ class PtoV0583ContractTests(unittest.TestCase):
         ):
             self.assertIn(symbol, self.cube + self.helper)
         self.assertNotIn("parameter-free postprocess subset", self.cube)
+
+    def test_cube_type_conformance_is_authority_generated(self) -> None:
+        generator = (ROOT / "scripts/linxisa/generate-cube-0583-conformance.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pto-v0583-matrix-type-authority.json", generator)
+        self.assertIn("ordinary_pairs = sum", generator)
+        self.assertIn("len(mx_types) ** 2", generator)
 
     def test_retired_b_branches_are_not_decoded_or_advertised(self) -> None:
         for name in ("b_eq", "b_ne", "b_lt", "b_ltu", "b_ge", "b_geu", "b_z", "b_nz"):

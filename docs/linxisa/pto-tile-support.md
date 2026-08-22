@@ -90,8 +90,15 @@ M16/M32/N8 CELL descriptor and capacity. Invalid function, dtype, shape,
 layout, or operand schemas fail before architectural Tile, ACC, descriptor, or
 memory state is published.
 The internal accumulator capacity is independent of the final D allocation;
-publication converts the FP64/FP32/S64/U64 staging value to the architectural
-FP64/FP32/S32/U32 result or the type selected by `B.FPATR`.
+ordinary floating, signed, and unsigned inputs stage as FP32, S64, and U64 and
+publish architectural FP32, S32, and U32 before any `B.FPATR` conversion.
+
+Ordinary CUBE primaries use exactly 18 side types. The floating class is
+FP32/TF32/HF32/FP16/BF16/HiF8/E4M3/E5M2/E3M2/E2M3/E2M1X2/E1M2X2; the signed
+class is S16/S8/S4X2; the unsigned class is U16/U8/U4X2. A and B may differ
+within one class. S32, U32, and HiF4X2 are not primary types. MX accepts all
+36 ordered pairs from FP16/BF16/E4M3/E5M2/E2M1X2/E1M2X2; FP16/BF16 omit their
+side scale while each lower-precision side supplies its own E8M0 scale.
 
 `B.FPATR.TransA` and `TransB` independently transpose the corresponding Shared
 matrix primary. A transpose bit with a Local primary is rejected before source

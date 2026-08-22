@@ -15,19 +15,19 @@ _start:
   C.B.DIMI 2, ->lb1
   B.IOR [a0,a3],[]
   B.IOT mask=0001, last, ->m<256B>
-  BSTART.TLOAD S32
+  .4byte 0x98011181  # BSTART.TLOAD S8
   B.DATR ND2M16, DTYPE_NONE, Null
   C.B.DIMI 1, ->lb0
   C.B.DIMI 2, ->lb1
   B.IOR [a1,a3],[]
   B.IOT mask=0001, last, ->t<128B>
-  BSTART.TLOAD S32
+  .4byte 0x98011181  # BSTART.TLOAD S8
   B.DATR ND2N8, DTYPE_NONE, Null
   C.B.DIMI 4, ->lb0
   C.B.DIMI 1, ->lb1
   B.IOR [a2,a3],[]
   B.IOT mask=0001, last, ->u<128B>
-  BSTART.TMATMUL.ACC S32
+  .4byte 0x98231181  # BSTART.TMATMUL.ACC S8
   B.FPATR 0, 0, 0, 0, 0, 0, 0, 0, 0
   C.B.DIMI 2, ->lb0
   C.B.DIMI 4, ->lb1
@@ -53,19 +53,19 @@ _start:
   C.B.DIMI 2, ->lb1
   B.IOR [a0,a3],[]
   B.IOT mask=0001, last, ->m<256B>
-  BSTART.TLOAD U32
+  .4byte 0xd8011181  # BSTART.TLOAD U8
   B.DATR ND2M16, DTYPE_NONE, Null
   C.B.DIMI 1, ->lb0
   C.B.DIMI 2, ->lb1
   B.IOR [a1,a3],[]
   B.IOT mask=0001, last, ->t<128B>
-  BSTART.TLOAD U32
+  .4byte 0xd8011181  # BSTART.TLOAD U8
   B.DATR ND2N8, DTYPE_NONE, Null
   C.B.DIMI 4, ->lb0
   C.B.DIMI 1, ->lb1
   B.IOR [a2,a3],[]
   B.IOT mask=0001, last, ->u<128B>
-  BSTART.TMATMUL.ACC U32
+  .4byte 0xd8231181  # BSTART.TMATMUL.ACC U8
   B.FPATR 0, 0, 0, 0, 0, 0, 0, 0, 0
   C.B.DIMI 2, ->lb0
   C.B.DIMI 4, ->lb1
@@ -158,12 +158,16 @@ _start:
 .text
 .balign 64, 0
 signed_c: .long -8, -7, -6, -5, -4, -3, -2, -1
-signed_a: .long 1, 1
-signed_b: .long 1, 1, 1, 1
+signed_a: .byte 1
+  .space 15
+  .byte 1
+signed_b: .byte 1, 1, 1, 1
 signed_expected: .long -7, -6, -5, -4, -3, -2, -1, 0
 unsigned_c: .long 8, 7, 6, 5, 4, 3, 2, 1
-unsigned_a: .long 1, 1
-unsigned_b: .long 1, 1, 1, 1
+unsigned_a: .byte 1
+  .space 15
+  .byte 1
+unsigned_b: .byte 1, 1, 1, 1
 unsigned_expected: .long 9, 8, 7, 6, 5, 4, 3, 2
 packed_a: .byte 0x11
 packed_b: .byte 0x21, 0x43

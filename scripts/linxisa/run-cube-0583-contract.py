@@ -48,6 +48,8 @@ def main() -> int:
              root / "tests/linxisa/cube_acc_packed_guest_contract.s", 1)
     run_case(args.llvm_mc, args.qemu,
              root / "tests/linxisa/cube_fpatr_aux_guest_contract.s", 1)
+    run_case(args.llvm_mc, args.qemu,
+             root / "tests/linxisa/cube_mx_type_matrix_guest_contract.s", 1)
     print("PASS: PTO 0.58.3 CUBE CELL/ACC/packed/FPATR/Shared guests")
     return 0
 

@@ -56,10 +56,40 @@ static inline bool linx_tile_numeric_mx_pair(uint32_t left, uint32_t right)
 {
     left &= 31u;
     right &= 31u;
-    if ((left == 7u || left == 8u) && (right == 7u || right == 8u)) {
-        return true;
+    const uint32_t allowed = (UINT32_C(1) << 4) | (UINT32_C(1) << 5) |
+                             (UINT32_C(1) << 7) | (UINT32_C(1) << 8) |
+                             (UINT32_C(1) << 11) | (UINT32_C(1) << 12);
+    return (allowed & (UINT32_C(1) << left)) != 0u &&
+           (allowed & (UINT32_C(1) << right)) != 0u;
+}
+
+static inline bool linx_tile_numeric_mx_requires_scale(uint32_t dtype)
+{
+    dtype &= 31u;
+    return dtype == 7u || dtype == 8u || dtype == 11u || dtype == 12u;
+}
+
+static inline unsigned linx_tile_numeric_matrix_class(uint32_t dtype)
+{
+    dtype &= 31u;
+    if (dtype >= 1u && dtype <= 12u) {
+        return 1u;
     }
-    return (left == 11u || left == 14u) && (right == 11u || right == 14u);
+    if (dtype >= 18u && dtype <= 20u) {
+        return 2u;
+    }
+    if (dtype >= 26u && dtype <= 28u) {
+        return 3u;
+    }
+    return 0u;
+}
+
+static inline bool linx_tile_numeric_ordinary_matrix_pair(uint32_t left,
+                                                           uint32_t right)
+{
+    const unsigned left_class = linx_tile_numeric_matrix_class(left);
+    return left_class != 0u &&
+           left_class == linx_tile_numeric_matrix_class(right);
 }
 
 static inline uint64_t linx_tile_numeric_canonical_nan(uint32_t dtype)
