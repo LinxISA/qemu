@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unittest
 from pathlib import Path
@@ -26,7 +27,17 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
 
     def test_exact_0583_elf_identity_is_fail_closed(self) -> None:
-        self.assertIn('"release":"0.58.3"', self.virt)
+        authority = json.loads(
+            (ROOT / "tests/linxisa/pto-isa-0583-authority.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(authority["linxisa_commit"], "dd52a2e5")
+        self.assertEqual(
+            authority["pto_spec_commit"],
+            "e599a3d36ebfad43362ff591ea5e128816c684c7",
+        )
+        self.assertIn('release\\\":\\\"0.58.3', self.virt)
         self.assertIn("pto-isa-0.58.3-mode-function-v1", self.virt)
         self.assertIn(
             "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
@@ -54,8 +65,8 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIsNotNone(fpatr)
         self.assertIn("transa=%FP_TransA", fpatr.group(0))
         self.assertIn("transb=%FP_TransB", fpatr.group(0))
-        self.assertIn("tile_fpatr_trans_a", self.cpu)
-        self.assertIn("tile_fpatr_trans_b", self.cpu)
+        self.assertIn("(a->transb << 8)", self.translate)
+        self.assertIn("(a->transa << 7)", self.translate)
 
     def test_tlsu_row_stride_is_bytes(self) -> None:
         self.assertIn("linx_tile_get_stride_bytes", self.helper)

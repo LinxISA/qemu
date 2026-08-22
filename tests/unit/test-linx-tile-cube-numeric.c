@@ -300,6 +300,38 @@ static void test_shared_ab_non_square_strides(void)
     g_free(env);
 }
 
+static void test_shared_ab_transpose_controls(void)
+{
+    CPULinxState *env = g_new0(CPULinxState, 1);
+    float left_stored[2 * 8] = {
+        1.0f, 3.0f,
+        [8] = 2.0f, 4.0f,
+    };
+    float right_stored[2 * 2] = {
+        5.0f, 7.0f,
+        6.0f, 8.0f,
+    };
+    const float expected[] = {19.0f, 22.0f, 43.0f, 50.0f};
+    float result[4];
+
+    env->lb[0] = env->lb[1] = env->lb[2] = 2;
+    env->tile_dtype = 1;
+    env->tile_fpatr_valid = 1;
+    env->tile_fpatr_raw = (1u << 7) | (1u << 8);
+    g_assert_true(linx_tile_cube_compute_shared_ab_058(
+        env, (const uint8_t *)left_stored, sizeof(left_stored), 1, 8,
+        (const uint8_t *)right_stored, sizeof(right_stored), 1, 2, 1, false));
+    memcpy(result, env->tile_acc, sizeof(result));
+    g_assert_cmpmem(result, sizeof(result), expected, sizeof(expected));
+
+    set_tile(env, 0, 1, 2, 2, expected, sizeof(expected));
+    set_tile(env, 1, 1, 2, 2, expected, sizeof(expected));
+    g_assert_false(
+        linx_tile_cube_compute_058(env, 0, 1, 0, 0, 0, 1,
+                                   false, false, false));
+    g_free(env);
+}
+
 static void test_mx_k64(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
@@ -782,6 +814,8 @@ int main(int argc, char **argv)
                     test_group_profile_dimension_contract);
     g_test_add_func("/linx/cube/shared-ab-non-square-strides",
                     test_shared_ab_non_square_strides);
+    g_test_add_func("/linx/cube/shared-ab-transpose-controls",
+                    test_shared_ab_transpose_controls);
     g_test_add_func("/linx/cube/mx-k64", test_mx_k64);
     g_test_add_func("/linx/cube/reject-non-power-of-two-k",
                     test_reject_non_power_of_two_k);

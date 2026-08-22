@@ -1,6 +1,6 @@
 # PTO Tile support on LinxISA 0.58
 
-The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.
+The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.3.
 The normative operation inventory is the LinxISA `engine_ops.json` projection;
 this page describes QEMU behavior and does not define a second ISA taxonomy.
 
@@ -8,8 +8,8 @@ this page describes QEMU behavior and does not define a second ISA taxonomy.
 
 | Engine | Operations | Responsibility |
 | --- | ---: | --- |
-| VEC | 35 | Elementwise Tile operations only |
-| SFU | 52 | Reductions, transforms, nonlinear functions, and other complex-hardware operations |
+| VEC | 31 | Elementwise Tile operations only |
+| SFU | 56 | Division, remainder, reductions, transforms, nonlinear functions, and other complex-hardware operations |
 | TLSU | 10 | Tile memory access and data movement |
 | CUBE | 12 | Matrix and matrix-vector operations |
 
@@ -21,9 +21,9 @@ any instruction bits.
 ### VEC operations
 
 ```text
-TADD TSUB TMUL TDIV TREM TAND TOR TXOR TSHL TSHR TMAX TMIN
+TADD TSUB TMUL TAND TOR TXOR TSHL TSHR TMAX TMIN
 TCMP TABS TNOT TNEG TRELU TSEL TCVT TFMA
-TADDS TSUBS TMULS TDIVS TREMS TANDS TORS TXORS TSHLS TSHRS
+TADDS TSUBS TMULS TANDS TORS TXORS TSHLS TSHRS
 TMAXS TMINS TCMPS TSELS TEXPANDS
 ```
 
@@ -34,7 +34,7 @@ uses the architectural wrapping result.
 ### SFU operations
 
 ```text
-TEXP TLOG TRECIP TSQRT TRSQRT
+TDIV TREM TDIVS TREMS TEXP TLOG TRECIP TSQRT TRSQRT
 TROWSUM TROWMAX TROWMIN TROWPROD TROWARGMAX TROWARGMIN
 TCOLSUM TCOLMAX TCOLMIN TCOLPROD TCOLARGMAX TCOLARGMIN
 TROWEXPAND TROWEXPANDADD TROWEXPANDSUB TROWEXPANDMUL
@@ -88,24 +88,37 @@ TGEMVMX TGEMVMX.BIAS TGEMVMX.ACC
 CUBE applies the same power-of-two row and column constraints as every other
 Tile operation. Invalid function, dtype, shape, layout, or operand schemas fail
 before architectural Tile, ACC, descriptor, or memory state is published.
+The internal accumulator capacity is independent of the final D allocation;
+publication converts the FP64/FP32/S64/U64 staging value to the architectural
+FP64/FP32/S32/U32 result or the type selected by `B.FPATR`.
+
+`B.FPATR.TransA` and `TransB` independently transpose the corresponding Shared
+matrix primary. A transpose bit with a Local primary is rejected before source
+snapshot or output effects. Shared schema checks apply to the stored transposed
+shape, while computation observes the original logical M×K or K×N shape.
 
 ## Tile capacity and shape
 
-`B.IOT` and `B.IOS` use the same TSize mapping:
+`B.IOT` and `B.IOS` encode a four-bit `SizeCode`:
 
-| TSize | Bytes per selected PE |
-| ---: | ---: |
-| 1 | 128 |
-| 2 | 256 |
-| 3 | 512 |
-| 4 | 1024 |
-| 5 | 2048 |
-| 6 | 4096 |
-| 7 | 8192 |
+| SizeCode | B.IOT bytes per selected PE | B.IOS bytes per selected PE |
+| ---: | ---: | ---: |
+| 1 | 128 | 128 |
+| 2 | 256 | 256 |
+| 3 | 512 | 512 |
+| 4 | 1024 | 1024 |
+| 5 | 2048 | 2048 |
+| 6 | 4096 | 4096 |
+| 7 | 8192 | 8192 |
+| 8 | 16384 | 16384 |
+| 9 | 32768 | 32768 |
+| 10 | 65536 | 65536 |
+| 11 | reserved | 131072 |
+| 12 | reserved | 262144 |
 
-Rows are derived from `TSizeBytes / (columns * element_size)`. Rows and columns
+Rows are derived from `SizeCodeBytes / (columns * element_size)`. Rows and columns
 must both be powers of two, and the valid region must not exceed the allocated
-rows or columns. QEMU keeps the wire TSize code separate from its internal
+rows or columns. QEMU keeps the wire SizeCode separate from its internal
 `log2(bytes)-4` allocation code.
 
 ## Shared Tile registers and B.IOS
@@ -114,8 +127,9 @@ Each core owns one bank of 256 shared Tile registers, assembled as `S0` through
 `S255`, visible to its four PEs. `B.IOS` uses an absolute SharedID and the former
 `B.IOD` encoding slot. `B.IOD` and `C.B.IOS` are deleted and never decoded.
 
-The four-bit PE mask is a predicate. Multiple bits may be set; zero is a strict
-no-op. Each selected PE receives its own TSize capacity and uses its own GPR
+The three-bit `PEMode` decodes to `0000`, `1000`, `0100`, `0010`, `0001`,
+`1100`, `1110`, or `1111`. Mode zero is a strict no-op. Each selected PE
+receives its own SizeCode capacity and uses its own GPR
 base and offset. A write allocates a new shared-register version and atomically
 publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity

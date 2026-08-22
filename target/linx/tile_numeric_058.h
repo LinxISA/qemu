@@ -449,6 +449,50 @@ linx_tile_numeric_encode_binary(double value, unsigned ebits,
            (frac_field << (carrier_frac - precision_frac));
 }
 
+static inline uint8_t linx_tile_numeric_encode_e8m0(double value,
+                                                     unsigned mode, bool sat)
+{
+    double exponent_value;
+    long long exponent;
+
+    if (!isfinite(value) || value <= 0.0) {
+        if (isinf(value) && value > 0.0) {
+            return sat ? 0xfeu : 0xffu;
+        }
+        return 0xffu;
+    }
+    exponent_value = log2(value);
+    switch (mode & 7u) {
+    case 2u: /* RTZ */
+    case 3u: /* RTM */
+        exponent = (long long)floor(exponent_value);
+        break;
+    case 4u: /* RTP */
+        exponent = (long long)ceil(exponent_value);
+        break;
+    case 5u: /* RNA */
+        exponent = (long long)floor(exponent_value + 0.5);
+        break;
+    default: { /* RNE and the profile's deterministic fallback modes. */
+        const double lower = floor(exponent_value);
+        const double fraction = exponent_value - lower;
+        exponent = (long long)lower;
+        if (fraction > 0.5 ||
+            (fraction == 0.5 && (exponent & 1ll) != 0ll)) {
+            exponent++;
+        }
+        break;
+    }
+    }
+    if (exponent < -127) {
+        return sat ? 0x00u : 0xffu;
+    }
+    if (exponent > 127) {
+        return sat ? 0xfeu : 0xffu;
+    }
+    return (uint8_t)(exponent + 127);
+}
+
 static inline uint8_t
 linx_tile_numeric_encode_enumerated(uint32_t dtype, double value, unsigned mode,
                                     bool sat, unsigned limit)
@@ -589,6 +633,8 @@ static inline uint64_t linx_tile_numeric_encode(uint32_t dtype, double value,
     case 10u:
         return linx_tile_numeric_encode_enumerated(dtype, value, mode, sat,
                                                    64u);
+    case 13u:
+        return linx_tile_numeric_encode_e8m0(value, mode, sat);
     default:
         return 0u;
     }

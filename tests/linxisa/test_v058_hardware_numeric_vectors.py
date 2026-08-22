@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the official PTO ISA 0.58.1 numeric vectors."""
+"""Execute the official PTO ISA 0.58.3 numeric vectors."""
 
 import ctypes
 import json
@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VECTORS = ROOT / "tests/linxisa/pto-isa-0581-hardware-numeric-vectors.json"
+VECTORS = ROOT / "tests/linxisa/pto-isa-0583-hardware-numeric-vectors.json"
 DTYPE = {
     "FP64": 0, "FP32": 1, "TF32": 2, "HF32": 3, "FP16": 4,
     "BF16": 5, "HiF8": 6, "E4M3": 7, "E5M2": 8, "E3M2": 9,
@@ -43,6 +43,9 @@ int v_compare(double a, double b, unsigned mode) {
 }
 uint64_t v_invalid(unsigned d) {
     return linx_tile_numeric_float_to_integer(d, NAN, 1, false);
+}
+uint64_t v_encode(unsigned d, double value, unsigned mode, int sat) {
+    return linx_tile_numeric_encode(d, value, mode, sat != 0);
 }
 int64_t v_sat_int(double x, unsigned d) {
     uint64_t raw = linx_tile_numeric_float_to_integer(d, x, 1, true);
@@ -133,6 +136,9 @@ class HardwareNumericVectors(unittest.TestCase):
         cls.lib.v_round.restype = ctypes.c_int64
         cls.lib.v_compare.argtypes = [ctypes.c_double, ctypes.c_double, ctypes.c_uint]
         cls.lib.v_invalid.restype = ctypes.c_uint64
+        cls.lib.v_encode.argtypes = [ctypes.c_uint, ctypes.c_double,
+                                     ctypes.c_uint, ctypes.c_int]
+        cls.lib.v_encode.restype = ctypes.c_uint64
         cls.lib.v_sat_int.argtypes = [ctypes.c_double, ctypes.c_uint]
         cls.lib.v_sat_int.restype = ctypes.c_int64
         cls.lib.v_sat_fp16.argtypes = [ctypes.c_double]
@@ -150,7 +156,7 @@ class HardwareNumericVectors(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_all_104_canonical_reference_vectors_are_checked(self):
+    def test_all_114_executable_reference_vectors_are_checked(self):
         groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
         executed = 0
 
@@ -254,7 +260,21 @@ class HardwareNumericVectors(unittest.TestCase):
                 )
             executed += 1
 
-        self.assertEqual(executed, 104)
+        tcvt_modes = {"RNE": 1, "RTM": 3}
+        for v in groups["tcvt_e8m0"]["vectors"]:
+            source_type = DTYPE[v["source_type"]]
+            source = self.lib.v_decode(source_type, int(v["input"], 16), 0)
+            self.assertEqual(
+                self.lib.v_encode(13, source, tcvt_modes[v["rmode"]], v["sat"]),
+                int(v["expected"], 16),
+            )
+            executed += 1
+
+        self.assertEqual(executed, 114)
+
+    def test_0583_matrix_postprocess_vectors_are_present(self):
+        groups = json.loads(VECTORS.read_text(encoding="utf-8"))["vector_groups"]
+        self.assertEqual(len(groups["matrix_postprocess"]), 8)
 
     def test_conformance_does_not_mislabel_reference_checks_as_production(self):
         conformance = json.loads(
@@ -264,7 +284,7 @@ class HardwareNumericVectors(unittest.TestCase):
         )
         evidence = conformance["qemu_implementation_gap"]["evidence"]
         self.assertEqual(conformance["status"], "reference-vector-coverage-only")
-        self.assertEqual(evidence["canonical_reference_vectors_checked"], 104)
+        self.assertEqual(evidence["canonical_reference_vectors_checked"], 114)
         self.assertEqual(evidence["production_vector_cases"], "unavailable")
         self.assertNotIn("canonical_contract_vectors_executed", evidence)
 

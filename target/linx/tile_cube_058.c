@@ -60,6 +60,30 @@ static bool cube_fpatr_output_dtype(unsigned prequant, uint32_t *dtype)
     }
 }
 
+static bool cube_accumulator_output_dtype(uint32_t selected_dtype,
+                                          uint32_t *dtype)
+{
+    selected_dtype &= 31u;
+    if (selected_dtype == 0u) {
+        *dtype = 0u; /* FP64 */
+        return true;
+    }
+    if (selected_dtype >= 1u && selected_dtype <= 14u &&
+        selected_dtype != 13u) {
+        *dtype = 1u; /* FP32 */
+        return true;
+    }
+    if (selected_dtype >= 16u && selected_dtype <= 20u) {
+        *dtype = 17u; /* S32 */
+        return true;
+    }
+    if (selected_dtype >= 24u && selected_dtype <= 28u) {
+        *dtype = 25u; /* U32 */
+        return true;
+    }
+    return false;
+}
+
 static bool cube_output_dtype(const CPULinxState *env, unsigned ordinal,
                               uint32_t *dtype)
 {
@@ -68,13 +92,7 @@ static bool cube_output_dtype(const CPULinxState *env, unsigned ordinal,
     if (ordinal == 0u && env->tile_fpatr_valid && prequant != 0u) {
         return cube_fpatr_output_dtype(prequant, dtype);
     }
-    /* A zero/canonical B.FPATR is a no-op: the selected DATR dtype remains
-     * the architectural output dtype.  The accumulator uses its own staging
-     * dtype (linx_tile_numeric_acc_dtype()) and is converted at publish time;
-     * exposing that staging dtype here incorrectly turns integer CUBE outputs
-     * such as S32 into S64 and makes the no-op FPATR conversion reject them. */
-    *dtype = env->tile_dtype & 31u;
-    return true;
+    return cube_accumulator_output_dtype(env->tile_dtype, dtype);
 }
 
 bool linx_tile_cube_output_descriptor_058(
@@ -327,6 +345,18 @@ static bool cube_read_buffer_raw(const uint8_t *data, uint32_t bytes,
     return true;
 }
 
+static bool cube_read_shared_matrix_raw(const uint8_t *data, uint32_t bytes,
+                                        uint32_t dtype, unsigned stride,
+                                        unsigned logical_row,
+                                        unsigned logical_column,
+                                        bool transpose, uint64_t *raw)
+{
+    return cube_read_buffer_raw(data, bytes, dtype, stride,
+                                transpose ? logical_column : logical_row,
+                                transpose ? logical_row : logical_column,
+                                raw);
+}
+
 static int64_t cube_signed(uint32_t dtype, uint64_t raw, unsigned logical_lane)
 {
     switch (dtype & 31u) {
@@ -397,6 +427,14 @@ static bool linx_tile_cube_compute_common_058(
     const unsigned output_m = m;
     const unsigned row_base = shared_a != NULL && shared_b != NULL
         ? env->pe_id * output_m : 0u;
+    const bool transpose_a = ((env->tile_fpatr_raw >> 7) & 1u) != 0u;
+    const bool transpose_b = ((env->tile_fpatr_raw >> 8) & 1u) != 0u;
+    const unsigned shared_a_rows = transpose_a
+        ? kdim : m * LINX_CORE4_PE_COUNT;
+    const unsigned shared_a_logical_cols = transpose_a
+        ? m * LINX_CORE4_PE_COUNT : kdim;
+    const unsigned shared_b_rows = transpose_b ? n : kdim;
+    const unsigned shared_b_logical_cols = transpose_b ? kdim : n;
     uint64_t required = (uint64_t)output_m * n * acc_bytes;
     unsigned groups = (kdim + 31u) / 32u;
     float_status fp_status = {0};
@@ -409,6 +447,8 @@ static bool linx_tile_cube_compute_common_058(
     }
 
     if ((shared_a == NULL && src_a >= LINX_TILE_SLOT_COUNT) ||
+        (transpose_a && shared_a == NULL) ||
+        (transpose_b && shared_b == NULL) ||
         (shared_a == NULL && shared_b == NULL &&
          !linx_tile_cube_primary_legal_058(env, src_a, src_b, mx,
                                            accumulate)) ||
@@ -422,14 +462,15 @@ static bool linx_tile_cube_compute_common_058(
           !cube_nonzero_power_of_two(kdim) ||
           (shared_a != NULL
                ? !cube_buffer_operand_legal(shared_a, shared_a_bytes,
-                                            left_dtype,
-                                            m * LINX_CORE4_PE_COUNT, kdim,
+                                            left_dtype, shared_a_rows,
+                                            shared_a_logical_cols,
                                             shared_a_cols)
                : env->tile_reg_valid_rows[src_a] != m ||
                      env->tile_reg_valid_cols[src_a] != kdim ||
                      !cube_operand_legal(env, src_a, left_dtype, m, kdim)) ||
           !cube_buffer_operand_legal(shared_b, shared_b_bytes,
-                                     right_dtype, kdim, n,
+                                     right_dtype, shared_b_rows,
+                                     shared_b_logical_cols,
                                      shared_b_cols) ||
           !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx))) ||
         (mx && (!cube_operand_legal(env, row_scale, 13u, m, groups) ||
@@ -470,16 +511,15 @@ static bool linx_tile_cube_compute_common_058(
                     uint64_t ar, br;
                     uint32_t av, bv;
                     if ((shared_a != NULL
-                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
-                                                     left_dtype, shared_a_cols,
-                                                     source_row, k,
-                                                     &ar)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_a, shared_a_bytes, left_dtype,
+                                   shared_a_cols, source_row, k, transpose_a,
+                                   &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
-                             ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, shared_b_cols,
-                                                     k, j,
-                                                     &br)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_b, shared_b_bytes, right_dtype,
+                                   shared_b_cols, k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
                     }
@@ -528,16 +568,15 @@ static bool linx_tile_cube_compute_common_058(
                 for (unsigned k = 0; k < kdim; k++) {
                     uint64_t ar, br;
                     if ((shared_a != NULL
-                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
-                                                     left_dtype, shared_a_cols,
-                                                     source_row, k,
-                                                     &ar)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_a, shared_a_bytes, left_dtype,
+                                   shared_a_cols, source_row, k, transpose_a,
+                                   &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
-                             ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, shared_b_cols,
-                                                     k, j,
-                                                     &br)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_b, shared_b_bytes, right_dtype,
+                                   shared_b_cols, k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
                     }
@@ -569,16 +608,15 @@ static bool linx_tile_cube_compute_common_058(
                 for (unsigned k = 0; k < kdim; k++) {
                     uint64_t ar, br;
                     if ((shared_a != NULL
-                             ? !cube_read_buffer_raw(shared_a, shared_a_bytes,
-                                                     left_dtype, shared_a_cols,
-                                                     source_row, k,
-                                                     &ar)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_a, shared_a_bytes, left_dtype,
+                                   shared_a_cols, source_row, k, transpose_a,
+                                   &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar)) ||
                         (shared_b != NULL
-                             ? !cube_read_buffer_raw(shared_b, shared_b_bytes,
-                                                     right_dtype, shared_b_cols,
-                                                     k, j,
-                                                     &br)
+                             ? !cube_read_shared_matrix_raw(
+                                   shared_b, shared_b_bytes, right_dtype,
+                                   shared_b_cols, k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br))) {
                         goto fail;
                     }
@@ -703,20 +741,16 @@ static bool linx_tile_fpatr_postprocess(const CPULinxState *env,
     if (group_n || row_max || group_max || row_init || max_abs || relu > 1u) {
         return false;
     }
-    /* The canonical zero B.FPATR descriptor requests no post-processing.
-     * It must preserve the DATR-selected output dtype, including integer
-     * CUBE profiles whose accumulator dtype differs from D. */
-    if (prequant == 0u) {
-        return true;
-    }
-    switch (prequant) {
-    case 1:  expected_dtype = 4u; break; /* FP32 -> FP16 */
-    case 16: expected_dtype = 5u; break; /* FP32 -> BF16 */
-    default: return false;
-    }
-    if (env->tile_acc_dtype != LINX_TILE_ACC_FP32 ||
-        dst_dtype != expected_dtype) {
-        return false;
+    if (prequant != 0u) {
+        switch (prequant) {
+        case 1:  expected_dtype = 4u; break; /* FP32 -> FP16 */
+        case 16: expected_dtype = 5u; break; /* FP32 -> BF16 */
+        default: return false;
+        }
+        if (env->tile_acc_dtype != LINX_TILE_ACC_FP32 ||
+            dst_dtype != expected_dtype) {
+            return false;
+        }
     }
     if (relu == 1u && *value < 0.0) {
         *value = 0.0;

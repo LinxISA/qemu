@@ -1,0 +1,9 @@
+{
+  "linxisa_commit": "dd52a2e5",
+  "pto_spec_commit": "e599a3d36ebfad43362ff591ea5e128816c684c7",
+  "pto_spec_tree": "abb6899d2e664e378ac9c1b77062670daa4d31b4",
+  "release": "0.58.3",
+  "encoding_abi": "pto-isa-0.58.3-mode-function-v1",
+  "encoding_projection_sha256": "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
+  "numeric_vectors_sha256": "09d863e39e5fcd932353f4dc3bc5a7d2eed91ec9818c83886747aa69d28c3890"
+}

@@ -260,7 +260,7 @@ static void test_tstore_size_comes_from_source_footprint(void)
 
     env->tile_iot_src_valid[0] = 1u;
     env->tile_iot_src_phys[0][0] = 3u;
-    for (unsigned expected = 3u; expected <= 9u; expected++) {
+    for (unsigned expected = 3u; expected <= 12u; expected++) {
         const uint32_t bytes = UINT32_C(1) << (expected + 4u);
 
         env->tile_reg_bytes[3] = bytes;
@@ -270,7 +270,7 @@ static void test_tstore_size_comes_from_source_footprint(void)
         g_assert_cmpuint(tile, ==, 3u);
         g_assert_cmpuint(size_code, ==, expected);
     }
-    const uint32_t invalid_bytes[] = { 0u, 64u, 96u, 16384u };
+    const uint32_t invalid_bytes[] = { 0u, 64u, 96u, 131072u };
     for (unsigned i = 0; i < ARRAY_SIZE(invalid_bytes); i++) {
         env->tile_reg_bytes[3] = invalid_bytes[i];
         g_assert_false(linx_tile_tstore_resolve_binding(
