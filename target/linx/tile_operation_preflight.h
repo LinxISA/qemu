@@ -296,6 +296,7 @@ static inline bool linx_tile_operation_pre_publish_legal(
                               impl == 0x084u || impl == 0x105u ||
                               impl == 0x01du ||
                               (impl >= 0x102u && impl <= 0x10bu);
+    const uint32_t source_shape_rows = expand ? valid_rows : rows;
 
     if (impl == 0x02cu) {
         if (source_count < 3u) {
@@ -323,7 +324,8 @@ static inline bool linx_tile_operation_pre_publish_legal(
                            env, src2, valid_cols, valid_rows, cols, rows)))) ||
         (expand && impl >= 0x03bu &&
          (!has_src0 || !linx_tile_operation_preflight_shape_covers(
-                           env, src0, valid_cols, valid_rows, cols, rows)))) {
+                           env, src0, valid_cols, valid_rows, cols,
+                           source_shape_rows)))) {
         return false;
     }
 

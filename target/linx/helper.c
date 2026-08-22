@@ -13432,7 +13432,6 @@ static bool linx_tile_operation_impl_selector_executable(uint32_t op)
     case 0x03eu: /* TROWEXPANDDIV */
     case 0x03fu: /* TROWEXPANDMAX */
     case 0x040u: /* TROWEXPANDMIN */
-    case 0x041u: /* TROWEXPANDEXPDIF */
     case 0x042u: /* TCOLEXPANDADD */
     case 0x043u: /* TCOLEXPANDSUB */
     case 0x044u: /* TCOLEXPANDMUL */
@@ -13707,13 +13706,15 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
     case 0x03eu: /* TROWEXPANDDIV */
     case 0x03fu: /* TROWEXPANDMAX */
     case 0x040u: /* TROWEXPANDMIN */
-    case 0x041u: /* TROWEXPANDEXPDIF */
     case 0x042u: /* TCOLEXPANDADD */
     case 0x043u: /* TCOLEXPANDSUB */
     case 0x044u: /* TCOLEXPANDMUL */
     case 0x045u: /* TCOLEXPANDDIV */
     case 0x046u: /* TCOLEXPANDMAX */
     case 0x047u: /* TCOLEXPANDMIN */
+        supported = standard;
+        break;
+    case 0x041u: /* TROWEXPANDEXPDIF */
     case 0x048u: /* TCOLEXPANDEXPDIF */
         supported = fp32 | fp16;
         break;
