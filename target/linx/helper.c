@@ -17419,6 +17419,7 @@ static bool linx_tile_preflight_tlsu(
         LinxSharedTileVersion *shared =
             &cpu->core4->shared_tile[linx_tile_shared_id(env)];
         qemu_mutex_lock(&cpu->core4->lock);
+        const uint32_t shared_capacity = quarter * LINX_CORE4_PE_COUNT;
         const bool compatible =
             shared->allocation_mask == 0u ||
             (shared->allocation_mask == mask &&
@@ -19692,8 +19693,9 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     if (new_version) {
                         memset(shared, 0, sizeof(*shared));
                         shared->allocation_mask = allocation_mask;
-                        /* B.IOS.TSize is already the complete core payload;
-                         * do not multiply it by the participating mask. */
+                        /* B.IOS SizeCode is the per-PE capacity; the
+                         * payload spans all four fixed-offset quarters, so no
+                         * mask multiplication is applied. */
                         shared->per_pe_capacity = bytes;
                         shared->allocated_bytes = ctpop8(pe_mask) * bytes;
                         shared->dtype = dtype;

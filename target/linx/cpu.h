@@ -58,9 +58,7 @@ typedef struct LinxSharedTileVersion {
      * this per-PE SizeCode capacity; allocation accounting multiplies this
      * capacity by the immutable allocation-mask population. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    /* B.IOS.TSize is the aggregate payload capacity for the core.  The
-     * historical field name is retained for migration compatibility; it no
-     * longer denotes a single-PE allocation. */
+    /* B.IOS SizeCode is the Core-level aggregate capacity. */
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;
