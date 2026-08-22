@@ -11,13 +11,15 @@
 static inline bool linx_tile_value_reduction_axis(uint32_t impl,
                                                   bool *row_reduce)
 {
-    if ((impl >= 0x012u && impl <= 0x014u) || impl == 0x035u) {
+    if ((impl >= 0x012u && impl <= 0x014u) || impl == 0x035u ||
+        impl == 0x036u || impl == 0x037u) {
         if (row_reduce != NULL) {
             *row_reduce = true;
         }
         return true;
     }
-    if ((impl >= 0x015u && impl <= 0x017u) || impl == 0x038u) {
+    if ((impl >= 0x015u && impl <= 0x017u) || impl == 0x038u ||
+        impl == 0x039u || impl == 0x03au) {
         if (row_reduce != NULL) {
             *row_reduce = false;
         }

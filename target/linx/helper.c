@@ -12490,7 +12490,7 @@ static bool linx_tile_operation_arg_reduce(CPULinxState *env, unsigned dst_tile,
             if (!linx_tile_get_elem(env, src_tile, r * physical_cols + c,
                                     elem_bytes, &value) ||
                 !linx_tile_tcmp_lane(env, dtype, value, best_value,
-                                     find_max ? 4u : 2u, &better)) {
+                                     find_max ? 3u : 2u, &better)) {
                 return false;
             }
             if (better) {
@@ -13691,7 +13691,7 @@ static bool linx_tile_operation_impl_dtype_supported(uint32_t op, uint32_t dtype
         break;
     case 0x036u: /* TROWARGMAX */
     case 0x037u: /* TROWARGMIN */
-        supported = fp64 | fp32 | fp16;
+        supported = standard;
         break;
     case 0x038u: /* TCOLPROD */
         supported = fp64 | fp32 | fp16 | bf16 | s64 | s32 | s16 |
