@@ -101,12 +101,25 @@ class PtoV0583ContractTests(unittest.TestCase):
         )
         self.assertIn("cube_cell_guest_contract.s", runner)
         self.assertIn("cube_shared_transpose_guest_contract.s", runner)
+        self.assertIn("cube_acc_packed_guest_contract.s", runner)
+        self.assertIn("cube_fpatr_aux_guest_contract.s", runner)
         shared = (ROOT / "tests/linxisa/cube_shared_transpose_guest_contract.s").read_text(
             encoding="utf-8"
         )
         self.assertIn(".4byte 0x000021a3", shared)
         self.assertIn("B.IOS S1, mask=1111", shared)
         self.assertIn("B.IOS S2, mask=1111", shared)
+
+    def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
+        for symbol in (
+            "linx_tile_fpatr_mode_uses_vector_parameter_058",
+            "linx_tile_fpatr_mode_uses_scalar_parameter_058",
+            "linx_tile_fpatr_quant_parameter_legal_058",
+            "linx_tile_accumulator_convert_with_aux_058",
+            "linx_tile_cube_reduction_outputs_with_input_058",
+        ):
+            self.assertIn(symbol, self.cube + self.helper)
+        self.assertNotIn("parameter-free postprocess subset", self.cube)
 
     def test_retired_b_branches_are_not_decoded_or_advertised(self) -> None:
         for name in ("b_eq", "b_ne", "b_lt", "b_ltu", "b_ge", "b_geu", "b_z", "b_nz"):

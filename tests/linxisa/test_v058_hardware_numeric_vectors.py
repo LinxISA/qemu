@@ -283,9 +283,9 @@ class HardwareNumericVectors(unittest.TestCase):
             )
         )
         evidence = conformance["qemu_implementation_gap"]["evidence"]
-        self.assertEqual(conformance["status"], "partial-production-evidence")
+        self.assertEqual(conformance["status"], "production-conformance")
         self.assertEqual(evidence["canonical_reference_vectors_checked"], 114)
-        self.assertEqual(evidence["production_vector_cases"], 18)
+        self.assertEqual(evidence["production_vector_cases"], 49)
         self.assertNotIn("canonical_contract_vectors_executed", evidence)
 
     def test_cube_type_matrix_is_24_plus_8_and_fail_closed(self):

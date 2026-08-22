@@ -44,9 +44,21 @@ bool linx_tile_cube_compute_shared_b_058(
     unsigned size_code, bool accumulate);
 bool linx_tile_accumulator_convert(CPULinxState *env, unsigned dst_tile,
                                    unsigned size_code);
+bool linx_tile_accumulator_convert_with_aux_058(
+    CPULinxState *env, unsigned dst_tile, unsigned size_code,
+    unsigned quant_tile, unsigned relu_tile);
 bool linx_tile_cube_reduction_outputs_058(CPULinxState *env,
                                           unsigned row_max_tile,
                                           unsigned group_max_tile);
+bool linx_tile_cube_reduction_outputs_with_input_058(
+    CPULinxState *env, unsigned row_max_tile, unsigned group_max_tile,
+    unsigned row_max_input);
+bool linx_tile_fpatr_mode_uses_vector_parameter_058(unsigned mode);
+bool linx_tile_fpatr_mode_uses_scalar_parameter_058(unsigned mode);
+bool linx_tile_fpatr_mode_uses_s32_accumulator_058(unsigned mode);
+bool linx_tile_fpatr_quant_parameter_legal_058(unsigned mode, uint64_t value);
+bool linx_tile_fpatr_relu_parameter_legal_058(uint64_t value);
+bool linx_tile_fpatr_datr_legal_058(unsigned mode, unsigned rmode, bool sat);
 bool linx_tile_cube_compute_shared_ab_058(
     CPULinxState *env, const uint8_t *shared_a, uint32_t shared_a_bytes,
     uint32_t shared_a_dtype, uint32_t shared_a_cols,

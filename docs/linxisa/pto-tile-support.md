@@ -85,9 +85,10 @@ TGEMV TGEMV.BIAS TGEMV.ACC
 TGEMVMX TGEMVMX.BIAS TGEMVMX.ACC
 ```
 
-CUBE applies the same power-of-two row and column constraints as every other
-Tile operation. Invalid function, dtype, shape, layout, or operand schemas fail
-before architectural Tile, ACC, descriptor, or memory state is published.
+CUBE accepts arbitrary positive M, N, and K values that fit the selected
+M16/M32/N8 CELL descriptor and capacity. Invalid function, dtype, shape,
+layout, or operand schemas fail before architectural Tile, ACC, descriptor, or
+memory state is published.
 The internal accumulator capacity is independent of the final D allocation;
 publication converts the FP64/FP32/S64/U64 staging value to the architectural
 FP64/FP32/S32/U32 result or the type selected by `B.FPATR`.
@@ -96,6 +97,12 @@ FP64/FP32/S32/U32 result or the type selected by `B.FPATR`.
 matrix primary. A transpose bit with a Local primary is rejected before source
 snapshot or output effects. Shared schema checks apply to the stored transposed
 shape, while computation observes the original logical M×K or K×N shape.
+
+All assigned `B.FPATR` pre-quantization modes execute their released scalar or
+per-column vector parameter schema. Scalar LReLU and vector PReLU select the
+activation multiplier before conversion. `RowMaxInit` consumes an ordinary
+row-major accumulator-type input, `MaxAbs` applies before RowMax/GroupMax
+selection, and D plus every enabled auxiliary output publish atomically.
 
 ## Tile capacity and shape
 

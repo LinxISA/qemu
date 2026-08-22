@@ -266,12 +266,11 @@ class PtoV058ContractTests(unittest.TestCase):
             "linx_tile_get_bound_output(env, 1u, &destination)", self.helper
         )
         self.assertIn("core4->collective_dst[pe] = destination", self.helper)
-        self.assertIn("linx_tile_accumulator_convert(", self.helper)
+        self.assertIn("linx_tile_accumulator_convert_with_aux_058(", self.helper)
         self.assertIn("planned_count[i], 1u)", self.helper)
         self.assertIn("planned_live[LINX_CORE4_PE_COUNT]", self.helper)
-        self.assertIn(
-            "dims.m == 32u && dims.n == 32u && dims.k == 32u", self.tile_cube
-        )
+        self.assertIn("dims.m != 0u && dims.n != 0u && dims.k != 0u",
+                      self.tile_cube)
         self.assertNotIn("32u * 32u * 4u", self.helper)
         self.assertIn(
             "linx_tile_cube_operand_legal(env, src_a, dtype,",
