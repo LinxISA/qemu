@@ -4121,6 +4121,14 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
         memset(env->tile_reg_layout, 0, sizeof(env->tile_reg_layout));
+        memset(env->tile_reg_cube_k_repeat, 0,
+               sizeof(env->tile_reg_cube_k_repeat));
+        memset(env->tile_reg_cube_n_repeat, 0,
+               sizeof(env->tile_reg_cube_n_repeat));
+        memset(env->tile_reg_cube_cell_count, 0,
+               sizeof(env->tile_reg_cube_cell_count));
+        memset(env->tile_reg_cube_storage_bytes, 0,
+               sizeof(env->tile_reg_cube_storage_bytes));
         memset(env->tile_reg_valid_cols, 0,
                sizeof(env->tile_reg_valid_cols));
         memset(env->tile_reg_valid_rows, 0,
@@ -4203,6 +4211,25 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->tile_acc_valid = 0;
         env->tile_acc_cols = 0;
         env->tile_acc_rows = 0;
+    }
+    if (version_id < 22) {
+        for (unsigned tile = 0; tile < LINX_TILE_SLOT_COUNT; tile++) {
+            if (env->tile_reg_bytes[tile] != 0u &&
+                env->tile_reg_layout[tile] >= 4u &&
+                env->tile_reg_layout[tile] <= 6u) {
+                error_setg(errp,
+                           "linx: cannot migrate pre-v22 CUBE CELL state");
+                return false;
+            }
+        }
+        memset(env->tile_reg_cube_k_repeat, 0,
+               sizeof(env->tile_reg_cube_k_repeat));
+        memset(env->tile_reg_cube_n_repeat, 0,
+               sizeof(env->tile_reg_cube_n_repeat));
+        memset(env->tile_reg_cube_cell_count, 0,
+               sizeof(env->tile_reg_cube_cell_count));
+        memset(env->tile_reg_cube_storage_bytes, 0,
+               sizeof(env->tile_reg_cube_storage_bytes));
     }
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4363,7 +4390,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 21,
+    .version_id = 22,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4483,6 +4510,14 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32(env.lr_valid, LinxCPU),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_layout, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 19),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_cube_k_repeat, LinxCPU,
+                               LINX_TILE_SLOT_COUNT, 22),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_cube_n_repeat, LinxCPU,
+                               LINX_TILE_SLOT_COUNT, 22),
+        VMSTATE_UINT16_ARRAY_V(env.tile_reg_cube_cell_count, LinxCPU,
+                               LINX_TILE_SLOT_COUNT, 22),
+        VMSTATE_UINT32_ARRAY_V(env.tile_reg_cube_storage_bytes, LinxCPU,
+                               LINX_TILE_SLOT_COUNT, 22),
         VMSTATE_END_OF_LIST(),
     },
 };

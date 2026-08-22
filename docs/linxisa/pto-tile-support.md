@@ -116,9 +116,11 @@ shape, while computation observes the original logical M×K or K×N shape.
 | 11 | reserved | 131072 |
 | 12 | reserved | 262144 |
 
-Rows are derived from `SizeCodeBytes / (columns * element_size)`. Rows and columns
-must both be powers of two, and the valid region must not exceed the allocated
-rows or columns. QEMU keeps the wire SizeCode separate from its internal
+For ordinary layouts, rows are derived from
+`SizeCodeBytes / (columns * element_size)`. CUBE layouts instead derive aligned
+storage rows, columns, repeat counts, CELL count, and required bytes from the
+logical M/N/K dimensions; valid dimensions need only be positive and fit the
+selected M16/M32/N8 layout. QEMU keeps the wire SizeCode separate from its internal
 `log2(bytes)-4` allocation code.
 
 ## Shared Tile registers and B.IOS
@@ -135,14 +137,11 @@ publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity
 but does not add cross-PE ordering; software must prevent conflicting accesses.
 
-For a one-hot mask, PTO-ISA #75 defines a single-issuer form: the selected PE
-loads the complete logical object from its own `B.IOR` base/stride, while the
-published Shared version has Core4-wide capacity and can be consumed by all
-four PEs at a later cooperative CUBE rendezvous. Non-issuer PEs perform no
-second memory read. A multi-bit mask retains the element-region form above;
-the selected PE bases contribute their corresponding regions to the same
-aggregate version. The focused current-encoding regression is
-`v058_group_mma_fp32_4pe_single_issuer` in SuperScalarModel.
+Each selected PE contributes the fixed quarter identified by its decoded mask
+bit. `SizeCode` is the capacity per participating PE, while capacity accounting
+charges `popcount(mask) * SizeCodeBytes`. The first successful update freezes
+the allocation mask; later compatible updates may initialize a subset but may
+not expand that mask.
 
 ## Fail-closed execution
 

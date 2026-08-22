@@ -85,7 +85,7 @@ class V058TileRawContractTest(unittest.TestCase):
         self.assertIn("%BA_Canonicalize 25:1", self.decode)
         self.assertIn("%BA_PadValue 27:2", self.decode)
         self.assertIn("UINT32_C(0x1f1f7fff)", self.table)
-        self.assertIn("UINT32_C(0x5816035b)", self.table)
+        self.assertIn("UINT32_C(0x5ff6035b)", self.table)
 
     def test_retired_tlsu_compatibility_is_deleted(self) -> None:
         self.assertNotIn("TCVT_COMPAT", self.helper)

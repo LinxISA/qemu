@@ -47,7 +47,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
-        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (1024 * 1024)", self.cpu)
+        self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -168,7 +168,7 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertRegex(body, r"(?:imm|offset)\s*<<=\s*12")
             self.assertNotRegex(body, r"offset\s*<<=\s*1(?![0-9])")
 
-    def test_scalar_right_modifier_mapping_matches_linxisa_0581(self) -> None:
+    def test_scalar_right_modifier_mapping_matches_linxisa_0583(self) -> None:
         arithmetic = re.search(
             r"static TCGv_i64 linx_srcR_addsub\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -189,7 +189,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertRegex(arithmetic, r"case 2: /\* \.neg \*/")
         self.assertRegex(logical, r"case 2: /\* \.not \*/")
         self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
-        self.assertIn("(srcRType & 0x3) == 2", select)
+        self.assertIn("(srcRType & 0x3) == 3", select)
 
         for name in ("trans_cmp_eq", "trans_cmp_ne", "trans_setc_eq", "trans_setc_ne"):
             body = re.search(
@@ -218,18 +218,17 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
-    def test_shared_tload_one_hot_issuer_publishes_full_aggregate(self) -> None:
+    def test_shared_tload_uses_released_per_mask_quarters(self) -> None:
         self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
-        self.assertIn("size_code < 5u || size_code > 16u", self.helper)
-        self.assertIn("const bool single_issuer", self.helper)
-        self.assertIn("(unsigned)__builtin_ctz((unsigned)pe_mask)", self.helper)
+        self.assertIn("size_code < 3u || size_code > 14u", self.helper)
+        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
         self.assertIn(
-            "if (single_issuer && env->pe_id != issuer_pe)", self.helper
+            "ctpop8(allocation_mask) * bytes", self.helper
         )
-        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
-        self.assertIn("shared->initialized_mask = 0xfu", self.helper)
+        self.assertIn("shared->allocation_mask = allocation_mask", self.helper)
+        self.assertIn("ctpop8(pe_mask) * bytes", self.helper)
         self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
-        self.assertIn("shared->per_pe_capacity = bytes", self.helper)
+        self.assertNotIn("single_issuer", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
@@ -252,11 +251,10 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(f"{name} = {function}", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        # Shared state uses one Core-level aggregate payload with fixed PE
-        # regions; selected regions are never packed.
+        # Shared state uses one per-PE-capacity payload with fixed PE quarters.
         self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertIn("destination_offset = legacy_whole ? 0u", self.helper)
-        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination],",
+        self.assertNotIn("legacy_whole", self.helper)
+        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
                       self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)

@@ -125,7 +125,7 @@ static inline bool linx_tile_data_type_field_accepted(uint32_t data_type)
 static inline bool linx_tile_layout_accepted(uint32_t layout)
 {
     return layout < 32u &&
-           (UINT32_C(0x5816035b) & (UINT32_C(1) << layout)) != 0;
+           (UINT32_C(0x5ff6035b) & (UINT32_C(1) << layout)) != 0;
 }
 
 /* TEPL remains only the unchanged two-bit Mode/five-bit Function carrier. */
@@ -273,10 +273,16 @@ static inline bool linx_tile_datr_applicable(uint32_t blocktype,
                                              bool present)
 {
     uint32_t nonzero;
-    const uint32_t allowed = linx_tile_datr_allowed(blocktype, function);
+    uint32_t allowed = linx_tile_datr_allowed(blocktype, function);
+    const uint32_t layout = (packed >> 2) & 0x1fu;
 
     if (!present) {
         return true;
+    }
+    if (blocktype == 2u &&
+        ((function == 0u && layout >= 21u && layout <= 23u) ||
+         (function == 1u && layout >= 24u && layout <= 26u))) {
+        allowed |= LINX_DATR_PAD_OR_BYTE_ID;
     }
     nonzero = linx_tile_datr_nonzero_fields(packed);
     /*

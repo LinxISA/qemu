@@ -20,6 +20,7 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.decode = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.table = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
@@ -81,6 +82,31 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("required > sizeof(env->tile_acc)", self.cube)
         self.assertIn("shared_a_cols", self.cube)
         self.assertIn("shared_b_cols", self.cube)
+        self.assertIn("linx_tile_cube_payload_index_058", self.cube)
+        self.assertIn("tile_reg_cube_cell_count", self.cpu)
+        self.assertIn("linx_tile_numeric_acc_dtype(env->tile_dtype)", self.helper)
+
+    def test_binding_stream_is_closed_before_mutation(self) -> None:
+        self.assertIn("#define LINX_TILE_MAX_IOT 4u", self.cpu)
+        self.assertIn("#define LINX_TILE_MAX_SHARED_BINDERS 4u", self.cpu)
+        self.assertIn("split_size_completion", self.helper)
+        self.assertIn("output_count == expected_outputs", self.helper)
+        self.assertIn("env->tile_fpatr_valid != 1u", self.helper)
+        self.assertNotIn("legacy_whole", self.helper)
+        self.assertIn("allowed |= LINX_DATR_PAD_OR_BYTE_ID", self.table)
+
+    def test_cube_guest_vectors_are_wired(self) -> None:
+        runner = (ROOT / "scripts/linxisa/run-cube-0583-contract.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("cube_cell_guest_contract.s", runner)
+        self.assertIn("cube_shared_transpose_guest_contract.s", runner)
+        shared = (ROOT / "tests/linxisa/cube_shared_transpose_guest_contract.s").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".4byte 0x000021a3", shared)
+        self.assertIn("B.IOS S1, mask=1111", shared)
+        self.assertIn("B.IOS S2, mask=1111", shared)
 
     def test_retired_b_branches_are_not_decoded_or_advertised(self) -> None:
         for name in ("b_eq", "b_ne", "b_lt", "b_ltu", "b_ge", "b_geu", "b_z", "b_nz"):

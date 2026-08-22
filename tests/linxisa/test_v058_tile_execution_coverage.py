@@ -96,7 +96,8 @@ class TileExecutionCoverage(unittest.TestCase):
         collector = re.search(
             r"linx_tile_collect_cube_sources\(.*?\n\}", HELPER, re.S
         ).group(0)
-        self.assertIn("else if (d.last != 0u || d.has_size", collector)
+        self.assertIn("output_count == expected_outputs", collector)
+        self.assertIn("final_desc && d.last == 0u", collector)
         self.assertIn("return false", collector)
         self.assertRegex(
             HELPER,

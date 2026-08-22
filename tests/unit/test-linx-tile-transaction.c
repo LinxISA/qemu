@@ -186,12 +186,16 @@ static void test_datr_must_zero_pad_is_unconsumed(void)
     const uint32_t tcmp_cmode2 = 2u << 22;
     const uint32_t fp16_zero = (4u << 7) | (1u << 12);
     const uint32_t fp32_max = (1u << 7) | (2u << 12);
+    const uint32_t nd2m16_null = (22u << 2) | (31u << 7) | (3u << 12);
+    const uint32_t m162nd_null = (25u << 2) | (31u << 7) | (3u << 12);
 
     g_assert_true(linx_tile_datr_applicable(6u, 0u, 0u, false));
     g_assert_true(linx_tile_datr_applicable(7u, 0x00du, tcmp_cmode0, true));
     g_assert_true(linx_tile_datr_applicable(7u, 0x00du, tcmp_cmode2, true));
     g_assert_true(linx_tile_datr_applicable(7u, 0x01bu, fp16_zero, true));
     g_assert_false(linx_tile_datr_applicable(6u, 0u, fp32_max, true));
+    g_assert_true(linx_tile_datr_applicable(2u, 0u, nd2m16_null, true));
+    g_assert_true(linx_tile_datr_applicable(2u, 1u, m162nd_null, true));
 }
 
 static void test_v058_source_binding_preserves_producer_age(void)
