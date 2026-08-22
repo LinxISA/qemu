@@ -13432,6 +13432,7 @@ static bool linx_tile_operation_impl_selector_executable(uint32_t op)
     case 0x03eu: /* TROWEXPANDDIV */
     case 0x03fu: /* TROWEXPANDMAX */
     case 0x040u: /* TROWEXPANDMIN */
+    case 0x041u: /* TROWEXPANDEXPDIF */
     case 0x042u: /* TCOLEXPANDADD */
     case 0x043u: /* TCOLEXPANDSUB */
     case 0x044u: /* TCOLEXPANDMUL */
