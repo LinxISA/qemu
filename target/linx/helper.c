@@ -6438,6 +6438,12 @@ static LinxMinstCanonicalInfo linx_minst_canonical_info(const LinxOpcodeMeta *me
     if (strcmp(mnemonic, "hl_lui") == 0) {
         return (LinxMinstCanonicalInfo){ "HL.LUI", "255991889818", "int", NULL };
     }
+    if (strcmp(mnemonic, "hl_liu") == 0) {
+        return (LinxMinstCanonicalInfo){ "HL.LIU", "9dd207ce3aea", "int", NULL };
+    }
+    if (strcmp(mnemonic, "hl_lis") == 0) {
+        return (LinxMinstCanonicalInfo){ "HL.LIS", "908853d6ef87", "int", NULL };
+    }
     if (strcmp(mnemonic, "lui") == 0) {
         return (LinxMinstCanonicalInfo){ "LUI", "982113b541d6", "int", NULL };
     }

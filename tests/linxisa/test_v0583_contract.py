@@ -125,6 +125,15 @@ class PtoV0583ContractTests(unittest.TestCase):
         )
         self.assertIn("linx_hl_lui_value(a->imm)", self.translate)
         self.assertIn("linx_hl_liu_value(a->uimm)", self.translate)
+        self.assertIn(
+            '{ "HL.LUI", "255991889818", "int", NULL }', self.helper
+        )
+        self.assertIn(
+            '{ "HL.LIU", "9dd207ce3aea", "int", NULL }', self.helper
+        )
+        self.assertIn(
+            '{ "HL.LIS", "908853d6ef87", "int", NULL }', self.helper
+        )
 
     def test_csel_src_r_type_matches_authority(self) -> None:
         authority = json.loads(
