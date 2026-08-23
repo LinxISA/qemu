@@ -37,8 +37,8 @@ _start:
 high_entry:
   # PASS: write 0x5555 to the canonical finisher (0x10009000).
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
@@ -49,8 +49,8 @@ high_entry:
 .Ltrap_vector:
   # FAIL: write 0x3333 to the canonical finisher (0x10009000).
   C.BSTART
-  hl.lui 13107, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 13107, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 

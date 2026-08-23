@@ -8664,13 +8664,13 @@ static bool trans_hl_setret(DisasContext *ctx, arg_hl_setret *a)
 
 static bool trans_hl_lis(DisasContext *ctx, arg_hl_lis *a)
 {
-    linx_set_dest(a->RegDst, tcg_constant_i64((int64_t)a->simm));
+    linx_set_dest(a->RegDst, tcg_constant_i64(linx_hl_lis_value(a->simm)));
     return true;
 }
 
 static bool trans_hl_liu(DisasContext *ctx, arg_hl_liu *a)
 {
-    linx_set_dest(a->RegDst, tcg_constant_i64((uint64_t)a->uimm));
+    linx_set_dest(a->RegDst, tcg_constant_i64(linx_hl_liu_value(a->uimm)));
     return true;
 }
 

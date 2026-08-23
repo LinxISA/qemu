@@ -6,7 +6,7 @@ _start:
   # dependencies.
   addi zero, 291, ->a0
   ssrset a0, 0x0f01
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP

@@ -29,9 +29,9 @@ _start:
   # Emit the ready marker before a long bounded loop. The host stops the
   # source in this loop, migrates it, then requires the destination to finish.
   addi zero, 82, ->a4
-  hl.lui 268435456, ->t
+  hl.liu 268435456, ->t
   swi a4, [t#1, 0]
-  hl.lui 100000000, ->a5
+  hl.liu 100000000, ->a5
   C.BSTOP
 
 .Lmigration_wait:
@@ -73,8 +73,8 @@ _start:
 
 .Lpass:
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
@@ -84,8 +84,8 @@ _start:
 
 .Lfail:
   C.BSTART
-  hl.lui 13107, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 13107, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 

@@ -55,8 +55,8 @@ first_use_handler:
   .if HANDLER_MODE == 0
 first_use_handler_pass:
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
@@ -101,15 +101,15 @@ first_use_handler_resume:
 
 first_use_fail:
   C.BSTART
-  hl.lui 13107, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 13107, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
 first_use_retry_complete:
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 
@@ -139,8 +139,8 @@ first_use_cross_handler:
 
 first_use_cross_pass:
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 .endif
@@ -210,8 +210,8 @@ first_use_target:
 
 first_use_pass:
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 

@@ -111,6 +111,21 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("B.IOS S1, mask=1111", shared)
         self.assertIn("B.IOS S2, mask=1111", shared)
 
+    def test_hl_lui_is_reserved_for_upper_word_materialization(self) -> None:
+        uses = []
+        for source in (ROOT / "tests/linxisa").glob("*.s"):
+            for line_number, line in enumerate(
+                source.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if "hl.lui" in line.lower():
+                    uses.append((source.name, line_number, line.strip()))
+        self.assertEqual(
+            uses,
+            [("hl_lui_value_contract.s", 5, "hl.lui 65536, ->a0")],
+        )
+        self.assertIn("linx_hl_lui_value(a->imm)", self.translate)
+        self.assertIn("linx_hl_liu_value(a->uimm)", self.translate)
+
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
             "linx_tile_fpatr_mode_uses_vector_parameter_058",

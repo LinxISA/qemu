@@ -97,7 +97,7 @@ _start:
   C.BSTART COND, .Lfail
   addtpc prelu_out, ->a0
   lwi [a0, 0], ->t
-  hl.liu 3087023104, ->u
+  hl.lis -1207944192, ->u
   setc.ne t#1, u#1
   C.BSTOP
   C.BSTART COND, .Lfail

@@ -6,10 +6,24 @@ _start:
   hl.liu 1, ->a1
   hl.liu 48, ->a2
   sll a1, a2, ->a1
+  hl.liu 4294967295, ->a3
+  hl.lis -1, ->a4
+  hl.liu 32, ->a7
+  srl a4, a7, ->a5
+  hl.liu 1, ->a6
+  sub zero, a6, ->a6
   C.BSTOP
 
   C.BSTART COND, .Lfail
   setc.ne a0, a1
+  C.BSTOP
+
+  C.BSTART COND, .Lfail
+  setc.ne a3, a5
+  C.BSTOP
+
+  C.BSTART COND, .Lfail
+  setc.ne a4, a6
   C.BSTOP
 
   C.BSTART
