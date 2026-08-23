@@ -225,6 +225,9 @@ static inline bool linx_tile_operation_remainder_divisor_nonzero(
     case 2u: /* TF32 */
     case 3u: /* HF32 */
         return (raw & UINT32_C(0x7fffffff)) != 0u;
+    case 4u: /* FP16 */
+    case 5u: /* BF16 */
+        return (raw & UINT16_C(0x7fff)) != 0u;
     default:
         if (elem_bytes == 1u) {
             return (raw & UINT8_MAX) != 0u;
@@ -331,12 +334,11 @@ static inline bool linx_tile_operation_pre_publish_legal(
 
     if (impl == 0x102u) { /* TQUANT */
         unsigned scale_reg;
-        unsigned zero_reg;
 
+        /* B.IOR is optional: omission selects multiplier 1.0 and zero point 0. */
         return has_src0 && !has_src1 &&
-               linx_tile_operation_preflight_resolve_ior(env, 0u, &scale_reg) &&
-               linx_tile_operation_preflight_resolve_ior(env, 1u, &zero_reg) &&
-               env->gpr[scale_reg] != 0u;
+               (!linx_tile_operation_preflight_resolve_ior(env, 0u, &scale_reg) ||
+                env->gpr[scale_reg] != 0u);
     }
     if (impl == 0x10cu) { /* TFMA */
         return has_src0 && has_src1 && has_src2 &&
