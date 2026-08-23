@@ -1,0 +1,8 @@
+{
+  "schema": "linxisa-v0.58.3-csel-authority-v1",
+  "source": "isa/v0.58/linxisa-v0.58.json",
+  "mnemonic": "CSEL",
+  "default_src_r_type": 3,
+  "neg_src_r_type": 2,
+  "other_src_r_types_are_default": true
+}

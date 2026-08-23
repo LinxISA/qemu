@@ -126,6 +126,18 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("linx_hl_lui_value(a->imm)", self.translate)
         self.assertIn("linx_hl_liu_value(a->uimm)", self.translate)
 
+    def test_csel_src_r_type_matches_authority(self) -> None:
+        authority = json.loads(
+            (ROOT / "tests/linxisa/linxisa-v0583-csel-authority.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(authority["default_src_r_type"], 3)
+        self.assertEqual(authority["neg_src_r_type"], 2)
+        numeric = (TARGET / "insn_numeric_058.h").read_text(encoding="utf-8")
+        self.assertIn("(src_r_type & 3u) == 2u", numeric)
+        self.assertIn("linx_csel_negates_src_r(srcRType)", self.translate)
+
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
             "linx_tile_fpatr_mode_uses_vector_parameter_058",

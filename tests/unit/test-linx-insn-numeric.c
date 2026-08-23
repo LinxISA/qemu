@@ -19,10 +19,19 @@ static void test_hl_li_signedness(void)
     g_assert_cmphex(linx_hl_lis_value(-1), ==, UINT64_MAX);
 }
 
+static void test_csel_src_r_type(void)
+{
+    g_assert_false(linx_csel_negates_src_r(0));
+    g_assert_false(linx_csel_negates_src_r(1));
+    g_assert_true(linx_csel_negates_src_r(2));
+    g_assert_false(linx_csel_negates_src_r(3));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/insn/hl-lui", test_hl_lui);
     g_test_add_func("/linx/insn/hl-li-signedness", test_hl_li_signedness);
+    g_test_add_func("/linx/insn/csel-src-r-type", test_csel_src_r_type);
     return g_test_run();
 }

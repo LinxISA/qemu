@@ -1853,7 +1853,7 @@ static TCGv_i64 linx_srcR_select(DisasContext *ctx, unsigned srcR,
     TCGv_i64 r = linx_get_reg(srcR);
     TCGv_i64 tmp = tcg_temp_new_i64();
 
-    if ((srcRType & 0x3) == 3) {
+    if (linx_csel_negates_src_r(srcRType)) {
         tcg_gen_neg_i64(tmp, r);
     } else {
         tcg_gen_mov_i64(tmp, r);
