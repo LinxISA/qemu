@@ -222,10 +222,11 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(f"{name} = {function}", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        # Shared state uses one per-PE-capacity payload with fixed PE quarters.
+        # Shared state uses one Core-level aggregate payload with fixed PE
+        # regions; selected regions are never packed.
         self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertNotIn("legacy_whole", self.helper)
-        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
+        self.assertIn("destination_offset = legacy_whole ? 0u", self.helper)
+        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination],",
                       self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
@@ -308,7 +309,9 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
-        self.assertIn("accepting legacy ELF", virt)
+        # PTO v0.58.3 requires the identity note; legacy-ELF acceptance was
+        # removed upstream.
+        self.assertIn("malformed .note.pto.isa", virt)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
         cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")

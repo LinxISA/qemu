@@ -92,7 +92,9 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("split_size_completion", self.helper)
         self.assertIn("output_count == expected_outputs", self.helper)
         self.assertIn("env->tile_fpatr_valid != 1u", self.helper)
-        self.assertNotIn("legacy_whole", self.helper)
+        # Aggregate Shared B.IOS semantics keep the legacy whole-payload path
+        # (issue #112/#132) on top of the 0.58.3 base.
+        self.assertIn("legacy_whole", self.helper)
         self.assertIn("allowed |= LINX_DATR_PAD_OR_BYTE_ID", self.table)
 
     def test_cube_guest_vectors_are_wired(self) -> None:
