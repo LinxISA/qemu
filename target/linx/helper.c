@@ -15506,7 +15506,7 @@ static void linx_tile_mgather_common(CPULinxState *env, unsigned dst_tile,
                     return;
                 }
                 /* PTO v0.58 indices address elements, not bytes. */
-                value = linx_tile_mem_read(env, base + off * elem_bytes,
+            value = linx_tile_mem_read(env, base + off,
                                            elem_bytes);
             } else {
                 const uint32_t seed = lane ^ (uint32_t)base ^ (env->tile_attr_raw << 8);
@@ -15570,7 +15570,7 @@ static void linx_tile_mscatter_common(CPULinxState *env, unsigned data_tile,
             off = signed_index
                       ? (uint64_t)linx_tile_sign_extend64(raw_off, off_bytes)
                       : raw_off;
-            linx_tile_mem_write(env, base + off * elem_bytes, elem_bytes,
+            linx_tile_mem_write(env, base + off, elem_bytes,
                                 value);
         }
     }
@@ -15615,7 +15615,7 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
                     return;
                 }
                 old_value = linx_tile_mem_cmpxchg(env,
-                                                  base + off * elem_bytes,
+                                                  base + off,
                                                   elem_bytes,
                                                   expected, desired);
             } else {
