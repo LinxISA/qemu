@@ -1,0 +1,19 @@
+{
+  "schema": "linxisa-v0.58.3-csel-authority-v1",
+  "authority_commit": "eddb0a2bd23399dd008381d21d89f20f742e7e53",
+  "decision_commit": "d231a27e566f1a5bc12003caedcb6b73bcefe341",
+  "catalog_path": "isa/v0.58/linxisa-v0.58.json",
+  "catalog_sha256": "e003d9a8e8e68de63afe0e8662e59658c173bb651e90f670c490aec2121ad1c8",
+  "catalog_csel": {
+    "description": "CSEL encodes its optional .neg as SrcRType=10; the canonical unmodified spelling uses SrcRType=11 and every other value is also treated as unmodified.",
+    "policy": "10_as_neg_else_00"
+  },
+  "catalog_csel_sha256": "ddecade34557df5241a955a1a81e0340dc5027b605ee992c9e6f54458101b771",
+  "sail_path": "isa/sail/model/execute/execute.sail",
+  "sail_sha256": "36b7b814ab567c69be42f1417efcc9aec3f5acad2151d8ebd9c946da1df842e5",
+  "sail_exec_csel_sha256": "2b26f8624064d33f7f9cee4d0f39765498935903b8fe977abfdfce71fe101912",
+  "mnemonic": "CSEL",
+  "default_src_r_type": 3,
+  "neg_src_r_type": 2,
+  "other_src_r_types_are_default": true
+}

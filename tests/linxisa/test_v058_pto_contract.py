@@ -160,7 +160,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertRegex(arithmetic, r"case 2: /\* \.neg \*/")
         self.assertRegex(logical, r"case 2: /\* \.not \*/")
         self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
-        self.assertIn("(srcRType & 0x3) == 3", select)
+        self.assertIn("linx_csel_negates_src_r(srcRType)", select)
 
         for name in ("trans_cmp_eq", "trans_cmp_ne", "trans_setc_eq", "trans_setc_ne"):
             body = re.search(
