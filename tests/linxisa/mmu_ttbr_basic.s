@@ -6,6 +6,7 @@ _start:
   addtpc .Ltrap_vector, ->a0
   addi a0, .Ltrap_vector, ->a0
   ssrset a0, 0x0f01
+  hl.ssrset a0, 0x1f01
   C.BSTOP
 
   # Program TTBR0/TTBR1 + enable MME (ACR1 bank) and then jump to a TTBR1-mapped
@@ -31,10 +32,24 @@ _start:
   addtpc high_entry, ->a2
   addi a2, high_entry, ->a2
   add a1, a2, ->a0
-  setc.tgt a0
+  # Enter the TTBR1 high alias explicitly as ACR2.  A mapped-user TLSU
+  # regression must exercise CPU MMU translation under the user ring, not only
+  # the same virtual address while remaining privileged in ACR0.
+  addi zero, 2, ->a1
+  ssrset a1, 0x0f00
+  ssrset a0, 0x0f41
+  ssrset a0, 0x0f43
+  acre 0
   C.BSTOP
 
 high_entry:
+  # Fail closed unless ACRE actually installed ACR2 in CSTATE.ACR.
+  C.BSTART COND, .Ltrap_vector
+  ssrget 0x0020, ->a4
+  xori a4, 2, ->a4
+  setc.ne a4, zero
+  C.BSTOP
+
   # Exercise ordinary TLSU through the active CPU MMU.  Both buffers live in
   # the high alias page mapped by TTBR1; an IOMMU/physical-mask shortcut would
   # access an unrelated physical address and fail this result check.
@@ -100,7 +115,10 @@ tile_output:
 .data
 .p2align 3
 .Lhigh_base:
-  .quad 0xffff800000000000
+  # Keep bits[28:0] different from the mapped PA.  This makes the regression
+  # fail on the retired physical-mask shortcut (VA & 0x1fffffff) while the CPU
+  # page-table walk resolves the alias to PA 0x10000.
+  .quad 0xffff800000200000
 
 /*
  * TTBR0 page tables: map VA[47]=0 region 0..2MiB identity using an L2 block.
@@ -143,8 +161,9 @@ L1_ttbr1:
 
 .p2align 12
 L2_ttbr1:
+  .zero 8
   .quad L3_ttbr1 + 3
-  .zero 8 * (512 - 1)
+  .zero 8 * (512 - 2)
 
 .p2align 12
 L3_ttbr1:

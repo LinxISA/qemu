@@ -180,6 +180,10 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("BSTART.TLOAD FP32", mmu_guest)
         self.assertIn("BSTART.TSTORE FP32", mmu_guest)
         self.assertIn("TTBR1-mapped", mmu_guest)
+        self.assertIn("ssrset a1, 0x0f00", mmu_guest)
+        self.assertIn("acre 0", mmu_guest)
+        self.assertIn("ssrget 0x0020, ->a4", mmu_guest)
+        self.assertIn("xori a4, 2, ->a4", mmu_guest)
 
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
