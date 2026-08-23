@@ -35,6 +35,39 @@ _start:
   C.BSTOP
 
 high_entry:
+  # Exercise ordinary TLSU through the active CPU MMU.  Both buffers live in
+  # the high alias page mapped by TTBR1; an IOMMU/physical-mask shortcut would
+  # access an unrelated physical address and fail this result check.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  addtpc tile_output, ->a1
+  addi a1, tile_output, ->a1
+  addi zero, 16, ->a3
+  C.BSTOP
+
+  BSTART.TLOAD FP32
+  B.DATR NORM, DTYPE_NONE, Zero
+  C.B.DIMI 4, ->lb0
+  C.B.DIMI 1, ->lb1
+  C.B.DIMI 4, ->lb2
+  B.IOR [a0,a3],[]
+  B.IOT mask=0001, last, ->t<128B>
+
+  BSTART.TSTORE FP32
+  B.DATR NORM, DTYPE_NONE, Zero
+  C.B.DIMI 4, ->lb0
+  C.B.DIMI 1, ->lb1
+  C.B.DIMI 4, ->lb2
+  B.IOR [a1,a3],[]
+  B.IOT t#1, mask=0001, last
+
+  C.BSTART COND, .Ltrap_vector
+  lwi [a0, 0], ->a2
+  lwi [a1, 0], ->a3
+  setc.ne a2, a3
+  C.BSTOP
+
   # PASS: write 0x5555 to the canonical finisher (0x10009000).
   C.BSTART
   hl.liu 21845, ->a0
@@ -57,6 +90,12 @@ high_entry:
 .Ltrap_hang:
   C.BSTART DIRECT, .Ltrap_hang
   C.BSTOP
+
+.p2align 4
+tile_input:
+  .4byte 0x3f800000, 0x40000000, 0x40400000, 0x40800000
+tile_output:
+  .zero 16
 
 .data
 .p2align 3

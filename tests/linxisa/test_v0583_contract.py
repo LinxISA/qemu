@@ -170,6 +170,17 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("(src_r_type & 3u) == 2u", numeric)
         self.assertIn("linx_csel_negates_src_r(srcRType)", self.translate)
 
+    def test_tlsu_cpu_virtual_memory_route_is_guarded(self) -> None:
+        self.assertIn("linx_tile_iommu_enabled", self.helper)
+        self.assertIn("cpu_ldub_data(env, (abi_ptr)addr)", self.helper)
+        self.assertIn("cpu_stb_data(env, (abi_ptr)addr", self.helper)
+        mmu_guest = (ROOT / "tests/linxisa/mmu_ttbr_basic.s").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("BSTART.TLOAD FP32", mmu_guest)
+        self.assertIn("BSTART.TSTORE FP32", mmu_guest)
+        self.assertIn("TTBR1-mapped", mmu_guest)
+
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
             "linx_tile_fpatr_mode_uses_vector_parameter_058",
