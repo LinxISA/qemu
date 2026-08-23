@@ -17675,10 +17675,12 @@ static bool linx_tile_preflight_tlsu(
         if (mask == 0u || (mask & pe_bit) == 0u) {
             return true;
         }
-        const uint32_t capacity = UINT32_C(1) << (size_class + 6u);
+        const uint32_t quarter = UINT32_C(1) << (size_class + 6u);
         const uint32_t local_bytes = env->tile_reg_bytes[source];
+        const bool legacy_whole =
+            local_bytes == quarter * LINX_CORE4_PE_COUNT;
         if (size_class == 0u || size_class > 12u ||
-            local_bytes != capacity ||
+            (local_bytes != quarter && !legacy_whole) ||
             env->tile_reg_dtype[source] != dtype ||
             env->tile_reg_elem_bytes[source] !=
                 linx_tile_dtype_elem_bytes(dtype)) {
@@ -17691,7 +17693,7 @@ static bool linx_tile_preflight_tlsu(
         const bool compatible =
             shared->allocation_mask == 0u ||
             (shared->allocation_mask == mask &&
-             shared->per_pe_capacity == capacity &&
+             shared->per_pe_capacity == shared_capacity &&
              shared->dtype == dtype &&
              shared->layout == env->tile_reg_layout[source] &&
              shared->valid_cols == env->tile_reg_valid_cols[source] &&
@@ -19169,7 +19171,10 @@ static bool linx_tile_shared_tmov_local_to_shared(
 
     payload = g_memdup2(env->tile_reg[source], bytes);
     const unsigned size_class = linx_tile_shared_size_code(env);
-    const uint32_t shared_capacity = UINT32_C(1) << (size_class + 6u);
+    const uint32_t quarter = UINT32_C(1) << (size_class + 6u);
+    const bool legacy_whole = bytes == quarter * LINX_CORE4_PE_COUNT;
+    const uint32_t shared_capacity = legacy_whole ? bytes
+                                                  : bytes * LINX_CORE4_PE_COUNT;
     LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
     qemu_mutex_lock(&cpu->core4->lock);
     bool valid = shared->allocation_mask == 0u ||
@@ -19183,8 +19188,10 @@ static bool linx_tile_shared_tmov_local_to_shared(
                   shared->rows == env->tile_reg_rows[source]);
     if (valid && shared->allocation_mask == 0u) {
         shared->allocation_mask = mask;
+        /* Issue #112/#132: a PE-local Local source contributes its fixed
+         * quarter of the Core-level aggregate Shared payload. */
         shared->per_pe_capacity = shared_capacity;
-        shared->allocated_bytes = ctpop8(mask) * shared->per_pe_capacity;
+        shared->allocated_bytes = shared->per_pe_capacity;
         shared->dtype = dtype;
         shared->layout = env->tile_reg_layout[source];
         shared->valid_cols = env->tile_reg_valid_cols[source];
@@ -19194,22 +19201,9 @@ static bool linx_tile_shared_tmov_local_to_shared(
         shared->producer_bpc = env->bpc;
     }
     if (valid && (mask & (uint8_t)(1u << env->pe_id)) != 0u) {
-        const unsigned elem_bytes = env->tile_reg_elem_bytes[source];
-        const uint32_t elements = elem_bytes == 0u ? 0u : bytes / elem_bytes;
-        for (uint32_t element = 0; element < elements; element++) {
-            const uint32_t byte_offset = element * elem_bytes;
-            const unsigned region = (unsigned)(((uint64_t)byte_offset * 4u) /
-                                                bytes);
-            if (region < LINX_CORE4_PE_COUNT &&
-                (mask & (uint8_t)(1u << region)) != 0u &&
-                destination_offset + elem_bytes <= shared->per_pe_capacity) {
-                /* Aggregate form supersedes the old
-                 * memcpy(shared->data + byte_offset, payload + byte_offset)
-                 * wording while preserving the same element payload copy. */
-                memcpy(shared->data + destination_offset, payload + byte_offset,
-                       elem_bytes);
-            }
-        }
+        const uint32_t destination_offset = legacy_whole ? 0u
+                                                         : env->pe_id * bytes;
+        memcpy(shared->data + destination_offset, payload, bytes);
         shared->initialized_mask |= mask;
     }
     qemu_mutex_unlock(&cpu->core4->lock);
@@ -19241,24 +19235,18 @@ static bool linx_tile_shared_tmov_shared_to_local(
     LinxSharedTileVersion *shared =
         &cpu->core4->shared_tile[linx_tile_shared_id(env)];
     qemu_mutex_lock(&cpu->core4->lock);
+    const uint32_t quarter = shared->per_pe_capacity / LINX_CORE4_PE_COUNT;
     const uint32_t dst_bytes = env->tile_reg_bytes[destination];
+    const bool legacy_whole = dst_bytes == shared->per_pe_capacity;
     const bool valid = shared->allocation_mask != 0u &&
                        shared->per_pe_capacity != 0u &&
-                       dst_bytes == shared->per_pe_capacity;
+                       shared->per_pe_capacity % LINX_CORE4_PE_COUNT == 0u &&
+                       (dst_bytes == quarter || legacy_whole);
     if (valid && (mask & (uint8_t)(1u << env->pe_id)) != 0u) {
-        const unsigned elem_bytes = env->tile_reg_elem_bytes[destination];
-        const uint32_t elements = elem_bytes == 0u ? 0u
-                                                   : dst_bytes / elem_bytes;
-        for (uint32_t element = 0; element < elements; element++) {
-            const uint32_t byte_offset = element * elem_bytes;
-            const unsigned region = (unsigned)(((uint64_t)byte_offset * 4u) /
-                                                dst_bytes);
-            if (region < LINX_CORE4_PE_COUNT &&
-                (mask & (uint8_t)(1u << region)) != 0u) {
-                memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,
-                       shared->data + byte_offset, elem_bytes);
-            }
-        }
+        const uint32_t source_offset = legacy_whole ? 0u
+                                                    : env->pe_id * quarter;
+        memcpy((uint8_t *)env->tile_reg[destination],
+               shared->data + source_offset, dst_bytes);
     }
     qemu_mutex_unlock(&cpu->core4->lock);
     if (!valid) {
