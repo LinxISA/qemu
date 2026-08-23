@@ -184,6 +184,18 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("acre 0", mmu_guest)
         self.assertIn("ssrget 0x0020, ->a4", mmu_guest)
         self.assertIn("xori a4, 2, ->a4", mmu_guest)
+        self.assertIn("hl.ssrget 0x1f03", mmu_guest)
+        self.assertIn("hl.ssrget 0x1f45", mmu_guest)
+        load_commit = self.helper.index("linx_tile_load(env, dst_tile")
+        load_publish = self.helper.index(
+            "linx_tile_complete_bound_output(", load_commit
+        )
+        store_commit = self.helper.index("linx_tile_store(env, src_tile")
+        store_consume = self.helper.index(
+            "linx_tile_consume_bound_sources(env, live, i", store_commit
+        )
+        self.assertLess(load_commit, load_publish)
+        self.assertLess(store_commit, store_consume)
 
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
