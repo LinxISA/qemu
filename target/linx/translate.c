@@ -11,6 +11,7 @@
 #include "tcg/tcg-op.h"
 #include "tcg/tcg.h"
 #include "exec/helper-proto.h"
+#include "insn_numeric_058.h"
 #include "exec/helper-gen.h"
 #include "exec/translator.h"
 #include "exec/target_page.h"
@@ -3997,9 +3998,8 @@ static bool trans_lui(DisasContext *ctx, arg_lui *a)
 
 static bool trans_hl_lui(DisasContext *ctx, arg_hl_lui *a)
 {
-    int32_t imm = (int32_t)a->imm;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, (int64_t)imm);
+    tcg_gen_movi_i64(out, linx_hl_lui_value(a->imm));
     linx_set_dest(a->RegDst, out);
     return true;
 }
