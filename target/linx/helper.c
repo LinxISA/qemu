@@ -11151,9 +11151,27 @@ static bool linx_iommu_translate(CPULinxState *env, uint64_t iova,
     return false;
 }
 
+static inline bool linx_tile_iommu_enabled(const CPULinxState *env)
+{
+    return (env->ssr_acr[1][LINX_SSR_IOTCR] & 1u) != 0u;
+}
+
 static inline uint32_t linx_tile_mem_read(CPULinxState *env, uint64_t addr,
                                           unsigned elem_bytes)
 {
+    if (!linx_tile_iommu_enabled(env)) {
+        switch (elem_bytes) {
+        case 1u:
+            return cpu_ldub_data(env, (abi_ptr)addr);
+        case 2u:
+            return cpu_lduw_le_data(env, (abi_ptr)addr);
+        case 4u:
+            return cpu_ldl_le_data(env, (abi_ptr)addr);
+        default:
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return 0;
+        }
+    }
     hwaddr pa;
     if (!linx_iommu_translate(env, addr, false, &pa)) {
         env->pending_trap_arg0 = addr;
@@ -11195,6 +11213,9 @@ static inline uint64_t linx_tile_mem_read64(CPULinxState *env, uint64_t addr,
     if (elem_bytes != 8u) {
         return linx_tile_mem_read(env, addr, elem_bytes);
     }
+    if (!linx_tile_iommu_enabled(env)) {
+        return cpu_ldq_le_data(env, (abi_ptr)addr);
+    }
     if (!linx_iommu_translate(env, addr, false, &pa)) {
         env->pending_trap_arg0 = addr;
         env->pending_trap_cause =
@@ -11215,6 +11236,24 @@ static inline uint64_t linx_tile_mem_read64(CPULinxState *env, uint64_t addr,
 static inline void linx_tile_mem_write(CPULinxState *env, uint64_t addr,
                                        unsigned elem_bytes, uint32_t v)
 {
+    if (!linx_tile_iommu_enabled(env)) {
+        switch (elem_bytes) {
+        case 1u:
+            cpu_stb_data(env, (abi_ptr)addr, v & 0xffu);
+            break;
+        case 2u:
+            cpu_stw_le_data(env, (abi_ptr)addr, v & 0xffffu);
+            break;
+        case 4u:
+            cpu_stl_le_data(env, (abi_ptr)addr, v);
+            break;
+        default:
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+            return;
+        }
+        linx_tile_invalidate_raw_transports(env, addr, elem_bytes);
+        return;
+    }
     hwaddr pa;
     if (!linx_iommu_translate(env, addr, true, &pa)) {
         env->pending_trap_arg0 = addr;
@@ -11256,6 +11295,11 @@ static inline void linx_tile_mem_write64(CPULinxState *env, uint64_t addr,
 
     if (elem_bytes != 8u) {
         linx_tile_mem_write(env, addr, elem_bytes, (uint32_t)value);
+        return;
+    }
+    if (!linx_tile_iommu_enabled(env)) {
+        cpu_stq_le_data(env, (abi_ptr)addr, value);
+        linx_tile_invalidate_raw_transports(env, addr, 8u);
         return;
     }
     if (!linx_iommu_translate(env, addr, true, &pa)) {

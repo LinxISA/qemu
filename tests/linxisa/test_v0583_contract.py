@@ -170,6 +170,33 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("(src_r_type & 3u) == 2u", numeric)
         self.assertIn("linx_csel_negates_src_r(srcRType)", self.translate)
 
+    def test_tlsu_cpu_virtual_memory_route_is_guarded(self) -> None:
+        self.assertIn("linx_tile_iommu_enabled", self.helper)
+        self.assertIn("cpu_ldub_data(env, (abi_ptr)addr)", self.helper)
+        self.assertIn("cpu_stb_data(env, (abi_ptr)addr", self.helper)
+        mmu_guest = (ROOT / "tests/linxisa/mmu_ttbr_basic.s").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("BSTART.TLOAD FP32", mmu_guest)
+        self.assertIn("BSTART.TSTORE FP32", mmu_guest)
+        self.assertIn("TTBR1-mapped", mmu_guest)
+        self.assertIn("ssrset a1, 0x0f00", mmu_guest)
+        self.assertIn("acre 0", mmu_guest)
+        self.assertIn("ssrget 0x0020, ->a4", mmu_guest)
+        self.assertIn("xori a4, 2, ->a4", mmu_guest)
+        self.assertIn("hl.ssrget 0x1f03", mmu_guest)
+        self.assertIn("hl.ssrget 0x1f45", mmu_guest)
+        load_commit = self.helper.index("linx_tile_load(env, dst_tile")
+        load_publish = self.helper.index(
+            "linx_tile_complete_bound_output(", load_commit
+        )
+        store_commit = self.helper.index("linx_tile_store(env, src_tile")
+        store_consume = self.helper.index(
+            "linx_tile_consume_bound_sources(env, live, i", store_commit
+        )
+        self.assertLess(load_commit, load_publish)
+        self.assertLess(store_commit, store_consume)
+
     def test_complete_fpatr_modes_and_auxiliary_sources_are_executable(self) -> None:
         for symbol in (
             "linx_tile_fpatr_mode_uses_vector_parameter_058",

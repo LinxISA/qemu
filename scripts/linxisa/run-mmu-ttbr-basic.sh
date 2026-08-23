@@ -102,6 +102,38 @@ if result.returncode != 0:
 PY
 echo "[PASS] mmu-ttbr-basic (current ET_REL relocation ABI)"
 
+for fault_kind in 0 1; do
+  if [[ "$fault_kind" -eq 0 ]]; then
+    fault_name="TLOAD"
+    fault_object="$TMP/mmu_ttbr_tload_fault.o"
+  else
+    fault_name="TSTORE"
+    fault_object="$TMP/mmu_ttbr_tstore_fault.o"
+  fi
+  echo "[llvm-mc] precise ACR2 $fault_name page fault"
+  "$LLVM_MC" -triple=linx64 -filetype=obj --defsym=FAULT_KIND="$fault_kind" \
+    "$SRC" -o "$fault_object"
+  qemu_direct_kernel_args "$fault_object"
+  echo "[run] precise ACR2 $fault_name page fault"
+  LINX_VIRT_TEST_FINISHER=1 python3 - "$TIMEOUT_SECONDS" \
+    "$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}" <<'PY'
+import os
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+try:
+    result = subprocess.run(sys.argv[2:], env=os.environ.copy(), timeout=timeout)
+except subprocess.TimeoutExpired:
+    print(f"error: QEMU timed out after {timeout:g}s", file=sys.stderr)
+    raise SystemExit(124)
+if result.returncode != 0:
+    print(f"error: QEMU exited with status {result.returncode}", file=sys.stderr)
+    raise SystemExit(result.returncode or 1)
+PY
+  echo "[PASS] precise ACR2 $fault_name VA/cause and commit boundary"
+done
+
 # Preserve matching instruction sites while changing their relocation types to
 # unsupported dynamic/GOT types.  Opcode fallback must reject all three.
 python3 - "$OUT_O" \
