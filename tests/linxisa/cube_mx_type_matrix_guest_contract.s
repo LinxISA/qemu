@@ -82,24 +82,24 @@ _start:
   C.BSTART COND, .Lfail
   addtpc mx_out0, ->a0
   lwi [a0, 0], ->t
-  hl.lui 1065353216, ->u
+  hl.liu 1065353216, ->u
   setc.ne t#1, u#1
   C.BSTOP
   C.BSTART COND, .Lfail
   addtpc mx_out1, ->a0
   lwi [a0, 0], ->t
-  hl.lui 1065353216, ->u
+  hl.liu 1065353216, ->u
   setc.ne t#1, u#1
   C.BSTOP
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 .Lfail:
   C.BSTART
-  hl.lui 13107, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 13107, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP
 

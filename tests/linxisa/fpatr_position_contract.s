@@ -56,7 +56,7 @@ fpatr_position_post_ios:
 
   # Every case must trap before reaching this observable side effect.
   C.BSTART
-  hl.lui 21845, ->a0
-  hl.lui 268472320, ->t
+  hl.liu 21845, ->a0
+  hl.liu 268472320, ->t
   swi a0, [t#1, 0]
   C.BSTOP

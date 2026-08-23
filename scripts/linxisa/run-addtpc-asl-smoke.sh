@@ -36,15 +36,18 @@ with open(os.environ["TRACE"], "r", encoding="utf-8") as stream:
     rows = [json.loads(line) for line in stream if line.strip()]
 
 writebacks = [row for row in rows if row.get("wb_valid")]
-expected = [(0x2000, "positive"), (-0x2000, "negative")]
+block_tpc = min(row["pc"] for row in writebacks[:4]) - 2
+expected = [
+    (block_tpc + 0x2000, "positive"),
+    (block_tpc - 0x2000, "negative"),
+]
 matched = {name: 0 for _, name in expected}
 for row in writebacks:
-    pc = row.get("pc")
     value = row.get("wb_data")
-    if not isinstance(pc, int) or not isinstance(value, int):
+    if not isinstance(value, int):
         continue
-    for displacement, name in expected:
-        if value == (pc + displacement) & ((1 << 64) - 1):
+    for expected_value, name in expected:
+        if value == expected_value & ((1 << 64) - 1):
             matched[name] += 1
 
 missing = [name for _, name in expected if matched[name] != 2]

@@ -46,7 +46,7 @@
 %fused_call_simm25 7:s25
 %fused_call_uimm5 38:5
 
-# HL.LUI | hl.lui imm, ->{t, u, Rd} (load upper immediate, 32-bit)
+# HL.LUI | hl.lui imm, ->{t, u, Rd} (imm32 in bits 63:32; bits 31:0 are zero)
 hl_lui 0000 0000 0000 0000 .... .... .... .... .... .... .001 0111 .... .... .... 1110 %RegDst imm=%imm32
 
 # HL.ADDTPC | hl.addtpc imm, ->{t, u, Rd} (PC-relative, 32-bit immediate)
