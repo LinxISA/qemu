@@ -870,6 +870,22 @@ bool linx_tile_cube_compute_shared_ab_058(
         0u, 0u, 0u, size_code, false, false, accumulate);
 }
 
+bool linx_tile_cube_compute_shared_058(
+    CPULinxState *env, unsigned src_a,
+    const uint8_t *shared_a, uint32_t shared_a_bytes,
+    uint32_t shared_a_dtype, uint32_t shared_a_cols,
+    const uint8_t *shared_b, uint32_t shared_b_bytes,
+    uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    unsigned row_scale, unsigned column_scale, unsigned bias,
+    unsigned size_code, bool mx, bool with_bias, bool accumulate)
+{
+    return linx_tile_cube_compute_common_058(
+        env, src_a, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
+        shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype,
+        shared_b_cols, row_scale, column_scale, bias, size_code, mx,
+        with_bias, accumulate);
+}
+
 static uint64_t cube_saturate_integer(uint64_t raw, uint8_t acc_dtype,
                                       uint32_t dst_dtype)
 {

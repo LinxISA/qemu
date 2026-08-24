@@ -18121,7 +18121,10 @@ void HELPER(linx_tile_append_shared_binder_v058)(CPULinxState *env,
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
-    env->tile_shared_binder[env->tile_shared_binder_count++] = shared & 0x7fffu;
+    /* PTO 0.58.4 stores Shared SizeCode in bits [18:15].  Preserve bit 15
+     * in the internal packed binder; the old 15-bit mask silently converted
+     * SizeCode 8 and above into a source-form binding. */
+    env->tile_shared_binder[env->tile_shared_binder_count++] = shared & 0x7ffffu;
 }
 
 void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
@@ -18503,8 +18506,15 @@ static bool linx_tile_group_cube_profile(
     unsigned destination = 0u;
     unsigned size_code;
     const unsigned shared_count = env->tile_shared_binder_count;
+    const bool with_bias = func == LINX_CUBE_TMATMUL_BIAS ||
+                           func == LINX_CUBE_TMATMUL_MX_BIAS;
+    const bool with_acc = func == LINX_CUBE_TMATMUL_ACC ||
+                          func == LINX_CUBE_TMATMUL_MX_ACC;
+    const bool with_mx = func == LINX_CUBE_TMATMUL_MX ||
+                         func == LINX_CUBE_TMATMUL_MX_BIAS ||
+                         func == LINX_CUBE_TMATMUL_MX_ACC;
     const unsigned required_sources =
-        (func == LINX_CUBE_TMATMUL_ACC ? 3u : 2u) - shared_count;
+        (2u + with_bias + with_acc + (with_mx ? 2u : 0u)) - shared_count;
     const LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     bool valid;
 
@@ -18522,8 +18532,13 @@ static bool linx_tile_group_cube_profile(
         cpu->core4->cpu[2] == NULL || cpu->core4->cpu[3] == NULL ||
         env->pe_id >= LINX_CORE4_PE_COUNT ||
         env->blocktype != LINX_BLOCK_CUBE ||
-        (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_ACC) ||
-        !linx_tile_numeric_ordinary_matrix_pair(left_dtype, right_dtype) ||
+        (func != LINX_CUBE_TMATMUL && func != LINX_CUBE_TMATMUL_BIAS &&
+         func != LINX_CUBE_TMATMUL_ACC && func != LINX_CUBE_TMATMUL_MX &&
+         func != LINX_CUBE_TMATMUL_MX_BIAS &&
+         func != LINX_CUBE_TMATMUL_MX_ACC) ||
+        ((!with_mx && !linx_tile_numeric_ordinary_matrix_pair(
+             left_dtype, right_dtype)) ||
+         (with_mx && !linx_tile_numeric_mx_pair(left_dtype, right_dtype))) ||
         (shared_count != 1u && shared_count != 2u) ||
         !dimensions_legal || !sources_legal || !output_legal ||
         !linx_tile_cube_postprocess_sources_legal(
@@ -18537,7 +18552,8 @@ static bool linx_tile_group_cube_profile(
     if (env->tile_iot_count > 1u) {
         dst = destination;
     }
-    src_a = shared_count == 1u ? sources[required_sources - 1u] : UINT_MAX;
+    src_a = shared_count == 1u
+        ? sources[with_acc ? 1u : 0u] : UINT_MAX;
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         if (cpu->core4->cpu[i] == NULL) {
             return false;
@@ -19371,6 +19387,13 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     const unsigned pe = env->pe_id;
     const uint8_t bit = 1u << pe;
     const uint32_t func = env->tile_func & 0x1fu;
+    const bool with_bias = func == LINX_CUBE_TMATMUL_BIAS ||
+                           func == LINX_CUBE_TMATMUL_MX_BIAS;
+    const bool with_acc = func == LINX_CUBE_TMATMUL_ACC ||
+                          func == LINX_CUBE_TMATMUL_MX_ACC;
+    const bool with_mx = func == LINX_CUBE_TMATMUL_MX ||
+                         func == LINX_CUBE_TMATMUL_MX_BIAS ||
+                         func == LINX_CUBE_TMATMUL_MX_ACC;
     const uint32_t dtype = env->tile_dtype & 31u;
     LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     qemu_mutex_lock(&core4->lock);
@@ -19444,7 +19467,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         valid = linx_tile_materialize_planned_outputs(
             peer, reserved_by_pe[i], &acc_sources_valid,
             peer->tile_acc_src0, peer->tile_acc_src1);
-        if (valid && func == LINX_CUBE_TMATMUL_ACC) {
+        if (valid && with_acc) {
             unsigned src_c;
             valid = linx_tile_get_bound_source(peer, 0u, 0u, &src_c) &&
                     linx_tile_cube_stage_accumulator(
@@ -19456,20 +19479,37 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     }
     for (unsigned i = 0; valid && i < LINX_CORE4_PE_COUNT; i++) {
         CPULinxState *peer = &core4->cpu[i]->env;
-        if (shared_left != NULL) {
-            valid = linx_tile_cube_compute_shared_ab_058(
-                peer, shared_left->data, shared_left->per_pe_capacity,
-                shared_left->dtype, shared_left->cols,
+        unsigned sources[LINX_TILE_MAX_IOT * 2];
+        unsigned source_count = 0u;
+        unsigned cursor = with_acc ? 1u : 0u;
+        unsigned row_scale = UINT_MAX;
+        unsigned column_scale = UINT_MAX;
+        unsigned bias = UINT_MAX;
+        valid = linx_tile_collect_sources(peer, sources, &source_count);
+        if (valid && shared_left == NULL) {
+            cursor++; /* Shared-B leaves the local A after an accumulator. */
+        }
+        const uint32_t left_dtype = shared_left != NULL
+            ? shared_left->dtype : peer->tile_reg_dtype[src_a];
+        const bool left_scaled = with_mx &&
+            linx_tile_numeric_mx_requires_scale(left_dtype);
+        const bool right_scaled = with_mx &&
+            linx_tile_numeric_mx_requires_scale(shared_right->dtype);
+        if (valid && left_scaled) row_scale = sources[cursor++];
+        if (valid && right_scaled) column_scale = sources[cursor++];
+        if (valid && with_bias) bias = sources[cursor++];
+        valid = valid && cursor == source_count;
+        if (valid) {
+            valid = linx_tile_cube_compute_shared_058(
+                peer, shared_left == NULL ? src_a : UINT_MAX,
+                shared_left == NULL ? NULL : shared_left->data,
+                shared_left == NULL ? 0u : shared_left->per_pe_capacity,
+                shared_left == NULL ? 0u : shared_left->dtype,
+                shared_left == NULL ? 0u : shared_left->cols,
                 shared_right->data, shared_right->per_pe_capacity,
                 shared_right->dtype, shared_right->cols,
-                core4->collective_size_code,
-                func == LINX_CUBE_TMATMUL_ACC);
-        } else {
-            valid = linx_tile_cube_compute_shared_b_058(
-                peer, core4->collective_src[i], shared_right->data,
-                shared_right->per_pe_capacity, shared_right->dtype,
-                shared_right->cols, core4->collective_size_code,
-                func == LINX_CUBE_TMATMUL_ACC);
+                row_scale, column_scale, bias,
+                core4->collective_size_code, with_mx, with_bias, with_acc);
         }
     }
     if (!valid) {
