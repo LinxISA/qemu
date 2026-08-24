@@ -97,7 +97,7 @@
 %IOTV5SizeCode 15:4
 %IOTV5PEMode 9:3
 %IOTV5Dst 7:2
-%SharedTID 20:8
+%SharedTID 20:6
 %SizeCode 15:4
 %PEMode 9:3
 
@@ -258,10 +258,10 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 }
 
 # DavinciOO PTO ISA v0.2/v5 Tile dependency descriptors.
-# PTO ISA 0.58 Shared binding (#119). SizeCode=0 is a source; 1..12 is a
-# destination (128 B..256 KiB per participating PE).  PEMode expands to a
-# fixed four-PE semantic mask; PEMode=000 is a strict no-op.
-b_ios          0000 .... .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode
+# PTO ISA 0.58.4 Shared binding. Bits [27:26] are reserved zero; SizeCode=0
+# is a source and 1..12 is a 128 B..256 KiB SharedCoreSize destination. PEMode
+# expands to a fixed four-PE semantic mask; PEMode=000 is a strict no-op.
+b_ios          0000 00.. .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode
 {
   b_iot        0000 00.. .... .000 0101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5
   b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5

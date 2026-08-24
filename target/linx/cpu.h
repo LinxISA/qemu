@@ -29,7 +29,7 @@
 #define LINX_VIRT_FINISHER_RESET UINT64_C(0x7777)
 
 #define LINX_CORE4_PE_COUNT 4
-#define LINX_SHARED_TILE_COUNT 256
+#define LINX_SHARED_TILE_COUNT 64
 #define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
 
@@ -54,11 +54,12 @@ typedef struct LinxRawTileTransport {
 } LinxRawTileTransport;
 
 typedef struct LinxSharedTileVersion {
-    /* One Shared payload descriptor. PEMode selects fixed quarters within
-     * this per-PE SizeCode capacity; allocation accounting multiplies this
-     * capacity by the immutable allocation-mask population. */
+    /* One Core-wide Shared payload descriptor. PEMode selects fixed payload
+     * quarters within this object; it never multiplies SharedCoreSize. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
-    /* B.IOS SizeCode is the Core-level aggregate capacity. */
+    /* B.IOS SizeCode is the complete Core-wide SharedCoreSize. */
+    /* Internal name is retained temporarily while the capacity accounting
+     * migration is completed; semantics are Core-wide SharedCoreSize. */
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;

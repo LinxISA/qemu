@@ -57,7 +57,7 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("linx_pemode_to_mask", self.translate)
         self.assertIn("0x0u, 0x1u, 0x2u, 0x4u, 0x8u, 0x3u, 0x7u, 0xfu", self.translate)
         self.assertIn("a->size_code > 12u", self.translate)
-        self.assertIn("size_code > 10u", self.translate)
+        self.assertIn("size_code > 12u", self.translate)
 
     def test_fpatr_carries_shared_transpose_bits(self) -> None:
         self.assertIn("%FP_TransA 7:1", self.decode)

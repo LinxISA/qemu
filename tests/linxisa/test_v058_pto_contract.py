@@ -37,9 +37,10 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_b_ios_uses_final_32_bit_encoding(self) -> None:
         self.assertRegex(
             self.decode32,
-            r"(?m)^b_ios\s+0000\s+\.\.\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
+            r"(?m)^b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
+        self.assertIn("%SharedTID 20:6", self.decode32)
         self.assertIn("%SizeCode", self.decode32)
         self.assertIn("%PEMode", self.decode32)
         self.assertIn("trans_b_ios", self.translate)
@@ -48,6 +49,7 @@ class PtoV058ContractTests(unittest.TestCase):
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
         self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)", self.cpu)
+        self.assertIn("#define LINX_SHARED_TILE_COUNT 64", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -189,15 +191,15 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
-    def test_shared_tload_uses_released_per_mask_quarters(self) -> None:
+    def test_shared_tload_uses_core_capacity_and_fixed_regions(self) -> None:
         self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
         self.assertIn("size_code < 3u || size_code > 14u", self.helper)
         self.assertIn("shared->per_pe_capacity = bytes", self.helper)
-        self.assertIn(
-            "ctpop8(allocation_mask) * bytes", self.helper
-        )
+        self.assertIn("shared->allocated_bytes = bytes", self.helper)
+        self.assertNotIn("ctpop8(allocation_mask) * bytes", self.helper)
+        self.assertNotIn("ctpop8(pe_mask) * bytes", self.helper)
         self.assertIn("shared->allocation_mask = allocation_mask", self.helper)
-        self.assertIn("ctpop8(pe_mask) * bytes", self.helper)
+        self.assertIn("destination_region != region", self.helper)
         self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
         self.assertNotIn("single_issuer", self.helper)
 
@@ -224,10 +226,10 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
         # Shared state uses one Core-level aggregate payload with fixed PE
         # regions; selected regions are never packed.
-        self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertIn("destination_offset = legacy_whole ? 0u", self.helper)
-        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination],",
-                      self.helper)
+        self.assertIn("shared->initialized_mask |= (uint8_t)(1u << pe)", self.helper)
+        self.assertIn("for (uint32_t offset = 0; offset < shared_capacity", self.helper)
+        self.assertIn("if (region != pe)", self.helper)
+        self.assertIn("env->tile_reg[destination] + offset", self.helper)
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
         self.assertNotIn("LinxSharedTileLane descriptor", self.helper)

@@ -2772,7 +2772,7 @@ static bool trans_b_ios(DisasContext *ctx, arg_b_ios *a)
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
     gen_helper_linx_tile_append_shared_binder_v058(
-        tcg_env, tcg_constant_i64((a->shared & 0xffu) |
+        tcg_env, tcg_constant_i64((a->shared & 0x3fu) |
                                   ((pe_mask & 0xfu) << 8) |
                                   ((a->size_code & 0xfu) << 12)));
     /* Shared bindings have no B.IOT, so the binder keeps commit pending. */
@@ -2800,10 +2800,10 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                              uint32_t src0, uint32_t src1, uint32_t pe_mode)
 {
     const bool has_size = size_code != 0u;
-    /* PTO v0.58 #119: destination forms accept SizeCode 1..10; codes 11..15
+    /* PTO ISA 0.58.4: destination forms accept SizeCode 1..12; codes 13..15
      * are reserved and reject before the PEMode no-op, matching
      * BindBundleTileIO.  Source-only forms fix SizeCode=0 in decode. */
-    if (has_size && size_code > 10u) {
+    if (has_size && size_code > 12u) {
         return linx_illegal(ctx);
     }
     const uint8_t pe_mask = linx_pemode_to_mask(pe_mode);
