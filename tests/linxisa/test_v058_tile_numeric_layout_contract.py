@@ -12,6 +12,22 @@ TRANSLATE = (ROOT / "target/linx/translate.c").read_text(encoding="utf-8")
 
 
 class V058TileNumericLayoutContract(unittest.TestCase):
+    def test_cube_cell_layout_codes_and_payload_path_are_current(self):
+        tile_isa = (ROOT / "target/linx/tile_isa_058.h").read_text(encoding="utf-8")
+        cube = (ROOT / "target/linx/tile_cube_058.c").read_text(encoding="utf-8")
+        self.assertIn("LINX_TILE_LAYOUT_CUBE_M16", cube)
+        self.assertIn("LINX_TILE_LAYOUT_CUBE_M32", cube)
+        self.assertIn("LINX_TILE_LAYOUT_CUBE_N8", cube)
+        accepted = re.search(
+            r"static inline bool linx_tile_layout_accepted\(.*?\n\}",
+            tile_isa,
+            re.S,
+        ).group(0)
+        self.assertIn("0x5ff6035b", accepted)
+        for code in ("21u", "22u", "23u", "24u", "25u", "26u"):
+            self.assertIn(code, HELPER)
+        self.assertIn("linx_tile_cube_payload_index_058", HELPER)
+
     def test_all_13_layout_codes_have_exact_source_destination_pairs(self):
         body = re.search(
             r"linx_tile_decode_datr_layout\(.*?\n\}", HELPER, re.S
