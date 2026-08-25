@@ -556,6 +556,10 @@ static bool linx_tile_cube_compute_common_058(
     uint32_t shared_a_dtype, uint32_t shared_a_cols,
     const uint8_t *shared_b, uint32_t shared_b_bytes,
     uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    const uint8_t *shared_row_scale, uint32_t shared_row_scale_bytes,
+    uint32_t shared_row_scale_cols,
+    const uint8_t *shared_column_scale, uint32_t shared_column_scale_bytes,
+    uint32_t shared_column_scale_cols,
     unsigned row_scale, unsigned column_scale,
     unsigned bias, unsigned size_code, bool mx, bool with_bias,
     bool accumulate)
@@ -586,14 +590,14 @@ static bool linx_tile_cube_compute_common_058(
     unsigned acc_bytes = acc_dtype == LINX_TILE_ACC_FP32 ? 4u : 8u;
     uint64_t allocated = size_code < 60u ? UINT64_C(1) << (size_code + 4u) : 0u;
     const unsigned output_m = m;
-    const unsigned row_base = shared_a != NULL && shared_b != NULL
+    const unsigned row_base = shared_a != NULL && shared_b != NULL && !mx
         ? env->pe_id * output_m : 0u;
     const bool transpose_a = ((env->tile_fpatr_raw >> 7) & 1u) != 0u;
     const bool transpose_b = ((env->tile_fpatr_raw >> 8) & 1u) != 0u;
     const unsigned shared_a_rows = transpose_a
-        ? kdim : m * LINX_CORE4_PE_COUNT;
+        ? kdim : (mx ? m : m * LINX_CORE4_PE_COUNT);
     const unsigned shared_a_logical_cols = transpose_a
-        ? m * LINX_CORE4_PE_COUNT : kdim;
+        ? (mx ? m : m * LINX_CORE4_PE_COUNT) : kdim;
     const unsigned shared_b_rows = transpose_b ? n : kdim;
     const unsigned shared_b_logical_cols = transpose_b ? kdim : n;
     uint64_t required = (uint64_t)output_m * n * acc_bytes;
@@ -633,9 +637,19 @@ static bool linx_tile_cube_compute_common_058(
                                      shared_b_cols) ||
           !cube_primary_dtype_legal(env, left_dtype, right_dtype, mx))) ||
         (scale_left &&
-         !cube_operand_legal(env, row_scale, 13u, m, groups)) ||
+         (shared_row_scale != NULL
+              ? !cube_buffer_operand_legal(shared_row_scale,
+                                           shared_row_scale_bytes, 13u,
+                                           shared_a_rows, groups,
+                                           shared_row_scale_cols)
+              : !cube_operand_legal(env, row_scale, 13u, m, groups))) ||
         (scale_right &&
-         !cube_operand_legal(env, column_scale, 13u, groups, n)) ||
+         (shared_column_scale != NULL
+              ? !cube_buffer_operand_legal(shared_column_scale,
+                                           shared_column_scale_bytes, 13u,
+                                           groups, n,
+                                           shared_column_scale_cols)
+              : !cube_operand_legal(env, column_scale, 13u, groups, n))) ||
         (with_bias &&
          (bias >= LINX_TILE_SLOT_COUNT ||
           (env->tile_reg_valid_rows[bias] != 1u &&
@@ -696,16 +710,28 @@ static bool linx_tile_cube_compute_common_058(
                         uint32_t scale_a = linx_tile_numeric_f32_raw(1.0);
                         uint32_t scale_b = linx_tile_numeric_f32_raw(1.0);
                         if (scale_left) {
-                            if (!cube_read_raw(env, row_scale, i, k / 32u,
-                                               &sar, NULL)) {
+                            if (shared_row_scale != NULL
+                                    ? !cube_read_buffer_raw(
+                                          shared_row_scale,
+                                          shared_row_scale_bytes, 13u,
+                                          shared_row_scale_cols, source_row,
+                                          k / 32u, &sar)
+                                    : !cube_read_raw(env, row_scale, i,
+                                                     k / 32u, &sar, NULL)) {
                                 goto fail;
                             }
                             scale_a = linx_tile_numeric_f32_raw(
                                 linx_tile_numeric_decode(13u, sar, 0));
                         }
                         if (scale_right) {
-                            if (!cube_read_raw(env, column_scale, k / 32u, j,
-                                               &sbr, NULL)) {
+                            if (shared_column_scale != NULL
+                                    ? !cube_read_buffer_raw(
+                                          shared_column_scale,
+                                          shared_column_scale_bytes, 13u,
+                                          shared_column_scale_cols,
+                                          k / 32u, j, &sbr)
+                                    : !cube_read_raw(env, column_scale,
+                                                     k / 32u, j, &sbr, NULL)) {
                                 goto fail;
                             }
                             scale_b = linx_tile_numeric_f32_raw(
@@ -842,6 +868,7 @@ bool linx_tile_cube_compute_058(CPULinxState *env, unsigned src_a,
 {
     return linx_tile_cube_compute_common_058(
         env, src_a, src_b, NULL, 0u, 0u, 0u, NULL, 0u, 0u, 0u,
+        NULL, 0u, 0u, NULL, 0u, 0u,
         row_scale, column_scale, bias,
         size_code, mx, with_bias, accumulate);
 }
@@ -853,7 +880,8 @@ bool linx_tile_cube_compute_shared_b_058(
 {
     return linx_tile_cube_compute_common_058(
         env, src_a, UINT_MAX, NULL, 0u, 0u, 0u, shared_b, shared_b_bytes,
-        shared_b_dtype, shared_b_cols, 0u, 0u, 0u, size_code, false, false,
+        shared_b_dtype, shared_b_cols, NULL, 0u, 0u, NULL, 0u, 0u,
+        0u, 0u, 0u, size_code, false, false,
         accumulate);
 }
 
@@ -867,6 +895,7 @@ bool linx_tile_cube_compute_shared_ab_058(
     return linx_tile_cube_compute_common_058(
         env, UINT_MAX, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
         shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype, shared_b_cols,
+        NULL, 0u, 0u, NULL, 0u, 0u,
         0u, 0u, 0u, size_code, false, false, accumulate);
 }
 
@@ -876,13 +905,18 @@ bool linx_tile_cube_compute_shared_058(
     uint32_t shared_a_dtype, uint32_t shared_a_cols,
     const uint8_t *shared_b, uint32_t shared_b_bytes,
     uint32_t shared_b_dtype, uint32_t shared_b_cols,
+    const uint8_t *shared_row_scale, uint32_t shared_row_scale_bytes,
+    uint32_t shared_row_scale_cols,
+    const uint8_t *shared_column_scale, uint32_t shared_column_scale_bytes,
+    uint32_t shared_column_scale_cols,
     unsigned row_scale, unsigned column_scale, unsigned bias,
     unsigned size_code, bool mx, bool with_bias, bool accumulate)
 {
     return linx_tile_cube_compute_common_058(
         env, src_a, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
         shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype,
-        shared_b_cols, row_scale, column_scale, bias, size_code, mx,
+        shared_b_cols, NULL, 0u, 0u, NULL, 0u, 0u,
+        row_scale, column_scale, bias, size_code, mx,
         with_bias, accumulate);
 }
 

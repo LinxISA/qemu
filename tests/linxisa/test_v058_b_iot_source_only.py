@@ -30,7 +30,7 @@ class V058BIOTSourceOnlyTest(unittest.TestCase):
         text = TRANSLATE.read_text(encoding="utf-8")
         self.assertIn("if (pe_mask == 0u)", text)
         self.assertIn("func < 4u || func > 6u", text)
-        self.assertIn("has_size && size_code > 10u", text)
+        self.assertIn("has_size && size_code > 12u", text)
         self.assertIn(
             "const uint32_t local_size_code = size_code == 0u ? 0u : size_code + 2u;",
             text,

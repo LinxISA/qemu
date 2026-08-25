@@ -18116,8 +18116,7 @@ void HELPER(linx_tile_append_shared_binder_v058)(CPULinxState *env,
         }
     }
     if (env->tile_shared_binder_count >= LINX_TILE_MAX_SHARED_BINDERS ||
-        duplicate || (env->tile_iot_count != 0u && !prior_iot_sources_only) ||
-        env->tile_ior_count != 0u) {
+        duplicate || (env->tile_iot_count != 0u && !prior_iot_sources_only)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
     }
@@ -18470,7 +18469,7 @@ static bool linx_tile_preflight_cube(const CPULinxState *env)
 
 static bool linx_tile_shared_cube_operand_legal(
     const LinxSharedTileVersion *shared, uint32_t dtype,
-    unsigned rows, unsigned cols)
+    unsigned rows, unsigned cols, uint32_t layout)
 {
     const unsigned elem_bytes = linx_tile_dtype_elem_bytes(dtype);
     const uint64_t required = rows == 0u || elem_bytes == 0u
@@ -18482,7 +18481,7 @@ static bool linx_tile_shared_cube_operand_legal(
         shared->per_pe_capacity == 0u ||
         shared->per_pe_capacity > LINX_SHARED_TILE_MAX_BYTES ||
         shared->allocated_bytes != shared->per_pe_capacity ||
-        shared->dtype != dtype || shared->layout != LINX_TILE_LAYOUT_ND ||
+        shared->dtype != dtype || shared->layout != layout ||
         shared->valid_rows != rows || shared->valid_cols != cols ||
         shared->rows < rows || shared->cols < cols ||
         required > shared->per_pe_capacity) {
@@ -18492,7 +18491,7 @@ static bool linx_tile_shared_cube_operand_legal(
 }
 
 static bool linx_tile_group_cube_profile(
-    CPULinxState *env, unsigned *src_a_out, unsigned shared_id_out[2],
+    CPULinxState *env, unsigned *src_a_out, unsigned shared_id_out[4],
     unsigned *shared_count_out, unsigned *dst_out, unsigned *size_code_out)
 {
     LinxCPU *cpu = env_archcpu(env);
@@ -18513,13 +18512,20 @@ static bool linx_tile_group_cube_profile(
     const bool with_mx = func == LINX_CUBE_TMATMUL_MX ||
                          func == LINX_CUBE_TMATMUL_MX_BIAS ||
                          func == LINX_CUBE_TMATMUL_MX_ACC;
+    const bool left_scaled = with_mx &&
+        linx_tile_numeric_mx_requires_scale(left_dtype);
+    const bool right_scaled = with_mx &&
+        linx_tile_numeric_mx_requires_scale(right_dtype);
+    const unsigned left_group = 1u + (left_scaled ? 1u : 0u);
+    const unsigned right_group = 1u + (right_scaled ? 1u : 0u);
+    const bool shared_right = shared_count == right_group;
+    const bool shared_left = shared_count == left_group + right_group;
     const unsigned required_sources =
         (2u + with_bias + with_acc + (with_mx ? 2u : 0u)) - shared_count;
     const LinxTileCubeDimensions dims = linx_tile_cube_dimensions_058(env);
     bool valid;
 
-    shared_id_out[0] = 0u;
-    shared_id_out[1] = 0u;
+    memset(shared_id_out, 0, sizeof(unsigned) * 4u);
 
     const bool dimensions_legal =
         linx_tile_cube_group_dimensions_legal_058(env);
@@ -18539,7 +18545,8 @@ static bool linx_tile_group_cube_profile(
         ((!with_mx && !linx_tile_numeric_ordinary_matrix_pair(
              left_dtype, right_dtype)) ||
          (with_mx && !linx_tile_numeric_mx_pair(left_dtype, right_dtype))) ||
-        (shared_count != 1u && shared_count != 2u) ||
+        (!with_mx && (shared_count != 1u && shared_count != 2u)) ||
+        (with_mx && !shared_right && !shared_left) ||
         !dimensions_legal || !sources_legal || !output_legal ||
         !linx_tile_cube_postprocess_sources_legal(
             env, sources, required_sources)) {
@@ -18552,7 +18559,7 @@ static bool linx_tile_group_cube_profile(
     if (env->tile_iot_count > 1u) {
         dst = destination;
     }
-    src_a = shared_count == 1u
+    src_a = shared_right
         ? sources[with_acc ? 1u : 0u] : UINT_MAX;
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
         if (cpu->core4->cpu[i] == NULL) {
@@ -18585,18 +18592,38 @@ static bool linx_tile_group_cube_profile(
         LinxSharedTileVersion *shared =
             &cpu->core4->shared_tile[shared_id];
 
-        const bool is_left = shared_count == 2u && binder == 0u;
+        const unsigned right_start = shared_left ? left_group : 0u;
+        const bool is_left = shared_left && binder < left_group;
+        const bool is_scale = is_left
+            ? (left_scaled && binder == 1u)
+            : (right_scaled && binder == right_start + 1u);
         const bool transpose = ((env->tile_fpatr_raw >>
                                  (is_left ? 7u : 8u)) & 1u) != 0u;
         const unsigned logical_rows = is_left
-            ? dims.m * LINX_CORE4_PE_COUNT : dims.k;
+            ? (with_mx ? dims.m * 1u : dims.m * LINX_CORE4_PE_COUNT) : dims.k;
         const unsigned logical_cols = is_left ? dims.k : dims.n;
         const unsigned operand_rows = transpose ? logical_cols : logical_rows;
         const unsigned operand_cols = transpose ? logical_rows : logical_cols;
         const uint32_t operand_dtype = is_left ? left_dtype : right_dtype;
-        valid = tsize == 0u && pe_mask == 0xfu &&
-                linx_tile_shared_cube_operand_legal(
-                    shared, operand_dtype, operand_rows, operand_cols);
+        if (is_scale) {
+            const unsigned scale_rows = is_left ? (with_mx ? dims.m
+                                                            : dims.m * LINX_CORE4_PE_COUNT)
+                                                : (dims.k + 31u) / 32u;
+            const unsigned scale_cols = is_left ? (dims.k + 31u) / 32u
+                                                : dims.n;
+            valid = tsize == 0u && pe_mask == 0xfu &&
+                    linx_tile_shared_cube_operand_legal(
+                        shared, 13u, scale_rows, scale_cols,
+                        LINX_TILE_LAYOUT_ND);
+        } else {
+            valid = tsize == 0u && pe_mask == 0xfu &&
+                    linx_tile_shared_cube_operand_legal(
+                        shared, operand_dtype, operand_rows, operand_cols,
+                        is_left ? (dims.m <= 16u
+                                       ? LINX_TILE_LAYOUT_CUBE_M16
+                                       : LINX_TILE_LAYOUT_CUBE_M32)
+                                : LINX_TILE_LAYOUT_CUBE_N8);
+        }
         shared_id_out[binder] = shared_id;
     }
     qemu_mutex_unlock(&cpu->core4->lock);
@@ -19366,7 +19393,7 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
     LinxCPU *cpu = env_archcpu(env);
     LinxCore4State *core4 = cpu->core4;
     unsigned src_a;
-    unsigned shared_id[2];
+    unsigned shared_id[4];
     unsigned shared_count;
     unsigned dst;
     unsigned size_code;
@@ -19443,10 +19470,25 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         cpu_loop_exit(cs);
     }
 
-    LinxSharedTileVersion *shared_left = shared_count == 2u
+    const uint32_t left_dtype = env->tile_dtype & 31u;
+    const uint32_t right_dtype = linx_tile_effective_dtype(env);
+    const bool left_scaled = with_mx &&
+        linx_tile_numeric_mx_requires_scale(left_dtype);
+    const bool right_scaled = with_mx &&
+        linx_tile_numeric_mx_requires_scale(right_dtype);
+    const unsigned left_group = 1u + (left_scaled ? 1u : 0u);
+    const unsigned right_group = 1u + (right_scaled ? 1u : 0u);
+    const bool shared_left_present = shared_count == left_group + right_group;
+    const unsigned right_start = shared_left_present ? left_group : 0u;
+    LinxSharedTileVersion *shared_left = shared_left_present
         ? &core4->shared_tile[shared_id[0]] : NULL;
     LinxSharedTileVersion *shared_right =
-        &core4->shared_tile[shared_id[shared_count - 1u]];
+        &core4->shared_tile[shared_id[right_start]];
+    LinxSharedTileVersion *shared_left_scale =
+        shared_left_present && left_scaled
+            ? &core4->shared_tile[shared_id[1u]] : NULL;
+    LinxSharedTileVersion *shared_right_scale =
+        right_scaled ? &core4->shared_tile[shared_id[right_start + 1u]] : NULL;
     LinxTileAccSnapshot *acc_snapshots =
         g_new(LinxTileAccSnapshot, LINX_CORE4_PE_COUNT);
     LinxTileRegSnapshot output_snapshots[LINX_CORE4_PE_COUNT];
@@ -19489,14 +19531,14 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         if (valid && shared_left == NULL) {
             cursor++; /* Shared-B leaves the local A after an accumulator. */
         }
-        const uint32_t left_dtype = shared_left != NULL
+        const uint32_t operand_left_dtype = shared_left != NULL
             ? shared_left->dtype : peer->tile_reg_dtype[src_a];
-        const bool left_scaled = with_mx &&
-            linx_tile_numeric_mx_requires_scale(left_dtype);
-        const bool right_scaled = with_mx &&
+        const bool operand_left_scaled = with_mx &&
+            linx_tile_numeric_mx_requires_scale(operand_left_dtype);
+        const bool operand_right_scaled = with_mx &&
             linx_tile_numeric_mx_requires_scale(shared_right->dtype);
-        if (valid && left_scaled) row_scale = sources[cursor++];
-        if (valid && right_scaled) column_scale = sources[cursor++];
+        if (valid && operand_left_scaled && !shared_left_present) row_scale = sources[cursor++];
+        if (valid && operand_right_scaled && !shared_right_scale) column_scale = sources[cursor++];
         if (valid && with_bias) bias = sources[cursor++];
         valid = valid && cursor == source_count;
         if (valid) {
@@ -19508,6 +19550,12 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
                 shared_left == NULL ? 0u : shared_left->cols,
                 shared_right->data, shared_right->per_pe_capacity,
                 shared_right->dtype, shared_right->cols,
+                shared_left_scale == NULL ? NULL : shared_left_scale->data,
+                shared_left_scale == NULL ? 0u : shared_left_scale->per_pe_capacity,
+                shared_left_scale == NULL ? 0u : shared_left_scale->cols,
+                shared_right_scale == NULL ? NULL : shared_right_scale->data,
+                shared_right_scale == NULL ? 0u : shared_right_scale->per_pe_capacity,
+                shared_right_scale == NULL ? 0u : shared_right_scale->cols,
                 row_scale, column_scale, bias,
                 core4->collective_size_code, with_mx, with_bias, with_acc);
         }
@@ -19778,6 +19826,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                             env->tile_shared_binder_count == 2u);
     const bool group_gmov = env->blocktype == LINX_BLOCK_TLSU &&
                             (env->tile_func & 0x1fu) == LINX_TLSU_GMOV;
+
 
     if (group_mma) {
         if (!linx_tile_group_mma_commit(env, resume_pc)) {

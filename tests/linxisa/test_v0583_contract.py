@@ -22,26 +22,26 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
         cls.table = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
+        cls.cpu_impl = (TARGET / "cpu.c").read_text(encoding="utf-8")
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
 
-    def test_exact_0583_elf_identity_is_fail_closed(self) -> None:
+    def test_exact_0584_elf_identity_is_fail_closed(self) -> None:
         authority = json.loads(
-            (ROOT / "tests/linxisa/pto-isa-0583-authority.json").read_text(
+            (ROOT / "tests/linxisa/pto-isa-0584-authority.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertEqual(authority["linxisa_commit"], "dd52a2e5")
         self.assertEqual(
             authority["pto_spec_commit"],
-            "e599a3d36ebfad43362ff591ea5e128816c684c7",
+            "8f8244d3ce71174a048f852625ca6138296b6dcc",
         )
-        self.assertIn('release\\\":\\\"0.58.3', self.virt)
-        self.assertIn("pto-isa-0.58.3-mode-function-v1", self.virt)
+        self.assertIn('release\\\":\\\"0.58.4', self.virt)
+        self.assertIn("pto-isa-0.58.4-mode-function-v1", self.virt)
         self.assertIn(
-            "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
+            "6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d",
             self.virt,
         )
         self.assertNotIn("accepting legacy ELF", self.virt)
@@ -75,6 +75,21 @@ class PtoV0583ContractTests(unittest.TestCase):
             "(uint64_t)row * stride + (uint64_t)col * elem_bytes",
             self.helper,
         )
+
+    def test_shared_tload_accepts_optional_ior_stride(self) -> None:
+        """TLOAD Shared uses B.IOR for the per-PE GM base/stride tuple."""
+        binder = re.search(
+            r"void HELPER\(linx_tile_append_shared_binder_v058\).*?\n\}",
+            self.helper,
+            re.S,
+        )
+        self.assertIsNotNone(binder)
+        self.assertNotIn("env->tile_ior_count != 0u", binder.group(0))
+        self.assertIn("peer->tile_ior_count == 0u", self.helper)
+
+    def test_core4_allows_mttcg_for_guest_memory_barriers(self) -> None:
+        self.assertIn(".mttcg_supported = true", self.cpu_impl)
+        self.assertNotIn("does not support MTTCG", self.virt)
 
     def test_cube_cell_layout_and_accumulator_are_distinct(self) -> None:
         self.assertIn("#define LINX_TILE_CELL_BYTES 128u", self.cpu)

@@ -1,8 +1,18 @@
 # PTO Tile support on LinxISA 0.58
 
-The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.3.
+The QEMU Linx target implements the Tile contract pinned by PTO ISA 0.58.4.
 The normative operation inventory is the LinxISA `engine_ops.json` projection;
 this page describes QEMU behavior and does not define a second ISA taxonomy.
+
+Core4 direct-boot runs use four TCG vCPUs with MTTCG enabled. This is required
+for guest-side memory barriers: a single host TCG thread can remain in one
+PE's polling loop and starve the other PEs. Core4 Shared/collective state is
+still protected by the Core4 lock and collective rendezvous protocol.
+
+For Shared `TLOAD`, the optional `B.IOR` remains part of the valid 0.58.4
+schema and supplies each PE's GM base and byte row stride before the Shared
+`B.IOS` destination binding. QEMU accepts that ordering and uses the
+per-PE stride during the Shared payload fill.
 
 ## Engine taxonomy
 

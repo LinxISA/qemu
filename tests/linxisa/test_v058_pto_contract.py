@@ -297,9 +297,9 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_validated_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.3-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.4-mode-function-v1", virt)
         self.assertIn(
-            "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
+            "6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]
@@ -311,7 +311,7 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
-        # PTO v0.58.3 requires the identity note; legacy-ELF acceptance was
+        # PTO v0.58.4 requires the identity note; legacy-ELF acceptance was
         # removed upstream.
         self.assertIn("malformed .note.pto.isa", virt)
 

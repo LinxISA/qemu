@@ -81,7 +81,7 @@ typedef struct LinxCore4State {
     uint64_t collective_bpc;
     uint32_t collective_func;
     uint32_t collective_dtype;
-    uint32_t collective_shared_id[2];
+    uint32_t collective_shared_id[4];
     uint8_t collective_shared_count;
     uint32_t collective_m;
     uint32_t collective_n;

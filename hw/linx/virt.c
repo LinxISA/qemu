@@ -21,7 +21,6 @@
 #include "system/device_tree.h"
 #include "system/memory.h"
 #include "system/reset.h"
-#include "system/tcg.h"
 #include "system/runstate.h"
 #include "elf.h"
 #include "chardev/char.h"
@@ -177,10 +176,10 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 #define PTO_NT_ISA_IDENTITY 1
 static const char linx_pto_isa_identity[] =
-    "{\"encoding_abi\":\"pto-isa-0.58.3-mode-function-v1\","
+    "{\"encoding_abi\":\"pto-isa-0.58.4-mode-function-v1\","
     "\"encoding_projection_sha256\":"
-    "\"8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172\","
-    "\"release\":\"0.58.3\"}";
+    "\"6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d\","
+    "\"release\":\"0.58.4\"}";
 
 static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 {
@@ -227,7 +226,7 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                 memcmp(notes + desc_offset, linx_pto_isa_identity,
                        sizeof(linx_pto_isa_identity) - 1) != 0) {
                 error_setg(errp,
-                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.3");
+                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.4");
                 return false;
             }
             (*identity_count)++;
@@ -311,7 +310,7 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
     }
 
     if (identity_count == 0) {
-        error_setg(errp, "missing required .note.pto.isa identity for 0.58.3");
+        error_setg(errp, "missing required .note.pto.isa identity for 0.58.4");
         return false;
     }
     return true;
@@ -3774,12 +3773,6 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
     s->pe_count = machine->smp.cpus;
-    if (s->pe_count == LINX_CORE4_PE_COUNT &&
-        qemu_tcg_mttcg_enabled()) {
-        error_report("linx virt: bounded Core4 does not support MTTCG; "
-                     "use -accel tcg,thread=single");
-        exit(1);
-    }
     qemu_mutex_init(&s->core4.lock);
     qemu_cond_init(&s->core4.collective_cond);
 
