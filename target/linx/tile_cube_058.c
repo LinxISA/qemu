@@ -499,16 +499,79 @@ static bool cube_read_buffer_raw(const uint8_t *data, uint32_t bytes,
     return true;
 }
 
+static bool cube_shared_payload_index(uint32_t layout, uint32_t dtype,
+                                      unsigned valid_rows, unsigned valid_cols,
+                                      unsigned storage_cols, unsigned row,
+                                      unsigned column, uint32_t *index)
+{
+    uint32_t cell_rows, cell_cols;
+    uint32_t cell_index, inner_row, inner_col;
+    uint32_t storage_rows;
+    const unsigned bits = cube_dtype_bits(dtype);
+
+    if (index == NULL || row >= valid_rows || column >= valid_cols ||
+        !cube_cell_geometry(layout, dtype, &cell_rows, &cell_cols) ||
+        storage_cols == 0u) {
+        return false;
+    }
+    if (layout == LINX_TILE_LAYOUT_CUBE_N8) {
+        storage_rows = ROUND_UP(valid_rows, cell_rows);
+        if (storage_cols < 8u) {
+            return false;
+        }
+        cell_index = (column / cell_cols) * (storage_rows / cell_rows) +
+                     row / cell_rows;
+        inner_row = row % cell_rows;
+        inner_col = column % cell_cols;
+        *index = cell_index * cell_rows * cell_cols +
+                 inner_col * cell_rows + inner_row;
+    } else {
+        if (storage_cols < ROUND_UP(valid_cols, cell_cols)) {
+            return false;
+        }
+        cell_index = column / cell_cols;
+        inner_row = row;
+        inner_col = column % cell_cols;
+        if (layout == LINX_TILE_LAYOUT_CUBE_M16 && bits == 4u) {
+            inner_col = inner_col < 4u ? inner_col
+                        : inner_col < 8u ? inner_col + 4u
+                        : inner_col < 12u ? inner_col - 4u : inner_col;
+        }
+        *index = cell_index * cell_rows * cell_cols +
+                 inner_row * cell_cols + inner_col;
+    }
+    return true;
+}
+
 static bool cube_read_shared_matrix_raw(const uint8_t *data, uint32_t bytes,
                                         uint32_t dtype, unsigned stride,
+                                        uint32_t layout, unsigned valid_rows,
+                                        unsigned valid_cols,
                                         unsigned logical_row,
                                         unsigned logical_column,
                                         bool transpose, uint64_t *raw)
 {
-    return cube_read_buffer_raw(data, bytes, dtype, stride,
-                                transpose ? logical_column : logical_row,
-                                transpose ? logical_row : logical_column,
-                                raw);
+    const unsigned row = transpose ? logical_column : logical_row;
+    const unsigned column = transpose ? logical_row : logical_column;
+    const unsigned elem_bytes = cube_dtype_bytes(dtype);
+    uint32_t index;
+
+    if (cube_layout(layout)) {
+        if (!cube_shared_payload_index(layout, dtype, valid_rows, valid_cols,
+                                       stride, row, column, &index)) {
+            return false;
+        }
+        const uint64_t offset = linx_tile_numeric_is_packed(dtype)
+                                    ? index / 2u
+                                    : (uint64_t)index * elem_bytes;
+        if (offset + elem_bytes > bytes) {
+            return false;
+        }
+        *raw = 0u;
+        memcpy(raw, data + offset, elem_bytes);
+        return true;
+    }
+    return cube_read_buffer_raw(data, bytes, dtype, stride, row, column, raw);
 }
 
 static int64_t cube_signed(uint32_t dtype, uint64_t raw, unsigned logical_lane)
@@ -689,14 +752,19 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_a, shared_a_bytes, left_dtype,
-                                   shared_a_cols, source_row, k, transpose_a,
-                                   &ar)
+                                   shared_a_cols,
+                                   m <= 16u ? LINX_TILE_LAYOUT_CUBE_M16
+                                             : LINX_TILE_LAYOUT_CUBE_M32,
+                                   shared_a_rows, shared_a_logical_cols,
+                                   source_row, k, transpose_a, &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar,
                                               &a_lane)) ||
                         (shared_b != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_b, shared_b_bytes, right_dtype,
-                                   shared_b_cols, k, j, transpose_b, &br)
+                                   shared_b_cols, LINX_TILE_LAYOUT_CUBE_N8,
+                                   shared_b_rows, shared_b_logical_cols,
+                                   k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br,
                                               &b_lane))) {
                         goto fail;
@@ -770,14 +838,19 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_a, shared_a_bytes, left_dtype,
-                                   shared_a_cols, source_row, k, transpose_a,
-                                   &ar)
+                                   shared_a_cols,
+                                   m <= 16u ? LINX_TILE_LAYOUT_CUBE_M16
+                                             : LINX_TILE_LAYOUT_CUBE_M32,
+                                   shared_a_rows, shared_a_logical_cols,
+                                   source_row, k, transpose_a, &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar,
                                               &a_lane)) ||
                         (shared_b != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_b, shared_b_bytes, right_dtype,
-                                   shared_b_cols, k, j, transpose_b, &br)
+                                   shared_b_cols, LINX_TILE_LAYOUT_CUBE_N8,
+                                   shared_b_rows, shared_b_logical_cols,
+                                   k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br,
                                               &b_lane))) {
                         goto fail;
@@ -814,14 +887,19 @@ static bool linx_tile_cube_compute_common_058(
                     if ((shared_a != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_a, shared_a_bytes, left_dtype,
-                                   shared_a_cols, source_row, k, transpose_a,
-                                   &ar)
+                                   shared_a_cols,
+                                   m <= 16u ? LINX_TILE_LAYOUT_CUBE_M16
+                                             : LINX_TILE_LAYOUT_CUBE_M32,
+                                   shared_a_rows, shared_a_logical_cols,
+                                   source_row, k, transpose_a, &ar)
                              : !cube_read_raw(env, src_a, i, k, &ar,
                                               &a_lane)) ||
                         (shared_b != NULL
                              ? !cube_read_shared_matrix_raw(
                                    shared_b, shared_b_bytes, right_dtype,
-                                   shared_b_cols, k, j, transpose_b, &br)
+                                   shared_b_cols, LINX_TILE_LAYOUT_CUBE_N8,
+                                   shared_b_rows, shared_b_logical_cols,
+                                   k, j, transpose_b, &br)
                              : !cube_read_raw(env, src_b, k, j, &br,
                                               &b_lane))) {
                         goto fail;
@@ -915,7 +993,9 @@ bool linx_tile_cube_compute_shared_058(
     return linx_tile_cube_compute_common_058(
         env, src_a, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
         shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype,
-        shared_b_cols, NULL, 0u, 0u, NULL, 0u, 0u,
+        shared_b_cols, shared_row_scale, shared_row_scale_bytes,
+        shared_row_scale_cols, shared_column_scale,
+        shared_column_scale_bytes, shared_column_scale_cols,
         row_scale, column_scale, bias, size_code, mx,
         with_bias, accumulate);
 }

@@ -19226,12 +19226,14 @@ static bool linx_tile_shared_tmov_local_to_shared(
 
     payload = g_memdup2(env->tile_reg[source], bytes);
     const unsigned size_class = linx_tile_shared_size_code(env);
-    const uint32_t shared_capacity = UINT32_C(1) << (size_class + 6u);
+    const uint32_t local_capacity = UINT32_C(1) << (size_class + 6u);
+    const uint32_t shared_capacity = local_capacity * LINX_CORE4_PE_COUNT;
     LinxSharedTileVersion *shared = &cpu->core4->shared_tile[shared_id];
     const unsigned pe = env->pe_id;
     const unsigned elem_bytes = env->tile_reg_elem_bytes[source];
     if (size_class == 0u || size_class > 12u ||
-        pe >= LINX_CORE4_PE_COUNT || bytes != shared_capacity ||
+        pe >= LINX_CORE4_PE_COUNT ||
+        (bytes != local_capacity && bytes != shared_capacity) ||
         elem_bytes == 0u) {
         return false;
     }
@@ -19265,14 +19267,14 @@ static bool linx_tile_shared_tmov_local_to_shared(
         shared->producer_bpc = env->bpc;
     }
     if (valid && (mask & (uint8_t)(1u << pe)) != 0u) {
-        for (uint32_t offset = 0; offset < shared_capacity;
-             offset += elem_bytes) {
-            const unsigned region =
-                (unsigned)(((uint64_t)offset * 4u) / shared_capacity);
-            if (region != pe) {
-                continue;
-            }
-            memcpy(shared->data + offset, payload + offset, elem_bytes);
+        for (uint32_t local_offset = 0; local_offset < local_capacity;
+             local_offset += elem_bytes) {
+            const uint32_t shared_offset =
+                (uint32_t)pe * local_capacity + local_offset;
+            const uint32_t source_offset =
+                bytes == shared_capacity ? shared_offset : local_offset;
+            memcpy(shared->data + shared_offset, payload + source_offset,
+                   elem_bytes);
         }
         shared->initialized_mask |= (uint8_t)(1u << pe);
     }
@@ -19308,22 +19310,20 @@ static bool linx_tile_shared_tmov_shared_to_local(
     const uint32_t dst_bytes = env->tile_reg_bytes[destination];
     const bool valid = shared->allocation_mask != 0u &&
                        shared->per_pe_capacity != 0u &&
-                       dst_bytes == shared->per_pe_capacity;
+                       dst_bytes * LINX_CORE4_PE_COUNT ==
+                           shared->per_pe_capacity;
     if (valid && (mask & (uint8_t)(1u << env->pe_id)) != 0u) {
         const unsigned elem_bytes = env->tile_reg_elem_bytes[destination];
         if (elem_bytes == 0u) {
             qemu_mutex_unlock(&cpu->core4->lock);
             return false;
         }
-        for (uint32_t offset = 0; offset < dst_bytes;
-             offset += elem_bytes) {
-            const unsigned region =
-                (unsigned)(((uint64_t)offset * 4u) / dst_bytes);
-            if (region != env->pe_id) {
-                continue;
-            }
-            memcpy((uint8_t *)env->tile_reg[destination] + offset,
-                   shared->data + offset, elem_bytes);
+        const uint32_t shared_base =
+            (uint32_t)env->pe_id * dst_bytes;
+        for (uint32_t local_offset = 0; local_offset < dst_bytes;
+             local_offset += elem_bytes) {
+            memcpy((uint8_t *)env->tile_reg[destination] + local_offset,
+                   shared->data + shared_base + local_offset, elem_bytes);
         }
     }
     qemu_mutex_unlock(&cpu->core4->lock);
@@ -19823,7 +19823,8 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                               env->tile_shared_binder_count == 1u;
     const bool group_mma = env->blocktype == LINX_BLOCK_CUBE &&
                            (env->tile_shared_binder_count == 1u ||
-                            env->tile_shared_binder_count == 2u);
+                            env->tile_shared_binder_count == 2u ||
+                            env->tile_shared_binder_count == 4u);
     const bool group_gmov = env->blocktype == LINX_BLOCK_TLSU &&
                             (env->tile_func & 0x1fu) == LINX_TLSU_GMOV;
 

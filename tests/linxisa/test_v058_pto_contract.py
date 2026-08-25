@@ -227,9 +227,15 @@ class PtoV058ContractTests(unittest.TestCase):
         # Shared state uses one Core-level aggregate payload with fixed PE
         # regions; selected regions are never packed.
         self.assertIn("shared->initialized_mask |= (uint8_t)(1u << pe)", self.helper)
-        self.assertIn("for (uint32_t offset = 0; offset < shared_capacity", self.helper)
-        self.assertIn("if (region != pe)", self.helper)
-        self.assertIn("env->tile_reg[destination] + offset", self.helper)
+        self.assertIn(
+            "for (uint32_t local_offset = 0; local_offset < local_capacity",
+            self.helper,
+        )
+        self.assertIn("shared_offset =", self.helper)
+        self.assertIn("shared_base =", self.helper)
+        self.assertIn(
+            "shared->data + shared_base + local_offset", self.helper
+        )
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
         self.assertNotIn("LinxSharedTileLane descriptor", self.helper)
