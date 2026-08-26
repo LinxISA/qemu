@@ -32,6 +32,7 @@
 #define LINX_SHARED_TILE_COUNT 64
 #define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
+#define LINX_TILE_CELL_BYTES 128u
 
 /* Compiler-generated S64/NORM spill metadata.  This is a model-internal
  * transport record; ordinary typed TLOAD/TSTORE never consults it. */
@@ -71,6 +72,19 @@ typedef struct LinxSharedTileVersion {
     uint64_t producer_bpc;
     uint8_t allocation_mask;
     uint8_t initialized_mask;
+    uint8_t generation_open;
+    uint8_t generation_closed;
+    uint8_t generation_mask;
+    uint8_t generation_last_seen;
+    uint32_t generation_parent_capacity;
+    uint32_t generation_parent_cells;
+    uint8_t generation_covered[LINX_SHARED_TILE_MAX_BYTES / LINX_TILE_CELL_BYTES];
+    uint8_t *generation_pending_data[LINX_CORE4_PE_COUNT];
+    uint32_t generation_pending_bytes[LINX_CORE4_PE_COUNT];
+    uint64_t generation_pending_offset[LINX_CORE4_PE_COUNT];
+    uint8_t generation_pending_last[LINX_CORE4_PE_COUNT];
+    uint8_t generation_pending_valid[LINX_CORE4_PE_COUNT];
+    uint32_t generation_pending_parent_size[LINX_CORE4_PE_COUNT];
 } LinxSharedTileVersion;
 
 typedef struct LinxCore4State {
@@ -301,7 +315,6 @@ typedef enum LinxTemplateKind {
 #define LINX_EBARG_STACK_DEPTH 8u
 
 /* Bring-up tile backing store limits (TAU). */
-#define LINX_TILE_CELL_BYTES 128u
 #define LINX_TILE_PE_CAPACITY_BYTES (256u * 1024u)
 #define LINX_TILE_MAX_BYTES (64u * 1024u)
 #define LINX_TILE_MAX_WORDS (LINX_TILE_MAX_BYTES / 4u)
@@ -368,7 +381,6 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_iot_src1;
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
-
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
@@ -501,6 +513,13 @@ typedef struct CPUArchState {
     uint32_t tile_iot_src1;
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
+    uint8_t tile_assemble_valid;
+    uint8_t tile_assemble_init;
+    uint8_t tile_assemble_last;
+    uint8_t tile_assemble_reg;
+    uint16_t tile_assemble_uimm;
+    uint8_t tile_assemble_parent_size;
+    uint64_t tile_assemble_offset;
 
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;

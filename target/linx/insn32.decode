@@ -100,6 +100,11 @@
 %SharedTID 20:6
 %SizeCode 15:4
 %PEMode 9:3
+%AssembleInit 31:1
+%AssembleUimm 20:11
+%AssembleReg 15:5
+%AssembleLast 11:1
+%AssembleParentSize 7:4
 
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
@@ -276,6 +281,7 @@ b_text         .... .... .... .... .... .... .000 0011 %simm25
 
 # GPR I/O dependency (decoupled block headers).
 b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
+b_assemble     .... .... .... .... .001 .... .101 0011 init=%AssembleInit uimm=%AssembleUimm reg=%AssembleReg last=%AssembleLast parent=%AssembleParentSize
 
 # Tile/tensor layout selector for descriptor-rich TLOAD/TSTORE headers.
 

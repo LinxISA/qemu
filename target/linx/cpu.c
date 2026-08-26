@@ -3778,6 +3778,12 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 void linx_core4_reset(LinxCore4State *core4)
 {
     qemu_mutex_lock(&core4->lock);
+    for (unsigned tile = 0; tile < LINX_SHARED_TILE_COUNT; tile++) {
+        for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+            g_free(core4->shared_tile[tile].generation_pending_data[pe]);
+            core4->shared_tile[tile].generation_pending_data[pe] = NULL;
+        }
+    }
     memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
     core4->collective_bpc = 0;
     core4->collective_func = 0;

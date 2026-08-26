@@ -1410,7 +1410,6 @@ static void linx_gen_ret_to_ra(DisasContext *ctx)
     ctx->base.is_jmp = DISAS_NORETURN;
 }
 
-
 static void linx_gen_goto_tb(DisasContext *ctx, int slot, vaddr dest,
                              bool validate_target)
 {
@@ -2891,6 +2890,24 @@ static bool trans_b_ior(DisasContext *ctx, arg_b_ior *a)
     gen_helper_linx_tile_append_ior(tcg_env, tcg_constant_i64(desc));
     return true;
 }
+
+static bool trans_b_assemble(DisasContext *ctx, arg_b_assemble *a)
+{
+    if (ctx->in_body || ctx->brtype == 0) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_DESC_OUTSIDE_BLOCK,
+                                LINX_BLOCKFMT_FAMILY_IOT);
+    }
+    if (a->init > 1 || a->last > 1 || a->reg > 23 || a->parent > 12 ||
+        (a->init && a->parent == 0) || (!a->init && a->parent != 0)) {
+        return linx_illegal(ctx);
+    }
+    gen_helper_linx_tile_set_assemble_v058(
+        tcg_env, tcg_constant_i32(a->init), tcg_constant_i32(a->last),
+        tcg_constant_i32(a->reg), tcg_constant_i32(a->uimm),
+        tcg_constant_i32(a->parent));
+    return true;
+}
+
 
 static bool trans_b_catr(DisasContext *ctx, arg_b_catr *a)
 {

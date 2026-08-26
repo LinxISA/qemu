@@ -18052,6 +18052,13 @@ void HELPER(linx_tile_reset_block)(CPULinxState *env)
     env->tile_arg_format = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_assemble_valid = 0;
+    env->tile_assemble_init = 0;
+    env->tile_assemble_last = 0;
+    env->tile_assemble_reg = 0;
+    env->tile_assemble_uimm = 0;
+    env->tile_assemble_parent_size = 0;
+    env->tile_assemble_offset = 0;
     env->tile_fpatr_raw = 0;
     env->tile_fpatr_valid = 0;
     env->tile_ior_count = 0;
@@ -18078,6 +18085,26 @@ void HELPER(linx_tile_set_attr)(CPULinxState *env, uint32_t packed)
     env->tile_attr_raw = packed;
     env->tile_attr_dtype = 0x100u | ((packed >> 7) & 0x1fu);
     env->tile_attr_pad = (packed >> 12) & 0x1fu;
+}
+
+void HELPER(linx_tile_set_assemble_v058)(CPULinxState *env,
+                                          uint32_t init, uint32_t last,
+                                          uint32_t reg, uint32_t uimm,
+                                          uint32_t parent)
+{
+    if (env->tile_shared_binder_count == 0u ||
+        env->tile_shared_binder_count > LINX_TILE_MAX_SHARED_BINDERS) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        return;
+    }
+    env->tile_assemble_valid = 1u;
+    env->tile_assemble_init = init & 1u;
+    env->tile_assemble_last = last & 1u;
+    env->tile_assemble_reg = reg & 0x1fu;
+    env->tile_assemble_uimm = uimm & 0x7ffu;
+    env->tile_assemble_parent_size = parent & 0xfu;
+    env->tile_assemble_offset = env->gpr[env->tile_assemble_reg] +
+                                (uint64_t)(uimm & 0x7ffu);
 }
 
 void HELPER(linx_tile_append_ior)(CPULinxState *env, uint64_t packed)
@@ -19236,6 +19263,178 @@ static bool linx_tile_shared_tmov_local_to_shared(
         (bytes != local_capacity && bytes != shared_capacity) ||
         elem_bytes == 0u) {
         return false;
+    }
+
+    if (env->tile_assemble_valid) {
+        if (env->tile_shared_binder_count != 1u ||
+            env->tile_assemble_parent_size > 12u ||
+            (env->tile_assemble_init && env->tile_assemble_parent_size == 0u) ||
+            (!env->tile_assemble_init && env->tile_assemble_parent_size != 0u) ||
+            bytes != local_capacity ||
+            (bytes % LINX_TILE_CELL_BYTES) != 0u) {
+            return false;
+        }
+        LinxSharedTileVersion *generation =
+            &cpu->core4->shared_tile[shared_id];
+        const uint32_t writer_cells = bytes / LINX_TILE_CELL_BYTES;
+        /* The decoded B.ASSEMBLE displacement is retained in CELL units by
+         * the PTO bundle carrier. */
+        const uint64_t offset_cells = env->tile_assemble_offset;
+        const uint32_t parent_capacity = env->tile_assemble_init
+            ? (UINT32_C(1) << (env->tile_assemble_parent_size + 6u))
+            : generation->generation_parent_capacity;
+
+        qemu_mutex_lock(&cpu->core4->lock);
+        if (!env->tile_assemble_init && !generation->generation_open) {
+            if (env->pe_id >= LINX_CORE4_PE_COUNT ||
+                generation->generation_pending_valid[env->pe_id]) {
+                qemu_mutex_unlock(&cpu->core4->lock);
+                return false;
+            }
+            generation->generation_pending_data[env->pe_id] =
+                g_memdup2(payload, bytes);
+            generation->generation_pending_bytes[env->pe_id] = bytes;
+            generation->generation_pending_offset[env->pe_id] = offset_cells;
+            generation->generation_pending_last[env->pe_id] =
+                env->tile_assemble_last;
+            generation->generation_pending_parent_size[env->pe_id] =
+                env->tile_assemble_parent_size;
+            generation->generation_pending_valid[env->pe_id] = 1u;
+            qemu_mutex_unlock(&cpu->core4->lock);
+            const LinxTileIOTDesc desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+            linx_tile_consume_bound_sources(env, planned_live, 0u, &desc,
+                                            NULL, NULL, carrier_valid, carrier);
+            return true;
+        }
+        if (env->tile_assemble_init) {
+            if (generation->generation_open || parent_capacity == 0u ||
+                parent_capacity > LINX_SHARED_TILE_MAX_BYTES ||
+                parent_capacity % LINX_TILE_CELL_BYTES != 0u) {
+                qemu_mutex_unlock(&cpu->core4->lock);
+                return false;
+            }
+            memset(generation->data, 0, sizeof(generation->data));
+            memset(generation->generation_covered, 0,
+                   sizeof(generation->generation_covered));
+            generation->generation_open = 1u;
+            generation->generation_closed = 0u;
+            generation->generation_mask = mask;
+            generation->generation_parent_capacity = parent_capacity;
+            generation->generation_parent_cells =
+                parent_capacity / LINX_TILE_CELL_BYTES;
+            generation->generation_last_seen = 0u;
+            generation->dtype = dtype;
+            generation->layout = env->tile_reg_layout[source];
+            generation->valid_cols = env->tile_reg_valid_cols[source];
+            generation->valid_rows = env->tile_reg_valid_rows[source];
+            generation->cols = env->tile_reg_cols[source];
+            generation->rows = env->tile_reg_rows[source];
+        } else if (generation->generation_mask != mask ||
+                   generation->generation_parent_capacity != parent_capacity ||
+                   generation->generation_parent_cells == 0u) {
+            qemu_mutex_unlock(&cpu->core4->lock);
+            return false;
+        }
+
+        const bool apply_writer = offset_cells + writer_cells <=
+                                  generation->generation_parent_cells;
+        if (!apply_writer) {
+            qemu_mutex_unlock(&cpu->core4->lock);
+            return false;
+        }
+        for (uint32_t cell = 0; cell < writer_cells; ++cell) {
+            if (generation->generation_covered[offset_cells + cell]) {
+                qemu_mutex_unlock(&cpu->core4->lock);
+                return false;
+            }
+        }
+        memcpy(generation->data + offset_cells * LINX_TILE_CELL_BYTES,
+               payload, bytes);
+        for (uint32_t cell = 0; cell < writer_cells; ++cell) {
+            generation->generation_covered[offset_cells + cell] = 1u;
+        }
+
+        bool last = env->tile_assemble_last != 0u;
+        if (env->tile_assemble_init) {
+            for (unsigned pending_pe = 0; pending_pe < LINX_CORE4_PE_COUNT;
+                 ++pending_pe) {
+                if (!generation->generation_pending_valid[pending_pe]) {
+                    continue;
+                }
+                const uint64_t pending_offset =
+                    generation->generation_pending_offset[pending_pe];
+                const uint32_t pending_bytes =
+                    generation->generation_pending_bytes[pending_pe];
+                const uint32_t pending_cells =
+                    pending_bytes / LINX_TILE_CELL_BYTES;
+                if (pending_offset + pending_cells >
+                        generation->generation_parent_cells) {
+                    qemu_mutex_unlock(&cpu->core4->lock);
+                    return false;
+                }
+                for (uint32_t cell = 0; cell < pending_cells; ++cell) {
+                    if (generation->generation_covered[pending_offset + cell]) {
+                        qemu_mutex_unlock(&cpu->core4->lock);
+                        return false;
+                    }
+                }
+                memcpy(generation->data + pending_offset * LINX_TILE_CELL_BYTES,
+                       generation->generation_pending_data[pending_pe],
+                       pending_bytes);
+                for (uint32_t cell = 0; cell < pending_cells; ++cell) {
+                    generation->generation_covered[pending_offset + cell] = 1u;
+                }
+                g_free(generation->generation_pending_data[pending_pe]);
+                generation->generation_pending_data[pending_pe] = NULL;
+                generation->generation_pending_valid[pending_pe] = 0u;
+                last = last || generation->generation_pending_last[pending_pe];
+            }
+        }
+        generation->generation_last_seen |= last ? 1u : 0u;
+        if (generation->generation_last_seen) {
+            bool covered = true;
+            for (uint32_t cell = 0; cell < generation->generation_parent_cells;
+                 ++cell) {
+                if (!generation->generation_covered[cell]) {
+                    covered = false;
+                    break;
+                }
+            }
+            if (!covered) {
+                qemu_mutex_unlock(&cpu->core4->lock);
+                const LinxTileIOTDesc desc =
+                    linx_tile_decode_iot(env->tile_iot_desc[0]);
+                linx_tile_consume_bound_sources(
+                    env, planned_live, 0u, &desc, NULL, NULL,
+                    carrier_valid, carrier);
+                return true;
+            }
+            generation->per_pe_capacity = parent_capacity;
+            generation->allocated_bytes = parent_capacity;
+            generation->allocation_mask = mask;
+            generation->initialized_mask = mask;
+            if ((generation->layout == LINX_TILE_LAYOUT_CUBE_M16 ||
+                 generation->layout == LINX_TILE_LAYOUT_CUBE_M32) &&
+                generation->valid_rows <= UINT16_MAX / LINX_CORE4_PE_COUNT) {
+                generation->valid_rows =
+                    (uint16_t)(generation->valid_rows * LINX_CORE4_PE_COUNT);
+            } else if (generation->layout == 0u &&
+                       generation->valid_rows > 1u &&
+                       generation->valid_rows <=
+                           UINT16_MAX / LINX_CORE4_PE_COUNT) {
+                /* NORM row-scale generation has one fixed PE row range per
+                 * writer; publish the assembled logical row extent. */
+                generation->valid_rows =
+                    (uint16_t)(generation->valid_rows * LINX_CORE4_PE_COUNT);
+            }
+            generation->generation_closed = 1u;
+            generation->generation_open = 0u;
+        }
+        qemu_mutex_unlock(&cpu->core4->lock);
+        const LinxTileIOTDesc desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+        linx_tile_consume_bound_sources(env, planned_live, 0u, &desc,
+                                        NULL, NULL, carrier_valid, carrier);
+        return true;
     }
     qemu_mutex_lock(&cpu->core4->lock);
     bool valid = shared->allocation_mask == 0u ||
@@ -20471,6 +20670,13 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     env->tile_arg_format = 0;
     env->tile_attr_pad = 0;
     env->tile_attr_dtype = 0;
+    env->tile_assemble_valid = 0;
+    env->tile_assemble_init = 0;
+    env->tile_assemble_last = 0;
+    env->tile_assemble_reg = 0;
+    env->tile_assemble_uimm = 0;
+    env->tile_assemble_parent_size = 0;
+    env->tile_assemble_offset = 0;
     env->tile_ior_count = 0;
     env->tile_shared_binder_count = 0;
     memset(env->tile_shared_binder, 0, sizeof(env->tile_shared_binder));
