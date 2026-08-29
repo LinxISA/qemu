@@ -186,9 +186,21 @@ static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
     return offset <= len && size <= (uint64_t)len - offset;
 }
 
-static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
+/*
+ * The PTO note is an ELF identity hint, not a Tile instruction legality
+ * gate.  During the current bring-up window, keep reporting note problems
+ * but allow the image loader to continue.  The actual v0.58 Tile contracts
+ * remain enforced by the target implementation after loading.
+ */
+static void linx_pto_note_warning(const char *reason)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: warning: %s; continuing ELF load\n", reason);
+}
+
+static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                                          unsigned *identity_count,
-                                         Error **errp)
+                                         bool *note_problem)
 {
     size_t offset = 0;
 
@@ -197,26 +209,30 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
         size_t name_offset, desc_offset, next;
 
         if (size - offset < 3u * sizeof(uint32_t)) {
-            error_setg(errp, "malformed .note.pto.isa header");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa header");
+            *note_problem = true;
+            return;
         }
         memcpy(&namesz, notes + offset, sizeof(namesz));
         memcpy(&descsz, notes + offset + 4, sizeof(descsz));
         memcpy(&type, notes + offset + 8, sizeof(type));
         name_offset = offset + 12;
         if (namesz > size - name_offset) {
-            error_setg(errp, "malformed .note.pto.isa owner");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa owner");
+            *note_problem = true;
+            return;
         }
         desc_offset = name_offset + QEMU_ALIGN_UP(namesz, 4);
         if (desc_offset > size || descsz > size - desc_offset) {
-            error_setg(errp, "malformed .note.pto.isa descriptor");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa descriptor");
+            *note_problem = true;
+            return;
         }
         next = desc_offset + QEMU_ALIGN_UP(descsz, 4);
         if (next > size) {
-            error_setg(errp, "malformed .note.pto.isa alignment");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa alignment");
+            *note_problem = true;
+            return;
         }
 
         if (namesz >= 3 && memcmp(notes + name_offset, "PTO", 3) == 0) {
@@ -225,21 +241,24 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                 descsz != sizeof(linx_pto_isa_identity) - 1 ||
                 memcmp(notes + desc_offset, linx_pto_isa_identity,
                        sizeof(linx_pto_isa_identity) - 1) != 0) {
-                error_setg(errp,
-                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.4");
-                return false;
+                linx_pto_note_warning(
+                    "Linx PTO ISA identity is malformed, mixed, or not 0.58.4");
+                *note_problem = true;
+                offset = next;
+                continue;
             }
             (*identity_count)++;
         }
         offset = next;
     }
-    return true;
+    return;
 }
 
 static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                                            Error **errp)
 {
     unsigned identity_count = 0;
+    bool note_problem = false;
 
     if (len < EI_NIDENT || memcmp(buf, ELFMAG, SELFMAG) != 0) {
         error_setg(errp, "not an ELF file");
@@ -269,11 +288,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
             const Elf32_Shdr *sh = (const Elf32_Shdr *)(
                 buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
             if (sh->sh_type == SHT_NOTE) {
-                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
-                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                  sh->sh_size,
-                                                  &identity_count, errp)) {
-                    return false;
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len)) {
+                    linx_pto_note_warning("malformed .note.pto.isa section range");
+                    note_problem = true;
+                } else {
+                    linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                 sh->sh_size, &identity_count,
+                                                 &note_problem);
                 }
             }
         }
@@ -296,11 +317,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
             const Elf64_Shdr *sh = (const Elf64_Shdr *)(
                 buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
             if (sh->sh_type == SHT_NOTE) {
-                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
-                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                  sh->sh_size,
-                                                  &identity_count, errp)) {
-                    return false;
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len)) {
+                    linx_pto_note_warning("malformed .note.pto.isa section range");
+                    note_problem = true;
+                } else {
+                    linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                 sh->sh_size, &identity_count,
+                                                 &note_problem);
                 }
             }
         }
@@ -309,9 +332,8 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
         return false;
     }
 
-    if (identity_count == 0) {
-        error_setg(errp, "missing required .note.pto.isa identity for 0.58.4");
-        return false;
+    if (identity_count == 0 && !note_problem) {
+        linx_pto_note_warning("missing .note.pto.isa identity for 0.58.4");
     }
     return true;
 }

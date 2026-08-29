@@ -311,7 +311,7 @@ class HardwareNumericVectors(unittest.TestCase):
         )
         self.assertEqual(contract["mx_side_types"], authority["mx_side_types"])
 
-    def test_cube_type_matrix_matches_locked_0583_authority(self):
+    def test_cube_type_matrix_matches_authority_with_current_mx_extension(self):
         authority = json.loads(MATRIX_AUTHORITY.read_text(encoding="utf-8"))
         floating, signed, unsigned = [
             [DTYPE[name] for name in authority["ordinary_classes"][kind]]
@@ -332,17 +332,24 @@ class HardwareNumericVectors(unittest.TestCase):
         self.assertNotIn(17, ordinary)
         self.assertNotIn(25, ordinary)
 
-        mx_types = [DTYPE[name] for name in authority["mx_side_types"]]
+        # ADR-0101 adds HiF4X2 to Matrix-MX input roles only.  Keep the
+        # 0.58.3 fixture as the ordinary-type authority, then extend the
+        # Matrix-MX expectation to the current v0.58.4 contract.
+        mx_types = [DTYPE[name] for name in authority["mx_side_types"]] + [
+            DTYPE["HiF4X2"]
+        ]
         mx = [(a, b) for a in mx_types for b in mx_types]
         self.assertEqual(
             [(a, b) for a in range(32) for b in range(32)
              if self.lib.v_mx_pair(a, b)],
             mx,
         )
-        self.assertEqual(len(mx), 36)
+        self.assertEqual(len(mx), 49)
         self.assertEqual(
             [d for d in mx_types if self.lib.v_mx_scale(d)],
-            [DTYPE[name] for name in authority["mx_scaled_side_types"]],
+            [DTYPE[name] for name in authority["mx_scaled_side_types"]] + [
+                DTYPE["HiF4X2"]
+            ],
         )
 
 

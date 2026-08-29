@@ -28,7 +28,7 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
 
-    def test_exact_0584_elf_identity_is_fail_closed(self) -> None:
+    def test_exact_0584_elf_identity_is_advisory(self) -> None:
         authority = json.loads(
             (ROOT / "tests/linxisa/pto-isa-0584-authority.json").read_text(
                 encoding="utf-8"
@@ -44,7 +44,8 @@ class PtoV0583ContractTests(unittest.TestCase):
             "6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d",
             self.virt,
         )
-        self.assertNotIn("accepting legacy ELF", self.virt)
+        self.assertIn("Linx: warning:", self.virt)
+        self.assertIn("continuing ELF load", self.virt)
 
     def test_iot_ios_use_size_code_and_fixed_pe_mode(self) -> None:
         for field in (

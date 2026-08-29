@@ -72,6 +72,9 @@ typedef struct LinxSharedTileVersion {
     uint64_t producer_bpc;
     uint8_t allocation_mask;
     uint8_t initialized_mask;
+    /* A one-hot Shared TLOAD may publish a complete dense object. Keep this
+     * separate from allocation_mask, which remains the encoded PEMode mask. */
+    uint8_t whole_object;
     uint8_t generation_open;
     uint8_t generation_closed;
     uint8_t generation_mask;
@@ -564,6 +567,9 @@ typedef struct CPUArchState {
     uint32_t tile_reg_capacity[LINX_TILE_SLOT_COUNT];
     uint32_t tile_reg_bytes[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
+    /* Predicate-kind Tiles use the same byte backing as numeric Tiles, but
+     * their logical elements are packed one bit per element. */
+    uint8_t tile_reg_predicate[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_layout[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_cube_k_repeat[LINX_TILE_SLOT_COUNT];

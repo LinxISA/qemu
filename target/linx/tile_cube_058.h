@@ -76,7 +76,8 @@ bool linx_tile_cube_compute_shared_058(
     const uint8_t *shared_column_scale, uint32_t shared_column_scale_bytes,
     uint32_t shared_column_scale_cols,
     unsigned row_scale, unsigned column_scale, unsigned bias,
-    unsigned size_code, bool mx, bool with_bias, bool accumulate);
+    unsigned size_code, bool mx, bool with_bias, bool accumulate,
+    uint32_t shared_a_layout, uint32_t shared_b_layout);
 bool linx_tile_acccvt_058(CPULinxState *env, unsigned dst_tile,
                            unsigned size_code);
 

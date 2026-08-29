@@ -4125,6 +4125,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_capacity, 0, sizeof(env->tile_reg_capacity));
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
+        memset(env->tile_reg_predicate, 0, sizeof(env->tile_reg_predicate));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
         memset(env->tile_reg_layout, 0, sizeof(env->tile_reg_layout));
         memset(env->tile_reg_cube_k_repeat, 0,
@@ -4236,6 +4237,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
                sizeof(env->tile_reg_cube_cell_count));
         memset(env->tile_reg_cube_storage_bytes, 0,
                sizeof(env->tile_reg_cube_storage_bytes));
+    }
+    if (version_id < 23) {
+        memset(env->tile_reg_predicate, 0,
+               sizeof(env->tile_reg_predicate));
     }
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4396,7 +4401,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 22,
+    .version_id = 23,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4490,6 +4495,8 @@ static const VMStateDescription vmstate_linx_cpu = {
                                LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_predicate, LinxCPU,
+                              LINX_TILE_SLOT_COUNT, 23),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_cols, LinxCPU,

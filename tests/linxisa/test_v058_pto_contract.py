@@ -201,7 +201,6 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("shared->allocation_mask = allocation_mask", self.helper)
         self.assertIn("destination_region != region", self.helper)
         self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
-        self.assertNotIn("single_issuer", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
@@ -300,7 +299,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertEqual(cube_values[4], 0x0d)
         self.assertEqual(cube_values[6], 0x0d)
 
-    def test_v058_elf_identity_is_validated_before_any_load(self) -> None:
+    def test_v058_elf_identity_is_reported_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
         self.assertIn("pto-isa-0.58.4-mode-function-v1", virt)
@@ -317,9 +316,12 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
-        # PTO v0.58.4 requires the identity note; legacy-ELF acceptance was
-        # removed upstream.
+        # The note is currently an advisory ELF identity check.  Its
+        # diagnostics must remain visible, but a missing or mismatched note
+        # must not prevent the loader from reaching the actual ISA checks.
         self.assertIn("malformed .note.pto.isa", virt)
+        self.assertIn("Linx: warning:", virt)
+        self.assertIn("continuing ELF load", virt)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
         cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")

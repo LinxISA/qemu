@@ -58,7 +58,8 @@ static inline bool linx_tile_numeric_mx_pair(uint32_t left, uint32_t right)
     right &= 31u;
     const uint32_t allowed = (UINT32_C(1) << 4) | (UINT32_C(1) << 5) |
                              (UINT32_C(1) << 7) | (UINT32_C(1) << 8) |
-                             (UINT32_C(1) << 11) | (UINT32_C(1) << 12);
+                             (UINT32_C(1) << 11) | (UINT32_C(1) << 12) |
+                             (UINT32_C(1) << 14);
     return (allowed & (UINT32_C(1) << left)) != 0u &&
            (allowed & (UINT32_C(1) << right)) != 0u;
 }
@@ -66,7 +67,8 @@ static inline bool linx_tile_numeric_mx_pair(uint32_t left, uint32_t right)
 static inline bool linx_tile_numeric_mx_requires_scale(uint32_t dtype)
 {
     dtype &= 31u;
-    return dtype == 7u || dtype == 8u || dtype == 11u || dtype == 12u;
+    return dtype == 7u || dtype == 8u || dtype == 11u || dtype == 12u ||
+           dtype == 14u;
 }
 
 static inline unsigned linx_tile_numeric_matrix_class(uint32_t dtype)
