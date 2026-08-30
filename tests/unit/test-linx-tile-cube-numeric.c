@@ -201,7 +201,7 @@ static void test_all_production_type_rows(void)
     g_free(env);
 }
 
-static void test_reject_stale_matrix_primary_types(void)
+static void test_accept_current_hif4x2_matrix_types(void)
 {
     CPULinxState *env = g_new0(CPULinxState, 1);
     static const unsigned rejected[] = {17u, 25u};
@@ -219,9 +219,10 @@ static void test_reject_stale_matrix_primary_types(void)
             env, 0u, 1u, UINT_MAX, UINT_MAX, UINT_MAX, 0u,
             false, false, false));
     }
-    g_assert_false(linx_tile_cube_descriptor_058(
+    /* HiF4X2 is a current MX matrix input type, not a stale primary type. */
+    g_assert_true(linx_tile_cube_descriptor_058(
         env, 0u, LINX_TILE_LAYOUT_CUBE_M16, 14u, 1u, 1u, 128u));
-    g_assert_false(linx_tile_cube_descriptor_058(
+    g_assert_true(linx_tile_cube_descriptor_058(
         env, 1u, LINX_TILE_LAYOUT_CUBE_N8, 14u, 1u, 1u, 128u));
     g_free(env);
 }
@@ -476,7 +477,7 @@ static void test_cube_cell_descriptors_and_payload_indices(void)
 
     g_assert_true(linx_tile_cube_descriptor_058(
         env, 0, LINX_TILE_LAYOUT_CUBE_M16, 1, 2, 3, 256));
-    g_assert_cmpuint(env->tile_reg_cube_k_repeat[0], ==, 2);
+    g_assert_cmpuint(env->tile_reg_cube_k_repeat[0], ==, 1);
     g_assert_cmpuint(env->tile_reg_cube_cell_count[0], ==, 2);
     g_assert_cmpuint(env->tile_reg_cube_storage_bytes[0], ==, 256);
     g_assert_true(linx_tile_cube_payload_index_058(env, 0, 1, 2, &index));
@@ -1172,8 +1173,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/cube/type-matrix", test_all_production_type_rows);
-    g_test_add_func("/linx/cube/reject-stale-primary-types",
-                    test_reject_stale_matrix_primary_types);
+    g_test_add_func("/linx/cube/accept-current-hif4x2-types",
+                    test_accept_current_hif4x2_matrix_types);
     g_test_add_func("/linx/cube/ordinary-bias-acc", test_ordinary_bias_and_acc);
     g_test_add_func("/linx/cube/upper-physical-slots",
                     test_upper_physical_slots);

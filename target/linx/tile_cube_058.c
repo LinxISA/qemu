@@ -1046,12 +1046,15 @@ bool linx_tile_cube_compute_shared_ab_058(
     uint32_t shared_b_dtype, uint32_t shared_b_cols,
     unsigned size_code, bool accumulate)
 {
+    /* This legacy raw-buffer wrapper retains its historical NORM layout.
+     * Current Core4 callers use linx_tile_cube_compute_shared_058() and pass
+     * the explicit M16/M32/N8 layouts from their Shared descriptors. */
     return linx_tile_cube_compute_common_058(
         env, UINT_MAX, UINT_MAX, shared_a, shared_a_bytes, shared_a_dtype,
         shared_a_cols, shared_b, shared_b_bytes, shared_b_dtype, shared_b_cols,
         NULL, 0u, 0u, NULL, 0u, 0u,
         0u, 0u, 0u, size_code, false, false, accumulate,
-        UINT32_MAX, UINT32_MAX);
+        0u, 0u);
 }
 
 bool linx_tile_cube_compute_shared_058(

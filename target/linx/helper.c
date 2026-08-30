@@ -18990,13 +18990,19 @@ static bool linx_tile_group_gmov_profile(
     unsigned *peer_out, unsigned *size_code_out, uint8_t *pe_mask_out)
 {
     LinxCPU *cpu = env_archcpu(env);
+    LinxCore4State *core4 = cpu->core4;
     LinxTileIOTDesc desc;
     unsigned source;
     unsigned destination;
     unsigned peer_reg;
     unsigned peer = 0u;
+    const bool single_pe_compat =
+        core4 != NULL && env->pe_id == 0u &&
+        (core4->cpu[0] == NULL || core4->cpu[0] == cpu) &&
+        core4->cpu[1] == NULL && core4->cpu[2] == NULL &&
+        core4->cpu[3] == NULL;
 
-    if (cpu->core4 == NULL || env->pe_id >= LINX_CORE4_PE_COUNT ||
+    if (core4 == NULL || env->pe_id >= LINX_CORE4_PE_COUNT ||
         env->blocktype != LINX_BLOCK_TLSU ||
         (env->tile_func & 0x1fu) != LINX_TLSU_GMOV ||
         env->tile_shared_binder_count != 0u || env->tile_iot_count != 1u ||
@@ -19007,9 +19013,11 @@ static bool linx_tile_group_gmov_profile(
         env->tile_ior_count > 1u) {
         return false;
     }
-    for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
-        if (cpu->core4->cpu[i] == NULL) {
-            return false;
+    if (!single_pe_compat) {
+        for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
+            if (core4->cpu[i] == NULL) {
+                return false;
+            }
         }
     }
 
@@ -19040,6 +19048,93 @@ static bool linx_tile_group_gmov_profile(
     *peer_out = peer;
     *size_code_out = desc.size & 0x1fu;
     *pe_mask_out = desc.reg & 0xfu;
+    return true;
+}
+
+static void linx_tile_group_reset_block(CPULinxState *env);
+
+static bool linx_tile_group_gmov_single_pe_commit(
+    CPULinxState *env, unsigned source, unsigned destination,
+    unsigned peer_tid, unsigned size_code, uint8_t pe_mask)
+{
+    static bool warned_legacy_single_pe_gmov;
+    LinxTileRegSnapshot source_snapshot;
+    LinxTileRegSnapshot destination_snapshot;
+    uint16_t live[LINX_TILE_HAND_COUNT];
+    uint16_t reserved[LINX_TILE_HAND_COUNT];
+    uint8_t order[LINX_TILE_HAND_COUNT][LINX_TILE_HAND_DEPTH];
+    uint8_t count_by_hand[LINX_TILE_HAND_COUNT];
+    uint8_t carrier_valid = env->tile_acc_carrier_valid;
+    uint8_t carrier = env->tile_acc_carrier;
+    uint8_t acc_sources_valid = env->tile_acc_sources_valid;
+    const LinxTileIOTDesc desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
+    LinxCPU *cpu = env_archcpu(env);
+    LinxCore4State *core4 = cpu->core4;
+
+    /*
+     * v0.58.4 GMOV is a Core4 operation.  This narrow fallback exists only
+     * for the pre-Core4 single-PE carrier still used by older bring-up tests;
+     * it is deliberately not used for a current partial-mask Core4 run.
+     */
+    if (core4 == NULL || env->pe_id != 0u || peer_tid != 0u || pe_mask != 1u ||
+        (core4->cpu[0] != NULL && core4->cpu[0] != cpu) ||
+        core4->cpu[1] != NULL || core4->cpu[2] != NULL ||
+        core4->cpu[3] != NULL) {
+        return false;
+    }
+    if (!warned_legacy_single_pe_gmov) {
+        warned_legacy_single_pe_gmov = true;
+        qemu_log_mask(
+            LOG_GUEST_ERROR,
+            "Linx: warning: accepting legacy single-PE GMOV carrier; "
+            "v0.58.4 ASL requires Core4 rendezvous\n");
+    }
+
+    linx_tile_snapshot_reg(env, source, &source_snapshot);
+    linx_tile_snapshot_reg(env, destination, &destination_snapshot);
+    if (source_snapshot.bytes != (UINT32_C(1) << (size_code + 4u))) {
+        return false;
+    }
+    memcpy(env->tile_reg[destination], source_snapshot.data,
+           sizeof(source_snapshot.data));
+    env->tile_reg_capacity[destination] = source_snapshot.bytes;
+    env->tile_reg_bytes[destination] = source_snapshot.bytes;
+    env->tile_reg_elem_bytes[destination] = source_snapshot.elem_bytes;
+    env->tile_reg_predicate[destination] = source_snapshot.predicate;
+    env->tile_reg_dtype[destination] = source_snapshot.dtype;
+    env->tile_reg_layout[destination] = source_snapshot.layout;
+    env->tile_reg_cube_k_repeat[destination] = source_snapshot.cube_k_repeat;
+    env->tile_reg_cube_n_repeat[destination] = source_snapshot.cube_n_repeat;
+    env->tile_reg_cube_cell_count[destination] = source_snapshot.cube_cell_count;
+    env->tile_reg_cube_storage_bytes[destination] =
+        source_snapshot.cube_storage_bytes;
+    env->tile_reg_valid_cols[destination] = source_snapshot.valid_cols;
+    env->tile_reg_valid_rows[destination] = source_snapshot.valid_rows;
+    env->tile_reg_cols[destination] = source_snapshot.cols;
+    env->tile_reg_rows[destination] = source_snapshot.rows;
+
+    memcpy(live, env->tile_hand_live, sizeof(live));
+    memcpy(reserved, env->tile_hand_reserved, sizeof(reserved));
+    memcpy(order, env->tile_hand_order, sizeof(order));
+    memcpy(count_by_hand, env->tile_hand_count, sizeof(count_by_hand));
+    linx_tile_consume_bound_sources(env, live, 0u, &desc, order,
+                                    count_by_hand, &carrier_valid, &carrier);
+    linx_tile_invalidate_acc_sources_on_output(
+        destination, &acc_sources_valid, env->tile_acc_src0,
+        env->tile_acc_src1);
+    if (!linx_tile_complete_bound_output(
+            env, live, reserved, order, count_by_hand, 0u)) {
+        linx_tile_restore_reg(env, &destination_snapshot);
+        return false;
+    }
+    memcpy(env->tile_hand_live, live, sizeof(live));
+    memcpy(env->tile_hand_reserved, reserved, sizeof(reserved));
+    memcpy(env->tile_hand_order, order, sizeof(order));
+    memcpy(env->tile_hand_count, count_by_hand, sizeof(count_by_hand));
+    env->tile_acc_carrier_valid = carrier_valid;
+    env->tile_acc_carrier = carrier;
+    env->tile_acc_sources_valid = acc_sources_valid;
+    linx_tile_group_reset_block(env);
     return true;
 }
 
@@ -20133,6 +20228,15 @@ static bool linx_tile_group_gmov_commit(CPULinxState *env,
         return false;
     }
 
+    /* A one-PE machine cannot satisfy the architectural Core4 rendezvous.
+     * Keep the legacy bring-up carrier finite and explicit; do not enter the
+     * collective wait with three absent CPUs. */
+    if (core4->cpu[1] == NULL && core4->cpu[2] == NULL &&
+        core4->cpu[3] == NULL) {
+        return linx_tile_group_gmov_single_pe_commit(
+            env, source, destination, peer_tid, size_code, pe_mask);
+    }
+
     const unsigned pe = env->pe_id;
     const uint8_t bit = 1u << pe;
     const uint32_t dtype = linx_tile_effective_dtype(env);
@@ -20302,9 +20406,31 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
     uint8_t acc_sources_valid = env->tile_acc_sources_valid;
     uint8_t acc_src0 = env->tile_acc_src0;
     uint8_t acc_src1 = env->tile_acc_src1;
+    uint32_t datr_packed = env->tile_attr_raw;
+    static bool warned_legacy_tquant_zero_pad;
+    /*
+     * The current Linx assembler spells the explicit ZERO PadValue with
+     * encoded value 01, while the v0.58.4 ASL contract uses encoded 00 for
+     * Zero and reserves PadValue for TQUANT.  Keep this old compiler spelling
+     * runnable as a compatibility alias, without widening any other
+     * operation's DATR applicability.  A current raw-00 carrier follows the
+     * normal strict path above.
+     */
+    if (env->blocktype == LINX_BLOCK_OPERATION &&
+        (env->tile_func & 0x7fu) == 0x06au &&
+        ((datr_packed >> 12) & 0x3u) == 0x1u) {
+        if (!warned_legacy_tquant_zero_pad) {
+            warned_legacy_tquant_zero_pad = true;
+            qemu_log_mask(
+                LOG_GUEST_ERROR,
+                "Linx: warning: accepting legacy TQUANT ZERO PadValue "
+                "encoding 01; v0.58.4 ASL encoding is 00\n");
+        }
+        datr_packed &= ~(UINT32_C(0x3) << 12);
+    }
     LinxTileTxnGate txn_gate = {
         .datr_legal = linx_tile_datr_applicable(
-            env->blocktype, env->tile_func, env->tile_attr_raw,
+            env->blocktype, env->tile_func, datr_packed,
             (env->tile_attr_dtype & 0x100u) != 0u),
         .operands_legal = true,
         .allocation_available = true,

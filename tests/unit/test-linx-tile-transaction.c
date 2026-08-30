@@ -342,14 +342,15 @@ static void test_operation_invalid_shape_is_atomic(void)
     g_free(env);
 }
 
-static void test_operation_missing_tquant_scale_is_atomic(void)
+static void test_operation_omitted_tquant_scale_is_legal(void)
 {
     CPULinxState *env = new_atomicity_env();
     VisibleCPUTileState *before = g_new(VisibleCPUTileState, 1);
     const unsigned sources[1] = { 0u };
 
     capture_cpu_visible_state(env, before);
-    g_assert_false(linx_tile_operation_pre_publish_legal(
+    /* v0.58.4 ASL: omitted B.IOR selects multiplier 1.0 and zero point 0. */
+    g_assert_true(linx_tile_operation_pre_publish_legal(
         env, 0x102u, sources, 1u, 17u, 4u, 4u, 2u, 4u, 2u));
     assert_cpu_visible_state_unchanged(env, before);
     g_free(before);
@@ -616,8 +617,8 @@ int main(int argc, char **argv)
                     test_tstore_shape_comes_from_source_descriptor);
     g_test_add_func("/linx/tile-transaction/operation-invalid-shape",
                     test_operation_invalid_shape_is_atomic);
-    g_test_add_func("/linx/tile-transaction/operation-missing-tquant-scale",
-                    test_operation_missing_tquant_scale_is_atomic);
+    g_test_add_func("/linx/tile-transaction/operation-omitted-tquant-scale",
+                    test_operation_omitted_tquant_scale_is_legal);
     g_test_add_func("/linx/tile-transaction/operation-tcvt-carrier-shape",
                     test_operation_tcvt_requires_matching_shape);
     g_test_add_func("/linx/tile-transaction/tcvt-descriptor",
