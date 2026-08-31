@@ -13465,6 +13465,7 @@ static bool linx_tile_part_arg(CPULinxState *env, uint32_t op,
  */
 static uint32_t linx_tile_operation_impl_selector(uint32_t selector)
 {
+    /* PTO 0.58.5 retired selectors are deliberately absent here. */
     switch (selector) {
     case 0x000u: /* TADD */ return 0x000u;
     case 0x001u: /* TSUB */ return 0x001u;
@@ -13494,7 +13495,6 @@ static uint32_t linx_tile_operation_impl_selector(uint32_t selector)
     case 0x03bu: /* TEXPANDS */ return 0x019u;
     case 0x06fu: /* TGATHER */ return 0x01au;
     case 0x070u: /* TSCATTER */ return 0x01bu;
-    case 0x06eu: /* TTRANS */ return 0x01du;
     case 0x054u: /* TCOLEXPAND */ return 0x01eu;
     case 0x044u: /* TROWEXPAND */ return 0x01fu;
     case 0x020u: /* TADDS */ return 0x020u;
@@ -13537,7 +13537,6 @@ static uint32_t linx_tile_operation_impl_selector(uint32_t selector)
     case 0x059u: /* TCOLEXPANDMAX */ return 0x046u;
     case 0x05au: /* TCOLEXPANDMIN */ return 0x047u;
     case 0x05bu: /* TCOLEXPANDEXPDIF */ return 0x048u;
-    case 0x065u: /* TFILLPAD */ return 0x082u;
     case 0x06bu: /* TDEQUANT */ return 0x084u;
     case 0x062u: /* TEXTRACT */ return 0x085u;
     case 0x066u: /* TCI */ return 0x080u;
@@ -13549,10 +13548,6 @@ static uint32_t linx_tile_operation_impl_selector(uint32_t selector)
     case 0x068u: /* THISTOGRAM */ return 0x105u;
     case 0x06cu: /* TSORT */ return 0x106u;
     case 0x06du: /* TMRGSORT */ return 0x107u;
-    case 0x071u: /* TPARTADD */ return 0x0c3u;
-    case 0x072u: /* TPARTMUL */ return 0x0c4u;
-    case 0x073u: /* TPARTMAX */ return 0x0c5u;
-    case 0x074u: /* TPARTMIN */ return 0x0c6u;
     default: return UINT32_MAX;
     }
 }
@@ -13761,7 +13756,6 @@ static bool linx_tile_operation_selector_executable(uint32_t selector)
     case 0x03bu: /* TEXPANDS */
     case 0x066u: /* TCI */
     case 0x067u: /* TTRI */
-    case 0x065u: /* TFILLPAD */
     case 0x01bu: /* TCVT */
     case 0x06au: /* TQUANT */
     case 0x06bu: /* TDEQUANT */
@@ -13770,15 +13764,10 @@ static bool linx_tile_operation_selector_executable(uint32_t selector)
     case 0x06fu: /* TGATHER */
     case 0x070u: /* TSCATTER */
     case 0x060u: /* TCONCAT */
-    case 0x06eu: /* TTRANS */
     case 0x064u: /* TIMG2COL */
     case 0x06cu: /* TSORT */
     case 0x06du: /* TMRGSORT */
     case 0x068u: /* THISTOGRAM */
-    case 0x071u: /* TPARTADD */
-    case 0x072u: /* TPARTMUL */
-    case 0x073u: /* TPARTMAX */
-    case 0x074u: /* TPARTMIN */
         return linx_tile_operation_impl_selector_executable(
             linx_tile_operation_impl_selector(selector));
     default:
