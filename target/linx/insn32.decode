@@ -191,7 +191,6 @@ bstart_sys        0000 0000 0000 0000 0001 0000 1000 0001
   bstart_texpands             .... .011 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tci                  .... .110 0110 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_ttri                 .... .110 0111 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tfillpad             .... .110 0101 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tcvt                 .... .001 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tquant               .... .110 1010 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tdequant             .... .110 1011 0001 1001 0001 1000 0001 dtype=%TileDataType
@@ -200,15 +199,10 @@ bstart_sys        0000 0000 0000 0000 0001 0000 1000 0001
   bstart_tgather              .... .110 1111 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tscatter             .... .111 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tconcat              .... .110 0000 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_ttrans               .... .110 1110 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_timg2col             .... .110 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tsort                .... .110 1100 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_tmrgsort             .... .110 1101 0001 1001 0001 1000 0001 dtype=%TileDataType
   bstart_thistogram           .... .110 1000 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartadd             .... .111 0001 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartmul             .... .111 0010 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartmax             .... .111 0011 0001 1001 0001 1000 0001 dtype=%TileDataType
-  bstart_tpartmin             .... .111 0100 0001 1001 0001 1000 0001 dtype=%TileDataType
   # Canonical selector form retained for decoders that do not use aliases.
   bstart_tepl               ..... .. ..... 00011 001 00011 000 000 1 dtype=%TileDataType mode=%Mode function=%TileFunc
 }
