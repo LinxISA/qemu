@@ -22,6 +22,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.numeric = (TARGET / "tile_numeric_058.h").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
+        cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         cls.tile_isa = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
         cls.tile_cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
@@ -128,7 +129,7 @@ class PtoV058ContractTests(unittest.TestCase):
         )
         self.assertNotIn("LB2 is destination Col", self.cube)
 
-    def test_addtpc_uses_linxisa_0581_page_base(self) -> None:
+    def test_addtpc_uses_current_instruction_tpc(self) -> None:
         addtpc = re.search(
             r"static bool trans_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -136,10 +137,30 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static bool trans_hl_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
         for body in (addtpc, hl_addtpc):
-            self.assertIn("pc_page", body)
-            self.assertRegex(body, r"current_pc\s*&\s*~\(vaddr\)0xfff")
-            self.assertRegex(body, r"(?:imm|offset)\s*<<=\s*12")
-            self.assertNotRegex(body, r"offset\s*<<=\s*1(?![0-9])")
+            self.assertIn("current_pc", body)
+            self.assertIn("sextract32", body)
+            self.assertRegex(body, r"page_offset\s*<<=\s*12")
+            self.assertRegex(body, r"tcg_gen_movi_i64\(out,\s*current_pc\s*\+\s*page_offset\)")
+            self.assertNotIn("pc_page", body)
+
+    def test_et_rel_addtpc_hi_lo_use_one_tpc_relative_pair(self) -> None:
+        addtpc = self.virt[
+            self.virt.index("static bool linx_patch_addtpc_pcrel") :
+            self.virt.index("static bool linx_patch_lo12_uimm12")
+        ]
+        lo12 = self.virt[
+            self.virt.index("static bool linx_patch_pcrel_lo12_uimm12") :
+            self.virt.index("/* Patch a PC-relative load instruction")
+        ]
+        self.assertIn("target_addr + addend - (int64_t)patch_addr", addtpc)
+        self.assertIn("page_imm = (delta + 0x800) >> 12", addtpc)
+        self.assertNotIn("target_page", addtpc)
+        self.assertIn("tpc_addr", lo12)
+        self.assertIn("delta = (int64_t)target_addr + addend - (int64_t)tpc_addr", lo12)
+        self.assertIn("base + rela[h].r_offset != anchor_addr", self.virt)
+        self.assertIn("ELF32_R_SYM(rela[h].r_info) != symidx", self.virt)
+        self.assertIn("expected ADDTPC at the PCREL HI20 anchor", lo12)
+        self.assertNotIn("rounded target page", lo12)
 
     def test_scalar_right_modifier_mapping_matches_linxisa_0583(self) -> None:
         arithmetic = re.search(

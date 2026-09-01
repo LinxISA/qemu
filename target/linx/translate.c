@@ -6721,13 +6721,12 @@ static bool trans_xb(DisasContext *ctx, arg_xb *a)
 
 static bool trans_addtpc(DisasContext *ctx, arg_addtpc *a)
 {
-    /* LinxISA 0.58.1: page-aligned TPC plus a signed page displacement. */
+    /* PTO ASL: current instruction TPC plus a signed page displacement. */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr pc_page = current_pc & ~(vaddr)0xfff;
-    int64_t imm = (int64_t)(int32_t)(a->imm20 << 12) >> 12;
-    imm <<= 12;
+    int64_t page_offset = sextract32(a->imm20, 0, 20);
+    page_offset <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, pc_page + imm);
+    tcg_gen_movi_i64(out, current_pc + page_offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }
@@ -7477,13 +7476,12 @@ static bool trans_hl_addtpc(DisasContext *ctx, arg_hl_addtpc *a)
         return linx_setret_common(ctx, (int64_t)(int32_t)a->imm);
     }
 
-    /* LinxISA 0.58.1: page-aligned TPC plus a signed page displacement. */
+    /* PTO ASL: current instruction TPC plus a signed page displacement. */
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr pc_page = current_pc & ~(vaddr)0xfff;
-    int64_t offset = (int64_t)(int32_t)a->imm;
-    offset <<= 12;
+    int64_t page_offset = sextract32(a->imm, 0, 32);
+    page_offset <<= 12;
     TCGv_i64 out = tcg_temp_new_i64();
-    tcg_gen_movi_i64(out, pc_page + offset);
+    tcg_gen_movi_i64(out, current_pc + page_offset);
     linx_set_dest(a->RegDst, out);
     return true;
 }

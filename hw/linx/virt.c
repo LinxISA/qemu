@@ -1293,13 +1293,12 @@ static bool linx_patch_setret20_pcrel(uint8_t *ram, size_t ram_size,
     return true;
 }
 
-/* Patch an ADDTPC instruction with a PC-relative page offset.
+/* Patch an ADDTPC instruction with the PTO ASL PC-relative page component.
  *
- * ADDTPC encodes a signed imm20 in bits [31:12] which is scaled by 4KiB
- * (imm20 << 12) and added to the current PC page base.
- *
- * Relocation value pairs with signed LO12 consumers, so the HI20 side uses
- * the rounded 4 KiB page of (S + A) rather than the floor page.
+ * ADDTPC encodes a signed imm20 in bits [31:12].  Its architectural effect is
+ * current instruction TPC + (SignExtend(imm20) << 12), so the relocation must
+ * be computed from the complete byte delta at the ADDTPC instruction, not
+ * from the page bases of the instruction and target.
  */
 static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
                                     hwaddr patch_addr, hwaddr target_addr,
@@ -1307,9 +1306,7 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
 {
     uint32_t insn;
     int64_t delta;
-    int64_t simm20;
-    int64_t target_page;
-    int64_t patch_page;
+    int64_t page_imm;
     uint32_t imm_bits;
 
     if (patch_addr + 4 > ram_size) {
@@ -1328,25 +1325,19 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /*
-     * Match the toolchain's signed LO12 pairing: when bit 11 of the low part
-     * is set, HI20 must advance by one page so base + sext(lo12) still lands
-     * on the final target.
-     */
-    target_page = (((int64_t)target_addr + addend) + 0x800) & ~0xfffLL;
-    patch_page = (int64_t)patch_addr & ~0xfffLL;
-    delta = target_page - patch_page;
+    /* Round the complete TPC-relative byte delta before extracting HI20. */
+    delta = (int64_t)target_addr + addend - (int64_t)patch_addr;
+    page_imm = (delta + 0x800) >> 12;
 
-    simm20 = delta >> 12;
-    if (simm20 < -(1LL << 19) || simm20 >= (1LL << 19)) {
+    if (page_imm < -(1LL << 19) || page_imm >= (1LL << 19)) {
         error_setg(errp,
-                   "ADDTPC page delta out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   "ADDTPC TPC-relative page displacement out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
                    patch_addr, target_addr, delta);
         return false;
     }
 
     /* Encode imm20 in bits [31:12] */
-    imm_bits = (uint32_t)(simm20 & 0xfffff);
+    imm_bits = (uint32_t)(page_imm & 0xfffff);
     insn = (insn & 0xfff) | (imm_bits << 12);
     stl_le_p(ram + patch_addr, insn);
     return true;
@@ -1404,11 +1395,15 @@ static bool linx_patch_lo12_uimm12(uint8_t *ram, size_t ram_size,
 }
 
 static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
-                                         hwaddr patch_addr, hwaddr target_addr,
-                                         int64_t addend, Error **errp)
+                                         hwaddr patch_addr, hwaddr tpc_addr,
+                                         hwaddr target_addr, int64_t addend,
+                                         Error **errp)
 {
     uint32_t insn;
-    uint32_t lo12;
+    uint32_t tpc_insn;
+    int64_t delta;
+    int64_t hi;
+    int64_t lo;
     const uint32_t addiMask = 0x707f;
     const uint32_t addiOpcode = 0x15;
     const uint32_t addiwOpcode = 0x35;
@@ -1432,22 +1427,32 @@ static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /*
-     * ADDTPC pairs with a rounded target page. When the final low 12-bit
-     * addend would be negative in the signed page-relative sense, plain ADDI
-     * cannot represent it because ADDI uses a zero-extended uimm12. In that
-     * case rewrite the consumer to SUBI and encode the positive magnitude,
-     * matching the canonical linker split.
-     */
-    lo12 = (uint32_t)(target_addr + addend) & 0xfff;
-    if (((insn & addiMask) == addiOpcode ||
-         (insn & addiMask) == addiwOpcode) &&
-        (lo12 & 0x800)) {
-        insn |= subiBit;
-        lo12 = (uint32_t)((0x1000u - lo12) & 0xfff);
+    if (tpc_addr + 4 > ram_size) {
+        error_setg(errp,
+                   "ADDTPC HI20 address out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   tpc_addr);
+        return false;
+    }
+    tpc_insn = ldl_le_p(ram + tpc_addr);
+    if ((tpc_insn & 0x7f) != 0x07) {
+        error_setg(errp,
+                   "expected ADDTPC at the PCREL HI20 anchor (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   tpc_insn, tpc_addr);
+        return false;
     }
 
-    stl_le_p(ram + patch_addr, linx_set_lo12_i(insn, lo12));
+    /* The LO12 relocation is paired with the anchored ADDTPC's current TPC. */
+    delta = (int64_t)target_addr + addend - (int64_t)tpc_addr;
+    hi = (delta + 0x800) >> 12;
+    lo = delta - (hi << 12);
+    if (((insn & addiMask) == addiOpcode ||
+         (insn & addiMask) == addiwOpcode) &&
+        (delta & 0x800)) {
+        insn |= subiBit;
+        lo = 0 - lo;
+    }
+
+    stl_le_p(ram + patch_addr, linx_set_lo12_i(insn, (uint32_t)lo & 0xfff));
     return true;
 }
 
@@ -2383,9 +2388,65 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_LO12) {
+                hwaddr tpc_addr = 0;
+                hwaddr lo_target = target;
+                int64_t lo_addend = (int64_t)rela[j].r_addend;
+                bool found_hi = false;
+                size_t hi_index = nrela;
+                hwaddr anchor_addr = (hwaddr)((int64_t)target + lo_addend);
+
+                /*
+                 * The normal %tpcrel_lo(anchor) form names the local symbol at
+                 * the ADDTPC, including the relocation addend.  Pair by that
+                 * architectural anchor rather than by instruction adjacency;
+                 * the low consumer may be separated from ADDTPC by harmless
+                 * scalar instructions.
+                 */
+                for (size_t h = 0; h < nrela; h++) {
+                    if (ELF32_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                        base + rela[h].r_offset != anchor_addr) {
+                        continue;
+                    }
+                    hi_index = h;
+                    found_hi = true;
+                    break;
+                }
+                /* Accept the linker-side form that names the final symbol. */
+                if (!found_hi) {
+                    for (size_t h = 0; h < nrela; h++) {
+                        if (ELF32_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                            ELF32_R_SYM(rela[h].r_info) != symidx ||
+                            base + rela[h].r_offset >= patch_addr) {
+                            continue;
+                        }
+                        if (hi_index == nrela ||
+                            rela[h].r_offset > rela[hi_index].r_offset) {
+                            hi_index = h;
+                        }
+                    }
+                    found_hi = hi_index != nrela;
+                }
+                if (found_hi) {
+                    unsigned hi_symidx = ELF32_R_SYM(rela[hi_index].r_info);
+                    if (hi_symidx >= nsyms) {
+                        error_setg(errp,
+                                   "invalid ADDTPC HI20 relocation symbol index %u",
+                                   hi_symidx);
+                        goto fail;
+                    }
+                    tpc_addr = base + rela[hi_index].r_offset;
+                    lo_target = sym_addr[hi_symidx];
+                    lo_addend = (int64_t)rela[hi_index].r_addend;
+                }
+                if (!found_hi) {
+                    error_setg(errp,
+                               "R_LINX_LO12 at 0x%" HWADDR_PRIx " has no anchored ADDTPC HI20",
+                               patch_addr);
+                    goto fail;
+                }
                 if (!linx_patch_pcrel_lo12_uimm12(
-                        ram, ram_size, patch_addr, target,
-                        (int64_t)rela[j].r_addend, errp)) {
+                        ram, ram_size, patch_addr, tpc_addr, lo_target,
+                        lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
@@ -3094,9 +3155,58 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_LO12) {
+                hwaddr tpc_addr = 0;
+                hwaddr lo_target = target;
+                int64_t lo_addend = rela[j].r_addend;
+                bool found_hi = false;
+                size_t hi_index = nrela;
+                hwaddr anchor_addr = (hwaddr)((int64_t)target + lo_addend);
+
+                /* See the ELF32 path above: pair by the HI20 anchor. */
+                for (size_t h = 0; h < nrela; h++) {
+                    if (ELF64_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                        base + rela[h].r_offset != anchor_addr) {
+                        continue;
+                    }
+                    hi_index = h;
+                    found_hi = true;
+                    break;
+                }
+                if (!found_hi) {
+                    for (size_t h = 0; h < nrela; h++) {
+                        if (ELF64_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                            ELF64_R_SYM(rela[h].r_info) != symidx ||
+                            base + rela[h].r_offset >= patch_addr) {
+                            continue;
+                        }
+                        if (hi_index == nrela ||
+                            rela[h].r_offset > rela[hi_index].r_offset) {
+                            hi_index = h;
+                        }
+                    }
+                    found_hi = hi_index != nrela;
+                }
+                if (found_hi) {
+                    unsigned hi_symidx = ELF64_R_SYM(rela[hi_index].r_info);
+                    if (hi_symidx >= nsyms) {
+                        error_setg(errp,
+                                   "invalid ADDTPC HI20 relocation symbol index %u",
+                                   hi_symidx);
+                        goto fail;
+                    }
+                    tpc_addr = base + rela[hi_index].r_offset;
+                    lo_target = sym_addr[hi_symidx];
+                    lo_addend = rela[hi_index].r_addend;
+                }
+                if (!found_hi) {
+                    error_setg(errp,
+                               "R_LINX_LO12 at 0x%" HWADDR_PRIx " has no anchored ADDTPC HI20",
+                               patch_addr);
+                    goto fail;
+                }
                 if (!linx_patch_pcrel_lo12_uimm12(
-                        ram, ram_size, patch_addr, target,
-                        rela[j].r_addend, errp)) {
+                        ram, ram_size, patch_addr, tpc_addr, lo_target,
+                        lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
