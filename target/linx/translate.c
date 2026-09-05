@@ -2421,17 +2421,8 @@ LINX_TRANS_TILE_OPERATION_DIRECT(texpands, 0x03bu)
 LINX_TRANS_TILE_OPERATION_DIRECT(tci, 0x066u)
 LINX_TRANS_TILE_OPERATION_DIRECT(ttri, 0x067u)
 LINX_TRANS_TILE_OPERATION_DIRECT(tcvt, 0x01bu)
-LINX_TRANS_TILE_OPERATION_DIRECT(tquant, 0x06au)
-LINX_TRANS_TILE_OPERATION_DIRECT(tdequant, 0x06bu)
-LINX_TRANS_TILE_OPERATION_DIRECT(textract, 0x062u)
-LINX_TRANS_TILE_OPERATION_DIRECT(tinsert, 0x063u)
 LINX_TRANS_TILE_OPERATION_DIRECT(tgather, 0x06fu)
 LINX_TRANS_TILE_OPERATION_DIRECT(tscatter, 0x070u)
-LINX_TRANS_TILE_OPERATION_DIRECT(tconcat, 0x060u)
-LINX_TRANS_TILE_OPERATION_DIRECT(timg2col, 0x064u)
-LINX_TRANS_TILE_OPERATION_DIRECT(tsort, 0x06cu)
-LINX_TRANS_TILE_OPERATION_DIRECT(tmrgsort, 0x06du)
-LINX_TRANS_TILE_OPERATION_DIRECT(thistogram, 0x068u)
 
 #undef LINX_TRANS_TILE_OPERATION_DIRECT
 
@@ -2523,39 +2514,9 @@ static bool trans_bstart_tstore(DisasContext *ctx, arg_bstart_tstore *a)
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 1);
 }
 
-static bool trans_bstart_tstore_spart(DisasContext *ctx,
-                                      arg_bstart_tstore_spart *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 14);
-}
-
 static bool trans_bstart_tmov(DisasContext *ctx, arg_bstart_tmov *a)
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 2);
-}
-
-static bool trans_bstart_tmov_l2s_insert(
-    DisasContext *ctx, arg_bstart_tmov_l2s_insert *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 9);
-}
-
-static bool trans_bstart_tmov_l2s_publish(
-    DisasContext *ctx, arg_bstart_tmov_l2s_publish *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 10);
-}
-
-static bool trans_bstart_tmov_s2l_broadcast(
-    DisasContext *ctx, arg_bstart_tmov_s2l_broadcast *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 11);
-}
-
-static bool trans_bstart_tmov_s2l_extract(
-    DisasContext *ctx, arg_bstart_tmov_s2l_extract *a)
-{
-    return trans_bstart_tile_func_common(ctx, a->dtype, 2, 12);
 }
 
 static bool trans_bstart_tprefetch(DisasContext *ctx, arg_bstart_tprefetch *a)
@@ -2590,6 +2551,35 @@ static bool trans_bstart_mgather_cas(DisasContext *ctx,
 {
     return trans_bstart_tile_func_common(ctx, a->dtype, 2, 8);
 }
+
+#define LINX_TRANS_TLSU_START(name, function)                              \
+    static bool trans_bstart_##name(DisasContext *ctx,                    \
+                                     arg_bstart_##name *a)                 \
+    {                                                                     \
+        return trans_bstart_tile_func_common(ctx, a->dtype, 2, function); \
+    }
+
+LINX_TRANS_TLSU_START(mgather_exch, 9)
+LINX_TRANS_TLSU_START(mgather_max, 10)
+LINX_TRANS_TLSU_START(mgather_min, 11)
+LINX_TRANS_TLSU_START(mgather_add, 12)
+LINX_TRANS_TLSU_START(mgather_inc, 14)
+LINX_TRANS_TLSU_START(mgather_dec, 15)
+LINX_TRANS_TLSU_START(mgather_and, 16)
+LINX_TRANS_TLSU_START(mgather_or, 17)
+LINX_TRANS_TLSU_START(mgather_xor, 18)
+LINX_TRANS_TLSU_START(mscatter_max, 19)
+LINX_TRANS_TLSU_START(mscatter_min, 20)
+LINX_TRANS_TLSU_START(mscatter_add, 21)
+LINX_TRANS_TLSU_START(mscatter_inc, 22)
+LINX_TRANS_TLSU_START(mscatter_dec, 23)
+LINX_TRANS_TLSU_START(mscatter_and, 24)
+LINX_TRANS_TLSU_START(mscatter_or, 25)
+LINX_TRANS_TLSU_START(mscatter_xor, 26)
+LINX_TRANS_TLSU_START(mscatter_popc, 27)
+LINX_TRANS_TLSU_START(timg2col, 28)
+
+#undef LINX_TRANS_TLSU_START
 
 static bool trans_bstart_gmov(DisasContext *ctx, arg_bstart_gmov *a)
 {
@@ -2793,10 +2783,10 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                              uint32_t src0, uint32_t src1, uint32_t pe_mode)
 {
     const bool has_size = size_code != 0u;
-    /* PTO ISA 0.58.4: destination forms accept SizeCode 1..12; codes 13..15
-     * are reserved and reject before the PEMode no-op, matching
+    /* PTO ISA 0.58.6: Local destination forms accept SizeCode 1..10;
+     * codes 11..15 are reserved and reject before the PEMode no-op, matching
      * BindBundleTileIO.  Source-only forms fix SizeCode=0 in decode. */
-    if (has_size && size_code > 12u) {
+    if (has_size && size_code > 10u) {
         return linx_illegal(ctx);
     }
     const uint8_t pe_mask = linx_pemode_to_mask(pe_mode);
@@ -2902,6 +2892,14 @@ static bool trans_b_assemble(DisasContext *ctx, arg_b_assemble *a)
     return true;
 }
 
+static bool trans_b_subview(DisasContext *ctx, arg_b_subview *a)
+{
+    /* The 0.58.6 generation/range state is not represented yet. Decode the
+     * exact public form but fail closed before mutating the block header. */
+    (void)a;
+    return linx_illegal(ctx);
+}
+
 
 static bool trans_b_catr(DisasContext *ctx, arg_b_catr *a)
 {
@@ -2978,7 +2976,8 @@ static bool trans_b_fpatr(DisasContext *ctx, arg_b_fpatr *a)
         tcg_constant_i32((a->prequant << 26) | (a->relu << 23) |
                          (a->groupn << 19) | (a->rowmax << 18) |
                          (a->groupmax << 17) | (a->rowinit << 16) |
-                         (a->maxabs << 15) | (a->transb << 8) |
+                         (a->maxabs << 15) | (a->cscale << 9) |
+                         (a->transb << 8) |
                          (a->transa << 7)),
         tcg_env, offsetof(CPULinxState, tile_fpatr_raw));
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,

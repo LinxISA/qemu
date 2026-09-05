@@ -1,0 +1,8 @@
+{
+  "pto_spec_commit": "dea0b75e803cffa873982c90f9aa0cd17c6d243b",
+  "pto_spec_tree": "64571b898e5acb437b93fdedb415e193bb63f60f",
+  "publication_tag": "v0.58.6.0",
+  "release": "0.58.6",
+  "encoding_abi": "pto-isa-0.58.6-mode-function-v1",
+  "encoding_projection_sha256": "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839"
+}

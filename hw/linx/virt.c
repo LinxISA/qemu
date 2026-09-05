@@ -176,10 +176,10 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 #define PTO_NT_ISA_IDENTITY 1
 static const char linx_pto_isa_identity[] =
-    "{\"encoding_abi\":\"pto-isa-0.58.4-mode-function-v1\","
+    "{\"encoding_abi\":\"pto-isa-0.58.6-mode-function-v1\","
     "\"encoding_projection_sha256\":"
-    "\"6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d\","
-    "\"release\":\"0.58.4\"}";
+    "\"a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839\","
+    "\"release\":\"0.58.6\"}";
 
 static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 {
@@ -187,15 +187,13 @@ static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 }
 
 /*
- * The PTO note is an ELF identity hint, not a Tile instruction legality
- * gate.  During the current bring-up window, keep reporting note problems
- * but allow the image loader to continue.  The actual v0.58 Tile contracts
- * remain enforced by the target implementation after loading.
+ * Report the first PTO note defect while the caller retains the fail-closed
+ * result. No guest instruction may execute under a missing or mixed identity.
  */
 static void linx_pto_note_warning(const char *reason)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
-                  "Linx: warning: %s; continuing ELF load\n", reason);
+                  "Linx: error: %s; rejecting ELF load\n", reason);
 }
 
 static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
@@ -242,7 +240,7 @@ static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                 memcmp(notes + desc_offset, linx_pto_isa_identity,
                        sizeof(linx_pto_isa_identity) - 1) != 0) {
                 linx_pto_note_warning(
-                    "Linx PTO ISA identity is malformed, mixed, or not 0.58.4");
+                    "Linx PTO ISA identity is malformed, mixed, or not 0.58.6");
                 *note_problem = true;
                 offset = next;
                 continue;
@@ -333,7 +331,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
     }
 
     if (identity_count == 0 && !note_problem) {
-        linx_pto_note_warning("missing .note.pto.isa identity for 0.58.4");
+        linx_pto_note_warning("missing .note.pto.isa identity for 0.58.6");
+        note_problem = true;
+    }
+    if (note_problem) {
+        error_setg(errp,
+                   "Linx ELF does not carry one consistent PTO ISA 0.58.6 identity");
+        return false;
     }
     return true;
 }

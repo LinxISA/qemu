@@ -52,7 +52,7 @@ class TileExecutionCoverage(unittest.TestCase):
             int(value, 16)
             for value in re.findall(r"case 0x([0-9a-f]+)u:", selector_body)
         }
-        self.assertEqual(87, len(accepted))
+        self.assertEqual(77, len(accepted))
         self.assertEqual(accepted, mappings.keys())
         self.assertEqual(accepted, executable_selectors)
         self.assertEqual(set(), set(mappings.values()) - executable)
@@ -64,8 +64,8 @@ class TileExecutionCoverage(unittest.TestCase):
         vec_masks = [int(x, 16) for x in re.findall(
             r"0x([0-9a-f]+)", vec_match.group(1)
         )]
-        self.assertEqual(35, sum(mask.bit_count() for mask in vec_masks))
-        self.assertEqual(52, len(accepted) - sum(
+        self.assertEqual(31, sum(mask.bit_count() for mask in vec_masks))
+        self.assertEqual(46, len(accepted) - sum(
             mask.bit_count() for mask in vec_masks
         ))
 

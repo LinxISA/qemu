@@ -86,7 +86,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("case 0x10cu: /* TFMA */", self.helper)
         self.assertRegex(
             self.helper,
-            r"case 0x10cu: /\* TFMA \*/\s*return 3;",
+            r"case 0x10cu: /\* TFMA \*/[\s\S]*?return 3;",
         )
         self.assertIn("fma(linx_tile_qword_as_f64(left)", self.helper)
         self.assertIn("const float fused = fmaf(", self.helper)
@@ -206,9 +206,9 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("default: /* no modifier */", addressing)
 
     def test_shared_tstore_profiles_are_executable(self) -> None:
-        self.assertIn("bstart_tstore_spart", self.decode32)
-        self.assertIn("trans_bstart_tstore_spart", self.translate)
-        self.assertIn("LINX_TLSU_TSTORE_SPART = 14", self.helper)
+        self.assertNotIn("bstart_tstore_spart", self.decode32)
+        self.assertNotIn("trans_bstart_tstore_spart", self.translate)
+        self.assertIn("LINX_TLSU_MGATHER_INC = 14", self.helper)
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
@@ -234,14 +234,15 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("collective_pe_mask", self.cpu)
         self.assertIn("linx_tile_gmov_source_matches_destination", self.helper)
 
-    def test_shared_tmov_uses_architectural_functions_and_aggregate_payload(self) -> None:
+    def test_shared_tmov_uses_function_two_and_reallocated_gm_functions(self) -> None:
         for name, function in (
-            ("LINX_TLSU_TMOV_L2S_INSERT", 9),
-            ("LINX_TLSU_TMOV_L2S_PUBLISH", 10),
-            ("LINX_TLSU_TMOV_S2L_BROADCAST", 11),
-            ("LINX_TLSU_TMOV_S2L_EXTRACT", 12),
+            ("LINX_TLSU_MGATHER_EXCH", 9),
+            ("LINX_TLSU_MGATHER_MAX", 10),
+            ("LINX_TLSU_MGATHER_MIN", 11),
+            ("LINX_TLSU_MGATHER_ADD", 12),
         ):
             self.assertIn(f"{name} = {function}", self.helper)
+        self.assertNotIn("LINX_TLSU_TMOV_L2S_INSERT", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
         # Shared state uses one Core-level aggregate payload with fixed PE
@@ -297,9 +298,12 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("subprocess.run", self.iommu_runner)
         self.assertIn("timeout=timeout", self.iommu_runner)
 
+    def test_finisher_pass_keeps_the_shared_runner_exit_contract(self) -> None:
+        self.assertIn("exit_code = 0;", self.virt)
+
     def test_engine_counts_and_datr_tables_cover_the_v058_catalog(self) -> None:
-        expected_engine_counts = {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12}
-        self.assertEqual(sum(expected_engine_counts.values()), 109)
+        expected_engine_counts = {"VEC": 31, "SFU": 46, "TLSU": 28, "CUBE": 12}
+        self.assertEqual(sum(expected_engine_counts.values()), 117)
         for family, function_name in (
             ("TEPL", "linx_tile_operation_datr_allowed"),
             ("TLSU", "linx_tile_tlsu_datr_allowed"),
@@ -323,9 +327,9 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_reported_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.4-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.6-mode-function-v1", virt)
         self.assertIn(
-            "6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d",
+            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]
@@ -337,12 +341,10 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
-        # The note is currently an advisory ELF identity check.  Its
-        # diagnostics must remain visible, but a missing or mismatched note
-        # must not prevent the loader from reaching the actual ISA checks.
+        # Identity rejection happens before any ELF loader reaches guest code.
         self.assertIn("malformed .note.pto.isa", virt)
-        self.assertIn("Linx: warning:", virt)
-        self.assertIn("continuing ELF load", virt)
+        self.assertIn("Linx: error:", virt)
+        self.assertIn("return false", virt)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
         cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")

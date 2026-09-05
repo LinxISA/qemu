@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source guards for the LinxISA/PTO ISA 0.58.3 QEMU contract."""
+"""Source guards for the LinxISA/PTO ISA 0.58.6 QEMU contract."""
 
 from __future__ import annotations
 
@@ -28,24 +28,25 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
 
-    def test_exact_0584_elf_identity_is_advisory(self) -> None:
+    def test_exact_0586_elf_identity_is_fail_closed(self) -> None:
         authority = json.loads(
-            (ROOT / "tests/linxisa/pto-isa-0584-authority.json").read_text(
+            (ROOT / "tests/linxisa/pto-isa-0586-authority.json").read_text(
                 encoding="utf-8"
             )
         )
         self.assertEqual(
             authority["pto_spec_commit"],
-            "8f8244d3ce71174a048f852625ca6138296b6dcc",
+            "dea0b75e803cffa873982c90f9aa0cd17c6d243b",
         )
-        self.assertIn('release\\\":\\\"0.58.4', self.virt)
-        self.assertIn("pto-isa-0.58.4-mode-function-v1", self.virt)
+        self.assertIn('release\\\":\\\"0.58.6', self.virt)
+        self.assertIn("pto-isa-0.58.6-mode-function-v1", self.virt)
         self.assertIn(
-            "6555adeeed2adb75327c53f5280560ec9505d334b46d1626b847440265e79e7d",
+            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
             self.virt,
         )
-        self.assertIn("Linx: warning:", self.virt)
-        self.assertIn("continuing ELF load", self.virt)
+        self.assertIn("Linx: error:", self.virt)
+        self.assertIn("No guest instruction may execute", self.virt)
+        self.assertIn("return false", self.virt)
 
     def test_iot_ios_use_size_code_and_fixed_pe_mode(self) -> None:
         for field in (
@@ -58,7 +59,7 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("linx_pemode_to_mask", self.translate)
         self.assertIn("0x0u, 0x1u, 0x2u, 0x4u, 0x8u, 0x3u, 0x7u, 0xfu", self.translate)
         self.assertIn("a->size_code > 12u", self.translate)
-        self.assertIn("size_code > 12u", self.translate)
+        self.assertIn("has_size && size_code > 10u", self.translate)
 
     def test_fpatr_carries_shared_transpose_bits(self) -> None:
         self.assertIn("%FP_TransA 7:1", self.decode)
@@ -108,10 +109,29 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("split_size_completion", self.helper)
         self.assertIn("output_count == expected_outputs", self.helper)
         self.assertIn("env->tile_fpatr_valid != 1u", self.helper)
-        # Aggregate Shared B.IOS semantics keep the legacy whole-payload path
-        # (issue #112/#132) on top of the 0.58.3 base.
-        self.assertIn("legacy_whole", self.helper)
+        self.assertNotIn("LINX_TLSU_TMOV_L2S_INSERT", self.helper)
+        self.assertIn("LINX_TLSU_MGATHER_EXCH = 9", self.helper)
+        self.assertIn("linx_tile_gm_atom_red", self.helper)
         self.assertIn("allowed |= LINX_DATR_PAD_OR_BYTE_ID", self.table)
+
+    def test_v0586_gm_and_timg2col_preflight_before_effects(self) -> None:
+        gm = self.helper.split("static bool linx_tile_gm_atom_red", 1)[1]
+        gm = gm.split("typedef struct LinxTIMG2COLParams", 1)[0]
+        self.assertIn("linx_tile_gm_index_dtype_supported", gm)
+        self.assertIn("linx_tile_iommu_enabled(env)", gm)
+        self.assertIn("atom && env->tile_attr_pad != 0u", gm)
+        self.assertIn("address & (elem_bytes - 1u)", gm)
+        self.assertLess(
+            gm.index("Validate every source and address"),
+            gm.index("linx_tile_gm_atomic_update"),
+        )
+        timg = self.helper.split("static bool linx_tile_timg2col_local", 1)[1]
+        timg = timg.split("static bool linx_tile_cube_operand_legal", 1)[0]
+        self.assertLess(
+            timg.index("Probe the complete valid GM footprint"),
+            timg.index("linx_tile_mem_read64"),
+        )
+        self.assertIn("*produced_out = pe_rows != 0u", timg)
 
     def test_cube_guest_vectors_are_wired(self) -> None:
         runner = (ROOT / "scripts/linxisa/run-cube-0583-contract.py").read_text(

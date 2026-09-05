@@ -33,7 +33,26 @@ class V058DecodeMetadataTests(unittest.TestCase):
             "bstart_mgather_mask",
             "bstart_mscatter_mask",
             "bstart_mgather_cas",
+            "bstart_mgather_exch",
+            "bstart_mgather_max",
+            "bstart_mgather_min",
+            "bstart_mgather_add",
             "bstart_gmov",
+            "bstart_mgather_inc",
+            "bstart_mgather_dec",
+            "bstart_mgather_and",
+            "bstart_mgather_or",
+            "bstart_mgather_xor",
+            "bstart_mscatter_max",
+            "bstart_mscatter_min",
+            "bstart_mscatter_add",
+            "bstart_mscatter_inc",
+            "bstart_mscatter_dec",
+            "bstart_mscatter_and",
+            "bstart_mscatter_or",
+            "bstart_mscatter_xor",
+            "bstart_mscatter_popc",
+            "bstart_timg2col",
         ):
             self.assertIn(decode_name, self.insn32)
             self.assertIn(f'.mnemonic="{decode_name}"', self.meta)
@@ -41,12 +60,12 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertNotIn("bstart_acccvt", self.insn32)
         self.assertNotIn('.mnemonic="bstart_acccvt"', self.meta)
 
-    def test_shared_tmov_source_forms_decode_to_distinct_functions(self) -> None:
+    def test_reallocated_tlsu_words_decode_to_gm_atomic_forms(self) -> None:
         expected = {
-            "bstart_tmov_l2s_insert": ("1001", "0x911181"),
-            "bstart_tmov_l2s_publish": ("1010", "0xa11181"),
-            "bstart_tmov_s2l_broadcast": ("1011", "0xb11181"),
-            "bstart_tmov_s2l_extract": ("1100", "0xc11181"),
+            "bstart_mgather_exch": ("1001", "0x911181"),
+            "bstart_mgather_max": ("1010", "0xa11181"),
+            "bstart_mgather_min": ("1011", "0xb11181"),
+            "bstart_mgather_add": ("1100", "0xc11181"),
         }
         for decode_name, (function_bits, match) in expected.items():
             self.assertRegex(
@@ -56,6 +75,16 @@ class V058DecodeMetadataTests(unittest.TestCase):
             )
             self.assertIn(f'.mnemonic="{decode_name}"', self.meta)
             self.assertIn(f".match=UINT64_C({match})", self.meta)
+        for retired in (
+            "bstart_tmov_l2s_insert",
+            "bstart_tmov_l2s_publish",
+            "bstart_tmov_s2l_broadcast",
+            "bstart_tmov_s2l_extract",
+            "bstart_tstore_spart",
+        ):
+            self.assertNotIn(retired, self.insn32)
+            self.assertNotIn(f'.mnemonic="{retired}"', self.meta)
+            self.assertNotIn(f"trans_{retired}", self.translate)
 
     def test_b_iot_uses_all_exact_public_forms(self) -> None:
         patterns = (
@@ -82,7 +111,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertNotIn("c_b_ios", self.meta)
         self.assertIn("LINX_OP_B_IOS = 638", self.ids)
         self.assertIn('.mnemonic="b_ios"', self.meta)
-        self.assertIn(".mask=UINT64_C(0xf00871ff)", self.meta)
+        self.assertIn(".mask=UINT64_C(0xfc0871ff)", self.meta)
         self.assertIn(".match=UINT64_C(0x1013)", self.meta)
 
     def test_vec_sfu_and_tfma_metadata_are_final(self) -> None:
@@ -106,6 +135,22 @@ class V058DecodeMetadataTests(unittest.TestCase):
         ):
             self.assertNotIn(retired, self.meta)
 
+    def test_pto_0586_retired_direct_tile_ops_are_absent(self) -> None:
+        for retired in (
+            "tconcat",
+            "textract",
+            "tinsert",
+            "thistogram",
+            "tquant",
+            "tdequant",
+            "tsort",
+            "tmrgsort",
+        ):
+            decode_name = f"bstart_{retired}"
+            self.assertNotIn(decode_name, self.insn32)
+            self.assertNotIn(f'.mnemonic="{decode_name}"', self.meta)
+            self.assertNotIn(f"trans_{decode_name}", self.translate)
+
     def test_internal_engine_names_do_not_restore_tma(self) -> None:
         self.assertIn("LINX_BLOCK_TLSU", self.helper)
         self.assertIn("LINX_BLOCK_OPERATION", self.helper)
@@ -114,7 +159,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
 
     def test_v0581_new_exact_forms_are_decoded(self) -> None:
         expected = {
-            "b_fpatr": ("0x7e7f", "0x2023"),
+            "b_fpatr": ("0x7c7f", "0x2023"),
             "start_call_32": ("0xf83f000f", "0x50160002"),
             "start_icall_32": ("0xf83fffff", "0x50166001"),
             "l_bstop": ("0xffffffffffffffff", "0x10000000f"),
@@ -130,7 +175,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
             line for line in self.meta.splitlines()
             if '.mnemonic="b_fpatr"' in line
         )
-        self.assertIn(".mask=UINT64_C(0x7e7f)", fpatr_meta)
+        self.assertIn(".mask=UINT64_C(0x7c7f)", fpatr_meta)
         self.assertIn(".match=UINT64_C(0x2023)", fpatr_meta)
         self.assertRegex(self.insn32, r"(?m)^start_icall_32\s+")
         self.assertRegex(self.insn64, r"(?m)^l_bstop\s+")
