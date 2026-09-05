@@ -35,6 +35,13 @@ class V058BIOTSourceOnlyTest(unittest.TestCase):
             "const uint32_t local_size_code = size_code == 0u ? 0u : size_code + 2u;",
             text,
         )
+        body = text.split("static bool linx_trans_b_iot", 1)[1].split(
+            "static bool trans_b_iot", 1
+        )[0]
+        self.assertLess(
+            body.index("has_size && size_code > 10u"),
+            body.index("if (pe_mask == 0u)"),
+        )
 
     def test_zero_size_code_descriptor_skips_tile_allocation(self) -> None:
         translate = TRANSLATE.read_text(encoding="utf-8")

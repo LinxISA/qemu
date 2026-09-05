@@ -11,13 +11,15 @@
 static inline bool linx_tile_value_reduction_axis(uint32_t impl,
                                                   bool *row_reduce)
 {
-    if ((impl >= 0x012u && impl <= 0x014u) || impl == 0x035u) {
+    if ((impl >= 0x012u && impl <= 0x014u) || impl == 0x035u ||
+        impl == 0x036u || impl == 0x037u) {
         if (row_reduce != NULL) {
             *row_reduce = true;
         }
         return true;
     }
-    if ((impl >= 0x015u && impl <= 0x017u) || impl == 0x038u) {
+    if ((impl >= 0x015u && impl <= 0x017u) || impl == 0x038u ||
+        impl == 0x039u || impl == 0x03au) {
         if (row_reduce != NULL) {
             *row_reduce = false;
         }
@@ -223,6 +225,9 @@ static inline bool linx_tile_operation_remainder_divisor_nonzero(
     case 2u: /* TF32 */
     case 3u: /* HF32 */
         return (raw & UINT32_C(0x7fffffff)) != 0u;
+    case 4u: /* FP16 */
+    case 5u: /* BF16 */
+        return (raw & UINT16_C(0x7fff)) != 0u;
     default:
         if (elem_bytes == 1u) {
             return (raw & UINT8_MAX) != 0u;
@@ -294,6 +299,7 @@ static inline bool linx_tile_operation_pre_publish_legal(
                               impl == 0x084u || impl == 0x105u ||
                               impl == 0x01du ||
                               (impl >= 0x102u && impl <= 0x10bu);
+    const uint32_t source_shape_rows = expand ? valid_rows : rows;
 
     if (impl == 0x02cu) {
         if (source_count < 3u) {
@@ -321,18 +327,18 @@ static inline bool linx_tile_operation_pre_publish_legal(
                            env, src2, valid_cols, valid_rows, cols, rows)))) ||
         (expand && impl >= 0x03bu &&
          (!has_src0 || !linx_tile_operation_preflight_shape_covers(
-                           env, src0, valid_cols, valid_rows, cols, rows)))) {
+                           env, src0, valid_cols, valid_rows, cols,
+                           source_shape_rows)))) {
         return false;
     }
 
     if (impl == 0x102u) { /* TQUANT */
         unsigned scale_reg;
-        unsigned zero_reg;
 
+        /* B.IOR is optional: omission selects multiplier 1.0 and zero point 0. */
         return has_src0 && !has_src1 &&
-               linx_tile_operation_preflight_resolve_ior(env, 0u, &scale_reg) &&
-               linx_tile_operation_preflight_resolve_ior(env, 1u, &zero_reg) &&
-               env->gpr[scale_reg] != 0u;
+               (!linx_tile_operation_preflight_resolve_ior(env, 0u, &scale_reg) ||
+                env->gpr[scale_reg] != 0u);
     }
     if (impl == 0x10cu) { /* TFMA */
         return has_src0 && has_src1 && has_src2 &&

@@ -22,6 +22,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.numeric = (TARGET / "tile_numeric_058.h").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
+        cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         cls.tile_isa = (TARGET / "tile_isa_058.h").read_text(encoding="utf-8")
         cls.tile_cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
@@ -37,9 +38,10 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_b_ios_uses_final_32_bit_encoding(self) -> None:
         self.assertRegex(
             self.decode32,
-            r"(?m)^b_ios\s+0000\s+\.\.\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
+            r"(?m)^b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
+        self.assertIn("%SharedTID 20:6", self.decode32)
         self.assertIn("%SizeCode", self.decode32)
         self.assertIn("%PEMode", self.decode32)
         self.assertIn("trans_b_ios", self.translate)
@@ -48,6 +50,7 @@ class PtoV058ContractTests(unittest.TestCase):
 
     def test_shared_register_state_is_per_pe_and_core_private(self) -> None:
         self.assertIn("#define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)", self.cpu)
+        self.assertIn("#define LINX_SHARED_TILE_COUNT 64", self.cpu)
         self.assertIn("uint8_t data[LINX_SHARED_TILE_MAX_BYTES]", self.cpu)
         self.assertNotIn("LinxSharedTileLane", self.cpu)
         self.assertIn("allocation_mask", self.cpu)
@@ -83,7 +86,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("case 0x10cu: /* TFMA */", self.helper)
         self.assertRegex(
             self.helper,
-            r"case 0x10cu: /\* TFMA \*/\s*return 3;",
+            r"case 0x10cu: /\* TFMA \*/[\s\S]*?return 3;",
         )
         self.assertIn("fma(linx_tile_qword_as_f64(left)", self.helper)
         self.assertIn("const float fused = fmaf(", self.helper)
@@ -126,7 +129,7 @@ class PtoV058ContractTests(unittest.TestCase):
         )
         self.assertNotIn("LB2 is destination Col", self.cube)
 
-    def test_addtpc_uses_linxisa_0581_page_base(self) -> None:
+    def test_addtpc_uses_current_instruction_tpc(self) -> None:
         addtpc = re.search(
             r"static bool trans_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -134,10 +137,30 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static bool trans_hl_addtpc\(.*?\n\}", self.translate, re.S
         ).group(0)
         for body in (addtpc, hl_addtpc):
-            self.assertIn("pc_page", body)
-            self.assertRegex(body, r"current_pc\s*&\s*~\(vaddr\)0xfff")
-            self.assertRegex(body, r"(?:imm|offset)\s*<<=\s*12")
-            self.assertNotRegex(body, r"offset\s*<<=\s*1(?![0-9])")
+            self.assertIn("current_pc", body)
+            self.assertIn("sextract32", body)
+            self.assertRegex(body, r"page_offset\s*<<=\s*12")
+            self.assertRegex(body, r"tcg_gen_movi_i64\(out,\s*current_pc\s*\+\s*page_offset\)")
+            self.assertNotIn("pc_page", body)
+
+    def test_et_rel_addtpc_hi_lo_use_one_tpc_relative_pair(self) -> None:
+        addtpc = self.virt[
+            self.virt.index("static bool linx_patch_addtpc_pcrel") :
+            self.virt.index("static bool linx_patch_lo12_uimm12")
+        ]
+        lo12 = self.virt[
+            self.virt.index("static bool linx_patch_pcrel_lo12_uimm12") :
+            self.virt.index("/* Patch a PC-relative load instruction")
+        ]
+        self.assertIn("target_addr + addend - (int64_t)patch_addr", addtpc)
+        self.assertIn("page_imm = (delta + 0x800) >> 12", addtpc)
+        self.assertNotIn("target_page", addtpc)
+        self.assertIn("tpc_addr", lo12)
+        self.assertIn("delta = (int64_t)target_addr + addend - (int64_t)tpc_addr", lo12)
+        self.assertIn("base + rela[h].r_offset != anchor_addr", self.virt)
+        self.assertIn("ELF32_R_SYM(rela[h].r_info) != symidx", self.virt)
+        self.assertIn("expected ADDTPC at the PCREL HI20 anchor", lo12)
+        self.assertNotIn("rounded target page", lo12)
 
     def test_scalar_right_modifier_mapping_matches_linxisa_0583(self) -> None:
         arithmetic = re.search(
@@ -183,23 +206,22 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("default: /* no modifier */", addressing)
 
     def test_shared_tstore_profiles_are_executable(self) -> None:
-        self.assertIn("bstart_tstore_spart", self.decode32)
-        self.assertIn("trans_bstart_tstore_spart", self.translate)
-        self.assertIn("LINX_TLSU_TSTORE_SPART = 14", self.helper)
+        self.assertNotIn("bstart_tstore_spart", self.decode32)
+        self.assertNotIn("trans_bstart_tstore_spart", self.translate)
+        self.assertIn("LINX_TLSU_MGATHER_INC = 14", self.helper)
         self.assertIn("linx_tile_shared_tstore_legal", self.helper)
         self.assertIn("linx_tile_shared_tstore_commit", self.helper)
 
-    def test_shared_tload_uses_released_per_mask_quarters(self) -> None:
+    def test_shared_tload_uses_core_capacity_and_fixed_regions(self) -> None:
         self.assertIn("linx_tile_shared_transfer_preflight", self.helper)
         self.assertIn("size_code < 3u || size_code > 14u", self.helper)
         self.assertIn("shared->per_pe_capacity = bytes", self.helper)
-        self.assertIn(
-            "ctpop8(allocation_mask) * bytes", self.helper
-        )
+        self.assertIn("shared->allocated_bytes = bytes", self.helper)
+        self.assertNotIn("ctpop8(allocation_mask) * bytes", self.helper)
+        self.assertNotIn("ctpop8(pe_mask) * bytes", self.helper)
         self.assertIn("shared->allocation_mask = allocation_mask", self.helper)
-        self.assertIn("ctpop8(pe_mask) * bytes", self.helper)
+        self.assertIn("destination_region != region", self.helper)
         self.assertIn("cpu_ldub_data(peer, (abi_ptr)(source + byte))", self.helper)
-        self.assertNotIn("single_issuer", self.helper)
 
     def test_final_tlsu_cas_and_gmov_paths_are_executable(self) -> None:
         self.assertIn("trans_bstart_mgather_cas", self.translate)
@@ -212,21 +234,29 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("collective_pe_mask", self.cpu)
         self.assertIn("linx_tile_gmov_source_matches_destination", self.helper)
 
-    def test_shared_tmov_uses_architectural_functions_and_aggregate_payload(self) -> None:
+    def test_shared_tmov_uses_function_two_and_reallocated_gm_functions(self) -> None:
         for name, function in (
-            ("LINX_TLSU_TMOV_L2S_INSERT", 9),
-            ("LINX_TLSU_TMOV_L2S_PUBLISH", 10),
-            ("LINX_TLSU_TMOV_S2L_BROADCAST", 11),
-            ("LINX_TLSU_TMOV_S2L_EXTRACT", 12),
+            ("LINX_TLSU_MGATHER_EXCH", 9),
+            ("LINX_TLSU_MGATHER_MAX", 10),
+            ("LINX_TLSU_MGATHER_MIN", 11),
+            ("LINX_TLSU_MGATHER_ADD", 12),
         ):
             self.assertIn(f"{name} = {function}", self.helper)
+        self.assertNotIn("LINX_TLSU_TMOV_L2S_INSERT", self.helper)
         self.assertIn("linx_tile_shared_tmov_local_to_shared", self.helper)
         self.assertIn("linx_tile_shared_tmov_shared_to_local", self.helper)
-        # Shared state uses one per-PE-capacity payload with fixed PE quarters.
-        self.assertIn("shared->initialized_mask |= mask", self.helper)
-        self.assertNotIn("legacy_whole", self.helper)
-        self.assertIn("memcpy((uint8_t *)env->tile_reg[destination] + byte_offset,",
-                      self.helper)
+        # Shared state uses one Core-level aggregate payload with fixed PE
+        # regions; selected regions are never packed.
+        self.assertIn("shared->initialized_mask |= (uint8_t)(1u << pe)", self.helper)
+        self.assertIn(
+            "for (uint32_t local_offset = 0; local_offset < local_capacity",
+            self.helper,
+        )
+        self.assertIn("shared_offset =", self.helper)
+        self.assertIn("shared_base =", self.helper)
+        self.assertIn(
+            "shared->data + shared_base + local_offset", self.helper
+        )
         self.assertIn("qemu_mutex_lock(&cpu->core4->lock)", self.helper)
         self.assertIn("g_autofree uint8_t *payload = NULL", self.helper)
         self.assertNotIn("LinxSharedTileLane descriptor", self.helper)
@@ -268,9 +298,12 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("subprocess.run", self.iommu_runner)
         self.assertIn("timeout=timeout", self.iommu_runner)
 
+    def test_finisher_pass_keeps_the_shared_runner_exit_contract(self) -> None:
+        self.assertIn("exit_code = 0;", self.virt)
+
     def test_engine_counts_and_datr_tables_cover_the_v058_catalog(self) -> None:
-        expected_engine_counts = {"VEC": 31, "SFU": 56, "TLSU": 10, "CUBE": 12}
-        self.assertEqual(sum(expected_engine_counts.values()), 109)
+        expected_engine_counts = {"VEC": 31, "SFU": 46, "TLSU": 28, "CUBE": 12}
+        self.assertEqual(sum(expected_engine_counts.values()), 117)
         for family, function_name in (
             ("TEPL", "linx_tile_operation_datr_allowed"),
             ("TLSU", "linx_tile_tlsu_datr_allowed"),
@@ -291,12 +324,12 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertEqual(cube_values[4], 0x0d)
         self.assertEqual(cube_values[6], 0x0d)
 
-    def test_v058_elf_identity_is_validated_before_any_load(self) -> None:
+    def test_v058_elf_identity_is_reported_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.3-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.6-mode-function-v1", virt)
         self.assertIn(
-            "8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172",
+            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]
@@ -308,6 +341,10 @@ class PtoV058ContractTests(unittest.TestCase):
             dispatch.index("linx_load_elf64_exec"),
         )
         self.assertLess(validate, first_loader)
+        # Identity rejection happens before any ELF loader reaches guest code.
+        self.assertIn("malformed .note.pto.isa", virt)
+        self.assertIn("Linx: error:", virt)
+        self.assertIn("return false", virt)
 
     def test_fused_icall_snapshots_the_existing_barg_target(self) -> None:
         cpu_h = (ROOT / "target/linx/cpu.h").read_text(encoding="utf-8")

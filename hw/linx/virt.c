@@ -21,7 +21,6 @@
 #include "system/device_tree.h"
 #include "system/memory.h"
 #include "system/reset.h"
-#include "system/tcg.h"
 #include "system/runstate.h"
 #include "elf.h"
 #include "chardev/char.h"
@@ -177,19 +176,29 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 
 #define PTO_NT_ISA_IDENTITY 1
 static const char linx_pto_isa_identity[] =
-    "{\"encoding_abi\":\"pto-isa-0.58.3-mode-function-v1\","
+    "{\"encoding_abi\":\"pto-isa-0.58.6-mode-function-v1\","
     "\"encoding_projection_sha256\":"
-    "\"8a48b80e04484c70870f155bf9efc79d2a805cf99e809f4e4e8a7e6a7eb34172\","
-    "\"release\":\"0.58.3\"}";
+    "\"a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839\","
+    "\"release\":\"0.58.6\"}";
 
 static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 {
     return offset <= len && size <= (uint64_t)len - offset;
 }
 
-static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
+/*
+ * Report the first PTO note defect while the caller retains the fail-closed
+ * result. No guest instruction may execute under a missing or mixed identity.
+ */
+static void linx_pto_note_warning(const char *reason)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "Linx: error: %s; rejecting ELF load\n", reason);
+}
+
+static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                                          unsigned *identity_count,
-                                         Error **errp)
+                                         bool *note_problem)
 {
     size_t offset = 0;
 
@@ -198,26 +207,30 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
         size_t name_offset, desc_offset, next;
 
         if (size - offset < 3u * sizeof(uint32_t)) {
-            error_setg(errp, "malformed .note.pto.isa header");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa header");
+            *note_problem = true;
+            return;
         }
         memcpy(&namesz, notes + offset, sizeof(namesz));
         memcpy(&descsz, notes + offset + 4, sizeof(descsz));
         memcpy(&type, notes + offset + 8, sizeof(type));
         name_offset = offset + 12;
         if (namesz > size - name_offset) {
-            error_setg(errp, "malformed .note.pto.isa owner");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa owner");
+            *note_problem = true;
+            return;
         }
         desc_offset = name_offset + QEMU_ALIGN_UP(namesz, 4);
         if (desc_offset > size || descsz > size - desc_offset) {
-            error_setg(errp, "malformed .note.pto.isa descriptor");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa descriptor");
+            *note_problem = true;
+            return;
         }
         next = desc_offset + QEMU_ALIGN_UP(descsz, 4);
         if (next > size) {
-            error_setg(errp, "malformed .note.pto.isa alignment");
-            return false;
+            linx_pto_note_warning("malformed .note.pto.isa alignment");
+            *note_problem = true;
+            return;
         }
 
         if (namesz >= 3 && memcmp(notes + name_offset, "PTO", 3) == 0) {
@@ -226,21 +239,24 @@ static bool linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
                 descsz != sizeof(linx_pto_isa_identity) - 1 ||
                 memcmp(notes + desc_offset, linx_pto_isa_identity,
                        sizeof(linx_pto_isa_identity) - 1) != 0) {
-                error_setg(errp,
-                           "Linx PTO ISA identity is malformed, mixed, or not 0.58.3");
-                return false;
+                linx_pto_note_warning(
+                    "Linx PTO ISA identity is malformed, mixed, or not 0.58.6");
+                *note_problem = true;
+                offset = next;
+                continue;
             }
             (*identity_count)++;
         }
         offset = next;
     }
-    return true;
+    return;
 }
 
 static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                                            Error **errp)
 {
     unsigned identity_count = 0;
+    bool note_problem = false;
 
     if (len < EI_NIDENT || memcmp(buf, ELFMAG, SELFMAG) != 0) {
         error_setg(errp, "not an ELF file");
@@ -270,11 +286,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
             const Elf32_Shdr *sh = (const Elf32_Shdr *)(
                 buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
             if (sh->sh_type == SHT_NOTE) {
-                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
-                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                  sh->sh_size,
-                                                  &identity_count, errp)) {
-                    return false;
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len)) {
+                    linx_pto_note_warning("malformed .note.pto.isa section range");
+                    note_problem = true;
+                } else {
+                    linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                 sh->sh_size, &identity_count,
+                                                 &note_problem);
                 }
             }
         }
@@ -297,11 +315,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
             const Elf64_Shdr *sh = (const Elf64_Shdr *)(
                 buf + eh->e_shoff + (uint64_t)i * eh->e_shentsize);
             if (sh->sh_type == SHT_NOTE) {
-                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len) ||
-                    !linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                  sh->sh_size,
-                                                  &identity_count, errp)) {
-                    return false;
+                if (!linx_file_range_valid(sh->sh_offset, sh->sh_size, len)) {
+                    linx_pto_note_warning("malformed .note.pto.isa section range");
+                    note_problem = true;
+                } else {
+                    linx_validate_pto_note_bytes(buf + sh->sh_offset,
+                                                 sh->sh_size, &identity_count,
+                                                 &note_problem);
                 }
             }
         }
@@ -310,8 +330,13 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
         return false;
     }
 
-    if (identity_count == 0) {
-        error_setg(errp, "missing required .note.pto.isa identity for 0.58.3");
+    if (identity_count == 0 && !note_problem) {
+        linx_pto_note_warning("missing .note.pto.isa identity for 0.58.6");
+        note_problem = true;
+    }
+    if (note_problem) {
+        error_setg(errp,
+                   "Linx ELF does not carry one consistent PTO ISA 0.58.6 identity");
         return false;
     }
     return true;
@@ -1272,13 +1297,12 @@ static bool linx_patch_setret20_pcrel(uint8_t *ram, size_t ram_size,
     return true;
 }
 
-/* Patch an ADDTPC instruction with a PC-relative page offset.
+/* Patch an ADDTPC instruction with the PTO ASL PC-relative page component.
  *
- * ADDTPC encodes a signed imm20 in bits [31:12] which is scaled by 4KiB
- * (imm20 << 12) and added to the current PC page base.
- *
- * Relocation value pairs with signed LO12 consumers, so the HI20 side uses
- * the rounded 4 KiB page of (S + A) rather than the floor page.
+ * ADDTPC encodes a signed imm20 in bits [31:12].  Its architectural effect is
+ * current instruction TPC + (SignExtend(imm20) << 12), so the relocation must
+ * be computed from the complete byte delta at the ADDTPC instruction, not
+ * from the page bases of the instruction and target.
  */
 static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
                                     hwaddr patch_addr, hwaddr target_addr,
@@ -1286,9 +1310,7 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
 {
     uint32_t insn;
     int64_t delta;
-    int64_t simm20;
-    int64_t target_page;
-    int64_t patch_page;
+    int64_t page_imm;
     uint32_t imm_bits;
 
     if (patch_addr + 4 > ram_size) {
@@ -1307,25 +1329,19 @@ static bool linx_patch_addtpc_pcrel(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /*
-     * Match the toolchain's signed LO12 pairing: when bit 11 of the low part
-     * is set, HI20 must advance by one page so base + sext(lo12) still lands
-     * on the final target.
-     */
-    target_page = (((int64_t)target_addr + addend) + 0x800) & ~0xfffLL;
-    patch_page = (int64_t)patch_addr & ~0xfffLL;
-    delta = target_page - patch_page;
+    /* Round the complete TPC-relative byte delta before extracting HI20. */
+    delta = (int64_t)target_addr + addend - (int64_t)patch_addr;
+    page_imm = (delta + 0x800) >> 12;
 
-    simm20 = delta >> 12;
-    if (simm20 < -(1LL << 19) || simm20 >= (1LL << 19)) {
+    if (page_imm < -(1LL << 19) || page_imm >= (1LL << 19)) {
         error_setg(errp,
-                   "ADDTPC page delta out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
+                   "ADDTPC TPC-relative page displacement out of range: patch @ 0x%" HWADDR_PRIx " -> 0x%" HWADDR_PRIx " (delta=%" PRId64 ")",
                    patch_addr, target_addr, delta);
         return false;
     }
 
     /* Encode imm20 in bits [31:12] */
-    imm_bits = (uint32_t)(simm20 & 0xfffff);
+    imm_bits = (uint32_t)(page_imm & 0xfffff);
     insn = (insn & 0xfff) | (imm_bits << 12);
     stl_le_p(ram + patch_addr, insn);
     return true;
@@ -1383,11 +1399,15 @@ static bool linx_patch_lo12_uimm12(uint8_t *ram, size_t ram_size,
 }
 
 static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
-                                         hwaddr patch_addr, hwaddr target_addr,
-                                         int64_t addend, Error **errp)
+                                         hwaddr patch_addr, hwaddr tpc_addr,
+                                         hwaddr target_addr, int64_t addend,
+                                         Error **errp)
 {
     uint32_t insn;
-    uint32_t lo12;
+    uint32_t tpc_insn;
+    int64_t delta;
+    int64_t hi;
+    int64_t lo;
     const uint32_t addiMask = 0x707f;
     const uint32_t addiOpcode = 0x15;
     const uint32_t addiwOpcode = 0x35;
@@ -1411,22 +1431,32 @@ static bool linx_patch_pcrel_lo12_uimm12(uint8_t *ram, size_t ram_size,
         return false;
     }
 
-    /*
-     * ADDTPC pairs with a rounded target page. When the final low 12-bit
-     * addend would be negative in the signed page-relative sense, plain ADDI
-     * cannot represent it because ADDI uses a zero-extended uimm12. In that
-     * case rewrite the consumer to SUBI and encode the positive magnitude,
-     * matching the canonical linker split.
-     */
-    lo12 = (uint32_t)(target_addr + addend) & 0xfff;
-    if (((insn & addiMask) == addiOpcode ||
-         (insn & addiMask) == addiwOpcode) &&
-        (lo12 & 0x800)) {
-        insn |= subiBit;
-        lo12 = (uint32_t)((0x1000u - lo12) & 0xfff);
+    if (tpc_addr + 4 > ram_size) {
+        error_setg(errp,
+                   "ADDTPC HI20 address out of RAM bounds @ 0x%" HWADDR_PRIx,
+                   tpc_addr);
+        return false;
+    }
+    tpc_insn = ldl_le_p(ram + tpc_addr);
+    if ((tpc_insn & 0x7f) != 0x07) {
+        error_setg(errp,
+                   "expected ADDTPC at the PCREL HI20 anchor (insn=0x%08x) @ 0x%" HWADDR_PRIx,
+                   tpc_insn, tpc_addr);
+        return false;
     }
 
-    stl_le_p(ram + patch_addr, linx_set_lo12_i(insn, lo12));
+    /* The LO12 relocation is paired with the anchored ADDTPC's current TPC. */
+    delta = (int64_t)target_addr + addend - (int64_t)tpc_addr;
+    hi = (delta + 0x800) >> 12;
+    lo = delta - (hi << 12);
+    if (((insn & addiMask) == addiOpcode ||
+         (insn & addiMask) == addiwOpcode) &&
+        (delta & 0x800)) {
+        insn |= subiBit;
+        lo = 0 - lo;
+    }
+
+    stl_le_p(ram + patch_addr, linx_set_lo12_i(insn, (uint32_t)lo & 0xfff));
     return true;
 }
 
@@ -2362,9 +2392,65 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_LO12) {
+                hwaddr tpc_addr = 0;
+                hwaddr lo_target = target;
+                int64_t lo_addend = (int64_t)rela[j].r_addend;
+                bool found_hi = false;
+                size_t hi_index = nrela;
+                hwaddr anchor_addr = (hwaddr)((int64_t)target + lo_addend);
+
+                /*
+                 * The normal %tpcrel_lo(anchor) form names the local symbol at
+                 * the ADDTPC, including the relocation addend.  Pair by that
+                 * architectural anchor rather than by instruction adjacency;
+                 * the low consumer may be separated from ADDTPC by harmless
+                 * scalar instructions.
+                 */
+                for (size_t h = 0; h < nrela; h++) {
+                    if (ELF32_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                        base + rela[h].r_offset != anchor_addr) {
+                        continue;
+                    }
+                    hi_index = h;
+                    found_hi = true;
+                    break;
+                }
+                /* Accept the linker-side form that names the final symbol. */
+                if (!found_hi) {
+                    for (size_t h = 0; h < nrela; h++) {
+                        if (ELF32_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                            ELF32_R_SYM(rela[h].r_info) != symidx ||
+                            base + rela[h].r_offset >= patch_addr) {
+                            continue;
+                        }
+                        if (hi_index == nrela ||
+                            rela[h].r_offset > rela[hi_index].r_offset) {
+                            hi_index = h;
+                        }
+                    }
+                    found_hi = hi_index != nrela;
+                }
+                if (found_hi) {
+                    unsigned hi_symidx = ELF32_R_SYM(rela[hi_index].r_info);
+                    if (hi_symidx >= nsyms) {
+                        error_setg(errp,
+                                   "invalid ADDTPC HI20 relocation symbol index %u",
+                                   hi_symidx);
+                        goto fail;
+                    }
+                    tpc_addr = base + rela[hi_index].r_offset;
+                    lo_target = sym_addr[hi_symidx];
+                    lo_addend = (int64_t)rela[hi_index].r_addend;
+                }
+                if (!found_hi) {
+                    error_setg(errp,
+                               "R_LINX_LO12 at 0x%" HWADDR_PRIx " has no anchored ADDTPC HI20",
+                               patch_addr);
+                    goto fail;
+                }
                 if (!linx_patch_pcrel_lo12_uimm12(
-                        ram, ram_size, patch_addr, target,
-                        (int64_t)rela[j].r_addend, errp)) {
+                        ram, ram_size, patch_addr, tpc_addr, lo_target,
+                        lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
@@ -3073,9 +3159,58 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                 }
                 continue;
             } else if (rtype == R_LINX_LO12) {
+                hwaddr tpc_addr = 0;
+                hwaddr lo_target = target;
+                int64_t lo_addend = rela[j].r_addend;
+                bool found_hi = false;
+                size_t hi_index = nrela;
+                hwaddr anchor_addr = (hwaddr)((int64_t)target + lo_addend);
+
+                /* See the ELF32 path above: pair by the HI20 anchor. */
+                for (size_t h = 0; h < nrela; h++) {
+                    if (ELF64_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                        base + rela[h].r_offset != anchor_addr) {
+                        continue;
+                    }
+                    hi_index = h;
+                    found_hi = true;
+                    break;
+                }
+                if (!found_hi) {
+                    for (size_t h = 0; h < nrela; h++) {
+                        if (ELF64_R_TYPE(rela[h].r_info) != R_LINX_PCREL_HI20 ||
+                            ELF64_R_SYM(rela[h].r_info) != symidx ||
+                            base + rela[h].r_offset >= patch_addr) {
+                            continue;
+                        }
+                        if (hi_index == nrela ||
+                            rela[h].r_offset > rela[hi_index].r_offset) {
+                            hi_index = h;
+                        }
+                    }
+                    found_hi = hi_index != nrela;
+                }
+                if (found_hi) {
+                    unsigned hi_symidx = ELF64_R_SYM(rela[hi_index].r_info);
+                    if (hi_symidx >= nsyms) {
+                        error_setg(errp,
+                                   "invalid ADDTPC HI20 relocation symbol index %u",
+                                   hi_symidx);
+                        goto fail;
+                    }
+                    tpc_addr = base + rela[hi_index].r_offset;
+                    lo_target = sym_addr[hi_symidx];
+                    lo_addend = rela[hi_index].r_addend;
+                }
+                if (!found_hi) {
+                    error_setg(errp,
+                               "R_LINX_LO12 at 0x%" HWADDR_PRIx " has no anchored ADDTPC HI20",
+                               patch_addr);
+                    goto fail;
+                }
                 if (!linx_patch_pcrel_lo12_uimm12(
-                        ram, ram_size, patch_addr, target,
-                        rela[j].r_addend, errp)) {
+                        ram, ram_size, patch_addr, tpc_addr, lo_target,
+                        lo_addend, errp)) {
                     goto fail;
                 }
                 continue;
@@ -3774,12 +3909,6 @@ static void linx_virt_init(MachineState *machine)
         exit(1);
     }
     s->pe_count = machine->smp.cpus;
-    if (s->pe_count == LINX_CORE4_PE_COUNT &&
-        qemu_tcg_mttcg_enabled()) {
-        error_report("linx virt: bounded Core4 does not support MTTCG; "
-                     "use -accel tcg,thread=single");
-        exit(1);
-    }
     qemu_mutex_init(&s->core4.lock);
     qemu_cond_init(&s->core4.collective_cond);
 

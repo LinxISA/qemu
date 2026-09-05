@@ -1,16 +1,27 @@
 # PTO Tile support on LinxISA 0.58
 
-The QEMU Linx target implements the Tile contract pinned by LinxISA 0.58.3.
+The QEMU Linx target implements the Tile contract pinned by PTO ISA 0.58.6
+publication `v0.58.6.0`.
 The normative operation inventory is the LinxISA `engine_ops.json` projection;
 this page describes QEMU behavior and does not define a second ISA taxonomy.
+
+Core4 direct-boot runs use four TCG vCPUs with MTTCG enabled. This is required
+for guest-side memory barriers: a single host TCG thread can remain in one
+PE's polling loop and starve the other PEs. Core4 Shared/collective state is
+still protected by the Core4 lock and collective rendezvous protocol.
+
+For Shared `TLOAD`, the optional `B.IOR` remains part of the valid 0.58.6
+schema and supplies each PE's GM base and byte row stride before the Shared
+`B.IOS` destination binding. QEMU accepts that ordering and uses the
+per-PE stride during the Shared payload fill.
 
 ## Engine taxonomy
 
 | Engine | Operations | Responsibility |
 | --- | ---: | --- |
 | VEC | 31 | Elementwise Tile operations only |
-| SFU | 56 | Division, remainder, reductions, transforms, nonlinear functions, and other complex-hardware operations |
-| TLSU | 10 | Tile memory access and data movement |
+| SFU | 46 | Division, remainder, reductions, transforms, nonlinear functions, and other complex-hardware operations |
+| TLSU | 28 | Tile movement, indexed memory, and GM atomic/reduction operations |
 | CUBE | 12 | Matrix and matrix-vector operations |
 
 `TEPL` is only the unchanged two-bit Mode plus five-bit Function encoding
@@ -41,10 +52,14 @@ TROWEXPAND TROWEXPANDADD TROWEXPANDSUB TROWEXPANDMUL
 TROWEXPANDDIV TROWEXPANDMAX TROWEXPANDMIN TROWEXPANDEXPDIF
 TCOLEXPAND TCOLEXPANDADD TCOLEXPANDSUB TCOLEXPANDMUL
 TCOLEXPANDDIV TCOLEXPANDMAX TCOLEXPANDMIN TCOLEXPANDEXPDIF
-TCONCAT TEXTRACT TINSERT TIMG2COL TFILLPAD TCI TTRI
-THISTOGRAM TQUANT TDEQUANT TSORT TMRGSORT TTRANS TGATHER
-TSCATTER TPARTADD TPARTMUL TPARTMAX TPARTMIN
+TCI TTRI TGATHER TSCATTER TPERMUTE TSHUF TPACK TUNPACK TGPR2T
 ```
+
+PTO 0.58.5 retired `TFILLPAD`, `TTRANS`, `TPARTADD`, `TPARTMUL`, `TPARTMAX`,
+and `TPARTMIN`; their former selector values are reserved. PTO 0.58.6 also
+retires `TCONCAT`, `TEXTRACT`, `TINSERT`, `THISTOGRAM`, `TQUANT`, `TDEQUANT`,
+`TSORT`, and `TMRGSORT` without compatibility aliases. QEMU rejects every
+retired direct selector before tile execution.
 
 ### TLSU operations
 
@@ -59,7 +74,39 @@ TSCATTER TPARTADD TPARTMUL TPARTMAX TPARTMIN
 | 6 | MGATHER.MASK |
 | 7 | MSCATTER.MASK |
 | 8 | MGATHER.CAS |
+| 9 | MGATHER.EXCH |
+| 10 | MGATHER.MAX |
+| 11 | MGATHER.MIN |
+| 12 | MGATHER.ADD |
 | 13 | GMOV |
+| 14 | MGATHER.INC |
+| 15 | MGATHER.DEC |
+| 16 | MGATHER.AND |
+| 17 | MGATHER.OR |
+| 18 | MGATHER.XOR |
+| 19 | MSCATTER.MAX |
+| 20 | MSCATTER.MIN |
+| 21 | MSCATTER.ADD |
+| 22 | MSCATTER.INC |
+| 23 | MSCATTER.DEC |
+| 24 | MSCATTER.AND |
+| 25 | MSCATTER.OR |
+| 26 | MSCATTER.XOR |
+| 27 | MSCATTER.POPC |
+
+The executable GM atom/reduction subset uses integer transfer values and
+unpacked integer index Tiles. Each operation preflights its complete address
+footprint and commits through atomic compare/exchange. Floating ADD, packed
+four-bit indices, nonzero atomic-destination padding, and IOMMU-translated GM
+atom/reduction currently fail closed until their dedicated numeric, packed-lane,
+and translated-atomic paths are implemented.
+
+`BSTART.TIMG2COL` uses the adjacent TLSU Function 28 command identity. It is
+not a direct Tile operation and does not restore the retired TEPL selector.
+QEMU executes the direct Local M16/M32 destination path with the two-record
+parameter carrier, crop bounds, ND/DN address generation, Cin padding, and
+spatial zero fill. The cooperative Shared `B.IOS`/`B.ASSEMBLE` form currently
+fails closed while its four-PE publication protocol is implemented.
 
 TLOAD and TSTORE retain the encoded scalar row stride. An omitted scalar input
 uses the instruction-defined dense default; an explicitly encoded zero remains
@@ -115,7 +162,7 @@ selection, and D plus every enabled auxiliary output publish atomically.
 
 `B.IOT` and `B.IOS` encode a four-bit `SizeCode`:
 
-| SizeCode | B.IOT bytes per selected PE | B.IOS bytes per selected PE |
+| SizeCode | B.IOT bytes per selected PE | B.IOS complete object bytes |
 | ---: | ---: | ---: |
 | 1 | 128 | 128 |
 | 2 | 256 | 256 |
@@ -139,21 +186,21 @@ selected M16/M32/N8 layout. QEMU keeps the wire SizeCode separate from its inter
 
 ## Shared Tile registers and B.IOS
 
-Each core owns one bank of 256 shared Tile registers, assembled as `S0` through
-`S255`, visible to its four PEs. `B.IOS` uses an absolute SharedID and the former
+Each core owns one bank of 64 shared Tile registers, assembled as `S0` through
+`S63`, visible to its four PEs. `B.IOS` uses a six-bit absolute SharedID and the former
 `B.IOD` encoding slot. `B.IOD` and `C.B.IOS` are deleted and never decoded.
 
 The three-bit `PEMode` decodes to `0000`, `1000`, `0100`, `0010`, `0001`,
 `1100`, `1110`, or `1111`. Mode zero is a strict no-op. Each selected PE
-receives its own SizeCode capacity and uses its own GPR
-base and offset. A write allocates a new shared-register version and atomically
+participates in the one complete object capacity selected by SizeCode. A write
+allocates a new shared-register version and atomically
 publishes its descriptor and payload. Reads do not modify descriptors. Initial
 contents are undefined like an uninitialized register. QEMU enforces atomicity
 but does not add cross-PE ordering; software must prevent conflicting accesses.
 
-Each selected PE contributes the fixed quarter identified by its decoded mask
-bit. `SizeCode` is the capacity per participating PE, while capacity accounting
-charges `popcount(mask) * SizeCodeBytes`. The first successful update freezes
+Each selected PE contributes the range identified by its decoded mask bit and,
+for cooperative writers, `B.ASSEMBLE`. `SizeCode` is the complete Core-wide
+Shared object capacity. The first successful update freezes
 the allocation mask; later compatible updates may initialize a subset but may
 not expand that mask.
 

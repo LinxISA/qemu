@@ -99,10 +99,12 @@ class V02Core4SafetyContractTest(unittest.TestCase):
             virt_reset.index("cpu_reset"),
         )
 
-    def test_core4_migration_and_mttcg_are_fail_closed(self) -> None:
-        self.assertIn(".mttcg_supported = false", CPU)
-        self.assertIn("qemu_tcg_mttcg_enabled()", VIRT)
-        self.assertIn("use -accel tcg,thread=single", VIRT)
+    def test_core4_migration_is_fail_closed_and_mttcg_is_supported(self) -> None:
+        # Guest-side Core4 barriers require one host thread per PE under MTTCG;
+        # the shared/collective paths retain explicit Core4 locking.
+        self.assertIn(".mttcg_supported = true", CPU)
+        self.assertNotIn("qemu_tcg_mttcg_enabled()", VIRT)
+        self.assertNotIn("does not support MTTCG", VIRT)
         pre_save = CPU[
             CPU.index("static int linx_cpu_pre_save") :
             CPU.index("static bool linx_cpu_post_load")

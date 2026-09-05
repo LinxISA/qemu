@@ -3778,6 +3778,12 @@ static void linx_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 void linx_core4_reset(LinxCore4State *core4)
 {
     qemu_mutex_lock(&core4->lock);
+    for (unsigned tile = 0; tile < LINX_SHARED_TILE_COUNT; tile++) {
+        for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+            g_free(core4->shared_tile[tile].generation_pending_data[pe]);
+            core4->shared_tile[tile].generation_pending_data[pe] = NULL;
+        }
+    }
     memset(core4->shared_tile, 0, sizeof(core4->shared_tile));
     core4->collective_bpc = 0;
     core4->collective_func = 0;
@@ -3951,7 +3957,7 @@ static bool linx_cpu_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
 static const TCGCPUOps linx_tcg_ops = {
     .guest_default_memory_order = TCG_MO_ALL,
     /* Core4 collectives synchronously update peer architectural state. */
-    .mttcg_supported = false,
+    .mttcg_supported = true,
 
     .initialize = linx_translate_init,
     .translate_code = linx_translate_code,
@@ -4119,6 +4125,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_capacity, 0, sizeof(env->tile_reg_capacity));
         memset(env->tile_reg_bytes, 0, sizeof(env->tile_reg_bytes));
         memset(env->tile_reg_elem_bytes, 0, sizeof(env->tile_reg_elem_bytes));
+        memset(env->tile_reg_predicate, 0, sizeof(env->tile_reg_predicate));
         memset(env->tile_reg_dtype, 0, sizeof(env->tile_reg_dtype));
         memset(env->tile_reg_layout, 0, sizeof(env->tile_reg_layout));
         memset(env->tile_reg_cube_k_repeat, 0,
@@ -4230,6 +4237,10 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
                sizeof(env->tile_reg_cube_cell_count));
         memset(env->tile_reg_cube_storage_bytes, 0,
                sizeof(env->tile_reg_cube_storage_bytes));
+    }
+    if (version_id < 23) {
+        memset(env->tile_reg_predicate, 0,
+               sizeof(env->tile_reg_predicate));
     }
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
@@ -4390,7 +4401,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 22,
+    .version_id = 23,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4484,6 +4495,8 @@ static const VMStateDescription vmstate_linx_cpu = {
                                LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_elem_bytes, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
+        VMSTATE_UINT8_ARRAY_V(env.tile_reg_predicate, LinxCPU,
+                              LINX_TILE_SLOT_COUNT, 23),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_dtype, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 18),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_valid_cols, LinxCPU,

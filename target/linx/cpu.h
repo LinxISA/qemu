@@ -29,9 +29,10 @@
 #define LINX_VIRT_FINISHER_RESET UINT64_C(0x7777)
 
 #define LINX_CORE4_PE_COUNT 4
-#define LINX_SHARED_TILE_COUNT 256
+#define LINX_SHARED_TILE_COUNT 64
 #define LINX_SHARED_TILE_MAX_BYTES (256 * 1024)
 #define LINX_RAW_TILE_TRANSPORT_MAX 8
+#define LINX_TILE_CELL_BYTES 128u
 
 /* Compiler-generated S64/NORM spill metadata.  This is a model-internal
  * transport record; ordinary typed TLOAD/TSTORE never consults it. */
@@ -54,10 +55,12 @@ typedef struct LinxRawTileTransport {
 } LinxRawTileTransport;
 
 typedef struct LinxSharedTileVersion {
-    /* One Shared payload descriptor. PEMode selects fixed quarters within
-     * this per-PE SizeCode capacity; allocation accounting multiplies this
-     * capacity by the immutable allocation-mask population. */
+    /* One Core-wide Shared payload descriptor. PEMode selects fixed payload
+     * quarters within this object; it never multiplies SharedCoreSize. */
     uint8_t data[LINX_SHARED_TILE_MAX_BYTES];
+    /* B.IOS SizeCode is the complete Core-wide SharedCoreSize. */
+    /* Internal name is retained temporarily while the capacity accounting
+     * migration is completed; semantics are Core-wide SharedCoreSize. */
     uint32_t per_pe_capacity;
     uint32_t allocated_bytes;
     uint32_t dtype;
@@ -69,6 +72,22 @@ typedef struct LinxSharedTileVersion {
     uint64_t producer_bpc;
     uint8_t allocation_mask;
     uint8_t initialized_mask;
+    /* A one-hot Shared TLOAD may publish a complete dense object. Keep this
+     * separate from allocation_mask, which remains the encoded PEMode mask. */
+    uint8_t whole_object;
+    uint8_t generation_open;
+    uint8_t generation_closed;
+    uint8_t generation_mask;
+    uint8_t generation_last_seen;
+    uint32_t generation_parent_capacity;
+    uint32_t generation_parent_cells;
+    uint8_t generation_covered[LINX_SHARED_TILE_MAX_BYTES / LINX_TILE_CELL_BYTES];
+    uint8_t *generation_pending_data[LINX_CORE4_PE_COUNT];
+    uint32_t generation_pending_bytes[LINX_CORE4_PE_COUNT];
+    uint64_t generation_pending_offset[LINX_CORE4_PE_COUNT];
+    uint8_t generation_pending_last[LINX_CORE4_PE_COUNT];
+    uint8_t generation_pending_valid[LINX_CORE4_PE_COUNT];
+    uint32_t generation_pending_parent_size[LINX_CORE4_PE_COUNT];
 } LinxSharedTileVersion;
 
 typedef struct LinxCore4State {
@@ -79,7 +98,7 @@ typedef struct LinxCore4State {
     uint64_t collective_bpc;
     uint32_t collective_func;
     uint32_t collective_dtype;
-    uint32_t collective_shared_id[2];
+    uint32_t collective_shared_id[4];
     uint8_t collective_shared_count;
     uint32_t collective_m;
     uint32_t collective_n;
@@ -299,7 +318,6 @@ typedef enum LinxTemplateKind {
 #define LINX_EBARG_STACK_DEPTH 8u
 
 /* Bring-up tile backing store limits (TAU). */
-#define LINX_TILE_CELL_BYTES 128u
 #define LINX_TILE_PE_CAPACITY_BYTES (256u * 1024u)
 #define LINX_TILE_MAX_BYTES (64u * 1024u)
 #define LINX_TILE_MAX_WORDS (LINX_TILE_MAX_BYTES / 4u)
@@ -366,7 +384,6 @@ typedef struct LinxAcrBlockState {
     uint32_t tile_iot_src1;
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
-
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;
     uint32_t tile_attr_pad;
@@ -499,6 +516,13 @@ typedef struct CPUArchState {
     uint32_t tile_iot_src1;
     uint32_t tile_iot_reg;
     uint32_t tile_iot_size;
+    uint8_t tile_assemble_valid;
+    uint8_t tile_assemble_init;
+    uint8_t tile_assemble_last;
+    uint8_t tile_assemble_reg;
+    uint16_t tile_assemble_uimm;
+    uint8_t tile_assemble_parent_size;
+    uint64_t tile_assemble_offset;
 
     uint32_t tile_arg_format;
     uint32_t tile_attr_raw;
@@ -543,6 +567,9 @@ typedef struct CPUArchState {
     uint32_t tile_reg_capacity[LINX_TILE_SLOT_COUNT];
     uint32_t tile_reg_bytes[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_elem_bytes[LINX_TILE_SLOT_COUNT];
+    /* Predicate-kind Tiles use the same byte backing as numeric Tiles, but
+     * their logical elements are packed one bit per element. */
+    uint8_t tile_reg_predicate[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_dtype[LINX_TILE_SLOT_COUNT];
     uint8_t tile_reg_layout[LINX_TILE_SLOT_COUNT];
     uint16_t tile_reg_cube_k_repeat[LINX_TILE_SLOT_COUNT];
