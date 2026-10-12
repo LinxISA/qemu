@@ -39,7 +39,7 @@
 %acr_type 20:4
 %aq 26:1
 %rl 25:1
-%far 27:1
+%far 31:1
 %pred_imm 24:4
 %succ_imm 20:4
 %ModeHi 26:1
@@ -316,17 +316,18 @@ acrc   0000 0000 .... 0000 0011 0000 0010 1011 rst=%acr_type
 acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
 
 # Atomics (minimal subset for toolchain intrinsics bring-up)
-# Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
-lr_w   0010 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-lr_d   0011 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+# v0.58 op5 = 31..27: b31 = far/size-override flag, b30..27 = op/size code;
+# aq (b26) / rl (b25) plus (SrcL/SrcR/RegDst) and funct3.
+lr_w   .001 0... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_d   .001 1... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+sc_w   .001 0... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_d   .001 1... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
-swapw  0010 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapw  .001 0... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapd  .001 1... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
-lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_add .000 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_add .000 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
 # LinxISA 0.58 local compare-and-swap and DMA encodings.
 casb   .... .... .... .... .000 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
@@ -334,6 +335,9 @@ cash   .... .... .... .... .001 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq 
 casw   .... .... .... .... .010 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 casd   .... .... .... .... .011 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 dma    0000 000. .... .... .111 0000 0000 1011 %SrcL %SrcR
+# v0.58 DMA resource release variants (S/L = Store/Load mode).
+dma_free_s 0000 0100 0000 .... .111 0000 0000 1011 %SrcL
+dma_free_l 0000 0110 0000 .... .111 0000 0000 1011 %SrcL
 
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
@@ -380,6 +384,9 @@ fret_stk      ....... ..... 0101 0011 ..... 100 0001 uimm_hi=%fentry_uimm_hi uim
 #   MSET:  RegSrc0=DstAddr (bits 19..15), RegSrc1=Value   (24..20), RegSrc2=Size (31..27)
 # These are standalone template blocks (must not appear inside BSTART..BSTOP).
 mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
+# v0.58 MCOPY.DS/DL: D + Store/Load mode, with a RegDst (11..7) L2SPM-address return.
+mcopy_ds      .... .01. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
+mcopy_dl      .... .11. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
 mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD
 esave         .... .00. .... .... .010 0000 0011 0001 %SrcL %SrcR %SrcD
 ercov         .... .00. .... .... .011 0000 0011 0001 %SrcL %SrcR %SrcD
@@ -646,39 +653,47 @@ prf           .... .... .... .... .111 .... .000 1001 %RegDst %SrcL %SrcR %SrcRT
 prfi_u        .... .... .... .... .111 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
 
 # Atomics
-lr_b          0000 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-lr_h          0001 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-sc_b          0000 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sc_h          0001 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swapb         0000 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swaph         0001 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_and        0001 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_or         0010 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_xor        0011 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_smax       0100 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_smin       0101 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_umax       0110 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_umin       0111 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_and        0001 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_or         0010 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_xor        0011 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_smax       0100 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_smin       0101 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_umax       0110 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_umin       0111 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sw_add        0000 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_and        0001 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_or         0010 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_xor        0011 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_smax       0100 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_smin       0101 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_umax       0110 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_umin       0111 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_add        0000 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_and        0001 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_or         0010 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_xor        0011 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_smax       0100 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_smin       0101 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_umax       0110 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_umin       0111 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+lr_b   .000 0... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_h   .000 1... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+sc_b   .000 0... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_h   .000 1... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapb  .000 0... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swaph  .000 1... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_and .000 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_or  .001 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_xor .001 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smax .010 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smin .010 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umax .011 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umin .011 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_and .000 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_or  .001 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_xor .001 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smax .010 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smin .010 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umax .011 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umin .011 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+# v0.58 store-op (SW/SD slot; b31 = size override, b30..27 = op): no far, rl only, aq fixed 0.
+sw_add 0000 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_and 0000 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_or  0001 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_xor 0001 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_smax 0010 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_smin 0010 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_umax 0011 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_umin 0011 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_sub 0100 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_add 0000 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_and 0000 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_or  0001 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_xor 0001 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_smax 0010 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_smin 0010 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_umax 0011 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_umin 0011 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_sub 0100 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+# v0.58 sub-word store-op: size override b31=1 shrinks to byte (SW slot) / halfword (SD slot).
+sb_add 1000 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sb_sub 1100 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sh_add 1000 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sh_sub 1100 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl

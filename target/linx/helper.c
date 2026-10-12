@@ -8172,6 +8172,57 @@ LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
 #undef LINX_DEFINE_STORE32_HELPER
 #undef LINX_DEFINE_STORE64_HELPER
 
+/*
+ * v0.58 store-op additions: subtract (implemented as modular negated add, as
+ * the atomic template has no fetch-sub) and byte/halfword size-override forms.
+ */
+void HELPER(linx_sw_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addl_le_mmu((CPUArchState *)env, addr,
+                                       (uint32_t)(0u - value),
+                                       linx_oi_le(MO_UL), GETPC());
+}
+
+void HELPER(linx_sd_sub)(CPULinxState *env, uint64_t addr, uint64_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addq_le_mmu((CPUArchState *)env, addr,
+                                       0ull - value,
+                                       linx_oi_le(MO_UQ), GETPC());
+}
+
+void HELPER(linx_sb_add)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
+                                    (uint8_t)value, linx_oi_le(MO_UB), GETPC());
+}
+
+void HELPER(linx_sb_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
+                                    (uint8_t)(0u - value),
+                                    linx_oi_le(MO_UB), GETPC());
+}
+
+void HELPER(linx_sh_add)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
+                                       (uint16_t)value,
+                                       linx_oi_le(MO_UW), GETPC());
+}
+
+void HELPER(linx_sh_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
+{
+    linx_lr_clear(env);
+    (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
+                                       (uint16_t)(0u - value),
+                                       linx_oi_le(MO_UW), GETPC());
+}
+
 uint64_t HELPER(linx_ld_add)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     linx_lr_clear(env);
@@ -11095,6 +11146,103 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         break;
+    }
+
+    g_assert_not_reached();
+}
+
+/*
+ * MCOPY.DS / MCOPY.DL: restartable bulk memory copy that also returns the
+ * L2SPM replica address into RegDst.  QEMU has no L2SPM allocator, so the
+ * returned address is the destination itself (identity model); the Store/Load
+ * mode is not modelled and both variants share this behaviour.
+ */
+void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
+                               uint64_t next_pc, uint32_t dst_reg,
+                               uint32_t src_reg, uint32_t size_reg,
+                               uint32_t rdst_reg)
+{
+    CPUState *cs = env_cpu(env);
+    const uint32_t kind = LINX_TEMPLATE_MCOPY_DS;
+
+    if (env->tmpl_pc != cur_pc || env->tmpl_kind != kind) {
+        env->tmpl_pc = cur_pc;
+        env->tmpl_kind = kind;
+        env->tmpl_step = 0;
+        env->tmpl_reg_cur = rdst_reg;
+        env->tmpl_mem_dst = 0;
+        env->tmpl_mem_src = 0;
+        env->tmpl_mem_remaining = 0;
+        if (dst_reg >= LINX_GPR_COUNT || src_reg >= LINX_GPR_COUNT ||
+            size_reg >= LINX_GPR_COUNT) {
+            helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+        }
+        env->tmpl_mem_dst = env->gpr[dst_reg];
+        env->tmpl_mem_src = env->gpr[src_reg];
+        env->tmpl_mem_remaining = env->gpr[size_reg];
+    }
+
+    {
+        uint64_t dst = env->tmpl_mem_dst;
+        uint64_t src = env->tmpl_mem_src;
+        uint64_t remaining = env->tmpl_mem_remaining;
+        uint32_t sz = 1;
+        uint64_t v = 0;
+
+        if (remaining == 0) {
+            env->gpr[rdst_reg] = env->gpr[dst_reg];
+            linx_template_clear(env);
+            env->pc = next_pc;
+            linx_trace_mem_clear(env);
+            linx_template_commit_and_exit(env, cs, env->pc);
+        }
+
+        if (remaining >= 8) {
+            sz = 8;
+        } else if (remaining >= 4) {
+            sz = 4;
+        } else if (remaining >= 2) {
+            sz = 2;
+        }
+
+        switch (sz) {
+        case 8:
+            v = cpu_ldq_le_data(env, (abi_ptr)src);
+            cpu_stq_le_data(env, (abi_ptr)dst, v);
+            break;
+        case 4:
+            v = cpu_ldl_le_data(env, (abi_ptr)src);
+            cpu_stl_le_data(env, (abi_ptr)dst, (uint32_t)v);
+            break;
+        case 2:
+            v = cpu_lduw_le_data(env, (abi_ptr)src);
+            cpu_stw_le_data(env, (abi_ptr)dst, (uint16_t)v);
+            break;
+        default:
+            v = cpu_ldub_data(env, (abi_ptr)src);
+            cpu_stb_data(env, (abi_ptr)dst, (uint8_t)v);
+            break;
+        }
+        linx_trace_mem(env, true, dst, v, 0, sz);
+
+        src += sz;
+        dst += sz;
+        remaining -= sz;
+        env->tmpl_mem_src = src;
+        env->tmpl_mem_dst = dst;
+        env->tmpl_mem_remaining = remaining;
+        env->tmpl_step += sz;
+
+        if (remaining == 0) {
+            env->gpr[rdst_reg] = env->gpr[dst_reg];
+            linx_template_clear(env);
+            env->pc = next_pc;
+            linx_trace_mem_clear(env);
+            linx_template_commit_and_exit(env, cs, env->pc);
+        } else {
+            env->pc = cur_pc;
+            linx_template_exit_without_commit(env, cs);
+        }
     }
 
     g_assert_not_reached();

@@ -274,6 +274,8 @@ typedef enum LinxTemplateKind {
     LINX_TEMPLATE_MSET     = 5,
     LINX_TEMPLATE_ESAVE    = 6,
     LINX_TEMPLATE_ERCOV    = 7,
+    LINX_TEMPLATE_MCOPY_DS = 8,
+    LINX_TEMPLATE_MCOPY_DL = 9,
 } LinxTemplateKind;
 
 #define LINX_SSR_COUNT 0x1000u /* SSR_ID[11:0] */

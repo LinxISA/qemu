@@ -6900,6 +6900,42 @@ static bool trans_mcopy(DisasContext *ctx, arg_mcopy *a)
     return true;
 }
 
+/* MCOPY.DS / MCOPY.DL: MCOPY plus a RegDst L2SPM-address return (identity). */
+static bool trans_mcopy_d_common(DisasContext *ctx, uint32_t dst, uint32_t src,
+                                 uint32_t size, uint32_t rdst)
+{
+    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
+
+    if (ctx->in_body) {
+        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
+    }
+    if (current_pc != ctx->base.pc_first) {
+        linx_gen_block_end(ctx, current_pc);
+        return true;
+    }
+
+    linx_block_begin(ctx, LINX_BR_FALL, 0);
+    gen_helper_linx_mcopy_d_step(tcg_env,
+                                 tcg_constant_i64(current_pc),
+                                 tcg_constant_i64(ctx->base.pc_next),
+                                 tcg_constant_i32(dst),
+                                 tcg_constant_i32(src),
+                                 tcg_constant_i32(size),
+                                 tcg_constant_i32(rdst));
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+static bool trans_mcopy_ds(DisasContext *ctx, arg_mcopy_ds *a)
+{
+    return trans_mcopy_d_common(ctx, a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+}
+
+static bool trans_mcopy_dl(DisasContext *ctx, arg_mcopy_dl *a)
+{
+    return trans_mcopy_d_common(ctx, a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+}
+
 /* MSET: restartable bulk memory set template (standalone block). */
 static bool trans_mset(DisasContext *ctx, arg_mset *a)
 {
@@ -8157,6 +8193,25 @@ static bool trans_dma(DisasContext *ctx, arg_dma *a)
     return true;
 }
 
+/*
+ * v0.58 DMA.FREE.S / DMA.FREE.L: release the L2SPM space associated with the
+ * address in SrcL.  QEMU has no L2SPM/DMA device model, so the release is a
+ * no-op (S/L Store/Load timing is not modelled).
+ */
+static bool trans_dma_free_s(DisasContext *ctx, arg_dma_free_s *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
+static bool trans_dma_free_l(DisasContext *ctx, arg_dma_free_l *a)
+{
+    (void)ctx;
+    (void)a;
+    return true;
+}
+
 static bool trans_fence_d(DisasContext *ctx, arg_fence_d *a)
 {
     (void)a;
@@ -8659,6 +8714,12 @@ LINX_DEFINE_STORE64(sd_smax, linx_sd_smax)
 LINX_DEFINE_STORE64(sd_smin, linx_sd_smin)
 LINX_DEFINE_STORE64(sd_umax, linx_sd_umax)
 LINX_DEFINE_STORE64(sd_umin, linx_sd_umin)
+LINX_DEFINE_STORE32(sw_sub, linx_sw_sub)
+LINX_DEFINE_STORE64(sd_sub, linx_sd_sub)
+LINX_DEFINE_STORE32(sb_add, linx_sb_add)
+LINX_DEFINE_STORE32(sb_sub, linx_sb_sub)
+LINX_DEFINE_STORE32(sh_add, linx_sh_add)
+LINX_DEFINE_STORE32(sh_sub, linx_sh_sub)
 
 #undef LINX_DEFINE_FETCH32
 #undef LINX_DEFINE_FETCH64
