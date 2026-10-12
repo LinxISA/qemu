@@ -8672,15 +8672,15 @@ static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
 static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
 { \
     TCGv_i32 val32 = tcg_temp_new_i32(); \
-    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL)); \
-    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcR), val32); \
+    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR)); \
+    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL), val32); \
     return true; \
 }
 
 #define LINX_DEFINE_STORE64(NAME, HELPER) \
 static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
 { \
-    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcR), linx_get_reg(a->SrcL)); \
+    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR)); \
     return true; \
 }
 
