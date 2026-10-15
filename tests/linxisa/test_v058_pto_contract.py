@@ -78,6 +78,16 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_TILE_ENGINE_VEC", self.tile_isa)
         self.assertIn("LINX_TILE_ENGINE_SFU", self.tile_isa)
         self.assertNotIn('return "tma"', self.helper)
+
+    def test_mcopy_d_destination_uses_scalar_destination_semantics(self) -> None:
+        helper = self.helper
+        writer = helper.index("static void linx_mcopy_d_write_dest")
+        body = helper[writer : helper.index("void HELPER(linx_mcopy_d_step)", writer)]
+        self.assertIn("reg == LINX_REG_ZERO", body)
+        self.assertIn("env->gpr[reg] = value", body)
+        self.assertIn("env->tq[0] = value", body)
+        self.assertIn("env->uq[0] = value", body)
+        self.assertNotIn("env->gpr[rdst_reg] = env->gpr[dst_reg]", helper)
         self.assertNotIn("LINX_OP_BSTART_TMA", self.ids)
         self.assertIn("LINX_OP_BSTART_TLSU", self.ids)
 

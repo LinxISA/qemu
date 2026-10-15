@@ -11157,6 +11157,42 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
  * returned address is the destination itself (identity model); the Store/Load
  * mode is not modelled and both variants share this behaviour.
  */
+static void linx_mcopy_d_write_dest(CPULinxState *env, uint32_t reg,
+                                    uint64_t value)
+{
+    if (reg == LINX_REG_ZERO) {
+        return;
+    }
+    if (reg < LINX_GPR_COUNT) {
+        env->gpr[reg] = value;
+        return;
+    }
+    if (reg == 31u) {
+        env->tq[3] = env->tq[2];
+        env->tq[2] = env->tq[1];
+        env->tq[1] = env->tq[0];
+        env->tq[0] = value;
+        return;
+    }
+    if (reg == 30u) {
+        env->uq[3] = env->uq[2];
+        env->uq[2] = env->uq[1];
+        env->uq[1] = env->uq[0];
+        env->uq[0] = value;
+        return;
+    }
+    if (reg < 28u) {
+        env->tq[reg - 24u] = value;
+        return;
+    }
+    if (reg < 30u) {
+        env->uq[reg - 28u] = value;
+        return;
+    }
+
+    helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+}
+
 void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
                                uint64_t next_pc, uint32_t dst_reg,
                                uint32_t src_reg, uint32_t size_reg,
@@ -11190,7 +11226,7 @@ void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
         uint64_t v = 0;
 
         if (remaining == 0) {
-            env->gpr[rdst_reg] = env->gpr[dst_reg];
+            linx_mcopy_d_write_dest(env, rdst_reg, env->gpr[dst_reg]);
             linx_template_clear(env);
             env->pc = next_pc;
             linx_trace_mem_clear(env);
@@ -11234,7 +11270,7 @@ void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
         env->tmpl_step += sz;
 
         if (remaining == 0) {
-            env->gpr[rdst_reg] = env->gpr[dst_reg];
+            linx_mcopy_d_write_dest(env, rdst_reg, env->gpr[dst_reg]);
             linx_template_clear(env);
             env->pc = next_pc;
             linx_trace_mem_clear(env);
