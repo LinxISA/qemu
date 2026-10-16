@@ -11193,13 +11193,12 @@ static void linx_mcopy_d_write_dest(CPULinxState *env, uint32_t reg,
     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
 }
 
-void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
-                               uint64_t next_pc, uint32_t dst_reg,
-                               uint32_t src_reg, uint32_t size_reg,
-                               uint32_t rdst_reg)
+static void linx_mcopy_d_step(CPULinxState *env, uint64_t cur_pc,
+                              uint64_t next_pc, uint32_t kind,
+                              uint32_t dst_reg, uint32_t src_reg,
+                              uint32_t size_reg, uint32_t rdst_reg)
 {
     CPUState *cs = env_cpu(env);
-    const uint32_t kind = LINX_TEMPLATE_MCOPY_DS;
 
     if (env->tmpl_pc != cur_pc || env->tmpl_kind != kind) {
         env->tmpl_pc = cur_pc;
@@ -11282,6 +11281,24 @@ void HELPER(linx_mcopy_d_step)(CPULinxState *env, uint64_t cur_pc,
     }
 
     g_assert_not_reached();
+}
+
+void HELPER(linx_mcopy_ds_step)(CPULinxState *env, uint64_t cur_pc,
+                                uint64_t next_pc, uint32_t dst_reg,
+                                uint32_t src_reg, uint32_t size_reg,
+                                uint32_t rdst_reg)
+{
+    linx_mcopy_d_step(env, cur_pc, next_pc, LINX_TEMPLATE_MCOPY_DS,
+                      dst_reg, src_reg, size_reg, rdst_reg);
+}
+
+void HELPER(linx_mcopy_dl_step)(CPULinxState *env, uint64_t cur_pc,
+                                uint64_t next_pc, uint32_t dst_reg,
+                                uint32_t src_reg, uint32_t size_reg,
+                                uint32_t rdst_reg)
+{
+    linx_mcopy_d_step(env, cur_pc, next_pc, LINX_TEMPLATE_MCOPY_DL,
+                      dst_reg, src_reg, size_reg, rdst_reg);
 }
 
 enum {

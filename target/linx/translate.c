@@ -6901,7 +6901,8 @@ static bool trans_mcopy(DisasContext *ctx, arg_mcopy *a)
 }
 
 /* MCOPY.DS / MCOPY.DL: MCOPY plus a RegDst L2SPM-address return (identity). */
-static bool trans_mcopy_d_common(DisasContext *ctx, uint32_t dst, uint32_t src,
+static bool trans_mcopy_d_common(DisasContext *ctx, uint32_t kind,
+                                 uint32_t dst, uint32_t src,
                                  uint32_t size, uint32_t rdst)
 {
     vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
@@ -6915,25 +6916,37 @@ static bool trans_mcopy_d_common(DisasContext *ctx, uint32_t dst, uint32_t src,
     }
 
     linx_block_begin(ctx, LINX_BR_FALL, 0);
-    gen_helper_linx_mcopy_d_step(tcg_env,
-                                 tcg_constant_i64(current_pc),
-                                 tcg_constant_i64(ctx->base.pc_next),
-                                 tcg_constant_i32(dst),
-                                 tcg_constant_i32(src),
-                                 tcg_constant_i32(size),
-                                 tcg_constant_i32(rdst));
+    if (kind == LINX_TEMPLATE_MCOPY_DS) {
+        gen_helper_linx_mcopy_ds_step(tcg_env,
+                                      tcg_constant_i64(current_pc),
+                                      tcg_constant_i64(ctx->base.pc_next),
+                                      tcg_constant_i32(dst),
+                                      tcg_constant_i32(src),
+                                      tcg_constant_i32(size),
+                                      tcg_constant_i32(rdst));
+    } else {
+        gen_helper_linx_mcopy_dl_step(tcg_env,
+                                      tcg_constant_i64(current_pc),
+                                      tcg_constant_i64(ctx->base.pc_next),
+                                      tcg_constant_i32(dst),
+                                      tcg_constant_i32(src),
+                                      tcg_constant_i32(size),
+                                      tcg_constant_i32(rdst));
+    }
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 
 static bool trans_mcopy_ds(DisasContext *ctx, arg_mcopy_ds *a)
 {
-    return trans_mcopy_d_common(ctx, a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+    return trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DS,
+                                a->SrcL, a->SrcR, a->SrcD, a->RegDst);
 }
 
 static bool trans_mcopy_dl(DisasContext *ctx, arg_mcopy_dl *a)
 {
-    return trans_mcopy_d_common(ctx, a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+    return trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DL,
+                                a->SrcL, a->SrcR, a->SrcD, a->RegDst);
 }
 
 /* MSET: restartable bulk memory set template (standalone block). */
