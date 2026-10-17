@@ -39,7 +39,7 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_b_ios_uses_final_32_bit_encoding(self) -> None:
         self.assertRegex(
             self.decode32,
-            r"(?m)^b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
+            r"(?m)^\s*b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
         self.assertIn("%SharedTID 20:6", self.decode32)
@@ -103,6 +103,48 @@ class PtoV058ContractTests(unittest.TestCase):
 
         self.assertNotIn("LINX_OP_BSTART_TMA", self.ids)
         self.assertIn("LINX_OP_BSTART_TLSU", self.ids)
+
+    def test_frame_encoding_and_legality_match_pto_0587(self) -> None:
+        for field in (
+            "%fentry_uimm_hi 7:5",
+            "%fentry_uimm_lo 25:7",
+            "%fentry_begin 15:5",
+            "%fentry_end 20:5",
+        ):
+            self.assertIn(field, self.decode32)
+
+        expected = {
+            "fentry": ("0x707f", "0x41"),
+            "fexit": ("0x707f", "0x1041"),
+            "fret_ra": ("0x707f", "0x2041"),
+            "fret_stk": ("0xff07f", "0x53041"),
+        }
+        for mnemonic, (mask, match) in expected.items():
+            meta = next(
+                line for line in self.meta.splitlines()
+                if f'.mnemonic="{mnemonic}"' in line
+            )
+            self.assertIn(f".mask=UINT64_C({mask})", meta)
+            self.assertIn(f".match=UINT64_C({match})", meta)
+            body = re.search(
+                rf"static bool trans_{mnemonic}\(.*?\n" + r"\}",
+                self.translate,
+                re.S,
+            ).group(0)
+            self.assertIn("linx_frame_operands_legal", body)
+            self.assertLess(
+                body.index("linx_frame_operands_legal"),
+                body.index("linx_block_begin"),
+            )
+
+        legality = re.search(
+            r"static bool linx_frame_operands_legal\(.*?\n\}",
+            self.translate,
+            re.S,
+        ).group(0)
+        self.assertIn("reg_begin < 2u || reg_begin > 23u", legality)
+        self.assertIn("reg_end < 2u || reg_end > 23u", legality)
+        self.assertIn("stacksize >= (uint64_t)count * 8u", legality)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)
@@ -350,9 +392,15 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_reported_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.6-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.7-mode-function-v1", virt)
         self.assertIn(
-            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
+            "a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881",
+            virt,
+        )
+        self.assertIn('\\"release\\":\\"0.58.7', virt)
+        self.assertNotIn("pto-isa-0.58.6-mode-function-v1", virt)
+        self.assertNotIn(
+            "9c49cdfa79a4eda6b27c1548bfd06ef681b6189f7d02d466ddfd43f59993b93d",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]

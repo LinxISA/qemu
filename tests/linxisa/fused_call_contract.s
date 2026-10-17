@@ -20,44 +20,17 @@ _start:
   # FRET.RA consumes the CALL return address directly. The encoded return
   # label may begin with a header command rather than a BSTART marker.
   FENTRY [a2 ~ a2], sp!, 8
-.Lcall32_hint_return:
-  .4byte 0x50160002 | (((.Lcallee_hint_return - .Lcall32_hint_return) / 2 & 0xfff) << 4) | (((.Lret32_hint_return - (.Lcall32_hint_return + 2)) / 2 & 0x1f) << 22)
+.Lcall48_hint_return:
+  .4byte 0x00000011 | (((.Lcallee_hint_return - .Lcall48_hint_return) / 2 & 0x1ffffff) << 7)
+  .2byte 0x5016 | (((.Lret48_hint_return - (.Lcall48_hint_return + 4)) / 2 & 0x1f) << 6)
   C.BSTOP
-.Lret32_hint_return:
+.Lret48_hint_return:
   B.HINT TRACE.begin
   C.BSTART DIRECT, .Lafter_hint_return
   C.BSTOP
 .Lcallee_hint_return:
   FRET.RA [a2 ~ a2], sp!, 8
 .Lafter_hint_return:
-
-  # 32-bit baseline: call=P+simm12*2, ra=P+2+uimm5*2.
-  SET_EXPECT 17
-.Lcall32_base:
-  .4byte 0x50160002 | (((.Lcallee17 - .Lcall32_base) / 2 & 0xfff) << 4) | (((.Lret32_base - (.Lcall32_base + 2)) / 2 & 0x1f) << 22)
-  C.BSTOP
-  .2byte 0xffff
-.Lret32_base:
-  CHECK_MARKER
-
-  # Changing only uimm5 must preserve the callee and move RA by two bytes.
-  SET_EXPECT 17
-.Lcall32_ret_mut:
-  .4byte 0x50160002 | (((.Lcallee17 - .Lcall32_ret_mut) / 2 & 0xfff) << 4) | (((.Lret32_mut - (.Lcall32_ret_mut + 2)) / 2 & 0x1f) << 22)
-  C.BSTOP
-  .2byte 0xffff
-  .2byte 0xffff
-.Lret32_mut:
-  CHECK_MARKER
-
-  # Changing only simm12 must select a different callee without moving RA.
-  SET_EXPECT 34
-.Lcall32_call_mut:
-  .4byte 0x50160002 | (((.Lcallee34 - .Lcall32_call_mut) / 2 & 0xfff) << 4) | (((.Lret32_call_mut - (.Lcall32_call_mut + 2)) / 2 & 0x1f) << 22)
-  C.BSTOP
-  .2byte 0xffff
-.Lret32_call_mut:
-  CHECK_MARKER
 
   # 48-bit baseline: call=P+simm25*2, ra=P+4+uimm5*2.
   SET_EXPECT 51
@@ -100,18 +73,6 @@ _start:
   hl.liu 21845, ->a0
   hl.liu 268472320, ->t
   swi a0, [t#1, 0]
-  C.BSTOP
-
-.Lcallee17:
-  C.BSTART.STD RET
-  addi zero, 17, ->a1
-  c.setc.tgt ra
-  C.BSTOP
-
-.Lcallee34:
-  C.BSTART.STD RET
-  addi zero, 34, ->a1
-  c.setc.tgt ra
   C.BSTOP
 
 .Lcallee51:

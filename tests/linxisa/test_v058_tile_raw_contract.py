@@ -56,7 +56,7 @@ class V058TileRawContractTest(unittest.TestCase):
     def test_b_iot_uses_final_v058_forms(self) -> None:
         patterns = [line for line in self.decode.splitlines()
                     if line.lstrip().startswith("b_iot ")]
-        self.assertEqual(len(patterns), 5)
+        self.assertEqual(len(patterns), 13)
         for field in (
             "%IOTV5Src1 26:6",
             "%IOTV5Src0 20:6",
@@ -68,10 +68,18 @@ class V058TileRawContractTest(unittest.TestCase):
             self.assertIn(field, self.decode)
         for mask, match in (
             ("0x707f", "0x4013"),
-            ("0x7f07f", "0x4013"),
+            ("0x7f1ff", "0x4013"),
             ("0xfc00707f", "0x5013"),
-            ("0xfc07f07f", "0x5013"),
+            ("0xfc07f1ff", "0x5013"),
             ("0xfff0707f", "0x6013"),
+            ("0x7f1ff", "0x2013"),
+            ("0x7f1ff", "0x3013"),
+            ("0x7f1ff", "0x7013"),
+            ("0x707f", "0x2013"),
+            ("0x707f", "0x3013"),
+            ("0x707f", "0x7013"),
+            ("0xfc07f1ff", "0x4005013"),
+            ("0xfc00707f", "0x4005013"),
         ):
             self.assertIn(f".mask=UINT64_C({mask})", self.meta)
             self.assertIn(f".match=UINT64_C({match})", self.meta)
@@ -79,12 +87,33 @@ class V058TileRawContractTest(unittest.TestCase):
     def test_attribute_raw_contracts(self) -> None:
         for mask, match in (
             ("0xfbf07fff", "0x23"),
-            ("0xc707f", "0x1023"),
+            ("0xc107f", "0x1023"),
         ):
             self.assertIn(f".mask=UINT64_C({mask})", self.meta)
             self.assertIn(f".match=UINT64_C({match})", self.meta)
         self.assertIn("%BA_Canonicalize 25:1", self.decode)
         self.assertIn("%BA_PadValue 27:2", self.decode)
+        self.assertIn("%BA_PredInv 14:1", self.decode)
+        self.assertIn("%BA_Zero 13:1", self.decode)
+        self.assertIn("%ExecMaskPresent 26:1", self.decode)
+        for trans_name, field in (
+            ("trans_b_ior", "a->exec_mask_present"),
+            ("trans_b_datr", "a->predinv || a->zero"),
+            ("trans_b_ios", "a->unsupported"),
+        ):
+            body = self.translate.split(
+                f"static bool {trans_name}", 1
+            )[1].split("\n}", 1)[0]
+            self.assertIn(field, body)
+            self.assertLess(body.index(field), body.index("ctx->in_body"))
+        b_iot = self.translate.split(
+            "static bool trans_b_iot", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn("a->unsupported", b_iot)
+        self.assertLess(
+            b_iot.index("a->unsupported"),
+            b_iot.index("linx_trans_b_iot"),
+        )
         self.assertIn("UINT32_C(0x1f1f7fff)", self.table)
         self.assertIn("UINT32_C(0x5ff6035b)", self.table)
 

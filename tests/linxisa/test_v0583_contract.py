@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source guards for the LinxISA/PTO ISA 0.58.6 QEMU contract."""
+"""Source guards for the LinxISA/PTO ISA 0.58.7 QEMU contract."""
 
 from __future__ import annotations
 
@@ -28,20 +28,39 @@ class PtoV0583ContractTests(unittest.TestCase):
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
 
-    def test_exact_0586_elf_identity_is_fail_closed(self) -> None:
+    def test_exact_0587_development_identity_is_fail_closed(self) -> None:
         authority = json.loads(
-            (ROOT / "tests/linxisa/pto-isa-0586-authority.json").read_text(
+            (
+                ROOT
+                / "tests/linxisa/pto-isa-0587-development-authority.json"
+            ).read_text(
                 encoding="utf-8"
             )
         )
         self.assertEqual(
             authority["pto_spec_commit"],
-            "dea0b75e803cffa873982c90f9aa0cd17c6d243b",
+            "f0a876e449a95d26841c5ee7affb4c905ebc5f5b",
         )
-        self.assertIn('release\\\":\\\"0.58.6', self.virt)
-        self.assertIn("pto-isa-0.58.6-mode-function-v1", self.virt)
+        self.assertEqual(authority["status"], "development-not-published")
+        self.assertIsNone(authority["publication"])
+        self.assertEqual(
+            authority["catalog_counts"],
+            {
+                "scalar_forms": 473,
+                "command_forms": 105,
+                "tile_operations": 119,
+                "reservations": 50,
+            },
+        )
+        self.assertIn('release\\\":\\\"0.58.7', self.virt)
+        self.assertIn("pto-isa-0.58.7-mode-function-v1", self.virt)
         self.assertIn(
-            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
+            "a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881",
+            self.virt,
+        )
+        self.assertNotIn("pto-isa-0.58.6-mode-function-v1", self.virt)
+        self.assertNotIn(
+            "9c49cdfa79a4eda6b27c1548bfd06ef681b6189f7d02d466ddfd43f59993b93d",
             self.virt,
         )
         self.assertIn("Linx: error:", self.virt)

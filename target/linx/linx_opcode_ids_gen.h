@@ -715,7 +715,6 @@ typedef enum LinxOpcodeId {
     LINX_OP_SC_D = 720,
     LINX_OP_SC_H = 721,
     LINX_OP_SC_W = 722,
-    LINX_OP_START_CALL_32 = 723,
     LINX_OP_START_CALL_48 = 724,
     LINX_OP_TLB_IA = 725,
     LINX_OP_TLB_IALL = 726,
@@ -744,6 +743,7 @@ typedef enum LinxOpcodeId {
     LINX_OP_DMA_FREE_L = 750,
     LINX_OP_MCOPY_DS = 751,
     LINX_OP_MCOPY_DL = 752,
+    LINX_OP_SYNC_CORE = 753,
 } LinxOpcodeId;
 
 #endif /* LINX_OPCODE_IDS_GEN_H */

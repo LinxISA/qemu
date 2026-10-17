@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.insn16 = (TARGET / "insn16.decode").read_text(encoding="utf-8")
         cls.insn32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
+        cls.insn48 = (TARGET / "insn48.decode").read_text(encoding="utf-8")
         cls.insn64 = (TARGET / "insn64.decode").read_text(encoding="utf-8")
         cls.ids = (TARGET / "linx_opcode_ids_gen.h").read_text(encoding="utf-8")
         cls.meta = (TARGET / "linx_opcode_meta_gen.h").read_text(encoding="utf-8")
@@ -88,11 +90,19 @@ class V058DecodeMetadataTests(unittest.TestCase):
 
     def test_b_iot_uses_all_exact_public_forms(self) -> None:
         patterns = (
+            "0000 00.. .... .000 0101 ...0 0001 0011",
             "0000 00.. .... .... .101 .... .001 0011",
-            ".... .... .... .000 0100 .... .001 0011",
+            ".... .... .... .000 0100 ...0 0001 0011",
             ".... .... .... .... .100 .... .001 0011",
-            "0000 00.. .... .000 0101 .... .001 0011",
             "0000 0000 0000 .... .110 .... .001 0011",
+            ".... .... .... .000 0010 ...0 0001 0011",
+            ".... .... .... .000 0011 ...0 0001 0011",
+            ".... .... .... .000 0111 ...0 0001 0011",
+            ".... .... .... .... .010 .... .001 0011",
+            ".... .... .... .... .011 .... .001 0011",
+            ".... .... .... .... .111 .... .001 0011",
+            "0000 01.. .... .000 0101 ...0 0001 0011",
+            "0000 01.. .... .... .101 .... .001 0011",
         )
         b_iot_lines = tuple(
             " ".join(line.split())
@@ -113,6 +123,8 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertIn('.mnemonic="b_ios"', self.meta)
         self.assertIn(".mask=UINT64_C(0xfc0871ff)", self.meta)
         self.assertIn(".match=UINT64_C(0x1013)", self.meta)
+        self.assertIn(".mask=UINT64_C(0xfc0ff1ff)", self.meta)
+        self.assertIn(".match=UINT64_C(0x4001013)", self.meta)
 
     def test_vec_sfu_and_tfma_metadata_are_final(self) -> None:
         self.assertIn("LINX_OP_BSTART_TLSU = 22", self.ids)
@@ -160,7 +172,7 @@ class V058DecodeMetadataTests(unittest.TestCase):
     def test_v0581_new_exact_forms_are_decoded(self) -> None:
         expected = {
             "b_fpatr": ("0x7c7f", "0x2023"),
-            "start_call_32": ("0xf83f000f", "0x50160002"),
+            "start_call_48": ("0xfffff83f0000007f", "0x501600000011"),
             "start_icall_32": ("0xf83fffff", "0x50166001"),
             "l_bstop": ("0xffffffffffffffff", "0x10000000f"),
         }
@@ -177,11 +189,13 @@ class V058DecodeMetadataTests(unittest.TestCase):
         )
         self.assertIn(".mask=UINT64_C(0x7c7f)", fpatr_meta)
         self.assertIn(".match=UINT64_C(0x2023)", fpatr_meta)
+        self.assertRegex(self.insn48, r"(?m)^start_call_48\s+")
         self.assertRegex(self.insn32, r"(?m)^start_icall_32\s+")
         self.assertRegex(self.insn64, r"(?m)^l_bstop\s+")
 
     def test_retired_32bit_bare_call_forms_are_illegal(self) -> None:
         retired = (
+            "start_call_32",
             "bstart_call",
             "bstart_icall",
             "bstart_fp_call",
@@ -196,8 +210,117 @@ class V058DecodeMetadataTests(unittest.TestCase):
         self.assertNotIn("LINX_OP_BSTART_FP_CALL", self.ids)
         self.assertNotIn("LINX_OP_BSTART_FP_ICALL", self.ids)
         self.assertNotIn("LINX_OP_BSTART_ICALL", self.ids)
+        self.assertNotIn("LINX_OP_START_CALL_32", self.ids)
+        self.assertNotIn("c-bstart-call-setret", self.translate)
+        self.assertNotIn("ret_base_offset", self.translate)
+        self.assertNotIn("if ((hw & 0x000f) == 0x0002)", self.translate)
         self.assertIn("LINX_OP_BSTART_STD_CALL = 17", self.ids)
         self.assertIn('.mnemonic="hl_bstart_std_call"', self.meta)
+
+    def test_sync_core_encoding_is_explicitly_unsupported(self) -> None:
+        self.assertRegex(
+            self.insn32,
+            r"(?m)^sync_core\s+0000 0011 0011 0000 1010 0000 0010 1011$",
+        )
+        meta = next(
+            line for line in self.meta.splitlines()
+            if '.mnemonic="sync_core"' in line
+        )
+        self.assertIn(".mask=UINT64_C(0xffffffff)", meta)
+        self.assertIn(".match=UINT64_C(0x330a02b)", meta)
+        self.assertIn('flags="ENCODING_ONLY_UNSUPPORTED"', meta)
+        body = self.translate.split(
+            "static bool trans_sync_core", 1
+        )[1].split("}", 1)[0]
+        self.assertIn("return linx_illegal(ctx);", body)
+
+    def test_scalar_amo_op5_masks_and_matches_are_exact(self) -> None:
+        meta = {}
+        for line in self.meta.splitlines():
+            match = re.search(
+                r'\.mask=UINT64_C\((0x[0-9a-f]+)\), '
+                r'\.match=UINT64_C\((0x[0-9a-f]+)\), '
+                r'\.mnemonic="([^"]+)"',
+                line,
+            )
+            if match:
+                meta[match.group(3)] = (
+                    int(match.group(1), 16),
+                    int(match.group(2), 16),
+                )
+
+        expected = {
+            "casb": (0x0000707F, 0x0000001B),
+            "cash": (0x0000707F, 0x0000101B),
+            "casw": (0x0000707F, 0x0000201B),
+            "casd": (0x0000707F, 0x0000301B),
+            "dma": (0xFE007FFF, 0x0000700B),
+        }
+        sizes = {"b": 0, "h": 1, "w": 2, "d": 3}
+        for suffix, op5 in sizes.items():
+            expected[f"lr_{suffix}"] = (
+                0x7800707F,
+                (op5 << 27) | 0x0000000B,
+            )
+            expected[f"sc_{suffix}"] = (
+                0x7800707F,
+                (op5 << 27) | 0x0000100B,
+            )
+            expected[f"swap{suffix}"] = (
+                0x7800707F,
+                (op5 << 27) | 0x0000600B,
+            )
+
+        operations = {
+            "add": 0,
+            "and": 1,
+            "or": 2,
+            "xor": 3,
+            "smax": 4,
+            "smin": 5,
+            "umax": 6,
+            "umin": 7,
+        }
+        for operation, op5 in operations.items():
+            expected[f"lw_{operation}"] = (
+                0x7800707F,
+                (op5 << 27) | 0x0000200B,
+            )
+            expected[f"ld_{operation}"] = (
+                0x7800707F,
+                (op5 << 27) | 0x0000400B,
+            )
+            expected[f"sw_{operation}"] = (
+                0xFC007FFF,
+                (op5 << 27) | 0x0000300B,
+            )
+            expected[f"sd_{operation}"] = (
+                0xFC007FFF,
+                (op5 << 27) | 0x0000500B,
+            )
+
+        expected.update(
+            {
+                "sw_sub": (0xFC007FFF, 0x4000300B),
+                "sd_sub": (0xFC007FFF, 0x4000500B),
+                "sb_add": (0xFC007FFF, 0x8000300B),
+                "sb_sub": (0xFC007FFF, 0xC000300B),
+                "sh_add": (0xFC007FFF, 0x8000500B),
+                "sh_sub": (0xFC007FFF, 0xC000500B),
+            }
+        )
+        for mnemonic, signature in expected.items():
+            with self.subTest(mnemonic=mnemonic):
+                self.assertEqual(meta[mnemonic], signature)
+
+        store32 = self.translate.split(
+            "#define LINX_DEFINE_STORE32", 1
+        )[1].split("#define LINX_DEFINE_STORE64", 1)[0]
+        store64 = self.translate.split(
+            "#define LINX_DEFINE_STORE64", 1
+        )[1].split("LINX_DEFINE_FETCH32", 1)[0]
+        self.assertIn("linx_get_reg(a->SrcL), val32", store32)
+        self.assertIn("linx_get_reg(a->SrcL), linx_get_reg(a->SrcR)", store64)
 
 
 if __name__ == "__main__":
