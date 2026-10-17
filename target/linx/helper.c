@@ -8073,9 +8073,53 @@ uint64_t HELPER(linx_sc_d)(CPULinxState *env, uint64_t addr, uint64_t value)
     return ok;
 }
 
+/*
+ * Single-threaded (serial) TCG cannot use the cpu_atomic_*_mmu RMW helpers:
+ * they call cpu_loop_exit_atomic, which asserts when !mttcg.  Provide an
+ * explicit load/modify/store fallback for every atomic RMW form so the
+ * recoded v0.58 atomics are executable under `-smp 1`.  The apply op is
+ * threaded through the helper macros so the fallback matches the atomic path.
+ */
+typedef enum LinxAtomicOp {
+    LINX_AOP_ADD, LINX_AOP_AND, LINX_AOP_OR, LINX_AOP_XOR,
+    LINX_AOP_SMAX, LINX_AOP_SMIN, LINX_AOP_UMAX, LINX_AOP_UMIN,
+} LinxAtomicOp;
+
+static inline uint64_t linx_atomic_apply(LinxAtomicOp op, uint64_t a, uint64_t b,
+                                         unsigned size)
+{
+    const uint64_t mask = (size >= 8) ? UINT64_MAX
+                                      : ((UINT64_C(1) << (size * 8)) - 1);
+    a &= mask;
+    b &= mask;
+    switch (op) {
+    case LINX_AOP_ADD: return (a + b) & mask;
+    case LINX_AOP_AND: return a & b;
+    case LINX_AOP_OR:  return a | b;
+    case LINX_AOP_XOR: return a ^ b;
+    case LINX_AOP_SMAX:
+    case LINX_AOP_SMIN: {
+        const unsigned bits = size * 8;
+        const int64_t sa = (int64_t)(a << (64 - bits)) >> (64 - bits);
+        const int64_t sb = (int64_t)(b << (64 - bits)) >> (64 - bits);
+        const int64_t r = (op == LINX_AOP_SMAX) ? ((sa > sb) ? sa : sb)
+                                                : ((sa < sb) ? sa : sb);
+        return (uint64_t)r & mask;
+    }
+    case LINX_AOP_UMAX: return (a > b) ? a : b;
+    case LINX_AOP_UMIN: return (a < b) ? a : b;
+    }
+    return a;
+}
+
 uint64_t HELPER(linx_swapw)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint32_t old = cpu_ldl_le_data(env, (abi_ptr)addr);
+        cpu_stl_le_data(env, (abi_ptr)addr, value);
+        return (uint64_t)old;
+    }
     return (uint64_t)cpu_atomic_xchgl_le_mmu((CPUArchState *)env, addr, value,
                                             linx_oi_le(MO_UL), GETPC());
 }
@@ -8083,6 +8127,11 @@ uint64_t HELPER(linx_swapw)(CPULinxState *env, uint64_t addr, uint32_t value)
 uint64_t HELPER(linx_swapb)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint8_t old = cpu_ldub_data(env, (abi_ptr)addr);
+        cpu_stb_data(env, (abi_ptr)addr, (uint8_t)value);
+        return (uint64_t)old;
+    }
     return (uint64_t)cpu_atomic_xchgb_mmu((CPUArchState *)env, addr, value,
                                           linx_oi_le(MO_UB), GETPC());
 }
@@ -8090,6 +8139,11 @@ uint64_t HELPER(linx_swapb)(CPULinxState *env, uint64_t addr, uint32_t value)
 uint64_t HELPER(linx_swaph)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint16_t old = cpu_lduw_le_data(env, (abi_ptr)addr);
+        cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)value);
+        return (uint64_t)old;
+    }
     return (uint64_t)cpu_atomic_xchgw_le_mmu((CPUArchState *)env, addr, value,
                                              linx_oi_le(MO_UW), GETPC());
 }
@@ -8097,6 +8151,11 @@ uint64_t HELPER(linx_swaph)(CPULinxState *env, uint64_t addr, uint32_t value)
 uint64_t HELPER(linx_swapd)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint64_t old = cpu_ldq_le_data(env, (abi_ptr)addr);
+        cpu_stq_le_data(env, (abi_ptr)addr, value);
+        return old;
+    }
     return cpu_atomic_xchgq_le_mmu((CPUArchState *)env, addr, value,
                                    linx_oi_le(MO_UQ), GETPC());
 }
@@ -8104,68 +8163,97 @@ uint64_t HELPER(linx_swapd)(CPULinxState *env, uint64_t addr, uint64_t value)
 uint64_t HELPER(linx_lw_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint32_t old = cpu_ldl_le_data(env, (abi_ptr)addr);
+        cpu_stl_le_data(env, (abi_ptr)addr, (uint32_t)(old + value));
+        return (uint64_t)old;
+    }
     return (uint64_t)cpu_atomic_fetch_addl_le_mmu((CPUArchState *)env, addr, value,
                                                   linx_oi_le(MO_UL), GETPC());
 }
 
-#define LINX_DEFINE_FETCH32_HELPER(NAME, OP, OI) \
+#define LINX_DEFINE_FETCH32_HELPER(NAME, OP, OI, AOP) \
 uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 { \
     linx_lr_clear(env); \
+    if (cpu_in_serial_context(env_cpu(env))) { \
+        const uint32_t old = cpu_ldl_le_data(env, (abi_ptr)addr); \
+        cpu_stl_le_data(env, (abi_ptr)addr, \
+                        (uint32_t)linx_atomic_apply((AOP), old, value, 4)); \
+        return (uint64_t)old; \
+    } \
     return (uint64_t)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
 }
 
-#define LINX_DEFINE_FETCH64_HELPER(NAME, OP, OI) \
+#define LINX_DEFINE_FETCH64_HELPER(NAME, OP, OI, AOP) \
 uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
 { \
     linx_lr_clear(env); \
+    if (cpu_in_serial_context(env_cpu(env))) { \
+        const uint64_t old = cpu_ldq_le_data(env, (abi_ptr)addr); \
+        cpu_stq_le_data(env, (abi_ptr)addr, \
+                        linx_atomic_apply((AOP), old, value, 8)); \
+        return old; \
+    } \
     return cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
 }
 
-#define LINX_DEFINE_STORE32_HELPER(NAME, OP, OI) \
+#define LINX_DEFINE_STORE32_HELPER(NAME, OP, OI, AOP) \
 void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 { \
     linx_lr_clear(env); \
+    if (cpu_in_serial_context(env_cpu(env))) { \
+        const uint32_t old = cpu_ldl_le_data(env, (abi_ptr)addr); \
+        cpu_stl_le_data(env, (abi_ptr)addr, \
+                        (uint32_t)linx_atomic_apply((AOP), old, value, 4)); \
+        return; \
+    } \
     (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
 }
 
-#define LINX_DEFINE_STORE64_HELPER(NAME, OP, OI) \
+#define LINX_DEFINE_STORE64_HELPER(NAME, OP, OI, AOP) \
 void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
 { \
     linx_lr_clear(env); \
+    if (cpu_in_serial_context(env_cpu(env))) { \
+        const uint64_t old = cpu_ldq_le_data(env, (abi_ptr)addr); \
+        cpu_stq_le_data(env, (abi_ptr)addr, \
+                        linx_atomic_apply((AOP), old, value, 8)); \
+        return; \
+    } \
     (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
 }
 
-LINX_DEFINE_FETCH32_HELPER(lw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH32_HELPER(lw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_FETCH64_HELPER(ld_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_FETCH64_HELPER(ld_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE32_HELPER(sw_add, fetch_addl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE32_HELPER(sw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL))
-LINX_DEFINE_STORE64_HELPER(sd_add, fetch_addq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ))
-LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
+LINX_DEFINE_FETCH32_HELPER(lw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_AND)
+LINX_DEFINE_FETCH32_HELPER(lw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_OR)
+LINX_DEFINE_FETCH32_HELPER(lw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_XOR)
+LINX_DEFINE_FETCH32_HELPER(lw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_SMAX)
+LINX_DEFINE_FETCH32_HELPER(lw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_SMIN)
+LINX_DEFINE_FETCH32_HELPER(lw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_UMAX)
+LINX_DEFINE_FETCH32_HELPER(lw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_UMIN)
+LINX_DEFINE_FETCH64_HELPER(ld_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_AND)
+LINX_DEFINE_FETCH64_HELPER(ld_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_OR)
+LINX_DEFINE_FETCH64_HELPER(ld_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_XOR)
+LINX_DEFINE_FETCH64_HELPER(ld_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_SMAX)
+LINX_DEFINE_FETCH64_HELPER(ld_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_SMIN)
+LINX_DEFINE_FETCH64_HELPER(ld_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_UMAX)
+LINX_DEFINE_FETCH64_HELPER(ld_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_UMIN)
+LINX_DEFINE_STORE32_HELPER(sw_add, fetch_addl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_ADD)
+LINX_DEFINE_STORE32_HELPER(sw_and, fetch_andl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_AND)
+LINX_DEFINE_STORE32_HELPER(sw_or, fetch_orl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_OR)
+LINX_DEFINE_STORE32_HELPER(sw_xor, fetch_xorl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_XOR)
+LINX_DEFINE_STORE32_HELPER(sw_smax, fetch_smaxl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_SMAX)
+LINX_DEFINE_STORE32_HELPER(sw_smin, fetch_sminl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_SMIN)
+LINX_DEFINE_STORE32_HELPER(sw_umax, fetch_umaxl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_UMAX)
+LINX_DEFINE_STORE32_HELPER(sw_umin, fetch_uminl_le_mmu, linx_oi_le(MO_UL), LINX_AOP_UMIN)
+LINX_DEFINE_STORE64_HELPER(sd_add, fetch_addq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_ADD)
+LINX_DEFINE_STORE64_HELPER(sd_and, fetch_andq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_AND)
+LINX_DEFINE_STORE64_HELPER(sd_or, fetch_orq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_OR)
+LINX_DEFINE_STORE64_HELPER(sd_xor, fetch_xorq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_XOR)
+LINX_DEFINE_STORE64_HELPER(sd_smax, fetch_smaxq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_SMAX)
+LINX_DEFINE_STORE64_HELPER(sd_smin, fetch_sminq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_SMIN)
+LINX_DEFINE_STORE64_HELPER(sd_umax, fetch_umaxq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_UMAX)
+LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ), LINX_AOP_UMIN)
 
 #undef LINX_DEFINE_FETCH32_HELPER
 #undef LINX_DEFINE_FETCH64_HELPER
@@ -8175,10 +8263,22 @@ LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ))
 /*
  * v0.58 store-op additions: subtract (implemented as modular negated add, as
  * the atomic template has no fetch-sub) and byte/halfword size-override forms.
+ *
+ * The cpu_atomic_*_mmu helpers cannot run in a single-threaded (serial) TCG
+ * context, so mirror linx_ld_add and fall back to a plain load/modify/store
+ * there.  This is what makes SW.SUB/SB.ADD/.. executable under `-smp 1`.
  */
+#define LINX_STORE_OP_SERIAL(LOAD, STORE, TYPE) \
+    if (cpu_in_serial_context(env_cpu(env))) { \
+        const TYPE old = LOAD(env, (abi_ptr)addr); \
+        STORE(env, (abi_ptr)addr, (TYPE)(old - value)); \
+        return; \
+    }
+
 void HELPER(linx_sw_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    LINX_STORE_OP_SERIAL(cpu_ldl_le_data, cpu_stl_le_data, uint32_t)
     (void)cpu_atomic_fetch_addl_le_mmu((CPUArchState *)env, addr,
                                        (uint32_t)(0u - value),
                                        linx_oi_le(MO_UL), GETPC());
@@ -8187,6 +8287,7 @@ void HELPER(linx_sw_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 void HELPER(linx_sd_sub)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     linx_lr_clear(env);
+    LINX_STORE_OP_SERIAL(cpu_ldq_le_data, cpu_stq_le_data, uint64_t)
     (void)cpu_atomic_fetch_addq_le_mmu((CPUArchState *)env, addr,
                                        0ull - value,
                                        linx_oi_le(MO_UQ), GETPC());
@@ -8195,6 +8296,11 @@ void HELPER(linx_sd_sub)(CPULinxState *env, uint64_t addr, uint64_t value)
 void HELPER(linx_sb_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint8_t old = cpu_ldub_data(env, (abi_ptr)addr);
+        cpu_stb_data(env, (abi_ptr)addr, (uint8_t)(old + value));
+        return;
+    }
     (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
                                     (uint8_t)value, linx_oi_le(MO_UB), GETPC());
 }
@@ -8202,6 +8308,11 @@ void HELPER(linx_sb_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 void HELPER(linx_sb_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint8_t old = cpu_ldub_data(env, (abi_ptr)addr);
+        cpu_stb_data(env, (abi_ptr)addr, (uint8_t)(old - value));
+        return;
+    }
     (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
                                     (uint8_t)(0u - value),
                                     linx_oi_le(MO_UB), GETPC());
@@ -8210,6 +8321,11 @@ void HELPER(linx_sb_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 void HELPER(linx_sh_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint16_t old = cpu_lduw_le_data(env, (abi_ptr)addr);
+        cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)(old + value));
+        return;
+    }
     (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
                                        (uint16_t)value,
                                        linx_oi_le(MO_UW), GETPC());
@@ -8218,6 +8334,11 @@ void HELPER(linx_sh_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 void HELPER(linx_sh_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     linx_lr_clear(env);
+    if (cpu_in_serial_context(env_cpu(env))) {
+        const uint16_t old = cpu_lduw_le_data(env, (abi_ptr)addr);
+        cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)(old - value));
+        return;
+    }
     (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
                                        (uint16_t)(0u - value),
                                        linx_oi_le(MO_UW), GETPC());
