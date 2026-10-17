@@ -823,6 +823,7 @@ enum {
     LINX_TRAPNUM_INTERRUPT        = 44,
     LINX_TRAPNUM_HW_BREAKPOINT    = 49,
     LINX_TRAPNUM_HW_WATCHPOINT    = 51,
+    LINX_TRAPNUM_DATA_ALIGN_FAULT = 34,
 };
 
 enum {
@@ -2207,6 +2208,7 @@ static void linx_cpu_do_interrupt(CPUState *cs)
         return;
 
     case LINX_EXCP_INST_ACCESS_FAULT:
+    case LINX_EXCP_DATA_ALIGN_FAULT:
     case LINX_EXCP_LOAD_ACCESS_FAULT:
     case LINX_EXCP_STORE_ACCESS_FAULT:
     {
@@ -2238,9 +2240,11 @@ static void linx_cpu_do_interrupt(CPUState *cs)
             user_valid_block_fault && user_fault_bpc != fault_pc;
         const bool bi = in_body || user_mid_block_data_fault;
         const uint8_t trapnum =
-            (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
-                ? LINX_TRAPNUM_INSN_EXP
-                : LINX_TRAPNUM_DATA_EXP;
+            exception == LINX_EXCP_DATA_ALIGN_FAULT
+                ? LINX_TRAPNUM_DATA_ALIGN_FAULT
+                : (exception == LINX_EXCP_INST_ACCESS_FAULT && !in_body)
+                    ? LINX_TRAPNUM_INSN_EXP
+                    : LINX_TRAPNUM_DATA_EXP;
         /*
          * User page faults inside an open scalar block must return through
          * RRAT_RESTORE: the resume PC is the faulting TPC, but the block BPC

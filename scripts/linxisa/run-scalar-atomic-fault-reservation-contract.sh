@@ -19,10 +19,13 @@ fi
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/linxisa-atomic-fault.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
-"$LLVM_MC" -triple=linx64 -filetype=obj --defsym=FAULT_KIND=2 \
-  "$ROOT/tests/linxisa/mmu_ttbr_basic.s" \
-  -o "$tmp/scalar_atomic_fault_reservation_contract.o"
+for fault_kind in 2 3 4 5 6; do
+  object="$tmp/scalar_atomic_fault_reservation_contract_$fault_kind.o"
+  "$LLVM_MC" -triple=linx64 -filetype=obj \
+    --defsym=FAULT_KIND="$fault_kind" \
+    "$ROOT/tests/linxisa/mmu_ttbr_basic.s" -o "$object"
 
-LINX_VIRT_TEST_FINISHER=1 "$QEMU_BIN" \
-  -nographic -monitor none -machine virt \
-  -kernel "$tmp/scalar_atomic_fault_reservation_contract.o" -bios none
+  LINX_VIRT_TEST_FINISHER=1 "$QEMU_BIN" \
+    -nographic -monitor none -machine virt \
+    -kernel "$object" -bios none
+done

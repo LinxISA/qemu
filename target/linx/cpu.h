@@ -131,6 +131,7 @@ enum {
     LINX_EXCP_EXEC_STATE_CHECK = 10, /* ACR_ENTER target/state invalid */
     LINX_EXCP_TILE_FAULT = 11, /* Precise Tile legality/allocation fault */
     LINX_EXCP_EXTENSION_FIRST_USE = 12, /* Precise VECTOR/CUBE first use */
+    LINX_EXCP_DATA_ALIGN_FAULT = 13, /* Natural-alignment data fault */
 };
 
 /*

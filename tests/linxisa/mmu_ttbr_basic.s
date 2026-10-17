@@ -149,6 +149,60 @@ high_entry:
   addi zero, 1, ->a2
   SW.ADD [a1], a2
   C.BSTOP
+
+.elseif FAULT_KIND == 3
+  # Misalignment wins over translation: LR.W on an unmapped odd address raises
+  # DataAlignment and preserves the older aligned reservation.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_load_va, ->a1
+  addi a1, .Lfault_load_va, ->a1
+  ldi [a1, 0], ->a1
+  addi a1, 1, ->a1
+  LR.W [a1], ->a2
+  C.BSTOP
+
+.elseif FAULT_KIND == 4
+  # Misalignment also wins over a write-permission fault for RMW and preserves
+  # the older reservation because no write commits.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a3
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi a1, 1, ->a1
+  addi zero, 1, ->a2
+  SW.ADD [a1], a2
+  C.BSTOP
+
+.elseif FAULT_KIND == 5
+  # SC hit clears the monitor before checking natural alignment.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addi a0, 1, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  C.BSTOP
+
+.elseif FAULT_KIND == 6
+  # A faulting ordinary scalar store must not clear a non-overlapping older
+  # reservation because no write commits.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi zero, 1, ->a2
+  swi a2, [a1, 0]
+  C.BSTOP
 .endif
 
 .if FAULT_KIND >= 0
@@ -212,6 +266,77 @@ high_entry:
 .elseif FAULT_KIND == 2
   # Recompute the original high-alias reservation address. A successful SC.W
   # proves the write-only RMW fault preserved the local reservation.
+  C.BSTART COND, .Ltrap_fail
+  addtpc .Lhigh_base, ->a0
+  addi a0, .Lhigh_base, ->a0
+  ldi [a0, 0], ->a0
+  addtpc tile_input, ->a1
+  addi a1, tile_input, ->a1
+  add a0, a1, ->a0
+  addi zero, 1, ->a1
+  SC.W [a0], a1, ->a2
+  setc.ne a2, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 3
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  or a0, a3, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 4
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  or a0, a3, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 5
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+  C.BSTART
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  C.BSTOP
+  C.BSTART COND, .Ltrap_fail
+  setc.eq a3, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 6
   C.BSTART COND, .Ltrap_fail
   addtpc .Lhigh_base, ->a0
   addi a0, .Lhigh_base, ->a0

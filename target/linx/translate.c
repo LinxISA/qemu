@@ -456,12 +456,6 @@ static bool linx_validate_opcode_meta(DisasContext *ctx, vaddr pc, uint64_t insn
     return false;
 }
 
-static inline void linx_lr_invalidate(void)
-{
-    tcg_gen_st_i32(tcg_constant_i32(0), tcg_env,
-                   offsetof(CPULinxState, lr_valid));
-}
-
 static inline void linx_tile_set_attr_const(uint32_t packed)
 {
     tcg_gen_st_i32(tcg_constant_i32((int32_t)packed), tcg_env,
@@ -5161,7 +5155,7 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
         linx_gen_mem_trace_probe(true, false, pc, addr64, size, val);
     }
 
-    linx_lr_invalidate();
+    gen_helper_linx_prepare_gm_write(tcg_env);
     tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
 #if TARGET_LONG_BITS == 32
     TCGv_i64 raw_transport_addr = tcg_temp_new_i64();
@@ -5169,6 +5163,9 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
 #else
     TCGv_i64 raw_transport_addr = (TCGv_i64)addr;
 #endif
+    gen_helper_linx_lr_invalidate_write(
+        tcg_env, raw_transport_addr,
+        tcg_constant_i32((int32_t)memop_size(mop)));
     TCGv_i32 raw_transport_active = tcg_temp_new_i32();
     TCGLabel *raw_transport_done = gen_new_label();
     tcg_gen_ld8u_i32(raw_transport_active, tcg_env,

@@ -41,6 +41,22 @@ _start:
   setc.ne a2, a7
   C.BSTOP
 
+  # Ordinary scalar stores share the same commit-time reservation rule.
+  C.BSTART
+  LR.W [a0], ->a2
+  swi a1, [a4, 0]
+  SC.W [a0], a1, ->a3
+  C.BSTOP
+  CHECK_ZERO a3
+
+  C.BSTART
+  addi a0, 8, ->a5
+  LR.W [a0], ->a2
+  swi a1, [a5, 0]
+  SC.W [a0], a1, ->a3
+  C.BSTOP
+  CHECK_NONZERO a3
+
   # A successful non-overlapping RMW preserves the reservation. SC.B uses a
   # different address and width in the same 64-byte reservation granule.
   C.BSTART
@@ -73,6 +89,14 @@ _start:
   LR.W [a0], ->a2
   CASW [a0], a1, a7, ->a2
   SC.W [a0], a1, ->a3
+  C.BSTOP
+  CHECK_NONZERO a3
+
+  # A reservation miss is probe-free: even a misaligned address returns
+  # failure instead of raising DataAlignment.
+  C.BSTART
+  addi a0, 1, ->a5
+  SC.W [a5], a1, ->a3
   C.BSTOP
   CHECK_NONZERO a3
 

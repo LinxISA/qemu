@@ -18,6 +18,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.decode16 = (TARGET / "insn16.decode").read_text(encoding="utf-8")
         cls.decode32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
+        cls.cpu_impl = (TARGET / "cpu.c").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
         cls.helper_h = (TARGET / "helper.h").read_text(encoding="utf-8")
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
@@ -40,6 +41,12 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.atomic_fault_runner = (
             ROOT
             / "scripts/linxisa/run-scalar-atomic-fault-reservation-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_cross_pe_runner = (
+            ROOT / "scripts/linxisa/run-scalar-atomic-cross-pe-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_cross_pe_fixture = (
+            ROOT / "tests/linxisa/scalar_atomic_cross_pe_contract.s"
         ).read_text(encoding="utf-8")
 
     def test_retired_compressed_ios_is_absent(self) -> None:
@@ -164,13 +171,14 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_atomic_reservation_changes_only_after_successful_overlap(self) -> None:
         helper = self.helper
         invalidate = re.search(
-            r"static inline void linx_lr_invalidate_for_write\(.*?\n\}",
+            r"static inline void linx_lr_invalidate_one_for_write\(.*?\n\}",
             helper,
             re.S,
         ).group(0)
         self.assertIn("LINX_RESERVATION_GRANULE_BYTES", invalidate)
-        self.assertIn("addr < reservation_end", invalidate)
-        self.assertIn("reservation_start < write_end", invalidate)
+        self.assertIn("addr <= reservation_end", invalidate)
+        self.assertIn("reservation_start <= write_end", invalidate)
+        self.assertIn("write_end < addr", invalidate)
 
         probe = re.search(
             r"static inline void linx_atomic_probe_rw\(.*?\n\}",
@@ -248,8 +256,78 @@ class PtoV058ContractTests(unittest.TestCase):
                 body.index("linx_lr_clear(env)"),
                 body.index("cpu_st"),
             )
+            self.assertLess(
+                body.index("cpu_st"),
+                body.index("linx_lr_invalidate_for_write"),
+            )
             self.assertNotIn("env->lr_addr == addr", body)
             self.assertNotIn("env->lr_size ==", body)
+
+    def test_atomic_alignment_precedes_translation_and_permissions(self) -> None:
+        align = re.search(
+            r"static inline void linx_require_natural_alignment\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("linx_raise_data_alignment", align)
+        probe = re.search(
+            r"static inline void linx_atomic_probe_rw\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertLess(
+            probe.index("linx_require_natural_alignment"),
+            probe.index("probe_read"),
+        )
+        self.assertLess(probe.index("probe_read"), probe.index("probe_write"))
+        self.assertIn("LINX_EXCP_DATA_ALIGN_FAULT", self.cpu)
+        self.assertIn("LINX_TRAPNUM_DATA_ALIGN_FAULT = 34", self.cpu_impl)
+
+        for mnemonic, size in (
+            ("linx_lr_b", "1"),
+            ("linx_lr_h", "2"),
+            ("linx_lr_w", "4"),
+            ("linx_lr_d", "8"),
+        ):
+            body = re.search(
+                rf"uint64_t HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertLess(
+                body.index(f"linx_require_natural_alignment(env, addr, {size})"),
+                body.index("cpu_ld"),
+            )
+
+    def test_plain_store_invalidates_only_after_successful_overlap(self) -> None:
+        body = self.translate.split(
+            "static bool linx_store_from_reg(", 2
+        )[2].split("\n}", 1)[0]
+        self.assertNotIn("linx_lr_invalidate();", body)
+        self.assertLess(
+            body.index("tcg_gen_qemu_st_i64"),
+            body.index("gen_helper_linx_lr_invalidate_write"),
+        )
+        self.assertIn("memop_size(mop)", body)
+
+        frame = re.search(
+            r"static void linx_template_fentry_impl\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertLess(
+            frame.index("linx_enter_atomic_context"),
+            frame.index("env->gpr[LINX_REG_SP]"),
+        )
+        tile_commit = re.search(
+            r"void HELPER\(linx_tile_commit\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertLess(
+            tile_commit.index("linx_enter_atomic_context"),
+            tile_commit.index("memcpy(live"),
+        )
 
     def test_dma_preflights_both_ranges_before_snapshot_and_commit(self) -> None:
         body = re.search(
@@ -282,8 +360,28 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(marker, self.atomic_fixture)
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_runner)
         self.assertIn("scalar_atomic_reservation_contract.s", self.atomic_runner)
-        self.assertIn("--defsym=FAULT_KIND=2", self.atomic_fault_runner)
+        self.assertIn("for fault_kind in 2 3 4 5 6", self.atomic_fault_runner)
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_fault_runner)
+
+        exclusive = re.search(
+            r"static inline void linx_enter_atomic_context\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("cpu_loop_exit_atomic", exclusive)
+        peer_invalidate = re.search(
+            r"static void linx_lr_invalidate_for_write\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("LINX_CORE4_PE_COUNT", peer_invalidate)
+        self.assertIn("cpu->core4->cpu[pe]->env", peer_invalidate)
+        self.assertIn("-smp 4", self.atomic_cross_pe_runner)
+        self.assertIn("swi a1, [a5, 0]", self.atomic_cross_pe_fixture)
+        self.assertIn("sbi zero, [a6, 0]", self.atomic_cross_pe_fixture)
+        self.assertIn("ABA does not preserve it", self.atomic_cross_pe_fixture)
+        self.assertIn("successful peer SC", self.atomic_cross_pe_fixture)
+        self.assertIn("SC.W [a0], a1, ->a3", self.atomic_cross_pe_fixture)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)
