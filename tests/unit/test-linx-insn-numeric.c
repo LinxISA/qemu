@@ -23,8 +23,16 @@ static void test_csel_src_r_type(void)
 {
     g_assert_false(linx_csel_negates_src_r(0));
     g_assert_false(linx_csel_negates_src_r(1));
-    g_assert_true(linx_csel_negates_src_r(2));
-    g_assert_false(linx_csel_negates_src_r(3));
+    g_assert_false(linx_csel_negates_src_r(2));
+    g_assert_true(linx_csel_negates_src_r(3));
+}
+
+static void test_address_src_r_type(void)
+{
+    g_assert_true(linx_address_src_r_type_valid(0));
+    g_assert_true(linx_address_src_r_type_valid(1));
+    g_assert_true(linx_address_src_r_type_valid(2));
+    g_assert_false(linx_address_src_r_type_valid(3));
 }
 
 int main(int argc, char **argv)
@@ -33,5 +41,6 @@ int main(int argc, char **argv)
     g_test_add_func("/linx/insn/hl-lui", test_hl_lui);
     g_test_add_func("/linx/insn/hl-li-signedness", test_hl_li_signedness);
     g_test_add_func("/linx/insn/csel-src-r-type", test_csel_src_r_type);
+    g_test_add_func("/linx/insn/address-src-r-type", test_address_src_r_type);
     return g_test_run();
 }

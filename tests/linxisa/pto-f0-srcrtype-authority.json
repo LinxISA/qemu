@@ -1,0 +1,30 @@
+{
+  "schema": "pto-development-srcrtype-authority-v1",
+  "authority_commit": "f0a876e449a95d26841c5ee7affb4c905ebc5f5b",
+  "authority_tree": "fe9e8e050375fbce3f526d08acca13c37cd15830",
+  "source_path": "asl/scalar/model/dispatch/decode.asl",
+  "binary": {
+    "0": "sw",
+    "1": "uw",
+    "2": "neg-or-not",
+    "3": "none"
+  },
+  "comparison": {
+    "0": "none",
+    "1": "sw",
+    "2": "uw",
+    "3": "neg-or-not"
+  },
+  "address": {
+    "0": "none",
+    "1": "sw",
+    "2": "uw",
+    "3": "reserved"
+  },
+  "csel": {
+    "0": "none",
+    "1": "none",
+    "2": "none",
+    "3": "neg"
+  }
+}

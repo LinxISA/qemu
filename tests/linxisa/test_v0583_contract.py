@@ -194,46 +194,24 @@ class PtoV0583ContractTests(unittest.TestCase):
 
     def test_csel_src_r_type_matches_authority(self) -> None:
         authority = json.loads(
-            (ROOT / "tests/linxisa/linxisa-v0583-csel-authority.json").read_text(
+            (ROOT / "tests/linxisa/pto-f0-srcrtype-authority.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertEqual(authority["default_src_r_type"], 3)
-        self.assertEqual(authority["neg_src_r_type"], 2)
         self.assertEqual(
             authority["authority_commit"],
-            "eddb0a2bd23399dd008381d21d89f20f742e7e53",
+            "f0a876e449a95d26841c5ee7affb4c905ebc5f5b",
         )
         self.assertEqual(
-            authority["decision_commit"],
-            "d231a27e566f1a5bc12003caedcb6b73bcefe341",
-        )
-        catalog_blob = (
-            json.dumps(
-                authority["catalog_csel"],
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode()
-        self.assertEqual(
-            hashlib.sha256(catalog_blob).hexdigest(),
-            authority["catalog_csel_sha256"],
+            authority["authority_tree"],
+            "fe9e8e050375fbce3f526d08acca13c37cd15830",
         )
         self.assertEqual(
-            authority["catalog_sha256"],
-            "e003d9a8e8e68de63afe0e8662e59658c173bb651e90f670c490aec2121ad1c8",
-        )
-        self.assertEqual(
-            authority["sail_sha256"],
-            "36b7b814ab567c69be42f1417efcc9aec3f5acad2151d8ebd9c946da1df842e5",
-        )
-        self.assertEqual(
-            authority["sail_exec_csel_sha256"],
-            "2b26f8624064d33f7f9cee4d0f39765498935903b8fe977abfdfce71fe101912",
+            authority["csel"],
+            {"0": "none", "1": "none", "2": "none", "3": "neg"},
         )
         numeric = (TARGET / "insn_numeric_058.h").read_text(encoding="utf-8")
-        self.assertIn("(src_r_type & 3u) == 2u", numeric)
+        self.assertIn("(src_r_type & 3u) == 3u", numeric)
         self.assertIn("linx_csel_negates_src_r(srcRType)", self.translate)
 
     def test_tlsu_cpu_virtual_memory_route_is_guarded(self) -> None:
