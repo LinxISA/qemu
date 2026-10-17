@@ -1,4 +1,5 @@
 {
+  "SPDX-License-Identifier": "GPL-2.0-or-later",
   "schema": "pto-development-srcrtype-authority-v1",
   "authority_commit": "f0a876e449a95d26841c5ee7affb4c905ebc5f5b",
   "authority_tree": "fe9e8e050375fbce3f526d08acca13c37cd15830",
