@@ -54,6 +54,7 @@ high_entry:
   setc.ne a4, zero
   C.BSTOP
 
+ .if FAULT_KIND < 0 || FAULT_KIND >= 3
   # Exercise ordinary TLSU through the active CPU MMU.  Both buffers live in
   # the high alias page mapped by TTBR1; an IOMMU/physical-mask shortcut would
   # access an unrelated physical address and fail this result check.
@@ -79,13 +80,14 @@ high_entry:
   C.B.DIMI 1, ->lb1
   C.B.DIMI 4, ->lb2
   B.IOR [a1,a3],[]
-  B.IOT t#1, mask=0001, last
+  B.IOT t#1.reuse, mask=0001, last
 
   C.BSTART COND, .Ltrap_vector
   lwi [a0, 0], ->a2
   lwi [a1, 0], ->a3
   setc.ne a2, a3
   C.BSTOP
+ .endif
 
 .if FAULT_KIND == 0
   # An unmapped TLOAD must report its original ACR2 VA and must not publish an
@@ -131,10 +133,144 @@ high_entry:
   C.B.DIMI 1, ->lb1
   C.B.DIMI 4, ->lb2
   B.IOR [a1,a3],[]
-  B.IOT t#1, mask=0001, last
+  B.IOT t#1.reuse, mask=0001, last
+
+.elseif FAULT_KIND == 2
+  # The target alias is readable but write-protected. Atomic RMW must probe
+  # both permissions before loading and must preserve the older reservation
+  # when the write probe raises the data-page fault.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi zero, 1, ->a2
+  SW.ADD [a1], a2
+  C.BSTOP
+
+.elseif FAULT_KIND == 3
+  # Misalignment wins over translation: LR.W on an unmapped odd address raises
+  # DataAlignment and preserves the older aligned reservation.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_load_va, ->a1
+  addi a1, .Lfault_load_va, ->a1
+  ldi [a1, 0], ->a1
+  addi a1, 1, ->a1
+.Lfault_atomic:
+  LR.W [a1], ->a2
+  C.BSTOP
+
+.elseif FAULT_KIND == 4
+  # Misalignment also wins over a write-permission fault for RMW and preserves
+  # the older reservation because no write commits.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a3
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi a1, 1, ->a1
+  addi zero, 1, ->a2
+.Lfault_atomic:
+  SW.ADD [a1], a2
+  C.BSTOP
+
+.elseif FAULT_KIND == 5
+  # SC hit clears the monitor before checking natural alignment.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  # Freeze the no-write oracle at 1 before LR. The faulting SC and its resumed
+  # monitor-miss retry must leave this value unchanged.
+  addi zero, 1, ->a4
+  swi a4, [a0, 0]
+  LR.W [a0], ->a2
+  addi a0, 1, ->a1
+  addi zero, 1, ->a2
+.Lfault_atomic:
+  SC.W [a1], a2, ->a3
+  C.BSTOP
+
+.elseif FAULT_KIND == 6
+  # A faulting ordinary scalar store must not clear a non-overlapping older
+  # reservation because no write commits.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi zero, 1, ->a2
+  swi a2, [a1, 0]
+  C.BSTOP
+
+.elseif FAULT_KIND == 7
+  # FEXIT restore faults before SP or destination-register commit.
+  C.BSTART
+  addtpc .Lfault_load_va, ->a0
+  addi a0, .Lfault_load_va, ->a0
+  ldi [a0, 0], ->a0
+  addi a0, 0, ->sp
+  C.BSTOP
+.Lfault_frame:
+  FEXIT [a2 ~ a2], sp!, 8
+
+.elseif FAULT_KIND == 8
+  # FRET.RA uses the same restore path, then returns to the pre-fault RA.
+  C.BSTART
+  addtpc .Lfault_load_va, ->a0
+  addi a0, .Lfault_load_va, ->a0
+  ldi [a0, 0], ->a0
+  addi a0, 0, ->sp
+  addtpc .Lfret_resume, ->a5
+  addi a5, .Lfret_resume, ->a5
+  addi a5, 0, ->ra
+  C.BSTOP
+.Lfault_frame:
+  FRET.RA [a2 ~ a2], sp!, 8
+.Lfret_resume:
 .endif
 
-.if FAULT_KIND >= 0
+.if FAULT_KIND == 3 || FAULT_KIND == 4 || FAULT_KIND == 5
+  # The handler repairs the operand and resumes at the exact faulting TPC.
+  # Reaching here proves the same instruction was reissued successfully.
+  C.BSTART COND, .Ltrap_fail
+  addi zero, 1, ->a0
+  xor a6, a0, ->a0
+  lwi [a1, 0], ->a2
+  .if FAULT_KIND == 4
+  addi zero, 2, ->a4
+  .else
+  addi zero, 1, ->a4
+  .endif
+  xor a2, a4, ->a2
+  or a0, a2, ->a0
+  .if FAULT_KIND == 5
+  # The retried SC must be a monitor miss, with no second fault or store.
+  xori a3, 1, ->a3
+  or a0, a3, ->a0
+  .endif
+  setc.ne a0, zero
+  C.BSTOP
+.elseif FAULT_KIND == 7 || FAULT_KIND == 8
+  # The frame helper must reissue exactly at the faulting template and commit
+  # the repaired restore value only after the resumed load succeeds.
+  C.BSTART COND, .Ltrap_fail
+  addi zero, 1, ->a0
+  xor a6, a0, ->a0
+  addi zero, 7, ->a1
+  xor a2, a1, ->a2
+  or a0, a2, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+.elseif FAULT_KIND >= 0
   # Reaching the following block means the unmapped access did not fault.
   C.BSTART DIRECT, .Ltrap_fail
   C.BSTOP
@@ -192,6 +328,169 @@ high_entry:
   setc.ne a0, zero
   C.BSTOP
 
+.elseif FAULT_KIND == 2
+  # Recompute the original high-alias reservation address. A successful SC.W
+  # proves the write-only RMW fault preserved the local reservation.
+  C.BSTART COND, .Ltrap_fail
+  addtpc .Lhigh_base, ->a0
+  addi a0, .Lhigh_base, ->a0
+  ldi [a0, 0], ->a0
+  addtpc tile_input, ->a1
+  addi a1, tile_input, ->a1
+  add a0, a1, ->a0
+  addi zero, 1, ->a1
+  SC.W [a0], a1, ->a2
+  setc.ne a2, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 3
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting LR.W in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  or a0, a3, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+  C.BSTART
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
+
+.elseif FAULT_KIND == 4
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting SW.ADD in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  SC.W [a1], a2, ->a3
+  or a0, a3, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+  C.BSTART
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
+
+.elseif FAULT_KIND == 5
+  C.BSTART COND, .Ltrap_fail
+  hl.ssrget 0x1f02, ->a0
+  andi a0, 63, ->a0
+  addi zero, 34, ->a1
+  xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting SC.W in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
+  setc.ne a0, zero
+  C.BSTOP
+  C.BSTART
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc tile_input, ->a2
+  addi a2, tile_input, ->a2
+  add a1, a2, ->a1
+  addi zero, 1, ->a2
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
+
+.elseif FAULT_KIND == 6
+  C.BSTART COND, .Ltrap_fail
+  addtpc .Lhigh_base, ->a0
+  addi a0, .Lhigh_base, ->a0
+  ldi [a0, 0], ->a0
+  addtpc tile_input, ->a1
+  addi a1, tile_input, ->a1
+  add a0, a1, ->a0
+  addi zero, 1, ->a1
+  SC.W [a0], a1, ->a2
+  setc.ne a2, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 7 || FAULT_KIND == 8
+  C.BSTART COND, .Ltrap_fail
+  # The saved TPC must identify the faulting frame template exactly.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_frame, ->a7
+  addi a7, .Lfault_frame, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  setc.ne a4, zero
+  C.BSTOP
+  C.BSTART
+  # Repair SP to a mapped slot containing the expected restore value.
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc .Lframe_slot, ->a2
+  addi a2, .Lframe_slot, ->a2
+  add a1, a2, ->a1
+  addi a1, 0, ->sp
+  addi zero, 1, ->a6
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
+
 .else
   C.BSTART DIRECT, .Ltrap_fail
   C.BSTOP
@@ -220,6 +519,12 @@ tile_input:
   .4byte 0x3f800000, 0x40000000, 0x40400000, 0x40800000
 tile_output:
   .zero 16
+.balign 8
+.Lframe_slot:
+  # Frame StackSize is encoded in eight-byte units; operand 8 restores the
+  # one-register endpoint from old_sp + 56 before committing sp += 64.
+  .space 56
+  .8byte 7
 .Lfault_load_va:
   .quad 0xffff800000211000
 .Lfault_store_va:
@@ -283,4 +588,8 @@ L3_ttbr1:
   .zero 8 * 16
   # L3[16] page: base=0x10000, AttrIdx=1, AF=1, U/X/W/R=1, type=Page(01)
   .quad 0x100fd
-  .zero 8 * (512 - 17)
+  .zero 8
+  # L3[18] aliases the same physical page but clears W. Atomic reads succeed;
+  # the mandatory write preflight raises the fault before the memory load.
+  .quad 0x100f5
+  .zero 8 * (512 - 19)

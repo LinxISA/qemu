@@ -1,0 +1,22 @@
+{
+  "pto_spec_commit": "f0a876e449a95d26841c5ee7affb4c905ebc5f5b",
+  "pto_spec_tree": "fe9e8e050375fbce3f526d08acca13c37cd15830",
+  "status": "development-not-published",
+  "publication": null,
+  "release": "0.58.7",
+  "encoding_abi": "pto-isa-0.58.7-mode-function-v1",
+  "encoding_projection_sha256": "a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881",
+  "catalog_counts": {
+    "scalar_forms": 473,
+    "command_forms": 105,
+    "tile_operations": 119,
+    "reservations": 50
+  },
+  "catalog_sha256": {
+    "scalar_forms": "840ae680f9193ae7a9422a0e7c0e264cd61fa83429149b7b0fff77d41282627d",
+    "command_forms": "d2817054e96456d058d88c27cef1eb034a2b164b486d5c11fe3c796f08e02f3e",
+    "tile_operations": "533db9b8f31f118af5978de813cfaa3fa738de820ee24655faa2ee71f343a706",
+    "reservations": "d34f6b560f19a531a962c6d8abf812a911e83ea57f721ef53102ed6f62c9c41c",
+    "system_registers": "2a5d6669b95c28f80651f5917558781de25b8465655399063790e50549e1e2a9"
+  }
+}

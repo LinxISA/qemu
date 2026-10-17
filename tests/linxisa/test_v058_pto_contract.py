@@ -18,7 +18,9 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.decode16 = (TARGET / "insn16.decode").read_text(encoding="utf-8")
         cls.decode32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
+        cls.cpu_impl = (TARGET / "cpu.c").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.helper_h = (TARGET / "helper.h").read_text(encoding="utf-8")
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.numeric = (TARGET / "tile_numeric_058.h").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
@@ -30,6 +32,28 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.iommu_runner = (ROOT / "scripts/linxisa/run-iommu-tile-basic.sh").read_text(
             encoding="utf-8"
         )
+        cls.mmu_runner = (
+            ROOT / "scripts/linxisa/run-mmu-ttbr-basic.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_runner = (
+            ROOT / "scripts/linxisa/run-scalar-atomic-reservation-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_fixture = (
+            ROOT / "tests/linxisa/scalar_atomic_reservation_contract.s"
+        ).read_text(encoding="utf-8")
+        cls.atomic_fault_runner = (
+            ROOT
+            / "scripts/linxisa/run-scalar-atomic-fault-reservation-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_fault_fixture = (
+            ROOT / "tests/linxisa/mmu_ttbr_basic.s"
+        ).read_text(encoding="utf-8")
+        cls.atomic_cross_pe_runner = (
+            ROOT / "scripts/linxisa/run-scalar-atomic-cross-pe-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_cross_pe_fixture = (
+            ROOT / "tests/linxisa/scalar_atomic_cross_pe_contract.s"
+        ).read_text(encoding="utf-8")
 
     def test_retired_compressed_ios_is_absent(self) -> None:
         self.assertNotRegex(self.decode16, r"(?m)^c_b_ios\b")
@@ -38,7 +62,7 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_b_ios_uses_final_32_bit_encoding(self) -> None:
         self.assertRegex(
             self.decode32,
-            r"(?m)^b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
+            r"(?m)^\s*b_ios\s+0000\s+00\.\.\s+\.\.\.\.\s+0\.\.\.\s+\.001\s+\.\.\.0\s+0001\s+0011\b",
         )
         self.assertIn("%SharedTID", self.decode32)
         self.assertIn("%SharedTID 20:6", self.decode32)
@@ -78,8 +102,393 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_TILE_ENGINE_VEC", self.tile_isa)
         self.assertIn("LINX_TILE_ENGINE_SFU", self.tile_isa)
         self.assertNotIn('return "tma"', self.helper)
+
+    def test_reserved_l2spm_encodings_are_rejected(self) -> None:
+        for mnemonic in ("dma_free_s", "dma_free_l", "mcopy_ds", "mcopy_dl"):
+            self.assertRegex(self.decode32, rf"(?m)^{mnemonic}\s+")
+            self.assertIn(f'.mnemonic="{mnemonic}"', self.meta)
+            self.assertIn(f"LINX_OP_{mnemonic.upper()} =", self.ids)
+            meta = next(
+                line for line in self.meta.splitlines()
+                if f'.mnemonic="{mnemonic}"' in line
+            )
+            self.assertIn('flags="ENCODING_ONLY_UNSUPPORTED"', meta)
+
+            trans = re.search(
+                rf"static bool trans_{mnemonic}\(.*?\n" + r"\}",
+                self.translate,
+                re.S,
+            ).group(0)
+            self.assertIn("return linx_illegal(ctx);", trans)
+
+        self.assertNotIn("LINX_TEMPLATE_MCOPY_DS", self.cpu)
+        self.assertNotIn("LINX_TEMPLATE_MCOPY_DL", self.cpu)
+        self.assertNotIn("linx_mcopy_d_step", self.helper)
+        self.assertNotIn("linx_mcopy_ds_step", self.helper)
+        self.assertNotIn("linx_mcopy_dl_step", self.helper)
+        self.assertNotIn("linx_mcopy_ds_step", self.helper_h)
+        self.assertNotIn("linx_mcopy_dl_step", self.helper_h)
+
         self.assertNotIn("LINX_OP_BSTART_TMA", self.ids)
         self.assertIn("LINX_OP_BSTART_TLSU", self.ids)
+
+    def test_frame_encoding_and_legality_match_pto_0587(self) -> None:
+        for field in (
+            "%fentry_uimm_hi 7:5",
+            "%fentry_uimm_lo 25:7",
+            "%fentry_begin 15:5",
+            "%fentry_end 20:5",
+        ):
+            self.assertIn(field, self.decode32)
+
+        expected = {
+            "fentry": ("0x707f", "0x41"),
+            "fexit": ("0x707f", "0x1041"),
+            "fret_ra": ("0x707f", "0x2041"),
+            "fret_stk": ("0xff07f", "0x53041"),
+        }
+        for mnemonic, (mask, match) in expected.items():
+            meta = next(
+                line for line in self.meta.splitlines()
+                if f'.mnemonic="{mnemonic}"' in line
+            )
+            self.assertIn(f".mask=UINT64_C({mask})", meta)
+            self.assertIn(f".match=UINT64_C({match})", meta)
+            body = re.search(
+                rf"static bool trans_{mnemonic}\(.*?\n" + r"\}",
+                self.translate,
+                re.S,
+            ).group(0)
+            self.assertIn("linx_frame_operands_legal", body)
+            self.assertLess(
+                body.index("linx_frame_operands_legal"),
+                body.index("linx_block_begin"),
+            )
+
+        legality = re.search(
+            r"static bool linx_frame_operands_legal\(.*?\n\}",
+            self.translate,
+            re.S,
+        ).group(0)
+        self.assertIn("reg_begin < 2u || reg_begin > 23u", legality)
+        self.assertIn("reg_end < 2u || reg_end > 23u", legality)
+        self.assertIn("stacksize >= (uint64_t)count * 8u", legality)
+
+    def test_atomic_reservation_changes_only_after_successful_overlap(self) -> None:
+        helper = self.helper
+        invalidate = re.search(
+            r"static inline void linx_lr_invalidate_one_for_write\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertIn("LINX_RESERVATION_GRANULE_BYTES", invalidate)
+        self.assertIn("addr <= reservation_end", invalidate)
+        self.assertIn("reservation_start <= write_end", invalidate)
+        self.assertIn("write_end < addr", invalidate)
+
+        probe = re.search(
+            r"static inline void linx_atomic_probe_rw\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertLess(probe.index("probe_read"), probe.index("probe_write"))
+
+        store32 = helper.split(
+            "#define LINX_DEFINE_STORE32_HELPER", 1
+        )[1].split("#define LINX_DEFINE_STORE64_HELPER", 1)[0]
+        store64 = helper.split(
+            "#define LINX_DEFINE_STORE64_HELPER", 1
+        )[1].split("LINX_DEFINE_FETCH32_HELPER", 1)[0]
+        for macro in (store32, store64):
+            self.assertLess(
+                macro.index("linx_atomic_probe_rw"),
+                macro.index("cpu_ld"),
+            )
+            self.assertLess(
+                macro.index("cpu_st"),
+                macro.index("linx_lr_invalidate_for_write"),
+            )
+            self.assertLess(
+                macro.index("cpu_atomic_"),
+                macro.index("linx_lr_invalidate_for_write"),
+            )
+            self.assertNotIn("linx_lr_clear(env)", macro)
+
+        for mnemonic in (
+            "linx_sw_sub",
+            "linx_sd_sub",
+            "linx_sb_add",
+            "linx_sb_sub",
+            "linx_sh_add",
+            "linx_sh_sub",
+        ):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                helper,
+                re.S,
+            ).group(0)
+            self.assertLess(
+                body.index("linx_atomic_probe_rw"),
+                min(body.find("cpu_ld") if "cpu_ld" in body else len(body),
+                    body.find("LINX_STORE_OP_SERIAL")
+                    if "LINX_STORE_OP_SERIAL" in body else len(body)),
+            )
+            self.assertLess(
+                max(body.rfind("cpu_st"), body.rfind("cpu_atomic_")),
+                body.rindex("linx_lr_invalidate_for_write"),
+            )
+            self.assertNotIn("linx_lr_clear(env)", body)
+
+        casw = re.search(
+            r"uint64_t HELPER\(linx_casw\)\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertLess(casw.index("linx_atomic_probe_rw"), casw.index("cpu_ld"))
+        self.assertIn("if (old == cmpv)", casw)
+        self.assertNotIn("linx_lr_clear(env)", casw)
+        self.assertIn("(uint64_t)(int64_t)(int32_t)old", casw)
+
+    def test_sc_uses_one_granule_and_clears_before_faultable_store(self) -> None:
+        self.assertIn("linx_lr_matches_granule", self.helper)
+        for mnemonic in ("linx_sc_b", "linx_sc_h", "linx_sc_w", "linx_sc_d"):
+            body = re.search(
+                rf"uint64_t HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("linx_lr_matches_granule", body)
+            self.assertLess(
+                body.index("linx_lr_clear(env)"),
+                body.index("cpu_st"),
+            )
+            self.assertLess(
+                body.index("cpu_st"),
+                body.index("linx_lr_invalidate_for_write"),
+            )
+            self.assertNotIn("env->lr_addr == addr", body)
+            self.assertNotIn("env->lr_size ==", body)
+
+    def test_atomic_alignment_precedes_translation_and_permissions(self) -> None:
+        align = re.search(
+            r"static inline void linx_require_natural_alignment\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("linx_raise_data_alignment", align)
+        self.assertIn("uintptr_t ra", align)
+        self.assertNotIn("GETPC()", align)
+        probe = re.search(
+            r"static inline void linx_atomic_probe_rw\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("uintptr_t ra", probe)
+        self.assertNotIn("GETPC()", probe)
+        self.assertLess(
+            probe.index("linx_require_natural_alignment"),
+            probe.index("probe_read"),
+        )
+        self.assertLess(probe.index("probe_read"), probe.index("probe_write"))
+        self.assertIn("LINX_EXCP_DATA_ALIGN_FAULT", self.cpu)
+        self.assertIn("LINX_TRAPNUM_DATA_ALIGN_FAULT = 34", self.cpu_impl)
+
+        for mnemonic, size in (
+            ("linx_lr_b", "1"),
+            ("linx_lr_h", "2"),
+            ("linx_lr_w", "4"),
+            ("linx_lr_d", "8"),
+        ):
+            body = re.search(
+                rf"uint64_t HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("const uintptr_t ra = GETPC();", body)
+            self.assertLess(
+                body.index(
+                    f"linx_require_natural_alignment(env, addr, {size}, ra)"
+                ),
+                body.index("cpu_ld"),
+            )
+
+    def test_plain_store_invalidates_only_after_successful_overlap(self) -> None:
+        body = self.translate.split(
+            "static bool linx_store_from_reg(", 2
+        )[2].split("\n}", 1)[0]
+        self.assertNotIn("linx_lr_invalidate();", body)
+        self.assertLess(
+            body.index("tcg_gen_qemu_st_i64"),
+            body.index("gen_helper_linx_lr_invalidate_write"),
+        )
+        self.assertIn("memop_size(mop)", body)
+
+        frame = re.search(
+            r"static void linx_template_fentry_impl\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertLess(
+            frame.index("linx_enter_atomic_context"),
+            frame.index("env->gpr[LINX_REG_SP]"),
+        )
+        tile_commit = re.search(
+            r"void HELPER\(linx_tile_commit\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertLess(
+            tile_commit.index("linx_enter_atomic_context"),
+            tile_commit.index("memcpy(live"),
+        )
+
+    def test_faultable_nested_helpers_receive_the_tcg_return_address(self) -> None:
+        align_raise = re.search(
+            r"static G_NORETURN void linx_raise_data_alignment\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("cpu_loop_exit_restore(cs, ra)", align_raise)
+        self.assertNotIn("GETPC()", align_raise)
+
+        prepare = re.search(
+            r"void HELPER\(linx_prepare_gm_write\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("const uintptr_t ra = GETPC();", prepare)
+        self.assertIn("linx_enter_atomic_context(env, ra)", prepare)
+
+        template_step = re.search(
+            r"void HELPER\(linx_template_step\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("const uintptr_t ra = GETPC();", template_step)
+        self.assertIn("cpu_stb_mmuidx_ra(env, (abi_ptr)dst, v, mmu_idx, ra)",
+                      template_step)
+        self.assertNotIn("set_helper_retaddr(GETPC())", template_step)
+
+        tile_probe = re.search(
+            r"static bool linx_tile_mem_preflight\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("uintptr_t ra", tile_probe)
+        self.assertNotIn("GETPC()", tile_probe)
+
+        for signature in (
+            "static inline uint32_t linx_tile_mem_read",
+            "static inline uint64_t linx_tile_mem_read64",
+            "static inline void linx_tile_mem_write",
+            "static inline void linx_tile_mem_write64",
+        ):
+            body = re.search(
+                rf"{signature}\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("uintptr_t ra", body)
+            self.assertNotIn("GETPC()", body)
+
+        for signature in (
+            "static inline uint64_t linx_frame_loadq_cached_or_fallback",
+            "static bool linx_frame_restore_prepare_page_fast",
+            "static int linx_frame_restore_prepare",
+        ):
+            body = re.search(
+                rf"{signature}\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("uintptr_t ra", body)
+            self.assertNotIn("GETPC()", body)
+
+        for mnemonic in (
+            "linx_template_fexit",
+            "linx_template_fexit_chain",
+            "linx_template_fret_stk",
+            "linx_template_fret_stk_chain",
+            "linx_template_fret_ra",
+            "linx_template_fret_ra_chain",
+        ):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("GETPC();", body)
+
+        for mnemonic in ("linx_v_sb_brg", "linx_v_sh_brg", "linx_v_sw_brg"):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("const uintptr_t ra = GETPC();", body)
+            self.assertIn("linx_enter_atomic_context(env, ra)", body)
+
+    def test_dma_preflights_both_ranges_before_snapshot_and_commit(self) -> None:
+        body = re.search(
+            r"void HELPER\(linx_dma\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        source_probe = body.index(
+            "linx_probe_data_range(env, src, sizeof(buf), false, ra)"
+        )
+        destination_probe = body.index(
+            "linx_probe_data_range(env, dst, sizeof(buf), true, ra)"
+        )
+        first_load = body.index("buf[i] = cpu_ldub_data")
+        first_store = body.index("cpu_stb_data")
+        invalidate = body.index("linx_lr_invalidate_for_write")
+        self.assertLess(source_probe, destination_probe)
+        self.assertLess(destination_probe, first_load)
+        self.assertLess(first_load, first_store)
+        self.assertLess(first_store, invalidate)
+        self.assertNotIn("linx_lr_clear(env)", body)
+
+    def test_atomic_reservation_runtime_contract_is_wired(self) -> None:
+        for marker in (
+            "different address and width in the same 64-byte reservation granule",
+            "successful overlapping RMW invalidates the reservation",
+            "CAS mismatch is read-only and preserves the reservation",
+            "CAS match performs an overlapping write",
+        ):
+            self.assertIn(marker, self.atomic_fixture)
+        self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_runner)
+        self.assertIn("scalar_atomic_reservation_contract.s", self.atomic_runner)
+        self.assertIn("for fault_kind in 2 3 4 5 6 7 8", self.atomic_fault_runner)
+        self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_fault_runner)
+
+        exclusive = re.search(
+            r"static inline void linx_enter_atomic_context\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("cpu_loop_exit_atomic(cs, ra)", exclusive)
+        self.assertNotIn("GETPC()", exclusive)
+        peer_invalidate = re.search(
+            r"static void linx_lr_invalidate_for_write\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("LINX_CORE4_PE_COUNT", peer_invalidate)
+        self.assertIn("cpu->core4->cpu[pe]->env", peer_invalidate)
+        self.assertIn("-smp 4", self.atomic_cross_pe_runner)
+        self.assertIn("swi a1, [a5, 0]", self.atomic_cross_pe_fixture)
+        self.assertIn("sbi zero, [a6, 0]", self.atomic_cross_pe_fixture)
+        self.assertIn("ABA does not preserve it", self.atomic_cross_pe_fixture)
+        self.assertIn("successful peer SC", self.atomic_cross_pe_fixture)
+        self.assertIn("SC.W [a0], a1, ->a3", self.atomic_cross_pe_fixture)
+        self.assertIn("hl.ssrget 0x1f43", self.atomic_fault_fixture)
+        self.assertIn(".Lfault_atomic", self.atomic_fault_fixture)
+        self.assertIn("acre 0", self.atomic_fault_fixture)
+        self.assertIn("FEXIT [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
+        self.assertIn("FRET.RA [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
+        self.assertIn(".Lfault_frame", self.atomic_fault_fixture)
+        self.assertIn("LINX_DISABLE_TIMER_IRQ=1", self.mmu_runner)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)
@@ -327,9 +736,15 @@ class PtoV058ContractTests(unittest.TestCase):
     def test_v058_elf_identity_is_reported_before_any_load(self) -> None:
         virt = (ROOT / "hw/linx/virt.c").read_text(encoding="utf-8")
         self.assertIn("linx_validate_pto_isa_identity", virt)
-        self.assertIn("pto-isa-0.58.6-mode-function-v1", virt)
+        self.assertIn("pto-isa-0.58.7-mode-function-v1", virt)
         self.assertIn(
-            "a757f2e50ec8050d2131b6b9ad38657511df80cf3f9424d5f009ea6e0cc35839",
+            "a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881",
+            virt,
+        )
+        self.assertIn('\\"release\\":\\"0.58.7', virt)
+        self.assertNotIn("pto-isa-0.58.6-mode-function-v1", virt)
+        self.assertNotIn(
+            "9c49cdfa79a4eda6b27c1548bfd06ef681b6189f7d02d466ddfd43f59993b93d",
             virt,
         )
         dispatch = virt.split("static bool linx_load_elf(", 1)[1]

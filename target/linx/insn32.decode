@@ -21,7 +21,6 @@
 %simm17 15:s17
 %simm22 7:s5 15:17
 %simm25 7:s25
-%fused_call_simm12 4:s12
 %fused_call_uimm5 22:5
 %uimm12 20:12
 %simm12_20_s12 20:s12
@@ -39,7 +38,7 @@
 %acr_type 20:4
 %aq 26:1
 %rl 25:1
-%far 27:1
+%far 31:1
 %pred_imm 24:4
 %succ_imm 20:4
 %ModeHi 26:1
@@ -60,6 +59,8 @@
 %BA_RMode 15:3
 %BA_Sat 26:1
 %BA_Canonicalize 25:1
+%BA_PredInv 14:1
+%BA_Zero 13:1
 %FP_PreQuantMode 26:6
 %FP_ReluMode 23:3
 %FP_GroupNCode 19:4
@@ -97,6 +98,7 @@
 %IOTV5SizeCode 15:4
 %IOTV5PEMode 9:3
 %IOTV5Dst 7:2
+%ExecMaskPresent 26:1
 %SharedTID 20:6
 %SizeCode 15:4
 %PEMode 9:3
@@ -114,9 +116,6 @@
 # Block headers
 bstart_split_direct .... .... .... .... .... .... .001 0001 %simm25
 bstart_split_cond   .... .... .... .... .... .... .010 0001 %simm25
-# Atomic 16+16 BSTART.CALL. Runtime fetch recognizes the complete word before
-# dispatch because the low halfword uses the compressed length prefix.
-start_call_32 0101 0... ..01 0110 .... .... .... 0010 simm12=%fused_call_simm12 uimm5=%fused_call_uimm5
 start_icall_32 0101 0... ..01 0110 0110 0000 0000 0001 uimm5=%fused_call_uimm5
 bstart_fall   0000 0000 0000 0000 0001 0000 0000 0001
 bstart_direct .... .... .... .... .010 0000 0000 0001 %simm17
@@ -270,21 +269,29 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 # PTO ISA 0.58.4 Shared binding. Bits [27:26] are reserved zero; SizeCode=0
 # is a source and 1..12 is a 128 B..256 KiB SharedCoreSize destination. PEMode
 # expands to a fixed four-PE semantic mask; PEMode=000 is a strict no-op.
-b_ios          0000 00.. .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode
-
 {
-  b_iot        0000 00.. .... .000 0101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5
-  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5
-  b_iot        .... .... .... .000 0100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4
-  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4
-  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=6
+  b_ios        0000 00.. .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode unsupported=0
+  b_ios        0000 01.. .... 0000 0001 ...0 0001 0011 shared=%SharedTID size_code=0 pe_mode=%PEMode unsupported=1
+  b_iot        0000 00.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 unsupported=0
+  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 unsupported=0
+  b_iot        .... .... .... .000 0100 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=4 unsupported=0
+  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4 unsupported=0
+  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=6 unsupported=0
+  b_iot        .... .... .... .000 0010 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=2 unsupported=1
+  b_iot        .... .... .... .000 0011 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=3 unsupported=1
+  b_iot        .... .... .... .000 0111 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=7 unsupported=1
+  b_iot        .... .... .... .... .010 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=2 unsupported=1
+  b_iot        .... .... .... .... .011 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=3 unsupported=1
+  b_iot        .... .... .... .... .111 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=7 unsupported=1
+  b_iot        0000 01.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 unsupported=1
+  b_iot        0000 01.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 unsupported=1
+  b_ior        .... ..0. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD exec_mask_present=%ExecMaskPresent
 }
 
 # Decoupled-body pointer (decoupled block headers).
 b_text         .... .... .... .... .... .... .000 0011 %simm25
 
 # GPR I/O dependency (decoupled block headers).
-b_ior          .... .00. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD
 b_assemble     .... .... .... .... .001 .... .101 0011 init=%AssembleInit uimm=%AssembleUimm reg=%AssembleReg last=%AssembleLast parent=%AssembleParentSize
 b_subview      .... .... .... .... .000 0... .101 0011 src_select=%SubviewSrcSelect uimm=%SubviewUimm reg=%SubviewReg size_code=%SubviewSizeCode
 
@@ -292,7 +299,7 @@ b_subview      .... .... .... .... .000 0... .101 0011 src_select=%SubviewSrcSel
 
 # Block attributes (ordering/traps); treated as hints/no-ops in bring-up.
 b_catr         0000 0.00 0000 .... .000 0000 0010 0011 dr=%BA_DR aq=%BA_aq atom=%BA_atom far=%BA_far rl=%BA_rl trap=%BA_trap
-b_datr         .... .... .... 00.. .001 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat canonicalize=%BA_Canonicalize
+b_datr         .... .... .... 00.. ...1 .... .010 0011 cmode=%BA_CMode layout=%BA_DataLayout dtype=%BA_DataType pad=%BA_PadValue rmode=%BA_RMode sat=%BA_Sat canonicalize=%BA_Canonicalize predinv=%BA_PredInv zero=%BA_Zero
 b_fpatr        .... .... .... .... .010 00.. .010 0011 prequant=%FP_PreQuantMode relu=%FP_ReluMode groupn=%FP_GroupNCode rowmax=%FP_RowMaxEn groupmax=%FP_GroupMaxEn rowinit=%FP_RowMaxInit maxabs=%FP_MaxAbsEn transa=%FP_TransA transb=%FP_TransB cscale=%FP_CScaleEn
 
 # Block hints; treated as no-ops in bring-up.
@@ -316,17 +323,18 @@ acrc   0000 0000 .... 0000 0011 0000 0010 1011 rst=%acr_type
 acre   0000 0001 .... 0000 0011 0000 0010 1011 rra=%acr_type
 
 # Atomics (minimal subset for toolchain intrinsics bring-up)
-# Field mapping matches isa/spec: far/aq/rl plus (SrcL/SrcR/RegDst) and funct3.
-lr_w   0010 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-lr_d   0011 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-sc_w   0010 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sc_d   0011 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+# v0.58 op5 = 31..27: b31 = far/size-override flag, b30..27 = op/size code;
+# aq (b26) / rl (b25) plus (SrcL/SrcR/RegDst) and funct3.
+lr_w   .001 0... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_d   .001 1... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+sc_w   .001 0... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_d   .001 1... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
-swapw  0010 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swapd  0011 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapw  .001 0... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapd  .001 1... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
-lw_add 0000 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_add 0000 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_add .000 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_add .000 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
 
 # LinxISA 0.58 local compare-and-swap and DMA encodings.
 casb   .... .... .... .... .000 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
@@ -334,9 +342,16 @@ cash   .... .... .... .... .001 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq 
 casw   .... .... .... .... .010 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 casd   .... .... .... .... .011 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 dma    0000 000. .... .... .111 0000 0000 1011 %SrcL %SrcR
+# v0.58 DMA resource release variants (S/L = Store/Load mode).
+# Encoding is reserved; QEMU rejects execution until L2SPM semantics are defined.
+dma_free_s 0000 0100 0000 .... .111 0000 0000 1011 %SrcL
+dma_free_l 0000 0110 0000 .... .111 0000 0000 1011 %SrcL
 
 fence_d 0000 .... .... 0000 0010 0000 0010 1011 pred=%pred_imm succ=%succ_imm
 fence_i 0001 0000 0000 0000 0010 0000 0010 1011
+# PTO 0.58.7 assigns this exact encoding, but QEMU does not yet implement the
+# four-PE rendezvous and earlier-GM-obligation completion semantics.
+sync_core 0000 0011 0011 0000 1010 0000 0010 1011
 
 # TLB flush (bring-up).
 tlb_ia   0000 0000 0000 .... .111 0000 0010 1011 %SrcL
@@ -380,6 +395,10 @@ fret_stk      ....... ..... 0101 0011 ..... 100 0001 uimm_hi=%fentry_uimm_hi uim
 #   MSET:  RegSrc0=DstAddr (bits 19..15), RegSrc1=Value   (24..20), RegSrc2=Size (31..27)
 # These are standalone template blocks (must not appear inside BSTART..BSTOP).
 mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
+# v0.58 MCOPY.DS/DL encoding reservation.
+# QEMU rejects execution until L2SPM allocation/completion semantics are defined.
+mcopy_ds      .... .01. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
+mcopy_dl      .... .11. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
 mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD
 esave         .... .00. .... .... .010 0000 0011 0001 %SrcL %SrcR %SrcD
 ercov         .... .00. .... .... .011 0000 0011 0001 %SrcL %SrcR %SrcD
@@ -646,39 +665,47 @@ prf           .... .... .... .... .111 .... .000 1001 %RegDst %SrcL %SrcR %SrcRT
 prfi_u        .... .... .... .... .111 .... .010 1001 %RegDst %SrcL simm12=%simm12_20_s12
 
 # Atomics
-lr_b          0000 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-lr_h          0001 .... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
-sc_b          0000 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sc_h          0001 .... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swapb         0000 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-swaph         0001 .... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_and        0001 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_or         0010 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_xor        0011 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_smax       0100 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_smin       0101 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_umax       0110 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-lw_umin       0111 .... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_and        0001 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_or         0010 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_xor        0011 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_smax       0100 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_smin       0101 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_umax       0110 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-ld_umin       0111 .... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
-sw_add        0000 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_and        0001 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_or         0010 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_xor        0011 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_smax       0100 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_smin       0101 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_umax       0110 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sw_umin       0111 .0.. .... .... .011 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_add        0000 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_and        0001 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_or         0010 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_xor        0011 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_smax       0100 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_smin       0101 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_umax       0110 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
-sd_umin       0111 .0.. .... .... .101 0000 0000 1011 %SrcL %SrcR far=%far rl=%rl
+lr_b   .000 0... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+lr_h   .000 1... .... .... .000 .... .000 1011 %RegDst %SrcL %SrcZero far=%far aq=%aq rl=%rl
+sc_b   .000 0... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+sc_h   .000 1... .... .... .001 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swapb  .000 0... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+swaph  .000 1... .... .... .110 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_and .000 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_or  .001 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_xor .001 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smax .010 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_smin .010 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umax .011 0... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+lw_umin .011 1... .... .... .010 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_and .000 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_or  .001 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_xor .001 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smax .010 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_smin .010 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umax .011 0... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+ld_umin .011 1... .... .... .100 .... .000 1011 %RegDst %SrcL %SrcR far=%far aq=%aq rl=%rl
+# v0.58 store-op (SW/SD slot; b31 = size override, b30..27 = op): no far, rl only, aq fixed 0.
+sw_add 0000 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_and 0000 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_or  0001 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_xor 0001 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_smax 0010 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_smin 0010 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_umax 0011 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_umin 0011 10.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sw_sub 0100 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_add 0000 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_and 0000 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_or  0001 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_xor 0001 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_smax 0010 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_smin 0010 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_umax 0011 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_umin 0011 10.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sd_sub 0100 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+# v0.58 sub-word store-op: size override b31=1 shrinks to byte (SW slot) / halfword (SD slot).
+sb_add 1000 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sb_sub 1100 00.. .... .... .011 0000 0000 1011 %SrcL %SrcR rl=%rl
+sh_add 1000 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
+sh_sub 1100 00.. .... .... .101 0000 0000 1011 %SrcL %SrcR rl=%rl
