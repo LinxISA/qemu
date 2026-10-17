@@ -374,6 +374,34 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("uintptr_t ra", tile_probe)
         self.assertNotIn("GETPC()", tile_probe)
 
+        for signature in (
+            "static inline uint64_t linx_frame_loadq_cached_or_fallback",
+            "static bool linx_frame_restore_prepare_page_fast",
+            "static int linx_frame_restore_prepare",
+        ):
+            body = re.search(
+                rf"{signature}\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("uintptr_t ra", body)
+            self.assertNotIn("GETPC()", body)
+
+        for mnemonic in (
+            "linx_template_fexit",
+            "linx_template_fexit_chain",
+            "linx_template_fret_stk",
+            "linx_template_fret_stk_chain",
+            "linx_template_fret_ra",
+            "linx_template_fret_ra_chain",
+        ):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("GETPC();", body)
+
         for mnemonic in ("linx_v_sb_brg", "linx_v_sh_brg", "linx_v_sw_brg"):
             body = re.search(
                 rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
@@ -414,7 +442,7 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertIn(marker, self.atomic_fixture)
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_runner)
         self.assertIn("scalar_atomic_reservation_contract.s", self.atomic_runner)
-        self.assertIn("for fault_kind in 2 3 4 5 6", self.atomic_fault_runner)
+        self.assertIn("for fault_kind in 2 3 4 5 6 7 8", self.atomic_fault_runner)
         self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_fault_runner)
 
         exclusive = re.search(
@@ -440,6 +468,9 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("hl.ssrget 0x1f43", self.atomic_fault_fixture)
         self.assertIn(".Lfault_atomic", self.atomic_fault_fixture)
         self.assertIn("acre 0", self.atomic_fault_fixture)
+        self.assertIn("FEXIT [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
+        self.assertIn("FRET.RA [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
+        self.assertIn(".Lfault_frame", self.atomic_fault_fixture)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)

@@ -186,6 +186,10 @@ high_entry:
   C.BSTART
   addtpc tile_input, ->a0
   addi a0, tile_input, ->a0
+  # Freeze the no-write oracle at 1 before LR. The faulting SC and its resumed
+  # monitor-miss retry must leave this value unchanged.
+  addi zero, 1, ->a4
+  swi a4, [a0, 0]
   LR.W [a0], ->a2
   addi a0, 1, ->a1
   addi zero, 1, ->a2
@@ -206,6 +210,32 @@ high_entry:
   addi zero, 1, ->a2
   swi a2, [a1, 0]
   C.BSTOP
+
+.elseif FAULT_KIND == 7
+  # FEXIT restore faults before SP or destination-register commit.
+  C.BSTART
+  addtpc .Lfault_load_va, ->a0
+  addi a0, .Lfault_load_va, ->a0
+  ldi [a0, 0], ->a0
+  addi a0, 0, ->sp
+  C.BSTOP
+.Lfault_frame:
+  FEXIT [a2 ~ a2], sp!, 8
+
+.elseif FAULT_KIND == 8
+  # FRET.RA uses the same restore path, then returns to the pre-fault RA.
+  C.BSTART
+  addtpc .Lfault_load_va, ->a0
+  addi a0, .Lfault_load_va, ->a0
+  ldi [a0, 0], ->a0
+  addi a0, 0, ->sp
+  addtpc .Lfret_resume, ->a5
+  addi a5, .Lfret_resume, ->a5
+  addi a5, 0, ->ra
+  C.BSTOP
+.Lfault_frame:
+  FRET.RA [a2 ~ a2], sp!, 8
+.Lfret_resume:
 .endif
 
 .if FAULT_KIND == 3 || FAULT_KIND == 4 || FAULT_KIND == 5
@@ -227,6 +257,17 @@ high_entry:
   xori a3, 1, ->a3
   or a0, a3, ->a0
   .endif
+  setc.ne a0, zero
+  C.BSTOP
+.elseif FAULT_KIND == 7 || FAULT_KIND == 8
+  # The frame helper must reissue exactly at the faulting template and commit
+  # the repaired restore value only after the resumed load succeeds.
+  C.BSTART COND, .Ltrap_fail
+  addi zero, 1, ->a0
+  xor a6, a0, ->a0
+  addi zero, 7, ->a1
+  xor a2, a1, ->a2
+  or a0, a2, ->a0
   setc.ne a0, zero
   C.BSTOP
 .elseif FAULT_KIND >= 0
@@ -421,6 +462,35 @@ high_entry:
   setc.ne a2, zero
   C.BSTOP
 
+.elseif FAULT_KIND == 7 || FAULT_KIND == 8
+  C.BSTART COND, .Ltrap_fail
+  # The saved TPC must identify the faulting frame template exactly.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_frame, ->a7
+  addi a7, .Lfault_frame, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  setc.ne a4, zero
+  C.BSTOP
+  C.BSTART
+  # Repair SP to a mapped slot containing the expected restore value.
+  addtpc .Lhigh_base, ->a1
+  addi a1, .Lhigh_base, ->a1
+  ldi [a1, 0], ->a1
+  addtpc .Lframe_slot, ->a2
+  addi a2, .Lframe_slot, ->a2
+  add a1, a2, ->a1
+  addi a1, 0, ->sp
+  addi zero, 1, ->a6
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
+
 .else
   C.BSTART DIRECT, .Ltrap_fail
   C.BSTOP
@@ -449,6 +519,12 @@ tile_input:
   .4byte 0x3f800000, 0x40000000, 0x40400000, 0x40800000
 tile_output:
   .zero 16
+.balign 8
+.Lframe_slot:
+  # Frame StackSize is encoded in eight-byte units; operand 8 restores the
+  # one-register endpoint from old_sp + 56 before committing sp += 64.
+  .space 56
+  .8byte 7
 .Lfault_load_va:
   .quad 0xffff800000211000
 .Lfault_store_va:
