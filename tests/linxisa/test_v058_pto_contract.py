@@ -571,7 +571,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("expected ADDTPC at the PCREL HI20 anchor", lo12)
         self.assertNotIn("rounded target page", lo12)
 
-    def test_scalar_right_modifier_mapping_matches_linxisa_0583(self) -> None:
+    def test_scalar_right_modifier_mapping_matches_pto_f0(self) -> None:
         arithmetic = re.search(
             r"static TCGv_i64 linx_srcR_addsub\(.*?\n\}", self.translate, re.S
         ).group(0)
@@ -580,6 +580,11 @@ class PtoV058ContractTests(unittest.TestCase):
         ).group(0)
         compare = re.search(
             r"static TCGv_i64 linx_srcR_compare\(.*?\n\}", self.translate, re.S
+        ).group(0)
+        compare_logic = re.search(
+            r"static TCGv_i64 linx_srcR_compare_logic\(.*?\n\}",
+            self.translate,
+            re.S,
         ).group(0)
         select = re.search(
             r"static TCGv_i64 linx_srcR_select\(.*?\n\}", self.translate, re.S
@@ -592,6 +597,9 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertRegex(arithmetic, r"case 2: /\* \.neg \*/")
         self.assertRegex(logical, r"case 2: /\* \.not \*/")
         self.assertIn("default: /* 0 and 3 are unmodified aliases */", compare)
+        self.assertRegex(compare_logic, r"case 1: /\* \.sw \*/")
+        self.assertRegex(compare_logic, r"case 2: /\* \.uw \*/")
+        self.assertRegex(compare_logic, r"case 3: /\* \.not \*/")
         self.assertIn("linx_csel_negates_src_r(srcRType)", select)
 
         for name in ("trans_cmp_eq", "trans_cmp_ne", "trans_setc_eq", "trans_setc_ne"):
@@ -609,10 +617,11 @@ class PtoV058ContractTests(unittest.TestCase):
             self.translate,
             re.S,
         ).group(0)
-        self.assertRegex(addressing, r"case 0: /\* \.sw \*/")
-        self.assertRegex(addressing, r"case 1: /\* \.uw \*/")
-        self.assertRegex(addressing, r"case 2: /\* \.neg \*/")
-        self.assertIn("default: /* no modifier */", addressing)
+        self.assertIn("linx_address_src_r_type_valid(idx_type)", addressing)
+        self.assertRegex(addressing, r"case 0: /\* no modifier \*/")
+        self.assertRegex(addressing, r"case 1: /\* \.sw \*/")
+        self.assertRegex(addressing, r"case 2: /\* \.uw \*/")
+        self.assertNotIn(".neg", addressing)
 
     def test_shared_tstore_profiles_are_executable(self) -> None:
         self.assertNotIn("bstart_tstore_spart", self.decode32)

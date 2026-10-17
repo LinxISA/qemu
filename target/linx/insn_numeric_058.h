@@ -22,7 +22,12 @@ static inline uint64_t linx_hl_lis_value(int32_t immediate)
 
 static inline bool linx_csel_negates_src_r(uint32_t src_r_type)
 {
-    return (src_r_type & 3u) == 2u;
+    return (src_r_type & 3u) == 3u;
+}
+
+static inline bool linx_address_src_r_type_valid(uint32_t src_r_type)
+{
+    return (src_r_type & 3u) != 3u;
 }
 
 #endif
