@@ -6900,53 +6900,16 @@ static bool trans_mcopy(DisasContext *ctx, arg_mcopy *a)
     return true;
 }
 
-/* MCOPY.DS / MCOPY.DL: MCOPY plus a RegDst L2SPM-address return (identity). */
-static bool trans_mcopy_d_common(DisasContext *ctx, uint32_t kind,
-                                 uint32_t dst, uint32_t src,
-                                 uint32_t size, uint32_t rdst)
-{
-    vaddr current_pc = ctx->base.pc_next - ctx->cur_insn_len;
-
-    if (ctx->in_body) {
-        return linx_block_fault(ctx, LINX_EBLOCK_LEGACY_ILLEGAL_IN_BODY, 0);
-    }
-    if (current_pc != ctx->base.pc_first) {
-        linx_gen_block_end(ctx, current_pc);
-        return true;
-    }
-
-    linx_block_begin(ctx, LINX_BR_FALL, 0);
-    if (kind == LINX_TEMPLATE_MCOPY_DS) {
-        gen_helper_linx_mcopy_ds_step(tcg_env,
-                                      tcg_constant_i64(current_pc),
-                                      tcg_constant_i64(ctx->base.pc_next),
-                                      tcg_constant_i32(dst),
-                                      tcg_constant_i32(src),
-                                      tcg_constant_i32(size),
-                                      tcg_constant_i32(rdst));
-    } else {
-        gen_helper_linx_mcopy_dl_step(tcg_env,
-                                      tcg_constant_i64(current_pc),
-                                      tcg_constant_i64(ctx->base.pc_next),
-                                      tcg_constant_i32(dst),
-                                      tcg_constant_i32(src),
-                                      tcg_constant_i32(size),
-                                      tcg_constant_i32(rdst));
-    }
-    ctx->base.is_jmp = DISAS_NORETURN;
-    return true;
-}
-
 static bool trans_mcopy_ds(DisasContext *ctx, arg_mcopy_ds *a)
 {
-    return trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DS,
-                                a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+    (void)a;
+    return linx_illegal(ctx);
 }
 
 static bool trans_mcopy_dl(DisasContext *ctx, arg_mcopy_dl *a)
 {
-    return trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DL,
-                                a->SrcL, a->SrcR, a->SrcD, a->RegDst);
+    (void)a;
+    return linx_illegal(ctx);
 }
 
 /* MSET: restartable bulk memory set template (standalone block). */
@@ -8206,23 +8169,17 @@ static bool trans_dma(DisasContext *ctx, arg_dma *a)
     return true;
 }
 
-/*
- * v0.58 DMA.FREE.S / DMA.FREE.L: release the L2SPM space associated with the
- * address in SrcL.  QEMU has no L2SPM/DMA device model, so the release is a
- * no-op (S/L Store/Load timing is not modelled).
- */
+/* Encodings are reserved in v0.58.7; L2SPM release semantics are unsupported. */
 static bool trans_dma_free_s(DisasContext *ctx, arg_dma_free_s *a)
 {
-    (void)ctx;
     (void)a;
-    return true;
+    return linx_illegal(ctx);
 }
 
 static bool trans_dma_free_l(DisasContext *ctx, arg_dma_free_l *a)
 {
-    (void)ctx;
     (void)a;
-    return true;
+    return linx_illegal(ctx);
 }
 
 static bool trans_fence_d(DisasContext *ctx, arg_fence_d *a)

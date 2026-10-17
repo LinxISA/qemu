@@ -336,6 +336,7 @@ casw   .... .... .... .... .010 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq 
 casd   .... .... .... .... .011 .... .001 1011 %RegDst %SrcL %SrcR %SrcD aq=%aq rl=%rl
 dma    0000 000. .... .... .111 0000 0000 1011 %SrcL %SrcR
 # v0.58 DMA resource release variants (S/L = Store/Load mode).
+# Encoding is reserved; QEMU rejects execution until L2SPM semantics are defined.
 dma_free_s 0000 0100 0000 .... .111 0000 0000 1011 %SrcL
 dma_free_l 0000 0110 0000 .... .111 0000 0000 1011 %SrcL
 
@@ -384,7 +385,8 @@ fret_stk      ....... ..... 0101 0011 ..... 100 0001 uimm_hi=%fentry_uimm_hi uim
 #   MSET:  RegSrc0=DstAddr (bits 19..15), RegSrc1=Value   (24..20), RegSrc2=Size (31..27)
 # These are standalone template blocks (must not appear inside BSTART..BSTOP).
 mcopy         .... .00. .... .... .000 0000 0011 0001 %SrcL %SrcR %SrcD
-# v0.58 MCOPY.DS/DL: D + Store/Load mode, with a RegDst (11..7) L2SPM-address return.
+# v0.58 MCOPY.DS/DL encoding reservation.
+# QEMU rejects execution until L2SPM allocation/completion semantics are defined.
 mcopy_ds      .... .01. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
 mcopy_dl      .... .11. .... .... .001 .... .011 0001 %RegDst %SrcL %SrcR %SrcD
 mset          .... .00. .... .... .001 0000 0011 0001 %SrcL %SrcR %SrcD

@@ -19,6 +19,7 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.decode32 = (TARGET / "insn32.decode").read_text(encoding="utf-8")
         cls.cpu = (TARGET / "cpu.h").read_text(encoding="utf-8")
         cls.helper = (TARGET / "helper.c").read_text(encoding="utf-8")
+        cls.helper_h = (TARGET / "helper.h").read_text(encoding="utf-8")
         cls.cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")
         cls.numeric = (TARGET / "tile_numeric_058.h").read_text(encoding="utf-8")
         cls.translate = (TARGET / "translate.c").read_text(encoding="utf-8")
@@ -79,44 +80,29 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("LINX_TILE_ENGINE_SFU", self.tile_isa)
         self.assertNotIn('return "tma"', self.helper)
 
-    def test_mcopy_d_destination_uses_scalar_destination_semantics(self) -> None:
-        helper = self.helper
-        writer = helper.index("static void linx_mcopy_d_write_dest")
-        body = helper[
-            writer : helper.index("static void linx_mcopy_d_step", writer)
-        ]
-        self.assertIn("reg == LINX_REG_ZERO", body)
-        self.assertIn("env->gpr[reg] = value", body)
-        self.assertIn("env->tq[0] = value", body)
-        self.assertIn("env->uq[0] = value", body)
-        self.assertNotIn("env->gpr[rdst_reg] = env->gpr[dst_reg]", helper)
+    def test_reserved_l2spm_encodings_are_rejected(self) -> None:
+        for mnemonic in ("dma_free_s", "dma_free_l", "mcopy_ds", "mcopy_dl"):
+            self.assertRegex(self.decode32, rf"(?m)^{mnemonic}\s+")
+            self.assertIn(f'.mnemonic="{mnemonic}"', self.meta)
+            self.assertIn(f"LINX_OP_{mnemonic.upper()} =", self.ids)
+
+            trans = re.search(
+                rf"static bool trans_{mnemonic}\(.*?\n" + r"\}",
+                self.translate,
+                re.S,
+            ).group(0)
+            self.assertIn("return linx_illegal(ctx);", trans)
+
+        self.assertNotIn("LINX_TEMPLATE_MCOPY_DS", self.cpu)
+        self.assertNotIn("LINX_TEMPLATE_MCOPY_DL", self.cpu)
+        self.assertNotIn("linx_mcopy_d_step", self.helper)
+        self.assertNotIn("linx_mcopy_ds_step", self.helper)
+        self.assertNotIn("linx_mcopy_dl_step", self.helper)
+        self.assertNotIn("linx_mcopy_ds_step", self.helper_h)
+        self.assertNotIn("linx_mcopy_dl_step", self.helper_h)
+
         self.assertNotIn("LINX_OP_BSTART_TMA", self.ids)
         self.assertIn("LINX_OP_BSTART_TLSU", self.ids)
-
-    def test_mcopy_d_preserves_store_load_template_kind(self) -> None:
-        translate = self.translate
-        helper = self.helper
-        self.assertIn(
-            "trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DS,",
-            translate,
-        )
-        self.assertIn(
-            "trans_mcopy_d_common(ctx, LINX_TEMPLATE_MCOPY_DL,",
-            translate,
-        )
-        step = helper[
-            helper.index("static void linx_mcopy_d_step") :
-            helper.index("enum {", helper.index("static void linx_mcopy_d_step"))
-        ]
-        self.assertIn("uint32_t kind", step)
-        self.assertIn(
-            "linx_mcopy_d_step(env, cur_pc, next_pc, LINX_TEMPLATE_MCOPY_DS,",
-            helper,
-        )
-        self.assertIn(
-            "linx_mcopy_d_step(env, cur_pc, next_pc, LINX_TEMPLATE_MCOPY_DL,",
-            helper,
-        )
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)
