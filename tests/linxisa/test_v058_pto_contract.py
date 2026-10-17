@@ -31,6 +31,16 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.iommu_runner = (ROOT / "scripts/linxisa/run-iommu-tile-basic.sh").read_text(
             encoding="utf-8"
         )
+        cls.atomic_runner = (
+            ROOT / "scripts/linxisa/run-scalar-atomic-reservation-contract.sh"
+        ).read_text(encoding="utf-8")
+        cls.atomic_fixture = (
+            ROOT / "tests/linxisa/scalar_atomic_reservation_contract.s"
+        ).read_text(encoding="utf-8")
+        cls.atomic_fault_runner = (
+            ROOT
+            / "scripts/linxisa/run-scalar-atomic-fault-reservation-contract.sh"
+        ).read_text(encoding="utf-8")
 
     def test_retired_compressed_ios_is_absent(self) -> None:
         self.assertNotRegex(self.decode16, r"(?m)^c_b_ios\b")
@@ -85,6 +95,11 @@ class PtoV058ContractTests(unittest.TestCase):
             self.assertRegex(self.decode32, rf"(?m)^{mnemonic}\s+")
             self.assertIn(f'.mnemonic="{mnemonic}"', self.meta)
             self.assertIn(f"LINX_OP_{mnemonic.upper()} =", self.ids)
+            meta = next(
+                line for line in self.meta.splitlines()
+                if f'.mnemonic="{mnemonic}"' in line
+            )
+            self.assertIn('flags="ENCODING_ONLY_UNSUPPORTED"', meta)
 
             trans = re.search(
                 rf"static bool trans_{mnemonic}\(.*?\n" + r"\}",
@@ -145,6 +160,130 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("reg_begin < 2u || reg_begin > 23u", legality)
         self.assertIn("reg_end < 2u || reg_end > 23u", legality)
         self.assertIn("stacksize >= (uint64_t)count * 8u", legality)
+
+    def test_atomic_reservation_changes_only_after_successful_overlap(self) -> None:
+        helper = self.helper
+        invalidate = re.search(
+            r"static inline void linx_lr_invalidate_for_write\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertIn("LINX_RESERVATION_GRANULE_BYTES", invalidate)
+        self.assertIn("addr < reservation_end", invalidate)
+        self.assertIn("reservation_start < write_end", invalidate)
+
+        probe = re.search(
+            r"static inline void linx_atomic_probe_rw\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertLess(probe.index("probe_read"), probe.index("probe_write"))
+
+        store32 = helper.split(
+            "#define LINX_DEFINE_STORE32_HELPER", 1
+        )[1].split("#define LINX_DEFINE_STORE64_HELPER", 1)[0]
+        store64 = helper.split(
+            "#define LINX_DEFINE_STORE64_HELPER", 1
+        )[1].split("LINX_DEFINE_FETCH32_HELPER", 1)[0]
+        for macro in (store32, store64):
+            self.assertLess(
+                macro.index("linx_atomic_probe_rw"),
+                macro.index("cpu_ld"),
+            )
+            self.assertLess(
+                macro.index("cpu_st"),
+                macro.index("linx_lr_invalidate_for_write"),
+            )
+            self.assertLess(
+                macro.index("cpu_atomic_"),
+                macro.index("linx_lr_invalidate_for_write"),
+            )
+            self.assertNotIn("linx_lr_clear(env)", macro)
+
+        for mnemonic in (
+            "linx_sw_sub",
+            "linx_sd_sub",
+            "linx_sb_add",
+            "linx_sb_sub",
+            "linx_sh_add",
+            "linx_sh_sub",
+        ):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                helper,
+                re.S,
+            ).group(0)
+            self.assertLess(
+                body.index("linx_atomic_probe_rw"),
+                min(body.find("cpu_ld") if "cpu_ld" in body else len(body),
+                    body.find("LINX_STORE_OP_SERIAL")
+                    if "LINX_STORE_OP_SERIAL" in body else len(body)),
+            )
+            self.assertLess(
+                max(body.rfind("cpu_st"), body.rfind("cpu_atomic_")),
+                body.rindex("linx_lr_invalidate_for_write"),
+            )
+            self.assertNotIn("linx_lr_clear(env)", body)
+
+        casw = re.search(
+            r"uint64_t HELPER\(linx_casw\)\(.*?\n\}",
+            helper,
+            re.S,
+        ).group(0)
+        self.assertLess(casw.index("linx_atomic_probe_rw"), casw.index("cpu_ld"))
+        self.assertIn("if (old == cmpv)", casw)
+        self.assertNotIn("linx_lr_clear(env)", casw)
+        self.assertIn("(uint64_t)(int64_t)(int32_t)old", casw)
+
+    def test_sc_uses_one_granule_and_clears_before_faultable_store(self) -> None:
+        self.assertIn("linx_lr_matches_granule", self.helper)
+        for mnemonic in ("linx_sc_b", "linx_sc_h", "linx_sc_w", "linx_sc_d"):
+            body = re.search(
+                rf"uint64_t HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("linx_lr_matches_granule", body)
+            self.assertLess(
+                body.index("linx_lr_clear(env)"),
+                body.index("cpu_st"),
+            )
+            self.assertNotIn("env->lr_addr == addr", body)
+            self.assertNotIn("env->lr_size ==", body)
+
+    def test_dma_preflights_both_ranges_before_snapshot_and_commit(self) -> None:
+        body = re.search(
+            r"void HELPER\(linx_dma\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        source_probe = body.index(
+            "linx_probe_data_range(env, src, sizeof(buf), false)"
+        )
+        destination_probe = body.index(
+            "linx_probe_data_range(env, dst, sizeof(buf), true)"
+        )
+        first_load = body.index("buf[i] = cpu_ldub_data")
+        first_store = body.index("cpu_stb_data")
+        invalidate = body.index("linx_lr_invalidate_for_write")
+        self.assertLess(source_probe, destination_probe)
+        self.assertLess(destination_probe, first_load)
+        self.assertLess(first_load, first_store)
+        self.assertLess(first_store, invalidate)
+        self.assertNotIn("linx_lr_clear(env)", body)
+
+    def test_atomic_reservation_runtime_contract_is_wired(self) -> None:
+        for marker in (
+            "different address and width in the same 64-byte reservation granule",
+            "successful overlapping RMW invalidates the reservation",
+            "CAS mismatch is read-only and preserves the reservation",
+            "CAS match performs an overlapping write",
+        ):
+            self.assertIn(marker, self.atomic_fixture)
+        self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_runner)
+        self.assertIn("scalar_atomic_reservation_contract.s", self.atomic_runner)
+        self.assertIn("--defsym=FAULT_KIND=2", self.atomic_fault_runner)
+        self.assertIn("LINX_VIRT_TEST_FINISHER=1", self.atomic_fault_runner)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)

@@ -83,6 +83,24 @@ class V058TileRawContractTest(unittest.TestCase):
         ):
             self.assertIn(f".mask=UINT64_C({mask})", self.meta)
             self.assertIn(f".match=UINT64_C({match})", self.meta)
+        unsupported_matches = {
+            "0x2013",
+            "0x3013",
+            "0x7013",
+            "0x4005013",
+        }
+        for line in self.meta.splitlines():
+            if '.mnemonic="b_iot"' not in line:
+                continue
+            if any(f".match=UINT64_C({match})" in line
+                   for match in unsupported_matches):
+                self.assertIn('flags="ENCODING_ONLY_UNSUPPORTED"', line)
+        b_ios_last = next(
+            line for line in self.meta.splitlines()
+            if '.mnemonic="b_ios"' in line
+            and ".match=UINT64_C(0x4001013)" in line
+        )
+        self.assertIn('flags="ENCODING_ONLY_UNSUPPORTED"', b_ios_last)
 
     def test_attribute_raw_contracts(self) -> None:
         for mask, match in (

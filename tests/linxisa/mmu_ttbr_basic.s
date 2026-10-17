@@ -54,6 +54,7 @@ high_entry:
   setc.ne a4, zero
   C.BSTOP
 
+ .if FAULT_KIND != 2
   # Exercise ordinary TLSU through the active CPU MMU.  Both buffers live in
   # the high alias page mapped by TTBR1; an IOMMU/physical-mask shortcut would
   # access an unrelated physical address and fail this result check.
@@ -79,13 +80,14 @@ high_entry:
   C.B.DIMI 1, ->lb1
   C.B.DIMI 4, ->lb2
   B.IOR [a1,a3],[]
-  B.IOT t#1, mask=0001, last
+  B.IOT t#1.reuse, mask=0001, last
 
   C.BSTART COND, .Ltrap_vector
   lwi [a0, 0], ->a2
   lwi [a1, 0], ->a3
   setc.ne a2, a3
   C.BSTOP
+ .endif
 
 .if FAULT_KIND == 0
   # An unmapped TLOAD must report its original ACR2 VA and must not publish an
@@ -131,7 +133,22 @@ high_entry:
   C.B.DIMI 1, ->lb1
   C.B.DIMI 4, ->lb2
   B.IOR [a1,a3],[]
-  B.IOT t#1, mask=0001, last
+  B.IOT t#1.reuse, mask=0001, last
+
+.elseif FAULT_KIND == 2
+  # The target alias is readable but write-protected. Atomic RMW must probe
+  # both permissions before loading and must preserve the older reservation
+  # when the write probe raises the data-page fault.
+  C.BSTART
+  addtpc tile_input, ->a0
+  addi a0, tile_input, ->a0
+  LR.W [a0], ->a2
+  addtpc .Lfault_store_va, ->a1
+  addi a1, .Lfault_store_va, ->a1
+  ldi [a1, 0], ->a1
+  addi zero, 1, ->a2
+  SW.ADD [a1], a2
+  C.BSTOP
 .endif
 
 .if FAULT_KIND >= 0
@@ -190,6 +207,21 @@ high_entry:
   xor a2, a3, ->a2
   or a0, a2, ->a0
   setc.ne a0, zero
+  C.BSTOP
+
+.elseif FAULT_KIND == 2
+  # Recompute the original high-alias reservation address. A successful SC.W
+  # proves the write-only RMW fault preserved the local reservation.
+  C.BSTART COND, .Ltrap_fail
+  addtpc .Lhigh_base, ->a0
+  addi a0, .Lhigh_base, ->a0
+  ldi [a0, 0], ->a0
+  addtpc tile_input, ->a1
+  addi a1, tile_input, ->a1
+  add a0, a1, ->a0
+  addi zero, 1, ->a1
+  SC.W [a0], a1, ->a2
+  setc.ne a2, zero
   C.BSTOP
 
 .else
@@ -283,4 +315,8 @@ L3_ttbr1:
   .zero 8 * 16
   # L3[16] page: base=0x10000, AttrIdx=1, AF=1, U/X/W/R=1, type=Page(01)
   .quad 0x100fd
-  .zero 8 * (512 - 17)
+  .zero 8
+  # L3[18] aliases the same physical page but clears W. Atomic reads succeed;
+  # the mandatory write preflight raises the fault before the memory load.
+  .quad 0x100f5
+  .zero 8 * (512 - 19)
