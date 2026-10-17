@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
 from __future__ import annotations
 
 import argparse
@@ -36,9 +37,15 @@ def evaluate_case(case: Case, returncode: int, output: str) -> tuple[bool, str]:
     marker = f"insn_len={case.illegal_length}"
     if "illegal instruction" not in output or marker not in output:
         return False, f"missing illegal-instruction evidence ({marker})"
-    if "data page fault" in output.lower() or "data alignment" in output.lower():
+    if (
+        "data page fault" in output.lower()
+        or "data alignment" in output.lower()
+    ):
         return False, "reserved address selector reached a memory-fault path"
-    return True, f"illegal selector trapped before destination effect ({marker})"
+    return (
+        True,
+        f"illegal selector trapped before destination effect ({marker})",
+    )
 
 
 def require_tool(path: str, label: str) -> Path:
@@ -92,11 +99,19 @@ def run_case(
         ]
     )
     if compile_result.returncode != 0:
-        return False, f"clang exited {compile_result.returncode}: {compile_result.stdout.strip()}"
+        return (
+            False,
+            f"clang exited {compile_result.returncode}: "
+            f"{compile_result.stdout.strip()}",
+        )
 
     link_result = run_command([str(lld), "-r", "-o", str(kernel), str(obj)])
     if link_result.returncode != 0:
-        return False, f"ld.lld exited {link_result.returncode}: {link_result.stdout.strip()}"
+        return (
+            False,
+            f"ld.lld exited {link_result.returncode}: "
+            f"{link_result.stdout.strip()}",
+        )
 
     qemu_env = dict(os.environ)
     qemu_env["LINX_VIRT_TEST_FINISHER"] = "1"
@@ -123,11 +138,19 @@ def run_case(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run PTO SrcRType family contracts")
-    parser.add_argument("--clang", required=True, help="exact Linx clang binary")
+    parser = argparse.ArgumentParser(
+        description="Run PTO SrcRType family contracts"
+    )
+    parser.add_argument(
+        "--clang", required=True, help="exact Linx clang binary"
+    )
     parser.add_argument("--lld", required=True, help="exact ld.lld binary")
-    parser.add_argument("--qemu", required=True, help="exact qemu-system-linx64 binary")
-    parser.add_argument("--out-dir", help="preserve objects and per-case logs here")
+    parser.add_argument(
+        "--qemu", required=True, help="exact qemu-system-linx64 binary"
+    )
+    parser.add_argument(
+        "--out-dir", help="preserve objects and per-case logs here"
+    )
     parser.add_argument("--timeout", type=float, default=5.0)
     return parser.parse_args()
 

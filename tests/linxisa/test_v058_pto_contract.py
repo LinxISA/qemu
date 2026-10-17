@@ -582,7 +582,9 @@ class PtoV058ContractTests(unittest.TestCase):
             r"static TCGv_i64 linx_srcR_compare\(.*?\n\}", self.translate, re.S
         ).group(0)
         compare_logic = re.search(
-            r"static TCGv_i64 linx_srcR_compare_logic\(.*?\n\}", self.translate, re.S
+            r"static TCGv_i64 linx_srcR_compare_logic\(.*?\n\}",
+            self.translate,
+            re.S,
         ).group(0)
         select = re.search(
             r"static TCGv_i64 linx_srcR_select\(.*?\n\}", self.translate, re.S
