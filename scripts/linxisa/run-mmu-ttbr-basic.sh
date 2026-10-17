@@ -83,7 +83,8 @@ echo "[reloc] current ABI: HI20=$HI20_COUNT LO12=$LO12_COUNT R64=$R64_COUNT"
 
 qemu_direct_kernel_args "$OUT_O"
 echo "[run] $QEMU_BIN ${QEMU_DIRECT_KERNEL_ARGS[*]}"
-LINX_VIRT_TEST_FINISHER=1 python3 - "$TIMEOUT_SECONDS" \
+LINX_VIRT_TEST_FINISHER=1 LINX_DISABLE_TIMER_IRQ=1 \
+  python3 - "$TIMEOUT_SECONDS" \
   "$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}" <<'PY'
 import os
 import subprocess
@@ -115,7 +116,8 @@ for fault_kind in 0 1; do
     "$SRC" -o "$fault_object"
   qemu_direct_kernel_args "$fault_object"
   echo "[run] precise ACR2 $fault_name page fault"
-  LINX_VIRT_TEST_FINISHER=1 python3 - "$TIMEOUT_SECONDS" \
+  LINX_VIRT_TEST_FINISHER=1 LINX_DISABLE_TIMER_IRQ=1 \
+    python3 - "$TIMEOUT_SECONDS" \
     "$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}" <<'PY'
 import os
 import subprocess
@@ -186,7 +188,8 @@ expect_unsupported_reloc() {
   qemu_direct_kernel_args "$object"
   echo "[run-negative] unsupported $label at matching opcode site"
   set +e
-  BAD_OUTPUT="$(LINX_VIRT_TEST_FINISHER=1 python3 - "$TIMEOUT_SECONDS" \
+  BAD_OUTPUT="$(LINX_VIRT_TEST_FINISHER=1 LINX_DISABLE_TIMER_IRQ=1 \
+    python3 - "$TIMEOUT_SECONDS" \
     "$QEMU_BIN" "${QEMU_DIRECT_KERNEL_ARGS[@]}" 2>&1 <<'PY'
 import os
 import subprocess

@@ -32,6 +32,9 @@ class PtoV058ContractTests(unittest.TestCase):
         cls.iommu_runner = (ROOT / "scripts/linxisa/run-iommu-tile-basic.sh").read_text(
             encoding="utf-8"
         )
+        cls.mmu_runner = (
+            ROOT / "scripts/linxisa/run-mmu-ttbr-basic.sh"
+        ).read_text(encoding="utf-8")
         cls.atomic_runner = (
             ROOT / "scripts/linxisa/run-scalar-atomic-reservation-contract.sh"
         ).read_text(encoding="utf-8")
@@ -375,6 +378,20 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertNotIn("GETPC()", tile_probe)
 
         for signature in (
+            "static inline uint32_t linx_tile_mem_read",
+            "static inline uint64_t linx_tile_mem_read64",
+            "static inline void linx_tile_mem_write",
+            "static inline void linx_tile_mem_write64",
+        ):
+            body = re.search(
+                rf"{signature}\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("uintptr_t ra", body)
+            self.assertNotIn("GETPC()", body)
+
+        for signature in (
             "static inline uint64_t linx_frame_loadq_cached_or_fallback",
             "static bool linx_frame_restore_prepare_page_fast",
             "static int linx_frame_restore_prepare",
@@ -471,6 +488,7 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("FEXIT [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
         self.assertIn("FRET.RA [a2 ~ a2], sp!, 8", self.atomic_fault_fixture)
         self.assertIn(".Lfault_frame", self.atomic_fault_fixture)
+        self.assertIn("LINX_DISABLE_TIMER_IRQ=1", self.mmu_runner)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)

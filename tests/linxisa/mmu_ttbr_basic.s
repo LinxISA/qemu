@@ -54,7 +54,7 @@ high_entry:
   setc.ne a4, zero
   C.BSTOP
 
- .if FAULT_KIND != 2
+ .if FAULT_KIND < 0 || FAULT_KIND >= 3
   # Exercise ordinary TLSU through the active CPU MMU.  Both buffers live in
   # the high alias page mapped by TTBR1; an IOMMU/physical-mask shortcut would
   # access an unrelated physical address and fail this result check.
