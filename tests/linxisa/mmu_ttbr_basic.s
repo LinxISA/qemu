@@ -161,6 +161,7 @@ high_entry:
   addi a1, .Lfault_load_va, ->a1
   ldi [a1, 0], ->a1
   addi a1, 1, ->a1
+.Lfault_atomic:
   LR.W [a1], ->a2
   C.BSTOP
 
@@ -176,6 +177,7 @@ high_entry:
   ldi [a1, 0], ->a1
   addi a1, 1, ->a1
   addi zero, 1, ->a2
+.Lfault_atomic:
   SW.ADD [a1], a2
   C.BSTOP
 
@@ -187,6 +189,7 @@ high_entry:
   LR.W [a0], ->a2
   addi a0, 1, ->a1
   addi zero, 1, ->a2
+.Lfault_atomic:
   SC.W [a1], a2, ->a3
   C.BSTOP
 
@@ -205,7 +208,28 @@ high_entry:
   C.BSTOP
 .endif
 
-.if FAULT_KIND >= 0
+.if FAULT_KIND == 3 || FAULT_KIND == 4 || FAULT_KIND == 5
+  # The handler repairs the operand and resumes at the exact faulting TPC.
+  # Reaching here proves the same instruction was reissued successfully.
+  C.BSTART COND, .Ltrap_fail
+  addi zero, 1, ->a0
+  xor a6, a0, ->a0
+  lwi [a1, 0], ->a2
+  .if FAULT_KIND == 4
+  addi zero, 2, ->a4
+  .else
+  addi zero, 1, ->a4
+  .endif
+  xor a2, a4, ->a2
+  or a0, a2, ->a0
+  .if FAULT_KIND == 5
+  # The retried SC must be a monitor miss, with no second fault or store.
+  xori a3, 1, ->a3
+  or a0, a3, ->a0
+  .endif
+  setc.ne a0, zero
+  C.BSTOP
+.elseif FAULT_KIND >= 0
   # Reaching the following block means the unmapped access did not fault.
   C.BSTART DIRECT, .Ltrap_fail
   C.BSTOP
@@ -284,6 +308,16 @@ high_entry:
   andi a0, 63, ->a0
   addi zero, 34, ->a1
   xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting LR.W in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
   addtpc .Lhigh_base, ->a1
   addi a1, .Lhigh_base, ->a1
   ldi [a1, 0], ->a1
@@ -294,6 +328,14 @@ high_entry:
   SC.W [a1], a2, ->a3
   or a0, a3, ->a0
   setc.ne a0, zero
+  C.BSTOP
+  C.BSTART
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
   C.BSTOP
 
 .elseif FAULT_KIND == 4
@@ -302,6 +344,16 @@ high_entry:
   andi a0, 63, ->a0
   addi zero, 34, ->a1
   xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting SW.ADD in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
   addtpc .Lhigh_base, ->a1
   addi a1, .Lhigh_base, ->a1
   ldi [a1, 0], ->a1
@@ -313,6 +365,14 @@ high_entry:
   or a0, a3, ->a0
   setc.ne a0, zero
   C.BSTOP
+  C.BSTART
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
+  C.BSTOP
 
 .elseif FAULT_KIND == 5
   C.BSTART COND, .Ltrap_fail
@@ -320,6 +380,16 @@ high_entry:
   andi a0, 63, ->a0
   addi zero, 34, ->a1
   xor a0, a1, ->a0
+  # EBARG_TPC must name the exact faulting SC.W in the high alias.
+  hl.ssrget 0x1f43, ->a4
+  addtpc .Lhigh_base, ->a5
+  addi a5, .Lhigh_base, ->a5
+  ldi [a5, 0], ->a5
+  addtpc .Lfault_atomic, ->a7
+  addi a7, .Lfault_atomic, ->a7
+  add a5, a7, ->a5
+  xor a4, a5, ->a4
+  or a0, a4, ->a0
   setc.ne a0, zero
   C.BSTOP
   C.BSTART
@@ -330,10 +400,12 @@ high_entry:
   addi a2, tile_input, ->a2
   add a1, a2, ->a1
   addi zero, 1, ->a2
-  SC.W [a1], a2, ->a3
-  C.BSTOP
-  C.BSTART COND, .Ltrap_fail
-  setc.eq a3, zero
+  addi zero, 1, ->a6
+  addi zero, 1, ->a2
+  hl.ssrget 0x1f43, ->a4
+  hl.ssrset a4, 0x1f41
+  hl.ssrset a4, 0x1f43
+  acre 0
   C.BSTOP
 
 .elseif FAULT_KIND == 6

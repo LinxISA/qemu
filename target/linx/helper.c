@@ -8015,12 +8015,12 @@ static inline bool linx_lr_matches_granule(const CPULinxState *env,
            linx_reservation_granule(addr);
 }
 
-static inline void linx_enter_atomic_context(CPULinxState *env)
+static inline void linx_enter_atomic_context(CPULinxState *env, uintptr_t ra)
 {
     CPUState *cs = env_cpu(env);
 
     if (!cpu_in_serial_context(cs)) {
-        cpu_loop_exit_atomic(cs, GETPC());
+        cpu_loop_exit_atomic(cs, ra);
     }
 }
 
@@ -8066,7 +8066,9 @@ static void linx_lr_invalidate_for_write(CPULinxState *env, uint64_t addr,
 
 void HELPER(linx_prepare_gm_write)(CPULinxState *env)
 {
-    linx_enter_atomic_context(env);
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
 }
 
 void HELPER(linx_lr_invalidate_write)(CPULinxState *env, uint64_t addr,
@@ -8076,85 +8078,97 @@ void HELPER(linx_lr_invalidate_write)(CPULinxState *env, uint64_t addr,
 }
 
 static G_NORETURN void linx_raise_data_alignment(CPULinxState *env,
-                                                 uint64_t addr)
+                                                 uint64_t addr,
+                                                 uintptr_t ra)
 {
     CPUState *cs = env_cpu(env);
 
     env->pending_trap_arg0 = addr;
     env->pending_trap_cause = 0;
     cs->exception_index = LINX_EXCP_DATA_ALIGN_FAULT;
-    cpu_loop_exit_restore(cs, GETPC());
+    cpu_loop_exit_restore(cs, ra);
 }
 
 static inline void linx_require_natural_alignment(CPULinxState *env,
                                                   uint64_t addr,
-                                                  uint32_t size)
+                                                  uint32_t size,
+                                                  uintptr_t ra)
 {
     if ((addr & (size - 1u)) != 0u) {
-        linx_raise_data_alignment(env, addr);
+        linx_raise_data_alignment(env, addr, ra);
     }
 }
 
 static inline void linx_atomic_probe_rw(CPULinxState *env, uint64_t addr,
-                                        uint32_t size)
+                                        uint32_t size, uintptr_t ra)
 {
     const int mmu_idx = linx_env_mmu_index(env);
 
-    linx_enter_atomic_context(env);
-    linx_require_natural_alignment(env, addr, size);
-    (void)probe_read(env, (vaddr)addr, size, mmu_idx, GETPC());
-    (void)probe_write(env, (vaddr)addr, size, mmu_idx, GETPC());
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, size, ra);
+    (void)probe_read(env, (vaddr)addr, size, mmu_idx, ra);
+    (void)probe_write(env, (vaddr)addr, size, mmu_idx, ra);
 }
 
 uint64_t HELPER(linx_lr_w)(CPULinxState *env, uint64_t addr)
 {
-    linx_enter_atomic_context(env);
-    linx_require_natural_alignment(env, addr, 4);
-    uint32_t v = cpu_ldl_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UL), GETPC());
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, 4, ra);
+    uint32_t v = cpu_ldl_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UL), ra);
     linx_lr_set(env, addr, 4);
     return (uint64_t)(int64_t)(int32_t)v;
 }
 
 uint64_t HELPER(linx_lr_b)(CPULinxState *env, uint64_t addr)
 {
-    linx_enter_atomic_context(env);
-    linx_require_natural_alignment(env, addr, 1);
-    uint32_t v = cpu_ldb_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UB), GETPC());
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, 1, ra);
+    uint32_t v = cpu_ldb_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UB), ra);
     linx_lr_set(env, addr, 1);
     return (uint64_t)v;
 }
 
 uint64_t HELPER(linx_lr_h)(CPULinxState *env, uint64_t addr)
 {
-    linx_enter_atomic_context(env);
-    linx_require_natural_alignment(env, addr, 2);
-    uint32_t v = cpu_ldw_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UW), GETPC());
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, 2, ra);
+    uint32_t v = cpu_ldw_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UW), ra);
     linx_lr_set(env, addr, 2);
     return (uint64_t)v;
 }
 
 uint64_t HELPER(linx_lr_d)(CPULinxState *env, uint64_t addr)
 {
-    linx_enter_atomic_context(env);
-    linx_require_natural_alignment(env, addr, 8);
-    uint64_t v = cpu_ldq_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UQ), GETPC());
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, 8, ra);
+    uint64_t v = cpu_ldq_mmu((CPUArchState *)env, addr, linx_oi_le(MO_UQ), ra);
     linx_lr_set(env, addr, 8);
     return v;
 }
 
 uint64_t HELPER(linx_sc_w)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
+    const uintptr_t ra = GETPC();
+
     /*
      * SC.W returns 0 on success and non-zero on failure. PTO reservations are
      * 64-byte-granule based, independent of LR/SC byte address and width.
      * Every SC attempt clears the local monitor before a faultable store.
      */
-    linx_enter_atomic_context(env);
+    linx_enter_atomic_context(env, ra);
     uint64_t ok = linx_lr_matches_granule(env, addr) ? 0 : 1;
     linx_lr_clear(env);
     if (ok == 0) {
-        linx_require_natural_alignment(env, addr, 4);
-        cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), GETPC());
+        linx_require_natural_alignment(env, addr, 4, ra);
+        cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), ra);
         linx_lr_invalidate_for_write(env, addr, 4);
     }
     return ok;
@@ -8162,12 +8176,14 @@ uint64_t HELPER(linx_sc_w)(CPULinxState *env, uint64_t addr, uint32_t value)
 
 uint64_t HELPER(linx_sc_b)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_enter_atomic_context(env);
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
     uint64_t ok = linx_lr_matches_granule(env, addr) ? 0 : 1;
     linx_lr_clear(env);
     if (ok == 0) {
-        linx_require_natural_alignment(env, addr, 1);
-        cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), GETPC());
+        linx_require_natural_alignment(env, addr, 1, ra);
+        cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), ra);
         linx_lr_invalidate_for_write(env, addr, 1);
     }
     return ok;
@@ -8175,12 +8191,14 @@ uint64_t HELPER(linx_sc_b)(CPULinxState *env, uint64_t addr, uint32_t value)
 
 uint64_t HELPER(linx_sc_h)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_enter_atomic_context(env);
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
     uint64_t ok = linx_lr_matches_granule(env, addr) ? 0 : 1;
     linx_lr_clear(env);
     if (ok == 0) {
-        linx_require_natural_alignment(env, addr, 2);
-        cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), GETPC());
+        linx_require_natural_alignment(env, addr, 2, ra);
+        cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), ra);
         linx_lr_invalidate_for_write(env, addr, 2);
     }
     return ok;
@@ -8188,12 +8206,14 @@ uint64_t HELPER(linx_sc_h)(CPULinxState *env, uint64_t addr, uint32_t value)
 
 uint64_t HELPER(linx_sc_d)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
-    linx_enter_atomic_context(env);
+    const uintptr_t ra = GETPC();
+
+    linx_enter_atomic_context(env, ra);
     uint64_t ok = linx_lr_matches_granule(env, addr) ? 0 : 1;
     linx_lr_clear(env);
     if (ok == 0) {
-        linx_require_natural_alignment(env, addr, 8);
-        cpu_stq_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UQ), GETPC());
+        linx_require_natural_alignment(env, addr, 8, ra);
+        cpu_stq_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UQ), ra);
         linx_lr_invalidate_for_write(env, addr, 8);
     }
     return ok;
@@ -8242,13 +8262,15 @@ uint64_t HELPER(linx_swapw)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     uint32_t old;
 
-    linx_atomic_probe_rw(env, addr, 4);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 4, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldl_le_data(env, (abi_ptr)addr);
         cpu_stl_le_data(env, (abi_ptr)addr, value);
     } else {
         old = cpu_atomic_xchgl_le_mmu((CPUArchState *)env, addr, value,
-                                      linx_oi_le(MO_UL), GETPC());
+                                      linx_oi_le(MO_UL), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 4);
     return (uint64_t)(int64_t)(int32_t)old;
@@ -8258,13 +8280,15 @@ uint64_t HELPER(linx_swapb)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     uint8_t old;
 
-    linx_atomic_probe_rw(env, addr, 1);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 1, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldub_data(env, (abi_ptr)addr);
         cpu_stb_data(env, (abi_ptr)addr, (uint8_t)value);
     } else {
         old = cpu_atomic_xchgb_mmu((CPUArchState *)env, addr, value,
-                                   linx_oi_le(MO_UB), GETPC());
+                                   linx_oi_le(MO_UB), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 1);
     return (uint64_t)old;
@@ -8274,13 +8298,15 @@ uint64_t HELPER(linx_swaph)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     uint16_t old;
 
-    linx_atomic_probe_rw(env, addr, 2);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 2, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_lduw_le_data(env, (abi_ptr)addr);
         cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)value);
     } else {
         old = cpu_atomic_xchgw_le_mmu((CPUArchState *)env, addr, value,
-                                      linx_oi_le(MO_UW), GETPC());
+                                      linx_oi_le(MO_UW), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 2);
     return (uint64_t)old;
@@ -8290,13 +8316,15 @@ uint64_t HELPER(linx_swapd)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     uint64_t old;
 
-    linx_atomic_probe_rw(env, addr, 8);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 8, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldq_le_data(env, (abi_ptr)addr);
         cpu_stq_le_data(env, (abi_ptr)addr, value);
     } else {
         old = cpu_atomic_xchgq_le_mmu((CPUArchState *)env, addr, value,
-                                      linx_oi_le(MO_UQ), GETPC());
+                                      linx_oi_le(MO_UQ), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 8);
     return old;
@@ -8306,13 +8334,15 @@ uint64_t HELPER(linx_lw_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
     uint32_t old;
 
-    linx_atomic_probe_rw(env, addr, 4);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 4, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldl_le_data(env, (abi_ptr)addr);
         cpu_stl_le_data(env, (abi_ptr)addr, (uint32_t)(old + value));
     } else {
         old = cpu_atomic_fetch_addl_le_mmu((CPUArchState *)env, addr, value,
-                                           linx_oi_le(MO_UL), GETPC());
+                                           linx_oi_le(MO_UL), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 4);
     return (uint64_t)(int64_t)(int32_t)old;
@@ -8322,13 +8352,14 @@ uint64_t HELPER(linx_lw_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 { \
     uint32_t old; \
-    linx_atomic_probe_rw(env, addr, 4); \
+    const uintptr_t ra = GETPC(); \
+    linx_atomic_probe_rw(env, addr, 4, ra); \
     if (cpu_in_serial_context(env_cpu(env))) { \
         old = cpu_ldl_le_data(env, (abi_ptr)addr); \
         cpu_stl_le_data(env, (abi_ptr)addr, \
                         (uint32_t)linx_atomic_apply((AOP), old, value, 4)); \
     } else { \
-        old = cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+        old = cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, ra); \
     } \
     linx_lr_invalidate_for_write(env, addr, 4); \
     return (uint64_t)(int64_t)(int32_t)old; \
@@ -8338,13 +8369,14 @@ uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
 { \
     uint64_t old; \
-    linx_atomic_probe_rw(env, addr, 8); \
+    const uintptr_t ra = GETPC(); \
+    linx_atomic_probe_rw(env, addr, 8, ra); \
     if (cpu_in_serial_context(env_cpu(env))) { \
         old = cpu_ldq_le_data(env, (abi_ptr)addr); \
         cpu_stq_le_data(env, (abi_ptr)addr, \
                         linx_atomic_apply((AOP), old, value, 8)); \
     } else { \
-        old = cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+        old = cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, ra); \
     } \
     linx_lr_invalidate_for_write(env, addr, 8); \
     return old; \
@@ -8353,13 +8385,14 @@ uint64_t HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
 #define LINX_DEFINE_STORE32_HELPER(NAME, OP, OI, AOP) \
 void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 { \
-    linx_atomic_probe_rw(env, addr, 4); \
+    const uintptr_t ra = GETPC(); \
+    linx_atomic_probe_rw(env, addr, 4, ra); \
     if (cpu_in_serial_context(env_cpu(env))) { \
         const uint32_t old = cpu_ldl_le_data(env, (abi_ptr)addr); \
         cpu_stl_le_data(env, (abi_ptr)addr, \
                         (uint32_t)linx_atomic_apply((AOP), old, value, 4)); \
     } else { \
-        (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+        (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, ra); \
     } \
     linx_lr_invalidate_for_write(env, addr, 4); \
 }
@@ -8367,13 +8400,14 @@ void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint32_t value) \
 #define LINX_DEFINE_STORE64_HELPER(NAME, OP, OI, AOP) \
 void HELPER(linx_##NAME)(CPULinxState *env, uint64_t addr, uint64_t value) \
 { \
-    linx_atomic_probe_rw(env, addr, 8); \
+    const uintptr_t ra = GETPC(); \
+    linx_atomic_probe_rw(env, addr, 8, ra); \
     if (cpu_in_serial_context(env_cpu(env))) { \
         const uint64_t old = cpu_ldq_le_data(env, (abi_ptr)addr); \
         cpu_stq_le_data(env, (abi_ptr)addr, \
                         linx_atomic_apply((AOP), old, value, 8)); \
     } else { \
-        (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, GETPC()); \
+        (void)cpu_atomic_##OP((CPUArchState *)env, addr, value, OI, ra); \
     } \
     linx_lr_invalidate_for_write(env, addr, 8); \
 }
@@ -8432,76 +8466,88 @@ LINX_DEFINE_STORE64_HELPER(sd_umin, fetch_uminq_le_mmu, linx_oi_le(MO_UQ), LINX_
 
 void HELPER(linx_sw_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_atomic_probe_rw(env, addr, 4);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 4, ra);
     LINX_STORE_OP_SERIAL(cpu_ldl_le_data, cpu_stl_le_data, uint32_t)
     (void)cpu_atomic_fetch_addl_le_mmu((CPUArchState *)env, addr,
                                        (uint32_t)(0u - value),
-                                       linx_oi_le(MO_UL), GETPC());
+                                       linx_oi_le(MO_UL), ra);
     linx_lr_invalidate_for_write(env, addr, 4);
 }
 
 void HELPER(linx_sd_sub)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
-    linx_atomic_probe_rw(env, addr, 8);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 8, ra);
     LINX_STORE_OP_SERIAL(cpu_ldq_le_data, cpu_stq_le_data, uint64_t)
     (void)cpu_atomic_fetch_addq_le_mmu((CPUArchState *)env, addr,
                                        0ull - value,
-                                       linx_oi_le(MO_UQ), GETPC());
+                                       linx_oi_le(MO_UQ), ra);
     linx_lr_invalidate_for_write(env, addr, 8);
 }
 
 void HELPER(linx_sb_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_atomic_probe_rw(env, addr, 1);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 1, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         const uint8_t old = cpu_ldub_data(env, (abi_ptr)addr);
         cpu_stb_data(env, (abi_ptr)addr, (uint8_t)(old + value));
     } else {
         (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
                                         (uint8_t)value,
-                                        linx_oi_le(MO_UB), GETPC());
+                                        linx_oi_le(MO_UB), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 1);
 }
 
 void HELPER(linx_sb_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_atomic_probe_rw(env, addr, 1);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 1, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         const uint8_t old = cpu_ldub_data(env, (abi_ptr)addr);
         cpu_stb_data(env, (abi_ptr)addr, (uint8_t)(old - value));
     } else {
         (void)cpu_atomic_fetch_addb_mmu((CPUArchState *)env, addr,
                                         (uint8_t)(0u - value),
-                                        linx_oi_le(MO_UB), GETPC());
+                                        linx_oi_le(MO_UB), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 1);
 }
 
 void HELPER(linx_sh_add)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_atomic_probe_rw(env, addr, 2);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 2, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         const uint16_t old = cpu_lduw_le_data(env, (abi_ptr)addr);
         cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)(old + value));
     } else {
         (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
                                            (uint16_t)value,
-                                           linx_oi_le(MO_UW), GETPC());
+                                           linx_oi_le(MO_UW), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 2);
 }
 
 void HELPER(linx_sh_sub)(CPULinxState *env, uint64_t addr, uint32_t value)
 {
-    linx_atomic_probe_rw(env, addr, 2);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 2, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         const uint16_t old = cpu_lduw_le_data(env, (abi_ptr)addr);
         cpu_stw_le_data(env, (abi_ptr)addr, (uint16_t)(old - value));
     } else {
         (void)cpu_atomic_fetch_addw_le_mmu((CPUArchState *)env, addr,
                                            (uint16_t)(0u - value),
-                                           linx_oi_le(MO_UW), GETPC());
+                                           linx_oi_le(MO_UW), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 2);
 }
@@ -8510,13 +8556,15 @@ uint64_t HELPER(linx_ld_add)(CPULinxState *env, uint64_t addr, uint64_t value)
 {
     uint64_t old;
 
-    linx_atomic_probe_rw(env, addr, 8);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 8, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldq_le_data(env, (abi_ptr)addr);
         cpu_stq_le_data(env, (abi_ptr)addr, old + value);
     } else {
         old = cpu_atomic_fetch_addq_le_mmu((CPUArchState *)env, addr, value,
-                                           linx_oi_le(MO_UQ), GETPC());
+                                           linx_oi_le(MO_UQ), ra);
     }
     linx_lr_invalidate_for_write(env, addr, 8);
     return old;
@@ -8526,7 +8574,9 @@ uint64_t HELPER(linx_casb)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
 {
     uint8_t old;
 
-    linx_atomic_probe_rw(env, addr, 1);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 1, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldub_data(env, (abi_ptr)addr);
         if (old == (uint8_t)cmpv) {
@@ -8535,7 +8585,7 @@ uint64_t HELPER(linx_casb)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
     } else {
         old = cpu_atomic_cmpxchgb_mmu((CPUArchState *)env, addr,
                                       (uint8_t)cmpv, (uint8_t)newv,
-                                      linx_oi_le(MO_UB), GETPC());
+                                      linx_oi_le(MO_UB), ra);
     }
     if (old == (uint8_t)cmpv) {
         linx_lr_invalidate_for_write(env, addr, 1);
@@ -8547,7 +8597,9 @@ uint64_t HELPER(linx_cash)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
 {
     uint16_t old;
 
-    linx_atomic_probe_rw(env, addr, 2);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 2, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_lduw_le_data(env, (abi_ptr)addr);
         if (old == (uint16_t)cmpv) {
@@ -8556,7 +8608,7 @@ uint64_t HELPER(linx_cash)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
     } else {
         old = cpu_atomic_cmpxchgw_le_mmu((CPUArchState *)env, addr,
                                          (uint16_t)cmpv, (uint16_t)newv,
-                                         linx_oi_le(MO_UW), GETPC());
+                                         linx_oi_le(MO_UW), ra);
     }
     if (old == (uint16_t)cmpv) {
         linx_lr_invalidate_for_write(env, addr, 2);
@@ -8568,7 +8620,9 @@ uint64_t HELPER(linx_casw)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
 {
     uint32_t old;
 
-    linx_atomic_probe_rw(env, addr, 4);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 4, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldl_le_data(env, (abi_ptr)addr);
         if (old == cmpv) {
@@ -8577,7 +8631,7 @@ uint64_t HELPER(linx_casw)(CPULinxState *env, uint64_t addr, uint32_t cmpv, uint
     } else {
         old = cpu_atomic_cmpxchgl_le_mmu((CPUArchState *)env, addr,
                                          cmpv, newv,
-                                         linx_oi_le(MO_UL), GETPC());
+                                         linx_oi_le(MO_UL), ra);
     }
     if (old == cmpv) {
         linx_lr_invalidate_for_write(env, addr, 4);
@@ -8589,7 +8643,9 @@ uint64_t HELPER(linx_casd)(CPULinxState *env, uint64_t addr, uint64_t cmpv, uint
 {
     uint64_t old;
 
-    linx_atomic_probe_rw(env, addr, 8);
+    const uintptr_t ra = GETPC();
+
+    linx_atomic_probe_rw(env, addr, 8, ra);
     if (cpu_in_serial_context(env_cpu(env))) {
         old = cpu_ldq_le_data(env, (abi_ptr)addr);
         if (old == cmpv) {
@@ -8598,7 +8654,7 @@ uint64_t HELPER(linx_casd)(CPULinxState *env, uint64_t addr, uint64_t cmpv, uint
     } else {
         old = cpu_atomic_cmpxchgq_le_mmu((CPUArchState *)env, addr,
                                          cmpv, newv,
-                                         linx_oi_le(MO_UQ), GETPC());
+                                         linx_oi_le(MO_UQ), ra);
     }
     if (old == cmpv) {
         linx_lr_invalidate_for_write(env, addr, 8);
@@ -8607,7 +8663,8 @@ uint64_t HELPER(linx_casd)(CPULinxState *env, uint64_t addr, uint64_t cmpv, uint
 }
 
 static void linx_probe_data_range(CPULinxState *env, uint64_t addr,
-                                  uint32_t size, bool is_write)
+                                  uint32_t size, bool is_write,
+                                  uintptr_t ra)
 {
     const int mmu_idx = linx_env_mmu_index(env);
     uint32_t done = 0;
@@ -8619,9 +8676,9 @@ static void linx_probe_data_range(CPULinxState *env, uint64_t addr,
         const uint32_t chunk = MIN(size - done, page_remaining);
 
         if (is_write) {
-            (void)probe_write(env, (vaddr)current, chunk, mmu_idx, GETPC());
+            (void)probe_write(env, (vaddr)current, chunk, mmu_idx, ra);
         } else {
-            (void)probe_read(env, (vaddr)current, chunk, mmu_idx, GETPC());
+            (void)probe_read(env, (vaddr)current, chunk, mmu_idx, ra);
         }
         done += chunk;
     }
@@ -8630,10 +8687,11 @@ static void linx_probe_data_range(CPULinxState *env, uint64_t addr,
 void HELPER(linx_dma)(CPULinxState *env, uint64_t src, uint64_t dst)
 {
     uint8_t buf[64];
+    const uintptr_t ra = GETPC();
 
-    linx_enter_atomic_context(env);
-    linx_probe_data_range(env, src, sizeof(buf), false);
-    linx_probe_data_range(env, dst, sizeof(buf), true);
+    linx_enter_atomic_context(env, ra);
+    linx_probe_data_range(env, src, sizeof(buf), false, ra);
+    linx_probe_data_range(env, dst, sizeof(buf), true, ra);
     for (unsigned i = 0; i < sizeof(buf); i++) {
         buf[i] = cpu_ldub_data(env, (abi_ptr)(src + i));
     }
@@ -10326,12 +10384,13 @@ static inline void linx_frame_storeq_after_probe(CPULinxState *env,
                                                  uint64_t addr,
                                                  uint64_t value,
                                                  int mmu_idx,
-                                                 void *host)
+                                                 void *host,
+                                                 uintptr_t ra)
 {
     if (likely(host != NULL)) {
         stq_le_p(host, value);
     } else {
-        cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, value, mmu_idx, GETPC());
+        cpu_stq_le_mmuidx_ra(env, (abi_ptr)addr, value, mmu_idx, ra);
     }
     linx_lr_invalidate_for_write(env, addr, 8);
 }
@@ -10556,7 +10615,8 @@ static bool linx_template_fentry_single_reg_fast(CPULinxState *env,
                                                  uint64_t new_sp,
                                                  int mmu_idx,
                                                  bool frame_stats,
-                                                 bool chain)
+                                                 bool chain,
+                                                 uintptr_t ra)
 {
     if (!linx_frame_single_reg_fast_enabled_p() ||
         !linx_frame_single_reg_fast_shape(reg, reg, stacksize)) {
@@ -10564,7 +10624,7 @@ static bool linx_template_fentry_single_reg_fast(CPULinxState *env,
     }
 
     const uint64_t addr = new_sp + stacksize - 8;
-    void *host = probe_write(env, (vaddr)addr, 8, mmu_idx, GETPC());
+    void *host = probe_write(env, (vaddr)addr, 8, mmu_idx, ra);
 
     if (frame_stats) {
         linx_frame_stat_fentry_save_probes++;
@@ -10581,7 +10641,7 @@ static bool linx_template_fentry_single_reg_fast(CPULinxState *env,
 
     const uint64_t v = env->gpr[reg];
     linx_trace_mem(env, true, addr, v, 0, 8);
-    linx_frame_storeq_after_probe(env, addr, v, mmu_idx, host);
+    linx_frame_storeq_after_probe(env, addr, v, mmu_idx, host, ra);
     if (frame_stats) {
         linx_frame_stat_fentry_save_slots++;
         if (host != NULL) {
@@ -10615,7 +10675,8 @@ static bool linx_template_fentry_page_fast(CPULinxState *env,
                                            int mmu_idx,
                                            int count,
                                            bool frame_stats,
-                                           bool chain)
+                                           bool chain,
+                                           uintptr_t ra)
 {
     const int begin = (int)reg_begin;
     const int end = (int)reg_end;
@@ -10633,7 +10694,7 @@ static bool linx_template_fentry_page_fast(CPULinxState *env,
     }
 
     uint8_t *host = probe_write(env, (vaddr)low_addr, (int)bytes, mmu_idx,
-                                GETPC());
+                                ra);
     if (host == NULL) {
         return false;
     }
@@ -10800,9 +10861,9 @@ static inline void linx_extctx_write_byte(CPULinxState *env, uint64_t off, uint8
 static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
                                       uint64_t next_pc, uint32_t reg_begin,
                                       uint32_t reg_end, uint64_t stacksize,
-                                      bool chain)
+                                      bool chain, uintptr_t ra)
 {
-    linx_enter_atomic_context(env);
+    linx_enter_atomic_context(env, ra);
 
     CPUState *cs = env_cpu(env);
     const uint64_t adj = stacksize;
@@ -10827,13 +10888,14 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
         linx_template_fentry_single_reg_fast(env, cs, cur_pc, next_pc,
                                              reg_begin, stacksize, old_sp,
                                              new_sp, mmu_idx, frame_stats,
-                                             chain)) {
+                                             chain, ra)) {
         return;
     }
     if (!fentry_trace_enabled &&
         linx_template_fentry_page_fast(env, cs, cur_pc, next_pc, reg_begin,
                                        reg_end, stacksize, old_sp, new_sp,
-                                       mmu_idx, count, frame_stats, chain)) {
+                                       mmu_idx, count, frame_stats, chain,
+                                       ra)) {
         return;
     }
 
@@ -10858,7 +10920,7 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
             if (reg != LINX_REG_ZERO && reg < LINX_GPR_COUNT) {
                 const uint64_t addr = new_sp + (uint64_t)off;
                 save_hosts[reg] = probe_write(env, (vaddr)addr, 8, mmu_idx,
-                                              GETPC());
+                                              ra);
                 if (frame_stats) {
                     linx_frame_stat_fentry_save_probes++;
                 }
@@ -10905,7 +10967,7 @@ static void linx_template_fentry_impl(CPULinxState *env, uint64_t cur_pc,
                 const uint64_t v = env->gpr[reg];
                 linx_trace_mem(env, true, addr, v, 0, 8);
                 linx_frame_storeq_after_probe(env, addr, v, mmu_idx,
-                                              save_hosts[reg]);
+                                              save_hosts[reg], ra);
                 if (frame_stats) {
                     linx_frame_stat_fentry_save_slots++;
                     if (save_hosts[reg] != NULL) {
@@ -10946,8 +11008,10 @@ void HELPER(linx_template_fentry)(CPULinxState *env, uint64_t cur_pc,
                                   uint64_t next_pc, uint32_t reg_begin,
                                   uint32_t reg_end, uint64_t stacksize)
 {
+    const uintptr_t ra = GETPC();
+
     linx_template_fentry_impl(env, cur_pc, next_pc, reg_begin, reg_end,
-                              stacksize, false);
+                              stacksize, false, ra);
     g_assert_not_reached();
 }
 
@@ -10955,8 +11019,10 @@ void HELPER(linx_template_fentry_chain)(CPULinxState *env, uint64_t cur_pc,
                                         uint64_t next_pc, uint32_t reg_begin,
                                         uint32_t reg_end, uint64_t stacksize)
 {
+    const uintptr_t ra = GETPC();
+
     linx_template_fentry_impl(env, cur_pc, next_pc, reg_begin, reg_end,
-                              stacksize, true);
+                              stacksize, true, ra);
 }
 
 static void linx_template_fexit_impl(CPULinxState *env, uint64_t cur_pc,
@@ -11203,6 +11269,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
                                 uint32_t op0, uint32_t op1, uint64_t op2)
 {
     CPUState *cs = env_cpu(env);
+    const uintptr_t ra = GETPC();
 
     if (env->tmpl_pc != cur_pc || env->tmpl_kind != kind) {
         env->tmpl_pc = cur_pc;
@@ -11279,7 +11346,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             linx_trace_mem_clear(env);
             linx_template_commit_and_exit(env, cs, env->pc);
         }
-        linx_enter_atomic_context(env);
+        linx_enter_atomic_context(env, ra);
 
         /*
          * One restartable step per helper invocation so commit-tracing can
@@ -11300,20 +11367,20 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
         uint64_t v = 0;
         switch (sz) {
         case 8:
-            v = cpu_ldq_le_data(env, (abi_ptr)src);
-            cpu_stq_le_data(env, (abi_ptr)dst, v);
+            v = cpu_ldq_le_data_ra(env, (abi_ptr)src, ra);
+            cpu_stq_le_data_ra(env, (abi_ptr)dst, v, ra);
             break;
         case 4:
-            v = cpu_ldl_le_data(env, (abi_ptr)src);
-            cpu_stl_le_data(env, (abi_ptr)dst, (uint32_t)v);
+            v = cpu_ldl_le_data_ra(env, (abi_ptr)src, ra);
+            cpu_stl_le_data_ra(env, (abi_ptr)dst, (uint32_t)v, ra);
             break;
         case 2:
-            v = cpu_lduw_le_data(env, (abi_ptr)src);
-            cpu_stw_le_data(env, (abi_ptr)dst, (uint16_t)v);
+            v = cpu_lduw_le_data_ra(env, (abi_ptr)src, ra);
+            cpu_stw_le_data_ra(env, (abi_ptr)dst, (uint16_t)v, ra);
             break;
         default:
-            v = cpu_ldub_data(env, (abi_ptr)src);
-            cpu_stb_data(env, (abi_ptr)dst, (uint8_t)v);
+            v = cpu_ldub_data_ra(env, (abi_ptr)src, ra);
+            cpu_stb_data_ra(env, (abi_ptr)dst, (uint8_t)v, ra);
             break;
         }
         linx_lr_invalidate_for_write(env, dst, sz);
@@ -11351,7 +11418,7 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             linx_trace_mem_clear(env);
             linx_template_commit_and_exit(env, cs, env->pc);
         }
-        linx_enter_atomic_context(env);
+        linx_enter_atomic_context(env, ra);
 
         if (linx_trace_capture_active(env)) {
             uint32_t sz = 1;
@@ -11369,16 +11436,16 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             }
             switch (sz) {
             case 8:
-                cpu_stq_le_data(env, (abi_ptr)dst, pat);
+                cpu_stq_le_data_ra(env, (abi_ptr)dst, pat, ra);
                 break;
             case 4:
-                cpu_stl_le_data(env, (abi_ptr)dst, (uint32_t)pat);
+                cpu_stl_le_data_ra(env, (abi_ptr)dst, (uint32_t)pat, ra);
                 break;
             case 2:
-                cpu_stw_le_data(env, (abi_ptr)dst, (uint16_t)pat);
+                cpu_stw_le_data_ra(env, (abi_ptr)dst, (uint16_t)pat, ra);
                 break;
             default:
-                cpu_stb_data(env, (abi_ptr)dst, (uint8_t)pat);
+                cpu_stb_data_ra(env, (abi_ptr)dst, (uint8_t)pat, ra);
                 break;
             }
             linx_lr_invalidate_for_write(env, dst, sz);
@@ -11402,12 +11469,12 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
             host = tlb_vaddr_to_host(env, (vaddr)dst, MMU_DATA_STORE, mmu_idx);
 #ifndef CONFIG_USER_ONLY
             if (unlikely(!host)) {
-                cpu_stb_mmuidx_ra(env, (abi_ptr)dst, v, mmu_idx, GETPC());
+                cpu_stb_mmuidx_ra(env, (abi_ptr)dst, v, mmu_idx, ra);
                 sz = 1;
             } else
 #endif
             {
-                set_helper_retaddr(GETPC());
+                set_helper_retaddr(ra);
                 memset(host, v, sz);
                 clear_helper_retaddr();
             }
@@ -11462,13 +11529,13 @@ void HELPER(linx_template_step)(CPULinxState *env, uint32_t kind,
          * restart semantics deterministic (idempotent on restart).
          */
         if (kind == LINX_TEMPLATE_ESAVE) {
-            linx_enter_atomic_context(env);
+            linx_enter_atomic_context(env, ra);
             byte = linx_extctx_byte(env, ext_kind, off);
-            cpu_stb_data(env, (abi_ptr)addr, byte);
+            cpu_stb_data_ra(env, (abi_ptr)addr, byte, ra);
             linx_lr_invalidate_for_write(env, addr, 1);
             linx_trace_mem(env, true, addr, byte, 0, 1);
         } else {
-            byte = cpu_ldub_data(env, (abi_ptr)addr);
+            byte = cpu_ldub_data_ra(env, (abi_ptr)addr, ra);
             linx_trace_mem(env, false, addr, 0, byte, 1);
             linx_extctx_write_byte(env, off, byte);
         }
@@ -11804,7 +11871,8 @@ static inline void linx_tile_mem_write64(CPULinxState *env, uint64_t addr,
 
 static inline uint64_t linx_tile_mem_cmpxchg(CPULinxState *env, uint64_t addr,
                                              unsigned elem_bytes,
-                                             uint64_t cmpv, uint64_t newv)
+                                             uint64_t cmpv, uint64_t newv,
+                                             uintptr_t ra)
 {
     hwaddr pa;
     if (!linx_iommu_translate(env, addr, true, &pa)) {
@@ -11825,22 +11893,22 @@ static inline uint64_t linx_tile_mem_cmpxchg(CPULinxState *env, uint64_t addr,
     case 1u:
         old = cpu_atomic_cmpxchgb_mmu((CPUArchState *)env, addr,
                                       (uint8_t)cmpv, (uint8_t)newv,
-                                      linx_oi_le(MO_UB), GETPC());
+                                      linx_oi_le(MO_UB), ra);
         break;
     case 2u:
         old = cpu_atomic_cmpxchgw_le_mmu((CPUArchState *)env, addr,
                                          (uint16_t)cmpv, (uint16_t)newv,
-                                         linx_oi_le(MO_UW), GETPC());
+                                         linx_oi_le(MO_UW), ra);
         break;
     case 4u:
         old = cpu_atomic_cmpxchgl_le_mmu((CPUArchState *)env, addr,
                                          cmpv, newv,
-                                         linx_oi_le(MO_UL), GETPC());
+                                         linx_oi_le(MO_UL), ra);
         break;
     case 8u:
         old = cpu_atomic_cmpxchgq_le_mmu((CPUArchState *)env, addr,
                                          cmpv, newv,
-                                         linx_oi_le(MO_UQ), GETPC());
+                                         linx_oi_le(MO_UQ), ra);
         break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
@@ -16574,7 +16642,7 @@ static void linx_tile_mscatter_common(CPULinxState *env, unsigned data_tile,
 static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
                                   unsigned offset_tile, unsigned expected_tile,
                                   unsigned desired_tile, unsigned addr_reg,
-                                  unsigned size_code)
+                                  unsigned size_code, uintptr_t ra)
 {
     uint32_t row = 0, col = 0, valid_row = 0, valid_col = 0, lane_count = 0;
     unsigned elem_bytes = 0;
@@ -16613,7 +16681,7 @@ static void linx_tile_mgather_cas(CPULinxState *env, unsigned dst_tile,
                 old_value = linx_tile_mem_cmpxchg(env,
                                                   base + off,
                                                   elem_bytes,
-                                                  expected, desired);
+                                                  expected, desired, ra);
             } else {
                 const uint32_t seed = lane ^ (uint32_t)base ^ (env->tile_attr_raw << 8);
                 old_value = linx_tile_pad_value(env->tile_attr_pad, env->tile_dtype,
@@ -16700,7 +16768,8 @@ static bool linx_tile_gm_index_dtype_supported(uint32_t dtype)
 }
 
 static bool linx_tile_mem_preflight(CPULinxState *env, uint64_t addr,
-                                    unsigned elem_bytes, bool write)
+                                    unsigned elem_bytes, bool write,
+                                    uintptr_t ra)
 {
     if (elem_bytes == 0u || addr > UINT64_MAX - (elem_bytes - 1u)) {
         return false;
@@ -16725,11 +16794,11 @@ static bool linx_tile_mem_preflight(CPULinxState *env, uint64_t addr,
     }
 
     const int mmu_idx = linx_env_mmu_index(env);
-    if (probe_read(env, (vaddr)addr, elem_bytes, mmu_idx, GETPC()) == NULL) {
+    if (probe_read(env, (vaddr)addr, elem_bytes, mmu_idx, ra) == NULL) {
         return false;
     }
     return !write ||
-           probe_write(env, (vaddr)addr, elem_bytes, mmu_idx, GETPC()) != NULL;
+           probe_write(env, (vaddr)addr, elem_bytes, mmu_idx, ra) != NULL;
 }
 
 static bool linx_tile_gm_address(uint64_t base, uint64_t raw_index,
@@ -16749,7 +16818,7 @@ static bool linx_tile_gm_address(uint64_t base, uint64_t raw_index,
 static uint64_t linx_tile_gm_atomic_update(CPULinxState *env, unsigned func,
                                            uint32_t dtype,
                                            unsigned elem_bytes, uint64_t addr,
-                                           uint64_t value)
+                                           uint64_t value, uintptr_t ra)
 {
     uint64_t expected = linx_tile_mem_read64(env, addr, elem_bytes);
 
@@ -16757,7 +16826,7 @@ static uint64_t linx_tile_gm_atomic_update(CPULinxState *env, unsigned func,
         const uint64_t desired = linx_tlsu_gm_update(
             env, func, dtype, elem_bytes, expected, value);
         const uint64_t observed = linx_tile_mem_cmpxchg(
-            env, addr, elem_bytes, expected, desired);
+            env, addr, elem_bytes, expected, desired, ra);
         if (observed == expected) {
             return expected;
         }
@@ -16769,7 +16838,7 @@ static bool linx_tile_gm_atom_red(CPULinxState *env, unsigned func,
                                   unsigned output_tile,
                                   const unsigned *sources,
                                   unsigned source_count, unsigned addr_reg,
-                                  unsigned size_code)
+                                  unsigned size_code, uintptr_t ra)
 {
     const bool atom = linx_tlsu_gm_atom_value(func);
     const bool popc = func == LINX_TLSU_MSCATTER_POPC;
@@ -16838,7 +16907,7 @@ static bool linx_tile_gm_atom_red(CPULinxState *env, unsigned func,
             if (!linx_tile_gm_address(base, raw_index, index_bytes,
                                       signed_index, &address) ||
                 (address & (elem_bytes - 1u)) != 0u ||
-                !linx_tile_mem_preflight(env, address, elem_bytes, true)) {
+                !linx_tile_mem_preflight(env, address, elem_bytes, true, ra)) {
                 return false;
             }
         }
@@ -16864,7 +16933,7 @@ static bool linx_tile_gm_atom_red(CPULinxState *env, unsigned func,
                 return false;
             }
             const uint64_t old = linx_tile_gm_atomic_update(
-                env, func, dtype, elem_bytes, address, value);
+                env, func, dtype, elem_bytes, address, value, ra);
             if (atom &&
                 !linx_tile_set_elem64(env, output_tile,
                                       row * env->tile_reg_cols[output_tile] + col,
@@ -17067,7 +17136,8 @@ static bool linx_tile_timg2col_profile(
     return true;
 }
 
-static bool linx_tile_timg2col_local(CPULinxState *env, bool *produced_out)
+static bool linx_tile_timg2col_local(CPULinxState *env, bool *produced_out,
+                                     uintptr_t ra)
 {
     LinxTIMG2COLParams p;
     unsigned output_tile;
@@ -17128,7 +17198,7 @@ static bool linx_tile_timg2col_local(CPULinxState *env, bool *produced_out)
                 if (gm_index > (UINT64_MAX - gm_base) / elem_bytes ||
                     !linx_tile_mem_preflight(
                         env, gm_base + gm_index * elem_bytes,
-                        elem_bytes, false)) {
+                        elem_bytes, false, ra)) {
                     return false;
                 }
             }
@@ -21563,8 +21633,10 @@ static bool linx_tile_commit_writes_gm(const CPULinxState *env)
 
 void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
 {
+    const uintptr_t ra = GETPC();
+
     if (linx_tile_commit_writes_gm(env)) {
-        linx_enter_atomic_context(env);
+        linx_enter_atomic_context(env, ra);
     }
 
     uint16_t live[LINX_TILE_HAND_COUNT];
@@ -22215,7 +22287,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                     break;
                 }
                 linx_tile_mgather_cas(env, output_tile, sources[0], sources[1],
-                                      sources[2], addr_reg, size_code);
+                                      sources[2], addr_reg, size_code, ra);
                 break;
             default:
                 g_assert_not_reached();
@@ -22280,7 +22352,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
                 }
             }
             if (!linx_tile_gm_atom_red(env, func, output_tile, sources,
-                                       source_count, addr_reg, size_code)) {
+                                       source_count, addr_reg, size_code, ra)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
@@ -22304,7 +22376,7 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
         }
         case LINX_TLSU_TIMG2COL: {
             bool produced = false;
-            if (!linx_tile_timg2col_local(env, &produced)) {
+            if (!linx_tile_timg2col_local(env, &produced, ra)) {
                 helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
                 break;
             }
@@ -24150,6 +24222,8 @@ void HELPER(linx_v_lhu_brg)(CPULinxState *env, uint32_t dst, uint32_t srcL,
 void HELPER(linx_v_sb_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
+    const uintptr_t ra = GETPC();
+
     if (local != 0) {
         HELPER(linx_v_sb_local)(env, srcD, srcL, srcR, shamt, local);
         return;
@@ -24177,14 +24251,16 @@ void HELPER(linx_v_sb_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                       base, idx, lane, shamt, addr, value, env->lc[1]);
     }
 
-    linx_enter_atomic_context(env);
-    cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), GETPC());
+    linx_enter_atomic_context(env, ra);
+    cpu_stb_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UB), ra);
     linx_lr_invalidate_for_write(env, addr, 1);
 }
 
 void HELPER(linx_v_sh_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
+    const uintptr_t ra = GETPC();
+
     if (local != 0) {
         HELPER(linx_v_sh_local)(env, srcD, srcL, srcR, shamt, local);
         return;
@@ -24212,14 +24288,16 @@ void HELPER(linx_v_sh_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                       base, idx, lane, shamt, addr, value, env->lc[1]);
     }
 
-    linx_enter_atomic_context(env);
-    cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), GETPC());
+    linx_enter_atomic_context(env, ra);
+    cpu_stw_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UW), ra);
     linx_lr_invalidate_for_write(env, addr, 2);
 }
 
 void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                            uint32_t srcR, uint32_t shamt, uint32_t local)
 {
+    const uintptr_t ra = GETPC();
+
     if (local != 0) {
         HELPER(linx_v_sw_local)(env, srcD, srcL, srcR, shamt, local);
         return;
@@ -24248,8 +24326,8 @@ void HELPER(linx_v_sw_brg)(CPULinxState *env, uint32_t srcD, uint32_t srcL,
                       base, idx, lane, shamt, addr, value, env->lc[1]);
     }
 
-    linx_enter_atomic_context(env);
-    cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), GETPC());
+    linx_enter_atomic_context(env, ra);
+    cpu_stl_mmu((CPUArchState *)env, addr, value, linx_oi_le(MO_UL), ra);
     linx_lr_invalidate_for_write(env, addr, 4);
 }
 

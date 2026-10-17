@@ -42,6 +42,9 @@ class PtoV058ContractTests(unittest.TestCase):
             ROOT
             / "scripts/linxisa/run-scalar-atomic-fault-reservation-contract.sh"
         ).read_text(encoding="utf-8")
+        cls.atomic_fault_fixture = (
+            ROOT / "tests/linxisa/mmu_ttbr_basic.s"
+        ).read_text(encoding="utf-8")
         cls.atomic_cross_pe_runner = (
             ROOT / "scripts/linxisa/run-scalar-atomic-cross-pe-contract.sh"
         ).read_text(encoding="utf-8")
@@ -270,11 +273,15 @@ class PtoV058ContractTests(unittest.TestCase):
             re.S,
         ).group(0)
         self.assertIn("linx_raise_data_alignment", align)
+        self.assertIn("uintptr_t ra", align)
+        self.assertNotIn("GETPC()", align)
         probe = re.search(
             r"static inline void linx_atomic_probe_rw\(.*?\n\}",
             self.helper,
             re.S,
         ).group(0)
+        self.assertIn("uintptr_t ra", probe)
+        self.assertNotIn("GETPC()", probe)
         self.assertLess(
             probe.index("linx_require_natural_alignment"),
             probe.index("probe_read"),
@@ -294,8 +301,11 @@ class PtoV058ContractTests(unittest.TestCase):
                 self.helper,
                 re.S,
             ).group(0)
+            self.assertIn("const uintptr_t ra = GETPC();", body)
             self.assertLess(
-                body.index(f"linx_require_natural_alignment(env, addr, {size})"),
+                body.index(
+                    f"linx_require_natural_alignment(env, addr, {size}, ra)"
+                ),
                 body.index("cpu_ld"),
             )
 
@@ -329,6 +339,50 @@ class PtoV058ContractTests(unittest.TestCase):
             tile_commit.index("memcpy(live"),
         )
 
+    def test_faultable_nested_helpers_receive_the_tcg_return_address(self) -> None:
+        align_raise = re.search(
+            r"static G_NORETURN void linx_raise_data_alignment\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("cpu_loop_exit_restore(cs, ra)", align_raise)
+        self.assertNotIn("GETPC()", align_raise)
+
+        prepare = re.search(
+            r"void HELPER\(linx_prepare_gm_write\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("const uintptr_t ra = GETPC();", prepare)
+        self.assertIn("linx_enter_atomic_context(env, ra)", prepare)
+
+        template_step = re.search(
+            r"void HELPER\(linx_template_step\)\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("const uintptr_t ra = GETPC();", template_step)
+        self.assertIn("cpu_stb_mmuidx_ra(env, (abi_ptr)dst, v, mmu_idx, ra)",
+                      template_step)
+        self.assertNotIn("set_helper_retaddr(GETPC())", template_step)
+
+        tile_probe = re.search(
+            r"static bool linx_tile_mem_preflight\(.*?\n\}",
+            self.helper,
+            re.S,
+        ).group(0)
+        self.assertIn("uintptr_t ra", tile_probe)
+        self.assertNotIn("GETPC()", tile_probe)
+
+        for mnemonic in ("linx_v_sb_brg", "linx_v_sh_brg", "linx_v_sw_brg"):
+            body = re.search(
+                rf"void HELPER\({mnemonic}\)\(.*?\n\}}",
+                self.helper,
+                re.S,
+            ).group(0)
+            self.assertIn("const uintptr_t ra = GETPC();", body)
+            self.assertIn("linx_enter_atomic_context(env, ra)", body)
+
     def test_dma_preflights_both_ranges_before_snapshot_and_commit(self) -> None:
         body = re.search(
             r"void HELPER\(linx_dma\)\(.*?\n\}",
@@ -336,10 +390,10 @@ class PtoV058ContractTests(unittest.TestCase):
             re.S,
         ).group(0)
         source_probe = body.index(
-            "linx_probe_data_range(env, src, sizeof(buf), false)"
+            "linx_probe_data_range(env, src, sizeof(buf), false, ra)"
         )
         destination_probe = body.index(
-            "linx_probe_data_range(env, dst, sizeof(buf), true)"
+            "linx_probe_data_range(env, dst, sizeof(buf), true, ra)"
         )
         first_load = body.index("buf[i] = cpu_ldub_data")
         first_store = body.index("cpu_stb_data")
@@ -368,7 +422,8 @@ class PtoV058ContractTests(unittest.TestCase):
             self.helper,
             re.S,
         ).group(0)
-        self.assertIn("cpu_loop_exit_atomic", exclusive)
+        self.assertIn("cpu_loop_exit_atomic(cs, ra)", exclusive)
+        self.assertNotIn("GETPC()", exclusive)
         peer_invalidate = re.search(
             r"static void linx_lr_invalidate_for_write\(.*?\n\}",
             self.helper,
@@ -382,6 +437,9 @@ class PtoV058ContractTests(unittest.TestCase):
         self.assertIn("ABA does not preserve it", self.atomic_cross_pe_fixture)
         self.assertIn("successful peer SC", self.atomic_cross_pe_fixture)
         self.assertIn("SC.W [a0], a1, ->a3", self.atomic_cross_pe_fixture)
+        self.assertIn("hl.ssrget 0x1f43", self.atomic_fault_fixture)
+        self.assertIn(".Lfault_atomic", self.atomic_fault_fixture)
+        self.assertIn("acre 0", self.atomic_fault_fixture)
 
     def test_tfma_is_fused_and_has_three_sources(self) -> None:
         self.assertIn("case 0x01cu: /* TFMA */ return 0x10cu;", self.helper)
