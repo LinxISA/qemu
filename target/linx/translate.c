@@ -1840,6 +1840,29 @@ static TCGv_i64 linx_srcR_compare(DisasContext *ctx, unsigned srcR,
     return tmp;
 }
 
+static TCGv_i64 linx_srcR_compare_logic(DisasContext *ctx, unsigned srcR,
+                                        unsigned srcRType)
+{
+    TCGv_i64 r = linx_get_reg(srcR);
+    TCGv_i64 tmp = tcg_temp_new_i64();
+
+    switch (srcRType & 0x3) {
+    case 1: /* .sw */
+        tcg_gen_ext32s_i64(tmp, r);
+        break;
+    case 2: /* .uw */
+        tcg_gen_ext32u_i64(tmp, r);
+        break;
+    case 3: /* .not */
+        tcg_gen_not_i64(tmp, r);
+        break;
+    default: /* no modifier */
+        tcg_gen_mov_i64(tmp, r);
+        break;
+    }
+    return tmp;
+}
+
 static TCGv_i64 linx_srcR_select(DisasContext *ctx, unsigned srcR,
                                  unsigned srcRType)
 {
@@ -3136,7 +3159,7 @@ static bool trans_setc_nei(DisasContext *ctx, arg_setc_nei *a)
 static bool trans_setc_and(DisasContext *ctx, arg_setc_and *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare_logic(ctx, a->SrcR, a->SrcRType);
     TCGv_i64 out = tcg_temp_new_i64();
     tcg_gen_and_i64(out, l, r);
     return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
@@ -3154,7 +3177,7 @@ static bool trans_setc_andi(DisasContext *ctx, arg_setc_andi *a)
 static bool trans_setc_or(DisasContext *ctx, arg_setc_or *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare_logic(ctx, a->SrcR, a->SrcRType);
     TCGv_i64 out = tcg_temp_new_i64();
     tcg_gen_or_i64(out, l, r);
     return trans_setc_cmp_imm(ctx, TCG_COND_NE, out, 0);
@@ -3939,7 +3962,7 @@ static bool trans_cmp_ne(DisasContext *ctx, arg_cmp_ne *a)
 static bool trans_cmp_and(DisasContext *ctx, arg_cmp_and *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare_logic(ctx, a->SrcR, a->SrcRType);
     TCGv_i64 tmp = tcg_temp_new_i64();
     tcg_gen_and_i64(tmp, l, r);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, tmp, tcg_constant_i64(0));
@@ -3948,7 +3971,7 @@ static bool trans_cmp_and(DisasContext *ctx, arg_cmp_and *a)
 static bool trans_cmp_or(DisasContext *ctx, arg_cmp_or *a)
 {
     TCGv_i64 l = linx_get_reg(a->SrcL);
-    TCGv_i64 r = linx_srcR_logic(ctx, a->SrcR, a->SrcRType, 0);
+    TCGv_i64 r = linx_srcR_compare_logic(ctx, a->SrcR, a->SrcRType);
     TCGv_i64 tmp = tcg_temp_new_i64();
     tcg_gen_or_i64(tmp, l, r);
     return trans_cmp_out(ctx, a->RegDst, TCG_COND_NE, tmp, tcg_constant_i64(0));
@@ -4247,24 +4270,28 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
                                   unsigned idx, unsigned idx_type,
                                   unsigned shamt)
 {
+    if (!linx_address_src_r_type_valid(idx_type)) {
+        linx_illegal(ctx);
+        return tcg_constant_i64(0);
+    }
+
     TCGv_i64 b = linx_get_reg(base);
     TCGv_i64 i = linx_get_reg(idx);
     TCGv_i64 t = tcg_temp_new_i64();
     TCGv_i64 addr = tcg_temp_new_i64();
 
     switch (idx_type & 0x3) {
-    case 0: /* .sw */
-        tcg_gen_ext32s_i64(t, i);
-        break;
-    case 1: /* .uw */
-        tcg_gen_ext32u_i64(t, i);
-        break;
-    case 2: /* .neg */
-        tcg_gen_neg_i64(t, i);
-        break;
-    default: /* no modifier */
+    case 0: /* no modifier */
         tcg_gen_mov_i64(t, i);
         break;
+    case 1: /* .sw */
+        tcg_gen_ext32s_i64(t, i);
+        break;
+    case 2: /* .uw */
+        tcg_gen_ext32u_i64(t, i);
+        break;
+    default:
+        g_assert_not_reached();
     }
     if (shamt) {
         tcg_gen_shli_i64(t, t, shamt & 0x3f);
