@@ -7,6 +7,7 @@ on:
       - 'scripts/linxisa/generate-scoped-scalar.py'
       - 'scripts/linxisa/run-scoped-scalar-runtime-smoke.sh'
       - 'target/linx/**'
+      - 'hw/linx/**'
       - 'tests/linxisa/scoped_scalar_runtime_*.s'
       - 'tests/unit/*linx*scoped*'
       - 'tests/unit/meson.build'
@@ -30,7 +31,9 @@ jobs:
           ref: 2a29daf7ed6ea33c1719c27abd1ac48d2e75b1cd
           path: linx-catalog
           persist-credentials: false
-          sparse-checkout: isa/v0.59/state/pto_scalar_forms.json
+          sparse-checkout: |
+            isa/v0.59/state/pto_scalar_forms.json
+            isa/v0.59/pto-spec.lock.json
           sparse-checkout-cone-mode: false
       - name: Check generated decoder and witnesses
         run: python3 scripts/linxisa/generate-scoped-scalar.py linx-catalog --check
@@ -38,7 +41,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: LinxISA/llvm-project
-          ref: 02ca3107814c25e1cc3792dc8a34196eb4f63b31
+          ref: 4aee6e952487d9201b42a8f2fc59c57529d01b30
           path: linx-llvm
           persist-credentials: false
       - name: Install build dependencies

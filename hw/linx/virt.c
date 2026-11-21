@@ -29,6 +29,7 @@
 #include "system/system.h"
 
 #include "cpu.h"
+#include "scoped_scalar.h"
 #include "trace.h"
 
 #include <libfdt.h>
@@ -181,6 +182,30 @@ static const char linx_pto_isa_identity[] =
     "\"a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881\","
     "\"release\":\"0.58.7\"}";
 
+static const char linx_pto_scoped_isa_identity[] =
+#include "pto_scoped_scalar_identity.inc"
+    ;
+
+typedef enum LinxPtoIdentity {
+    LINX_PTO_IDENTITY_NONE,
+    LINX_PTO_IDENTITY_V0587,
+    LINX_PTO_IDENTITY_V0591,
+} LinxPtoIdentity;
+
+static LinxPtoIdentity linx_pto_note_identity(const uint8_t *desc, size_t size,
+                                             bool allow_scoped)
+{
+    if (size == sizeof(linx_pto_isa_identity) - 1 &&
+        memcmp(desc, linx_pto_isa_identity, size) == 0) {
+        return LINX_PTO_IDENTITY_V0587;
+    }
+    if (allow_scoped && size == sizeof(linx_pto_scoped_isa_identity) - 1 &&
+        memcmp(desc, linx_pto_scoped_isa_identity, size) == 0) {
+        return LINX_PTO_IDENTITY_V0591;
+    }
+    return LINX_PTO_IDENTITY_NONE;
+}
+
 static bool linx_file_range_valid(uint64_t offset, uint64_t size, size_t len)
 {
     return offset <= len && size <= (uint64_t)len - offset;
@@ -197,7 +222,8 @@ static void linx_pto_note_warning(const char *reason)
 }
 
 static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
-                                         unsigned *identity_count,
+                                         bool allow_scoped,
+                                         LinxPtoIdentity *identity,
                                          bool *note_problem)
 {
     size_t offset = 0;
@@ -234,18 +260,20 @@ static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
         }
 
         if (namesz >= 3 && memcmp(notes + name_offset, "PTO", 3) == 0) {
+            LinxPtoIdentity found = linx_pto_note_identity(notes + desc_offset,
+                                                          descsz, allow_scoped);
+
             if (namesz != 4 || notes[name_offset + 3] != '\0' ||
                 type != PTO_NT_ISA_IDENTITY ||
-                descsz != sizeof(linx_pto_isa_identity) - 1 ||
-                memcmp(notes + desc_offset, linx_pto_isa_identity,
-                       sizeof(linx_pto_isa_identity) - 1) != 0) {
+                found == LINX_PTO_IDENTITY_NONE ||
+                (*identity != LINX_PTO_IDENTITY_NONE && *identity != found)) {
                 linx_pto_note_warning(
-                    "Linx PTO ISA identity is malformed, mixed, or not 0.58.7");
+                    "Linx PTO ISA identity is malformed, mixed, or unsupported");
                 *note_problem = true;
                 offset = next;
                 continue;
             }
-            (*identity_count)++;
+            *identity = found;
         }
         offset = next;
     }
@@ -253,9 +281,10 @@ static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
 }
 
 static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
+                                           bool allow_scoped,
                                            Error **errp)
 {
-    unsigned identity_count = 0;
+    LinxPtoIdentity identity = LINX_PTO_IDENTITY_NONE;
     bool note_problem = false;
 
     if (len < EI_NIDENT || memcmp(buf, ELFMAG, SELFMAG) != 0) {
@@ -291,7 +320,8 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                     note_problem = true;
                 } else {
                     linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                 sh->sh_size, &identity_count,
+                                                 sh->sh_size, allow_scoped,
+                                                 &identity,
                                                  &note_problem);
                 }
             }
@@ -320,7 +350,8 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                     note_problem = true;
                 } else {
                     linx_validate_pto_note_bytes(buf + sh->sh_offset,
-                                                 sh->sh_size, &identity_count,
+                                                 sh->sh_size, allow_scoped,
+                                                 &identity,
                                                  &note_problem);
                 }
             }
@@ -330,13 +361,14 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
         return false;
     }
 
-    if (identity_count == 0 && !note_problem) {
-        linx_pto_note_warning("missing .note.pto.isa identity for 0.58.7");
+    if (identity == LINX_PTO_IDENTITY_NONE && !note_problem) {
+        linx_pto_note_warning("missing .note.pto.isa identity");
         note_problem = true;
     }
     if (note_problem) {
         error_setg(errp,
-                   "Linx ELF does not carry one consistent PTO ISA 0.58.7 identity");
+                   "Linx ELF does not carry one consistent PTO ISA %s identity",
+                   allow_scoped ? "0.58.7 or 0.59.1" : "0.58.7");
         return false;
     }
     return true;
@@ -3451,6 +3483,7 @@ static bool linx_load_elf64_exec(const uint8_t *buf, size_t len,
 static bool linx_load_elf(const char *filename,
                           uint8_t *ram, size_t ram_size,
                           CPULinxState *env,
+                          bool allow_scoped,
                           hwaddr load_base,
                           hwaddr *entry, hwaddr *image_end,
                           Error **errp)
@@ -3466,7 +3499,7 @@ static bool linx_load_elf(const char *filename,
         return false;
     }
 
-    if (!linx_validate_pto_isa_identity(buf, len, errp)) {
+    if (!linx_validate_pto_isa_identity(buf, len, allow_scoped, errp)) {
         g_free(buf);
         return false;
     }
@@ -4019,12 +4052,14 @@ static void linx_virt_init(MachineState *machine)
     }
 
     ram = s->dfx_ram_ptr;
+    bool allow_scoped = s->pe_count == 1 &&
+                        linx_scoped_scalar_runtime_requested();
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         hwaddr pe_entry = 0;
         hwaddr pe_image_end = 0;
 
         if (!linx_load_elf(machine->kernel_filename, ram, machine->ram_size,
-                           &s->cpu[pe]->env, load_base, &pe_entry,
+                           &s->cpu[pe]->env, allow_scoped, load_base, &pe_entry,
                            &pe_image_end, &error_fatal)) {
             exit(1);
         }
