@@ -17,6 +17,7 @@ enum {
 #include "qemu/bswap.h"
 #include "cpu.h"
 #include "first_use.h"
+#include "hscb_geometry.h"
 #include "tile_transaction.h"
 #include "tile_operation_preflight.h"
 #include "trace.h"
@@ -5125,6 +5126,10 @@ enum {
     LINX_SSR_TIME  = 0x0010,
     LINX_SSR_CYCLE = 0x0c00,
     LINX_SSR_CSTATE = 0x0020,
+    LINX_SSR_BLOCKNUM = 0x0050,
+    LINX_SSR_BLOCKID = 0x0051,
+    LINX_SSR_BLOCK_ALIAS_FIRST = 0x0052,
+    LINX_SSR_BLOCK_ALIAS_LAST = 0x0055,
 };
 
 /* Managing-ACR SSR indices (low 12 bits). */
@@ -6943,6 +6948,17 @@ static inline void linx_raise_illegal_inst(CPULinxState *env)
     helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
 }
 
+static G_NORETURN void linx_raise_ssr_illegal(CPULinxState *env,
+                                               uintptr_t ra)
+{
+    CPUState *cs = env_cpu(env);
+
+    env->pending_trap_arg0 = 0;
+    env->pending_trap_cause = 0;
+    cs->exception_index = LINX_EXCP_ILLEGAL_INST;
+    cpu_loop_exit_restore(cs, ra);
+}
+
 static inline bool linx_legacy_trapsave_alias_read(CPULinxState *env, uint32_t idx,
                                                    uint32_t bank, uint64_t *value)
 {
@@ -6993,6 +7009,21 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
     uint64_t value;
 
     switch (idx) {
+    case LINX_SSR_BLOCKNUM:
+        if (ssrid != LINX_SSR_BLOCKNUM) {
+            linx_raise_ssr_illegal(env, GETPC());
+        }
+        value = linx_hscb_geometry_blocknum(env);
+        break;
+    case LINX_SSR_BLOCKID:
+        if (ssrid != LINX_SSR_BLOCKID) {
+            linx_raise_ssr_illegal(env, GETPC());
+        }
+        value = linx_hscb_geometry_blockid(env);
+        break;
+    case LINX_SSR_BLOCK_ALIAS_FIRST ... LINX_SSR_BLOCK_ALIAS_LAST:
+        linx_raise_ssr_illegal(env, GETPC());
+        break;
     case LINX_SSR_PEID:
         value = env->pe_id;
         break;
@@ -7166,6 +7197,11 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
     }
 
     switch (idx) {
+    case LINX_SSR_BLOCKNUM:
+    case LINX_SSR_BLOCKID:
+    case LINX_SSR_BLOCK_ALIAS_FIRST ... LINX_SSR_BLOCK_ALIAS_LAST:
+        linx_raise_ssr_illegal(env, GETPC());
+        return;
     case LINX_SSR_PEID:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
         return;
@@ -7442,6 +7478,9 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
     const uint32_t idx = linx_ssr_low12(ssrid);
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? linx_ssr_manager_bank(env, ssrid) : 0u;
+    if (idx >= LINX_SSR_BLOCKNUM && idx <= LINX_SSR_BLOCK_ALIAS_LAST) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10be8) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010be8ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,

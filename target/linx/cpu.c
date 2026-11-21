@@ -9,6 +9,7 @@
 #include "qapi/error.h"
 #include "cpu.h"
 #include "first_use.h"
+#include "hscb_geometry.h"
 #include "trace.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -4246,6 +4247,12 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         memset(env->tile_reg_predicate, 0,
                sizeof(env->tile_reg_predicate));
     }
+    if (version_id < 24) {
+        env->hscb_geometry_valid = 0;
+        env->hscb_geometry_invocation = 0;
+        env->hscb_blocknum = 0;
+        env->hscb_blockid = 0;
+    }
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
         env->tile_iot_count > LINX_TILE_MAX_IOT) {
@@ -4400,12 +4407,29 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
             return false;
         }
     }
+    if (env->hscb_geometry_valid > 1) {
+        error_setg(errp, "linx: invalid migrated HSCB geometry valid bit");
+        return false;
+    }
+    if (env->hscb_geometry_valid) {
+        if (env->hscb_geometry_invocation == 0 ||
+            env->hscb_blocknum == 0 || env->hscb_blocknum > UINT32_MAX ||
+            env->hscb_blockid > UINT32_MAX ||
+            env->hscb_blockid >= env->hscb_blocknum) {
+            error_setg(errp, "linx: invalid migrated HSCB worker geometry");
+            return false;
+        }
+    } else if (env->hscb_geometry_invocation != 0 ||
+               env->hscb_blocknum != 0 || env->hscb_blockid != 0) {
+        error_setg(errp, "linx: inactive migrated HSCB geometry is not zero");
+        return false;
+    }
     return true;
 }
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 23,
+    .version_id = 24,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4521,6 +4545,10 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64(env.insn_pc_next, LinxCPU),
         VMSTATE_UINT64_ARRAY(env.ssr, LinxCPU, LINX_SSR_COUNT),
         VMSTATE_UINT64_2DARRAY(env.ssr_acr, LinxCPU, LINX_ACR_COUNT, LINX_SSR_COUNT),
+        VMSTATE_UINT8_V(env.hscb_geometry_valid, LinxCPU, 24),
+        VMSTATE_UINT64_V(env.hscb_geometry_invocation, LinxCPU, 24),
+        VMSTATE_UINT64_V(env.hscb_blocknum, LinxCPU, 24),
+        VMSTATE_UINT64_V(env.hscb_blockid, LinxCPU, 24),
         VMSTATE_UINT64_ARRAY(env.irq_level_acr, LinxCPU, LINX_ACR_COUNT),
         VMSTATE_UINT64(env.lr_addr, LinxCPU),
         VMSTATE_UINT32(env.lr_size, LinxCPU),
