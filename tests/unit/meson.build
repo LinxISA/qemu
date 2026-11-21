@@ -18,6 +18,10 @@ linx_first_use_test_target = declare_dependency(
   dependencies: [linx_tile_test_target],
   sources: ['../../target/linx/first_use.c'],
 )
+linx_hscb_geometry_test_target = declare_dependency(
+  dependencies: [linx_tile_test_target],
+  sources: ['../../target/linx/hscb_geometry.c'],
+)
 
 tests = {
   'check-block-qdict': [],
@@ -70,6 +74,7 @@ tests = {
   'test-linx-tile-cube-numeric': [linx_tile_cube_test_target],
   'test-linx-tile-state-dump': ['../../hw/linx/tile-state-dump.c'],
   'test-linx-first-use': [linx_first_use_test_target],
+  'test-linx-hscb-geometry': [linx_hscb_geometry_test_target],
   'test-linx-msgb-receive': ['../../target/linx/msgb_receive.c'],
   'test-linx-scoped-scalar': ['../../target/linx/scoped_scalar.c'],
   'test-linx-insn-numeric': [linx_tile_test_target],
