@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Linx HSCB geometry
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linx-hscb-geometry.yml'
+      - 'README.md'
+      - 'scripts/linxisa/run-hscb-geometry-smoke.sh'
+      - 'target/linx/cpu.c'
+      - 'target/linx/cpu.h'
+      - 'target/linx/helper.c'
+      - 'target/linx/hscb_geometry.*'
+      - 'target/linx/meson.build'
+      - 'tests/linxisa/hscb_geometry_*.s'
+      - 'tests/linxisa/test_v058_review_contract.py'
+      - 'tests/unit/meson.build'
+      - 'tests/unit/test-linx-hscb-geometry.c'
+
+permissions:
+  contents: read
+
+jobs:
+  hscb-geometry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out QEMU
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Check out qualified Linx LLVM MC
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: LinxISA/llvm-project
+          ref: 02ca3107814c25e1cc3792dc8a34196eb4f63b31
+          path: linx-llvm
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libpixman-1-dev python3-venv
+          python3 -m venv "$RUNNER_TEMP/linx-qemu-tools"
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --no-index --find-links python/wheels meson==1.10.0 pycotap==1.3.1
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --only-binary=:all: ninja==1.13.0
+      - name: Build Linx QEMU and geometry unit test
+        run: |
+          tools="$RUNNER_TEMP/linx-qemu-tools/bin"
+          ./configure --target-list=linx64-softmmu --disable-docs \
+            --disable-werror --without-default-features --enable-gio \
+            --python="$tools/python3"
+          "$tools/ninja" -C build -j 3 qemu-system-linx64 \
+            tests/unit/test-linx-hscb-geometry
+          build/pyvenv/bin/meson test -C build --print-errorlogs \
+            test-linx-hscb-geometry
+      - name: Build MC assembler and run decoded guest tests
+        run: |
+          cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD= \
+            -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA
+          cmake --build linx-llvm-build --target llvm-mc -j 3
+          LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
+          QEMU_BIN="$PWD/build/qemu-system-linx64" \
+            scripts/linxisa/run-hscb-geometry-smoke.sh
