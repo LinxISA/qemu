@@ -29,7 +29,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn(".mttcg_supported = true", self.cpu)
 
     def test_vmstate_v19_does_not_claim_backward_compatibility(self) -> None:
-        self.assertIn(".version_id = 23", self.cpu)
+        self.assertIn(".version_id = 24", self.cpu)
         self.assertIn(".minimum_version_id = 19", self.cpu)
         vmstate = self.cpu[
             self.cpu.index("static const VMStateDescription vmstate_linx_cpu") :
@@ -48,6 +48,14 @@ class V058ReviewContractTests(unittest.TestCase):
             r"LINX_TILE_SLOT_COUNT, 19\),",
         )
         self.assertIn("env.tile_reg_cube_storage_bytes", vmstate)
+        self.assertIn(
+            "VMSTATE_UINT8_V(env.hscb_geometry_valid, LinxCPU, 24)",
+            vmstate,
+        )
+        self.assertIn(
+            "VMSTATE_UINT64_V(env.hscb_blocknum, LinxCPU, 24)",
+            vmstate,
+        )
         self.assertNotIn("if (version_id < 19)", self.cpu)
 
     def test_fpatr_is_consumed_and_inactive_acr_migration_is_rejected(self) -> None:

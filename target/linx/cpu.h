@@ -454,6 +454,10 @@ typedef struct CPUArchState {
      */
     uint64_t ssr[LINX_SSR_COUNT];       /* non-ACR-scoped SSRs */
     uint64_t ssr_acr[LINX_ACR_COUNT][LINX_SSR_COUNT]; /* managing-ACR banks */
+    uint8_t hscb_geometry_valid;
+    uint64_t hscb_geometry_invocation;
+    uint64_t hscb_blocknum;
+    uint64_t hscb_blockid;
 
     /* Current Access Control Ring (ACR) level: 0..15. */
     uint32_t acr;

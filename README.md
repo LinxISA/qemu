@@ -52,6 +52,19 @@ QEMU=/Users/zhoubot/linx-isa/emulator/qemu/build/qemu-system-linx64 \
 ./check_system_strict.sh
 ```
 
+## PTO 0.59.1 HSCB worker geometry candidate
+
+`BLOCKNUM` (`0x0050`) and `BLOCKID` (`0x0051`) are read-only. Their ambient
+value is zero. An HSCB owner may bind one live ACR0 worker geometry with
+`linx_hscb_geometry_bind` after LAUNCH admission and clear it with the exact
+invocation through `linx_hscb_geometry_clear` after matching DONE or invocation
+teardown. Other ACRs continue to observe zero. The binding is included in CPU
+migration state.
+
+The HSCB dispatcher owns calls at LAUNCH, DONE and teardown boundaries. Obsolete
+aliases `0x0052` through `0x0055`, high-address aliases, and all writes to the
+two read-only registers raise the existing QEMU illegal-instruction trap.
+
 ## LinxISA Integration Touchpoints
 - Runtime AVS in `/Users/zhoubot/linx-isa/avs/qemu`
 - Linux boot and musl smoke flows (`kernel/linux`, `avs/qemu/run_musl_smoke.py`)
