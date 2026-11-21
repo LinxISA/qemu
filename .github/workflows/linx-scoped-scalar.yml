@@ -1,0 +1,42 @@
+name: Linx scoped Scalar
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linx-scoped-scalar.yml'
+      - 'scripts/linxisa/generate-scoped-scalar.py'
+      - 'target/linx/**'
+      - 'tests/unit/*linx*scoped*'
+      - 'tests/unit/meson.build'
+
+permissions:
+  contents: read
+
+jobs:
+  scoped-scalar-decode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out QEMU
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Check out locked LinxISA catalog
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: LinxISA/linx-isa
+          ref: 2a29daf7ed6ea33c1719c27abd1ac48d2e75b1cd
+          path: linx-catalog
+          persist-credentials: false
+          sparse-checkout: isa/v0.59/state/pto_scalar_forms.json
+          sparse-checkout-cone-mode: false
+      - name: Check generated decoder and witnesses
+        run: python3 scripts/linxisa/generate-scoped-scalar.py linx-catalog --check
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libglib2.0-dev libpixman-1-dev ninja-build
+      - name: Build Linx QEMU and test decoder
+        run: |
+          ./configure --target-list=linx64-softmmu --disable-docs --disable-werror \
+            --without-default-features --enable-gio
+          ninja -C build -j 3 qemu-system-linx64 tests/unit/test-linx-scoped-scalar
+          build/pyvenv/bin/meson test -C build --print-errorlogs test-linx-scoped-scalar
