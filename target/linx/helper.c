@@ -41,6 +41,7 @@ enum {
 #include "exec/target_page.h"
 #include "exec/tlb-flags.h"
 #include "hw/core/cpu.h"
+#include "hw/core/boards.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include <inttypes.h>
@@ -8096,6 +8097,82 @@ static inline void linx_require_natural_alignment(CPULinxState *env,
 {
     if ((addr & (size - 1u)) != 0u) {
         linx_raise_data_alignment(env, addr, ra);
+    }
+}
+
+uint64_t HELPER(linx_scoped_load)(CPULinxState *env, uint64_t addr,
+                                  uint32_t mop, uint32_t scope, uint64_t pc)
+{
+    uintptr_t ra = GETPC();
+    uint64_t value;
+    unsigned size = memop_size(mop);
+
+    if (scope > 2 || !current_machine || current_machine->smp.cpus != 1) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+    trace_linx_scoped_scalar_access(pc, scope, addr, size, false);
+    linx_require_natural_alignment(env, addr, size, ra);
+    switch (size) {
+    case 1:
+        value = cpu_ldub_data_ra(env, (abi_ptr)addr, ra);
+        break;
+    case 2:
+        value = cpu_lduw_le_data_ra(env, (abi_ptr)addr, ra);
+        break;
+    case 4:
+        value = cpu_ldl_le_data_ra(env, (abi_ptr)addr, ra);
+        break;
+    case 8:
+        value = cpu_ldq_le_data_ra(env, (abi_ptr)addr, ra);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+    if (mop & MO_SIGN) {
+        switch (size) {
+        case 1:
+            value = (int8_t)value;
+            break;
+        case 2:
+            value = (int16_t)value;
+            break;
+        case 4:
+            value = (int32_t)value;
+            break;
+        default:
+            break;
+        }
+    }
+    return value;
+}
+
+void HELPER(linx_scoped_store)(CPULinxState *env, uint64_t addr,
+                               uint64_t value, uint32_t mop, uint32_t scope,
+                               uint64_t pc)
+{
+    uintptr_t ra = GETPC();
+    unsigned size = memop_size(mop);
+
+    if (scope > 2 || !current_machine || current_machine->smp.cpus != 1) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+    trace_linx_scoped_scalar_access(pc, scope, addr, size, true);
+    linx_require_natural_alignment(env, addr, size, ra);
+    switch (size) {
+    case 1:
+        cpu_stb_data_ra(env, (abi_ptr)addr, value, ra);
+        break;
+    case 2:
+        cpu_stw_le_data_ra(env, (abi_ptr)addr, value, ra);
+        break;
+    case 4:
+        cpu_stl_le_data_ra(env, (abi_ptr)addr, value, ra);
+        break;
+    case 8:
+        cpu_stq_le_data_ra(env, (abi_ptr)addr, value, ra);
+        break;
+    default:
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
     }
 }
 
