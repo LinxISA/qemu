@@ -11,6 +11,7 @@ linx_ss.add(files(
   'cpu.c',
   'first_use.c',
   'helper.c',
+  'msgb_receive.c',
   'scoped_scalar.c',
   'tile_cube_058.c',
   'translate.c',
