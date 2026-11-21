@@ -55,6 +55,8 @@ jobs:
             tests/unit/test-linx-hscb-geometry
           build/pyvenv/bin/meson test -C build --print-errorlogs \
             test-linx-hscb-geometry
+          python3 -m unittest tests.linxisa.test_v02_tile_hand_depth \
+            tests.linxisa.test_v058_review_contract
       - name: Build MC assembler and run decoded guest tests
         run: |
           cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja \
