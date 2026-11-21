@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Linx MSGB receive
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linx-msgb-receive.yml'
+      - 'README.md'
+      - 'target/linx/meson.build'
+      - 'target/linx/msgb_receive.*'
+      - 'tests/unit/meson.build'
+      - 'tests/unit/test-linx-msgb-receive.c'
+
+permissions:
+  contents: read
+
+jobs:
+  msgb-receive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out QEMU
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libpixman-1-dev python3-venv
+          python3 -m venv "$RUNNER_TEMP/linx-qemu-tools"
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --no-index --find-links python/wheels meson==1.10.0 pycotap==1.3.1
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --only-binary=:all: ninja==1.13.0
+      - name: Build and test receive state machine
+        run: |
+          tools="$RUNNER_TEMP/linx-qemu-tools/bin"
+          ./configure --target-list=linx64-softmmu --disable-docs \
+            --disable-werror --without-default-features --enable-gio \
+            --python="$tools/python3"
+          "$tools/ninja" -C build -j 3 tests/unit/test-linx-msgb-receive
+          build/pyvenv/bin/meson test -C build --print-errorlogs \
+            test-linx-msgb-receive

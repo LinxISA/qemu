@@ -12,6 +12,21 @@
 - Linx decode/translate/execute paths and trap behavior
 - QEMU binaries used by AVS/runtime gates (`qemu-system-linx64`)
 
+## PTO 0.59.1 Message Buffer receive backend
+
+`target/linx/msgb_receive.c` implements the released receive-side bank
+transitions for queue admission, claim, data reads, release, ACK, ACKSTAT and
+ACKID. Each bank owns its receive epoch and 48-bit claim sequence, so claims
+from different endpoints allocate isolated tokens. Failed claims and releases
+change only RX result diagnostics. Failed ACK attempts change only ACKSTAT and
+ACKID diagnostics. Queue, snapshot, read mask, claim sequence and the last
+successful token remain unchanged.
+
+This backend has no guest-visible register connection yet. Transport admission
+must supply a validated packet and active nonzero invocation. Later integration
+owns endpoint selection, configuration, permission and GM checks, and the
+`0x0830..0x084b` SSR helpers. BSE and BWE remain outside this receive slice.
+
 ## PTO 0.59.1 scoped Scalar candidate
 
 Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1

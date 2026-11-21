@@ -75,6 +75,7 @@ tests = {
   'test-linx-tile-state-dump': ['../../hw/linx/tile-state-dump.c'],
   'test-linx-first-use': [linx_first_use_test_target],
   'test-linx-hscb-geometry': [linx_hscb_geometry_test_target],
+  'test-linx-msgb-receive': ['../../target/linx/msgb_receive.c'],
   'test-linx-scoped-scalar': ['../../target/linx/scoped_scalar.c'],
   'test-linx-insn-numeric': [linx_tile_test_target],
 }
