@@ -11,6 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 OBJ="$TMP/scoped-scalar-runtime.o"
 SCOPED_OBJ="$TMP/scoped-scalar-v0591-runtime.o"
 FAULT_OBJ="$TMP/scoped-scalar-runtime-fault.o"
+INDEXED_OBJ="$TMP/scoped-scalar-runtime-indexed.o"
 TRACE="$TMP/scoped-scalar-runtime.trace"
 COMMIT="$TMP/scoped-scalar-runtime.jsonl"
 
@@ -20,6 +21,8 @@ COMMIT="$TMP/scoped-scalar-runtime.jsonl"
   "$ROOT/tests/linxisa/scoped_scalar_runtime_smoke.s" -o "$SCOPED_OBJ"
 "$LLVM_MC" -triple=linx64 -filetype=obj \
   "$ROOT/tests/linxisa/scoped_scalar_runtime_fault.s" -o "$FAULT_OBJ"
+"$LLVM_MC" -triple=linx64 -mattr=+pto-v0591-scoped -filetype=obj \
+  "$ROOT/tests/linxisa/scoped_scalar_runtime_indexed.s" -o "$INDEXED_OBJ"
 
 LINX_QEMU_SCOPED_SCALAR_RUNTIME=1 \
 LINX_VIRT_TEST_FINISHER=1 \
@@ -27,6 +30,10 @@ LINX_COMMIT_TRACE="$COMMIT" \
   "$QEMU_BIN" -nographic -monitor none -machine virt -smp 1 -bios none \
     -kernel "$OBJ" -trace "enable=linx_scoped_scalar_access" \
     -D "$TRACE"
+
+LINX_QEMU_SCOPED_SCALAR_RUNTIME=1 LINX_VIRT_TEST_FINISHER=1 \
+  "$QEMU_BIN" -nographic -monitor none -machine virt -smp 1 -bios none \
+    -kernel "$INDEXED_OBJ"
 
 TRACE="$TRACE" COMMIT="$COMMIT" python3 - <<'PY'
 import json

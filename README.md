@@ -15,9 +15,10 @@
 ## PTO 0.59.1 scoped Scalar candidate
 
 Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1
-immediate and PC-relative single-access Scalar carriers. The candidate accepts
-exactly 60 inner base forms and all three scope codes. Each actual memory helper
-receives the carrier's scope together with the address, size and outer TPC.
+immediate, PC-relative and register-offset single accesses, including their
+pre-index and post-index writeback forms. The candidate accepts 140 base forms
+and all three scope codes. Each memory helper receives the carrier's scope
+together with the address, size and outer TPC.
 Successful carriers retire eight bytes. Faults and rejected carriers retain the
 outer TPC and suppress destination and memory publication.
 
