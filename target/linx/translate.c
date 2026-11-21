@@ -19,6 +19,7 @@
 #include "exec/log.h"
 #include "trace.h"
 #include "opcode_meta.h"
+#include "scoped_scalar.h"
 #include "tile_isa_058.h"
 
 #define HELPER_H "helper.h"
@@ -9425,6 +9426,18 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         ctx->cur_insn_raw = insn64;
         insn_val = (uint32_t)(insn64 & 0xFFFFFFFFu);
         linx_trace_begin(pc, insn64, len);
+        if ((hw & 0xf0ff) == 0x001f) {
+            LinxScopedScalar scoped;
+
+            if (linx_scoped_scalar_decode(insn64, &scoped)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "Linx: inactive scoped Scalar form %s at PC=0x%"
+                              VADDR_PRIx "\n", scoped.base_form_id, pc);
+            }
+            trace_linx_insn_decode_fail_raw(pc, insn64, len);
+            linx_illegal(ctx);
+            break;
+        }
         if (!linx_validate_opcode_meta(ctx, pc, insn64, len)) {
             break;
         }
