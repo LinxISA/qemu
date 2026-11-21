@@ -12,6 +12,7 @@ typedef struct LinxScopedScalarForm {
     uint64_t reserved_mask; /* The all-ones SrcRType value, if present. */
     unsigned inner_bytes;
     bool runtime_eligible;
+    int reg_store_shift;
     const char *base_form_id;
 } LinxScopedScalarForm;
 
@@ -51,6 +52,7 @@ bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded)
                 .scope = scope,
                 .inner_bytes = inner_bytes,
                 .runtime_eligible = form->runtime_eligible,
+                .reg_store_shift = form->reg_store_shift,
             };
             return true;
         }

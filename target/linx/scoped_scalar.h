@@ -18,6 +18,7 @@ typedef struct LinxScopedScalar {
     LinxScalarScope scope;
     unsigned inner_bytes;
     bool runtime_eligible;
+    int reg_store_shift;
 } LinxScopedScalar;
 
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded);

@@ -43,6 +43,7 @@ typedef struct DisasContext {
     uint32_t block_insn_index;
     int mem_idx;
     int scoped_scope;
+    int scoped_reg_store_shift;
 } DisasContext;
 
 static bool linx_scoped_scalar_runtime_enabled;
@@ -4285,6 +4286,10 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
                                   unsigned idx, unsigned idx_type,
                                   unsigned shamt)
 {
+    /* Scoped register stores encode SrcD here. Their index shift is fixed. */
+    if (ctx->scoped_scope >= 0 && ctx->scoped_reg_store_shift >= 0) {
+        shamt = ctx->scoped_reg_store_shift;
+    }
     if (!linx_address_src_r_type_valid(idx_type)) {
         linx_illegal(ctx);
         return tcg_constant_i64(0);
@@ -9445,12 +9450,14 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         linx_trace_begin(pc, insn64, len);
         if ((hw & 0xf0ff) == 0x001f) {
             LinxScopedScalar scoped;
+            bool valid_scoped = linx_scoped_scalar_decode(insn64, &scoped);
 
-            if (linx_scoped_scalar_decode(insn64, &scoped) &&
+            if (valid_scoped &&
                 linx_scoped_scalar_runtime_enabled &&
                 current_machine && current_machine->smp.cpus == 1 &&
                 scoped.runtime_eligible) {
                 ctx->scoped_scope = scoped.scope;
+                ctx->scoped_reg_store_shift = scoped.reg_store_shift;
                 switch (scoped.inner_bytes) {
                 case 2:
                     decoded = decode_insn16(ctx, scoped.inner_word);
@@ -9470,7 +9477,7 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                                          "scoped-scalar");
                     break;
                 }
-            } else if (linx_scoped_scalar_decode(insn64, &scoped)) {
+            } else if (valid_scoped) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "Linx: inactive scoped Scalar form %s at PC=0x%"
                               VADDR_PRIx "\n", scoped.base_form_id, pc);
