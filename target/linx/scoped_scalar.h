@@ -21,5 +21,6 @@ typedef struct LinxScopedScalar {
 } LinxScopedScalar;
 
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded);
+bool linx_scoped_scalar_runtime_requested(void);
 
 #endif

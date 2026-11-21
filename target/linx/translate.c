@@ -9573,8 +9573,6 @@ void linx_translate_init(void)
     const char *mem_trace_pc_lo = getenv("LINX_MEM_TRACE_PC_LO");
     const char *mem_trace_pc_hi = getenv("LINX_MEM_TRACE_PC_HI");
     const char *mem_trace_pre = getenv("LINX_MEM_TRACE_PRE");
-    const char *scoped_scalar_runtime =
-        getenv("LINX_QEMU_SCOPED_SCALAR_RUNTIME");
     uint64_t mem_trace_addr_value = 0;
     uint64_t mem_trace_size_value = 8;
     uint64_t mem_trace_pc_value = 0;
@@ -9608,9 +9606,7 @@ void linx_translate_init(void)
          strcmp(call_trace_ring, "0") != 0);
     linx_template_chain_enabled =
         template_chain && template_chain[0] && strcmp(template_chain, "0") != 0;
-    linx_scoped_scalar_runtime_enabled =
-        scoped_scalar_runtime && scoped_scalar_runtime[0] &&
-        strcmp(scoped_scalar_runtime, "0") != 0;
+    linx_scoped_scalar_runtime_enabled = linx_scoped_scalar_runtime_requested();
     linx_mem_trace_translate_addr_filter_enabled =
         mem_trace_addr && mem_trace_addr[0] &&
         linx_translate_parse_u64(mem_trace_addr, &mem_trace_addr_value);
