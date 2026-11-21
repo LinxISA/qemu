@@ -27,6 +27,8 @@ or captured scope remains after the helper returns. In this single-agent model,
 Private, IntraCore and InterCore use the same coherent RAM backend while their
 typed scope remains observable through `linx_scoped_scalar_access`. The default
 v0.58 execution path remains active when the environment switch is absent.
+The loader admits the exact locked PTO 0.59.1 ELF identity with this switch and
+`-smp 1`. It rejects mixed identities and incorrect projection hashes.
 
 ## Canonical Build and Test Commands
 Run from `/Users/zhoubot/linx-isa`.

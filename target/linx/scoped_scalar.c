@@ -19,6 +19,13 @@ static const LinxScopedScalarForm linx_scoped_scalar_forms[] = {
 #include "scoped_scalar_forms.inc"
 };
 
+bool linx_scoped_scalar_runtime_requested(void)
+{
+    const char *flag = getenv("LINX_QEMU_SCOPED_SCALAR_RUNTIME");
+
+    return flag && flag[0] && strcmp(flag, "0") != 0;
+}
+
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded)
 {
     unsigned scope = (word >> 8) & 3;

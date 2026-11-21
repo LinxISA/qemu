@@ -9,12 +9,15 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/linx-scoped-runtime.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 OBJ="$TMP/scoped-scalar-runtime.o"
+SCOPED_OBJ="$TMP/scoped-scalar-v0591-runtime.o"
 FAULT_OBJ="$TMP/scoped-scalar-runtime-fault.o"
 TRACE="$TMP/scoped-scalar-runtime.trace"
 COMMIT="$TMP/scoped-scalar-runtime.jsonl"
 
 "$LLVM_MC" -triple=linx64 -filetype=obj \
   "$ROOT/tests/linxisa/scoped_scalar_runtime_smoke.s" -o "$OBJ"
+"$LLVM_MC" -triple=linx64 -mattr=+pto-v0591-scoped -filetype=obj \
+  "$ROOT/tests/linxisa/scoped_scalar_runtime_smoke.s" -o "$SCOPED_OBJ"
 "$LLVM_MC" -triple=linx64 -filetype=obj \
   "$ROOT/tests/linxisa/scoped_scalar_runtime_fault.s" -o "$FAULT_OBJ"
 
@@ -67,6 +70,67 @@ for pc in scoped_pcs:
     if pc + 8 not in next_pcs:
         raise SystemExit(f"carrier at 0x{pc:x} did not advance by eight bytes")
 print("ok: scoped immediate/PCR accesses carried scope and retired eight bytes")
+PY
+
+QEMU_BIN="$QEMU_BIN" LLVM_MC="$LLVM_MC" SCOPED_OBJ="$SCOPED_OBJ" TMP="$TMP" \
+SOURCE="$ROOT/tests/linxisa/scoped_scalar_runtime_smoke.s" python3 - <<'PY'
+import json
+import os
+import pathlib
+import struct
+import subprocess
+
+obj = pathlib.Path(os.environ["SCOPED_OBJ"])
+tampered = pathlib.Path(os.environ["TMP"]) / "wrong-projection.o"
+contents = obj.read_bytes()
+projection = b"d90c881754d66f2cd26f6014d0b582cba88307e70123583d87fc59a918229c28"
+if contents.count(projection) != 1:
+    raise SystemExit("expected one canonical scoped identity")
+tampered.write_bytes(contents.replace(projection, b"0" + projection[1:]))
+
+mixed = pathlib.Path(os.environ["TMP"]) / "mixed-identities.o"
+legacy = json.dumps({
+    "encoding_abi": "pto-isa-0.58.7-mode-function-v1",
+    "encoding_projection_sha256": (
+        "a5f78ecd707bde4a014542158ea257c783796b95fa4fbcce37742e41fee6a881"
+    ),
+    "release": "0.58.7",
+}, separators=(",", ":")).encode()
+note = struct.pack("<III", 4, len(legacy), 1) + b"PTO\0" + legacy
+note += b"\0" * (-len(note) % 4)
+more = '\n.section .note.other,"a",@note\n.p2align 2\n'
+more += ".byte " + ",".join(str(byte) for byte in note) + "\n"
+subprocess.run(
+    [os.environ["LLVM_MC"], "-triple=linx64", "-mattr=+pto-v0591-scoped",
+     "-filetype=obj", "-o", mixed],
+    input=pathlib.Path(os.environ["SOURCE"]).read_text() + more,
+    text=True, check=True,
+)
+
+cases = [
+    (obj, "1", "1", True),
+    (obj, "1", "0", False),
+    (obj, "4", "1", False),
+    (tampered, "1", "1", False),
+    (mixed, "1", "1", False),
+]
+for image, smp, enabled, should_boot in cases:
+    env = os.environ | {
+        "LINX_QEMU_SCOPED_SCALAR_RUNTIME": enabled,
+        "LINX_VIRT_TEST_FINISHER": "1",
+    }
+    run = subprocess.run(
+        [os.environ["QEMU_BIN"], "-nographic", "-monitor", "none",
+         "-machine", "virt",
+         "-smp", smp, "-bios", "none", "-kernel", image],
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    if should_boot:
+        if run.returncode != 0:
+            raise SystemExit(f"canonical scoped ELF failed: {run.stderr}")
+    elif run.returncode == 0 or "one consistent PTO ISA" not in run.stderr:
+        raise SystemExit(f"unexpected admission for {image.name}: {run.stderr}")
+print("ok: exact PTO 0.59.1 ELF identity admitted only on the opt-in single PE")
 PY
 
 QEMU_BIN="$QEMU_BIN" OBJ="$OBJ" TMP="$TMP" python3 - <<'PY'
