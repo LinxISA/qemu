@@ -21,6 +21,7 @@
 #include "opcode_meta.h"
 #include "scoped_scalar.h"
 #include "tile_isa_058.h"
+#include "hw/core/boards.h"
 
 #define HELPER_H "helper.h"
 #include "exec/helper-info.c.inc"
@@ -41,7 +42,10 @@ typedef struct DisasContext {
     vaddr call_ra_target;
     uint32_t block_insn_index;
     int mem_idx;
+    int scoped_scope;
 } DisasContext;
+
+static bool linx_scoped_scalar_runtime_enabled;
 
 enum {
     LINX_BR_FALL   = 1,
@@ -1881,6 +1885,16 @@ static TCGv_i64 linx_srcR_select(DisasContext *ctx, unsigned srcR,
 static vaddr linx_pcrel_target(vaddr pc, int64_t simm_hw)
 {
     return pc + ((vaddr)simm_hw << 1);
+}
+
+static vaddr linx_scalar_pcr_address(DisasContext *ctx, int64_t displacement)
+{
+    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
+
+    if (ctx->scoped_scope >= 0) {
+        return (pc & ~(vaddr)3) + ((vaddr)displacement << 2);
+    }
+    return pc + displacement;
 }
 
 static bool linx_illegal(DisasContext *ctx)
@@ -4333,7 +4347,19 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
                                      tcg_constant_i64(0));
         }
     }
-    tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
+    if (ctx->scoped_scope >= 0) {
+#if TARGET_LONG_BITS == 32
+        TCGv_i64 scoped_addr = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(scoped_addr, addr);
+#else
+        TCGv_i64 scoped_addr = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_scoped_load(
+            out, tcg_env, scoped_addr, tcg_constant_i32(mop),
+            tcg_constant_i32(ctx->scoped_scope), tcg_constant_i64(pc));
+    } else {
+        tcg_gen_qemu_ld_i64(out, addr, ctx->mem_idx, mop | linx_mo_endian());
+    }
 
     if (linx_mem_trace_translate_enabled && linx_mem_trace_translate_loads) {
         const unsigned size = memop_size(mop);
@@ -4404,8 +4430,7 @@ static bool trans_lwi(DisasContext *ctx, arg_lwi *a)
 
 static bool trans_lb_pcr(DisasContext *ctx, arg_lb_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SB);
@@ -4413,8 +4438,7 @@ static bool trans_lb_pcr(DisasContext *ctx, arg_lb_pcr *a)
 
 static bool trans_lbu_pcr(DisasContext *ctx, arg_lbu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UB);
@@ -4422,8 +4446,7 @@ static bool trans_lbu_pcr(DisasContext *ctx, arg_lbu_pcr *a)
 
 static bool trans_lh_pcr(DisasContext *ctx, arg_lh_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SW);
@@ -4431,8 +4454,7 @@ static bool trans_lh_pcr(DisasContext *ctx, arg_lh_pcr *a)
 
 static bool trans_lhu_pcr(DisasContext *ctx, arg_lhu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UW);
@@ -4440,8 +4462,7 @@ static bool trans_lhu_pcr(DisasContext *ctx, arg_lhu_pcr *a)
 
 static bool trans_lw_pcr(DisasContext *ctx, arg_lw_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
@@ -4449,8 +4470,7 @@ static bool trans_lw_pcr(DisasContext *ctx, arg_lw_pcr *a)
 
 static bool trans_lwu_pcr(DisasContext *ctx, arg_lwu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UL);
@@ -4458,8 +4478,7 @@ static bool trans_lwu_pcr(DisasContext *ctx, arg_lwu_pcr *a)
 
 static bool trans_ld_pcr(DisasContext *ctx, arg_ld_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UQ);
@@ -4467,8 +4486,7 @@ static bool trans_ld_pcr(DisasContext *ctx, arg_ld_pcr *a)
 
 static bool trans_hl_lb_pcr(DisasContext *ctx, arg_hl_lb_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SB);
@@ -4476,8 +4494,7 @@ static bool trans_hl_lb_pcr(DisasContext *ctx, arg_hl_lb_pcr *a)
 
 static bool trans_hl_lbu_pcr(DisasContext *ctx, arg_hl_lbu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UB);
@@ -4485,8 +4502,7 @@ static bool trans_hl_lbu_pcr(DisasContext *ctx, arg_hl_lbu_pcr *a)
 
 static bool trans_hl_lh_pcr(DisasContext *ctx, arg_hl_lh_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SW);
@@ -4494,8 +4510,7 @@ static bool trans_hl_lh_pcr(DisasContext *ctx, arg_hl_lh_pcr *a)
 
 static bool trans_hl_lhu_pcr(DisasContext *ctx, arg_hl_lhu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UW);
@@ -4503,8 +4518,7 @@ static bool trans_hl_lhu_pcr(DisasContext *ctx, arg_hl_lhu_pcr *a)
 
 static bool trans_hl_lw_pcr(DisasContext *ctx, arg_hl_lw_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_SL);
@@ -4512,8 +4526,7 @@ static bool trans_hl_lw_pcr(DisasContext *ctx, arg_hl_lw_pcr *a)
 
 static bool trans_hl_lwu_pcr(DisasContext *ctx, arg_hl_lwu_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UL);
@@ -4521,8 +4534,7 @@ static bool trans_hl_lwu_pcr(DisasContext *ctx, arg_hl_lwu_pcr *a)
 
 static bool trans_hl_ld_pcr(DisasContext *ctx, arg_hl_ld_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_load_to_dest(ctx, a->RegDst, linx_addr_from_i64(addr64), MO_UQ);
@@ -5184,7 +5196,19 @@ static bool linx_store_from_reg(DisasContext *ctx, TCGv addr, TCGv_i64 val,
     }
 
     gen_helper_linx_prepare_gm_write(tcg_env);
-    tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
+    if (ctx->scoped_scope >= 0) {
+#if TARGET_LONG_BITS == 32
+        TCGv_i64 scoped_addr = tcg_temp_new_i64();
+        tcg_gen_extu_tl_i64(scoped_addr, addr);
+#else
+        TCGv_i64 scoped_addr = (TCGv_i64)addr;
+#endif
+        gen_helper_linx_scoped_store(
+            tcg_env, scoped_addr, val, tcg_constant_i32(mop),
+            tcg_constant_i32(ctx->scoped_scope), tcg_constant_i64(pc));
+    } else {
+        tcg_gen_qemu_st_i64(val, addr, ctx->mem_idx, mop | linx_mo_endian());
+    }
 #if TARGET_LONG_BITS == 32
     TCGv_i64 raw_transport_addr = tcg_temp_new_i64();
     tcg_gen_extu_tl_i64(raw_transport_addr, addr);
@@ -5244,9 +5268,8 @@ static inline int32_t linx_decode_pcr17_store_imm(uint32_t enc_imm)
 
 static bool trans_sb_pcr(DisasContext *ctx, arg_sb_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int32_t simm17 = linx_decode_pcr17_store_imm(a->imm);
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UB);
@@ -5254,9 +5277,8 @@ static bool trans_sb_pcr(DisasContext *ctx, arg_sb_pcr *a)
 
 static bool trans_sh_pcr(DisasContext *ctx, arg_sh_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int32_t simm17 = linx_decode_pcr17_store_imm(a->imm);
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UW);
@@ -5264,9 +5286,8 @@ static bool trans_sh_pcr(DisasContext *ctx, arg_sh_pcr *a)
 
 static bool trans_sw_pcr(DisasContext *ctx, arg_sw_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int32_t simm17 = linx_decode_pcr17_store_imm(a->imm);
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
@@ -5274,9 +5295,8 @@ static bool trans_sw_pcr(DisasContext *ctx, arg_sw_pcr *a)
 
 static bool trans_sd_pcr(DisasContext *ctx, arg_sd_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     const int32_t simm17 = linx_decode_pcr17_store_imm(a->imm);
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)simm17);
+    vaddr addr = linx_scalar_pcr_address(ctx, simm17);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UQ);
@@ -5284,8 +5304,7 @@ static bool trans_sd_pcr(DisasContext *ctx, arg_sd_pcr *a)
 
 static bool trans_hl_sb_pcr(DisasContext *ctx, arg_hl_sb_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UB);
@@ -5293,8 +5312,7 @@ static bool trans_hl_sb_pcr(DisasContext *ctx, arg_hl_sb_pcr *a)
 
 static bool trans_hl_sh_pcr(DisasContext *ctx, arg_hl_sh_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UW);
@@ -5302,8 +5320,7 @@ static bool trans_hl_sh_pcr(DisasContext *ctx, arg_hl_sh_pcr *a)
 
 static bool trans_hl_sw_pcr(DisasContext *ctx, arg_hl_sw_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UL);
@@ -5311,8 +5328,7 @@ static bool trans_hl_sw_pcr(DisasContext *ctx, arg_hl_sw_pcr *a)
 
 static bool trans_hl_sd_pcr(DisasContext *ctx, arg_hl_sd_pcr *a)
 {
-    vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
-    vaddr addr = (vaddr)((int64_t)pc + (int64_t)a->simm);
+    vaddr addr = linx_scalar_pcr_address(ctx, a->simm);
     TCGv_i64 addr64 = tcg_temp_new_i64();
     tcg_gen_movi_i64(addr64, addr);
     return linx_store_from_reg(ctx, linx_addr_from_i64(addr64), linx_get_reg(a->SrcL), MO_UQ);
@@ -9072,6 +9088,7 @@ static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     ctx->cur_insn_len = 0;
     ctx->in_body = (ctx->base.tb->flags & LINX_TB_FLAG_IN_BODY) != 0;
     ctx->mem_idx = (ctx->base.tb->flags & LINX_TB_FLAG_USER_MMU) != 0 ? 1 : 0;
+    ctx->scoped_scope = -1;
     ctx->decoupled_header = false;
     ctx->tgt_modified =
         (ctx->base.tb->flags & LINX_TB_FLAG_FUSED_ICALL) != 0;
@@ -9429,7 +9446,31 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
         if ((hw & 0xf0ff) == 0x001f) {
             LinxScopedScalar scoped;
 
-            if (linx_scoped_scalar_decode(insn64, &scoped)) {
+            if (linx_scoped_scalar_decode(insn64, &scoped) &&
+                linx_scoped_scalar_runtime_enabled &&
+                current_machine && current_machine->smp.cpus == 1 &&
+                scoped.runtime_eligible) {
+                ctx->scoped_scope = scoped.scope;
+                switch (scoped.inner_bytes) {
+                case 2:
+                    decoded = decode_insn16(ctx, scoped.inner_word);
+                    break;
+                case 4:
+                    decoded = decode_insn32(ctx, scoped.inner_word);
+                    break;
+                case 6:
+                    decoded = decode_insn48(ctx, scoped.inner_word);
+                    break;
+                default:
+                    g_assert_not_reached();
+                }
+                ctx->scoped_scope = -1;
+                if (decoded) {
+                    trace_linx_insn_exec(pc, insn_val, len,
+                                         "scoped-scalar");
+                    break;
+                }
+            } else if (linx_scoped_scalar_decode(insn64, &scoped)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "Linx: inactive scoped Scalar form %s at PC=0x%"
                               VADDR_PRIx "\n", scoped.base_form_id, pc);
@@ -9532,6 +9573,8 @@ void linx_translate_init(void)
     const char *mem_trace_pc_lo = getenv("LINX_MEM_TRACE_PC_LO");
     const char *mem_trace_pc_hi = getenv("LINX_MEM_TRACE_PC_HI");
     const char *mem_trace_pre = getenv("LINX_MEM_TRACE_PRE");
+    const char *scoped_scalar_runtime =
+        getenv("LINX_QEMU_SCOPED_SCALAR_RUNTIME");
     uint64_t mem_trace_addr_value = 0;
     uint64_t mem_trace_size_value = 8;
     uint64_t mem_trace_pc_value = 0;
@@ -9565,6 +9608,9 @@ void linx_translate_init(void)
          strcmp(call_trace_ring, "0") != 0);
     linx_template_chain_enabled =
         template_chain && template_chain[0] && strcmp(template_chain, "0") != 0;
+    linx_scoped_scalar_runtime_enabled =
+        scoped_scalar_runtime && scoped_scalar_runtime[0] &&
+        strcmp(scoped_scalar_runtime, "0") != 0;
     linx_mem_trace_translate_addr_filter_enabled =
         mem_trace_addr && mem_trace_addr[0] &&
         linx_translate_parse_u64(mem_trace_addr, &mem_trace_addr_value);

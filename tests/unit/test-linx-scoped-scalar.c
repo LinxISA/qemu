@@ -15,6 +15,7 @@ static const struct {
 static void test_scope_forms(void)
 {
     LinxScopedScalar decoded;
+    unsigned runtime_forms = 0;
 
     g_assert_cmpuint(ARRAY_SIZE(witnesses), ==, 705);
     for (size_t i = 0; i < ARRAY_SIZE(witnesses); i++) {
@@ -23,7 +24,9 @@ static void test_scope_forms(void)
         g_assert_cmpuint(decoded.scope, ==, witnesses[i].scope);
         g_assert_cmpuint(decoded.inner_bytes, ==, witnesses[i].inner_bytes);
         g_assert_cmpuint(decoded.inner_word, ==, witnesses[i].word >> 16);
+        runtime_forms += decoded.runtime_eligible;
     }
+    g_assert_cmpuint(runtime_forms, ==, 180);
 }
 
 static void test_scope_invalid(void)

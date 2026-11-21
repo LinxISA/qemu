@@ -5,7 +5,9 @@ on:
     paths:
       - '.github/workflows/linx-scoped-scalar.yml'
       - 'scripts/linxisa/generate-scoped-scalar.py'
+      - 'scripts/linxisa/run-scoped-scalar-runtime-smoke.sh'
       - 'target/linx/**'
+      - 'tests/linxisa/scoped_scalar_runtime_*.s'
       - 'tests/unit/*linx*scoped*'
       - 'tests/unit/meson.build'
 
@@ -15,7 +17,7 @@ permissions:
 jobs:
   scoped-scalar-decode:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - name: Check out QEMU
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -32,6 +34,13 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Check generated decoder and witnesses
         run: python3 scripts/linxisa/generate-scoped-scalar.py linx-catalog --check
+      - name: Check out qualified Linx LLVM MC
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: LinxISA/llvm-project
+          ref: 02ca3107814c25e1cc3792dc8a34196eb4f63b31
+          path: linx-llvm
+          persist-credentials: false
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -47,3 +56,11 @@ jobs:
             --without-default-features --enable-gio --python="$tools/python3"
           "$tools/ninja" -C build -j 3 qemu-system-linx64 tests/unit/test-linx-scoped-scalar
           build/pyvenv/bin/meson test -C build --print-errorlogs test-linx-scoped-scalar
+      - name: Build MC assembler and run scoped runtime
+        run: |
+          cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD= -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA
+          cmake --build linx-llvm-build --target llvm-mc -j 3
+          LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
+          QEMU_BIN="$PWD/build/qemu-system-linx64" \
+            scripts/linxisa/run-scoped-scalar-runtime-smoke.sh

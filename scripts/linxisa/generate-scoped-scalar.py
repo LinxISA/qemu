@@ -31,6 +31,7 @@ def render(data):
     witnesses = [provenance, revision]
     bases = {row["form_id"]: row for row in data["forms"]}
     carriers = {}
+    runtime_forms = 0
     for row in data["scoped_forms"]:
         carriers.setdefault(row["base_form_id"], []).append(row)
     if len(carriers) != 235 or len(data["scoped_forms"]) != 705:
@@ -38,6 +39,13 @@ def render(data):
 
     for form_id, variants in sorted(carriers.items()):
         base = bases[form_id]
+        agu = base.get("agu", {})
+        runtime = (
+            agu.get("action") in {"Load", "Store"}
+            and agu.get("address_kind") in {"Immediate", "PCRelative"}
+            and agu.get("update_mode") == "None"
+        )
+        runtime_forms += int(runtime)
         length, mask, match = packed_encoding(base["encoding"])
         reserved_mask = 0
         if base["constraints"]:
@@ -50,7 +58,8 @@ def render(data):
             if field["width"] != 2 or reserved_mask.bit_count() != 2:
                 raise ValueError(f"unsupported SrcRType layout for {form_id}")
         rows.append(
-            f'{{ 0x{mask:012x}, 0x{match:012x}, 0x{reserved_mask:012x}, {length // 8}, "{form_id}" }},'
+            f'{{ 0x{mask:012x}, 0x{match:012x}, 0x{reserved_mask:012x}, '
+            f'{length // 8}, {str(runtime).lower()}, "{form_id}" }},'
         )
         if len(variants) != 3 or {item["scope_code"] for item in variants} != {0, 1, 2}:
             raise ValueError(f"incomplete scopes for {form_id}")
@@ -69,6 +78,10 @@ def render(data):
                 raise ValueError(f"invalid carrier {row['form_id']}")
             witnesses.append(f'{{ 0x{full_match:016x}, {scope}, {length // 8}, "{form_id}" }},')
 
+    if runtime_forms != 60:
+        raise ValueError(
+            f"expected 60 immediate/PCR runtime forms, got {runtime_forms}"
+        )
     return ("\n".join(rows) + "\n", "\n".join(witnesses) + "\n")
 
 

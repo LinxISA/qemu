@@ -12,6 +12,22 @@
 - Linx decode/translate/execute paths and trap behavior
 - QEMU binaries used by AVS/runtime gates (`qemu-system-linx64`)
 
+## PTO 0.59.1 scoped Scalar candidate
+
+Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1
+immediate and PC-relative single-access Scalar carriers. The candidate accepts
+exactly 60 inner base forms and all three scope codes. Each actual memory helper
+receives the carrier's scope together with the address, size and outer TPC.
+Successful carriers retire eight bytes. Faults and rejected carriers retain the
+outer TPC and suppress destination and memory publication.
+
+This candidate is restricted to `-smp 1`. The access helper completes the
+memory request synchronously before instruction retirement, so no GM obligation
+or captured scope remains after the helper returns. In this single-agent model,
+Private, IntraCore and InterCore use the same coherent RAM backend while their
+typed scope remains observable through `linx_scoped_scalar_access`. The default
+v0.58 execution path remains active when the environment switch is absent.
+
 ## Canonical Build and Test Commands
 Run from `/Users/zhoubot/linx-isa`.
 
