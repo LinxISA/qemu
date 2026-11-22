@@ -13,6 +13,7 @@ linx_ss.add(files(
   'helper.c',
   'hscb_geometry.c',
   'msgb_receive.c',
+  'msgb_guest.c',
   'scoped_scalar.c',
   'tile_cube_058.c',
   'translate.c',
