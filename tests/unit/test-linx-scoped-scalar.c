@@ -26,7 +26,7 @@ static void test_scope_forms(void)
         g_assert_cmpuint(decoded.inner_word, ==, witnesses[i].word >> 16);
         runtime_forms += decoded.runtime_eligible;
     }
-    g_assert_cmpuint(runtime_forms, ==, 519);
+    g_assert_cmpuint(runtime_forms, ==, 693);
 }
 
 static void test_scope_invalid(void)

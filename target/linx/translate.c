@@ -621,6 +621,15 @@ static void linx_set_dest(unsigned dst, TCGv_i64 v)
     }
 }
 
+static void linx_set_scoped_atomic_dest(DisasContext *ctx, unsigned dst,
+                                        TCGv_i64 value)
+{
+    if (ctx->scoped_scope >= 0 && dst >= 24u && dst < 30u) {
+        return;
+    }
+    linx_set_dest(dst, value);
+}
+
 static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
 {
     if (!linx_commit_trace_enabled) {
@@ -8147,11 +8156,54 @@ static bool trans_acre(DisasContext *ctx, arg_acre *a)
     return true;
 }
 
+#define LINX_SCOPED_AOP_SWAP 0u
+#define LINX_SCOPED_AOP_ADD 1u
+#define LINX_SCOPED_AOP_SUB 2u
+#define LINX_SCOPED_AOP_AND 3u
+#define LINX_SCOPED_AOP_OR 4u
+#define LINX_SCOPED_AOP_XOR 5u
+#define LINX_SCOPED_AOP_SMAX 6u
+#define LINX_SCOPED_AOP_SMIN 7u
+#define LINX_SCOPED_AOP_UMAX 8u
+#define LINX_SCOPED_AOP_UMIN 9u
+
+static TCGv_i32 linx_scoped_atomic_control(DisasContext *ctx, unsigned size,
+                                           unsigned op, unsigned far)
+{
+    return tcg_constant_i32(size | (op << 4) |
+                            ((unsigned)ctx->scoped_scope << 8) | (far << 10));
+}
+
+static void linx_atomic_order_before(unsigned release)
+{
+    if (release) {
+        tcg_gen_mb(TCG_MO_ALL);
+    }
+}
+
+static void linx_atomic_order_after(unsigned acquire)
+{
+    if (acquire) {
+        tcg_gen_mb(TCG_MO_ALL);
+    }
+}
+
+/* Scoped memory destinations 24..29 are architectural discard encodings. */
+#define linx_set_dest(DST, VALUE)                                              \
+    linx_set_scoped_atomic_dest(ctx, (DST), (VALUE))
+
 static bool trans_lr_w(DisasContext *ctx, arg_lr_w *a)
 {
     TCGv_i64 addr = linx_get_reg(a->SrcL);
     TCGv_i64 val = tcg_temp_new_i64();
-    gen_helper_linx_lr_w(val, tcg_env, addr);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_lr(
+            val, tcg_env, addr, linx_scoped_atomic_control(ctx, 4, 0, a->far));
+    } else {
+        gen_helper_linx_lr_w(val, tcg_env, addr);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, val);
     return true;
 }
@@ -8160,7 +8212,14 @@ static bool trans_lr_d(DisasContext *ctx, arg_lr_d *a)
 {
     TCGv_i64 addr = linx_get_reg(a->SrcL);
     TCGv_i64 val = tcg_temp_new_i64();
-    gen_helper_linx_lr_d(val, tcg_env, addr);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_lr(
+            val, tcg_env, addr, linx_scoped_atomic_control(ctx, 8, 0, a->far));
+    } else {
+        gen_helper_linx_lr_d(val, tcg_env, addr);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, val);
     return true;
 }
@@ -8172,7 +8231,17 @@ static bool trans_sc_w(DisasContext *ctx, arg_sc_w *a)
     TCGv_i64 res = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, val64);
-    gen_helper_linx_sc_w(res, tcg_env, addr, val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_sc(
+            res, tcg_env, addr, value,
+            linx_scoped_atomic_control(ctx, 4, 0, a->far));
+    } else {
+        gen_helper_linx_sc_w(res, tcg_env, addr, val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, res);
     return true;
 }
@@ -8182,7 +8251,15 @@ static bool trans_sc_d(DisasContext *ctx, arg_sc_d *a)
     TCGv_i64 addr = linx_get_reg(a->SrcR);
     TCGv_i64 val = linx_get_reg(a->SrcL);
     TCGv_i64 res = tcg_temp_new_i64();
-    gen_helper_linx_sc_d(res, tcg_env, addr, val);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_sc(
+            res, tcg_env, addr, val,
+            linx_scoped_atomic_control(ctx, 8, 0, a->far));
+    } else {
+        gen_helper_linx_sc_d(res, tcg_env, addr, val);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, res);
     return true;
 }
@@ -8194,7 +8271,17 @@ static bool trans_swapw(DisasContext *ctx, arg_swapw *a)
     TCGv_i64 old = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, val64);
-    gen_helper_linx_swapw(old, tcg_env, addr, val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, addr, value,
+            linx_scoped_atomic_control(ctx, 4, LINX_SCOPED_AOP_SWAP, a->far));
+    } else {
+        gen_helper_linx_swapw(old, tcg_env, addr, val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8204,7 +8291,15 @@ static bool trans_swapd(DisasContext *ctx, arg_swapd *a)
     TCGv_i64 addr = linx_get_reg(a->SrcL);
     TCGv_i64 val = linx_get_reg(a->SrcR);
     TCGv_i64 old = tcg_temp_new_i64();
-    gen_helper_linx_swapd(old, tcg_env, addr, val);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, addr, val,
+            linx_scoped_atomic_control(ctx, 8, LINX_SCOPED_AOP_SWAP, a->far));
+    } else {
+        gen_helper_linx_swapd(old, tcg_env, addr, val);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8216,7 +8311,17 @@ static bool trans_lw_add(DisasContext *ctx, arg_lw_add *a)
     TCGv_i64 old = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, val64);
-    gen_helper_linx_lw_add(old, tcg_env, addr, val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, addr, value,
+            linx_scoped_atomic_control(ctx, 4, LINX_SCOPED_AOP_ADD, a->far));
+    } else {
+        gen_helper_linx_lw_add(old, tcg_env, addr, val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8226,7 +8331,15 @@ static bool trans_ld_add(DisasContext *ctx, arg_ld_add *a)
     TCGv_i64 addr = linx_get_reg(a->SrcL);
     TCGv_i64 val = linx_get_reg(a->SrcR);
     TCGv_i64 old = tcg_temp_new_i64();
-    gen_helper_linx_ld_add(old, tcg_env, addr, val);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, addr, val,
+            linx_scoped_atomic_control(ctx, 8, LINX_SCOPED_AOP_ADD, a->far));
+    } else {
+        gen_helper_linx_ld_add(old, tcg_env, addr, val);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8239,7 +8352,19 @@ static bool trans_casb(DisasContext *ctx, arg_casb *a)
 
     tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
     tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
-    gen_helper_linx_casb(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 cmp = tcg_temp_new_i64();
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(cmp, cmp32);
+        tcg_gen_extu_i32_i64(value, new32);
+        gen_helper_linx_scoped_cas(old, tcg_env, linx_get_reg(a->SrcL), cmp,
+                                   value,
+                                   linx_scoped_atomic_control(ctx, 1, 0, 0));
+    } else {
+        gen_helper_linx_casb(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8252,7 +8377,19 @@ static bool trans_cash(DisasContext *ctx, arg_cash *a)
 
     tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
     tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
-    gen_helper_linx_cash(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 cmp = tcg_temp_new_i64();
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(cmp, cmp32);
+        tcg_gen_extu_i32_i64(value, new32);
+        gen_helper_linx_scoped_cas(old, tcg_env, linx_get_reg(a->SrcL), cmp,
+                                   value,
+                                   linx_scoped_atomic_control(ctx, 2, 0, 0));
+    } else {
+        gen_helper_linx_cash(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8265,7 +8402,19 @@ static bool trans_casw(DisasContext *ctx, arg_casw *a)
 
     tcg_gen_extrl_i64_i32(cmp32, linx_get_reg(a->SrcR));
     tcg_gen_extrl_i64_i32(new32, linx_get_reg(a->SrcD));
-    gen_helper_linx_casw(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 cmp = tcg_temp_new_i64();
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(cmp, cmp32);
+        tcg_gen_extu_i32_i64(value, new32);
+        gen_helper_linx_scoped_cas(old, tcg_env, linx_get_reg(a->SrcL), cmp,
+                                   value,
+                                   linx_scoped_atomic_control(ctx, 4, 0, 0));
+    } else {
+        gen_helper_linx_casw(old, tcg_env, linx_get_reg(a->SrcL), cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8274,8 +8423,16 @@ static bool trans_casd(DisasContext *ctx, arg_casd *a)
 {
     TCGv_i64 old = tcg_temp_new_i64();
 
-    gen_helper_linx_casd(old, tcg_env, linx_get_reg(a->SrcL),
-                         linx_get_reg(a->SrcR), linx_get_reg(a->SrcD));
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_cas(old, tcg_env, linx_get_reg(a->SrcL),
+                                   linx_get_reg(a->SrcR), linx_get_reg(a->SrcD),
+                                   linx_scoped_atomic_control(ctx, 8, 0, 0));
+    } else {
+        gen_helper_linx_casd(old, tcg_env, linx_get_reg(a->SrcL),
+                             linx_get_reg(a->SrcR), linx_get_reg(a->SrcD));
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8697,7 +8854,15 @@ static bool trans_prfi_u(DisasContext *ctx, arg_prfi_u *a)
 static bool trans_lr_b(DisasContext *ctx, arg_lr_b *a)
 {
     TCGv_i64 val = tcg_temp_new_i64();
-    gen_helper_linx_lr_b(val, tcg_env, linx_get_reg(a->SrcL));
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_lr(
+            val, tcg_env, linx_get_reg(a->SrcL),
+            linx_scoped_atomic_control(ctx, 1, 0, a->far));
+    } else {
+        gen_helper_linx_lr_b(val, tcg_env, linx_get_reg(a->SrcL));
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, val);
     return true;
 }
@@ -8705,7 +8870,15 @@ static bool trans_lr_b(DisasContext *ctx, arg_lr_b *a)
 static bool trans_lr_h(DisasContext *ctx, arg_lr_h *a)
 {
     TCGv_i64 val = tcg_temp_new_i64();
-    gen_helper_linx_lr_h(val, tcg_env, linx_get_reg(a->SrcL));
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_lr(
+            val, tcg_env, linx_get_reg(a->SrcL),
+            linx_scoped_atomic_control(ctx, 2, 0, a->far));
+    } else {
+        gen_helper_linx_lr_h(val, tcg_env, linx_get_reg(a->SrcL));
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, val);
     return true;
 }
@@ -8715,7 +8888,17 @@ static bool trans_sc_b(DisasContext *ctx, arg_sc_b *a)
     TCGv_i64 res = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL));
-    gen_helper_linx_sc_b(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_sc(
+            res, tcg_env, linx_get_reg(a->SrcR), value,
+            linx_scoped_atomic_control(ctx, 1, 0, a->far));
+    } else {
+        gen_helper_linx_sc_b(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, res);
     return true;
 }
@@ -8725,7 +8908,17 @@ static bool trans_sc_h(DisasContext *ctx, arg_sc_h *a)
     TCGv_i64 res = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcL));
-    gen_helper_linx_sc_h(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_sc(
+            res, tcg_env, linx_get_reg(a->SrcR), value,
+            linx_scoped_atomic_control(ctx, 2, 0, a->far));
+    } else {
+        gen_helper_linx_sc_h(res, tcg_env, linx_get_reg(a->SrcR), val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, res);
     return true;
 }
@@ -8735,7 +8928,17 @@ static bool trans_swapb(DisasContext *ctx, arg_swapb *a)
     TCGv_i64 old = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));
-    gen_helper_linx_swapb(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, linx_get_reg(a->SrcL), value,
+            linx_scoped_atomic_control(ctx, 1, LINX_SCOPED_AOP_SWAP, a->far));
+    } else {
+        gen_helper_linx_swapb(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -8745,83 +8948,131 @@ static bool trans_swaph(DisasContext *ctx, arg_swaph *a)
     TCGv_i64 old = tcg_temp_new_i64();
     TCGv_i32 val32 = tcg_temp_new_i32();
     tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));
-    gen_helper_linx_swaph(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        TCGv_i64 value = tcg_temp_new_i64();
+        tcg_gen_extu_i32_i64(value, val32);
+        gen_helper_linx_scoped_rmw(
+            old, tcg_env, linx_get_reg(a->SrcL), value,
+            linx_scoped_atomic_control(ctx, 2, LINX_SCOPED_AOP_SWAP, a->far));
+    } else {
+        gen_helper_linx_swaph(old, tcg_env, linx_get_reg(a->SrcL), val32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
 
-#define LINX_DEFINE_FETCH32(NAME, HELPER) \
-static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
-{ \
-    TCGv_i64 old = tcg_temp_new_i64(); \
-    TCGv_i32 val32 = tcg_temp_new_i32(); \
-    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR)); \
-    gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL), val32); \
-    linx_set_dest(a->RegDst, old); \
-    return true; \
-}
+#define LINX_DEFINE_FETCH32(NAME, HELPER, OP)                                  \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a)                 \
+    {                                                                          \
+        TCGv_i64 old = tcg_temp_new_i64();                                     \
+        TCGv_i32 val32 = tcg_temp_new_i32();                                   \
+        tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));                   \
+        linx_atomic_order_before(a->rl);                                       \
+        if (ctx->scoped_scope >= 0) {                                          \
+            TCGv_i64 value = tcg_temp_new_i64();                               \
+            tcg_gen_extu_i32_i64(value, val32);                                \
+            gen_helper_linx_scoped_rmw(                                        \
+                old, tcg_env, linx_get_reg(a->SrcL), value,                    \
+                linx_scoped_atomic_control(ctx, 4, (OP), a->far));             \
+        } else {                                                               \
+            gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL), val32);   \
+        }                                                                      \
+        linx_atomic_order_after(a->aq);                                        \
+        linx_set_dest(a->RegDst, old);                                         \
+        return true;                                                           \
+    }
 
-#define LINX_DEFINE_FETCH64(NAME, HELPER) \
-static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
-{ \
-    TCGv_i64 old = tcg_temp_new_i64(); \
-    gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR)); \
-    linx_set_dest(a->RegDst, old); \
-    return true; \
-}
+#define LINX_DEFINE_FETCH64(NAME, HELPER, OP)                                  \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a)                 \
+    {                                                                          \
+        TCGv_i64 old = tcg_temp_new_i64();                                     \
+        linx_atomic_order_before(a->rl);                                       \
+        if (ctx->scoped_scope >= 0) {                                          \
+            gen_helper_linx_scoped_rmw(                                        \
+                old, tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR),    \
+                linx_scoped_atomic_control(ctx, 8, (OP), a->far));             \
+        } else {                                                               \
+            gen_helper_##HELPER(old, tcg_env, linx_get_reg(a->SrcL),           \
+                                linx_get_reg(a->SrcR));                        \
+        }                                                                      \
+        linx_atomic_order_after(a->aq);                                        \
+        linx_set_dest(a->RegDst, old);                                         \
+        return true;                                                           \
+    }
 
-#define LINX_DEFINE_STORE32(NAME, HELPER) \
-static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
-{ \
-    TCGv_i32 val32 = tcg_temp_new_i32(); \
-    tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR)); \
-    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL), val32); \
-    return true; \
-}
+#define LINX_DEFINE_STORE32(NAME, HELPER, SIZE, OP)                            \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a)                 \
+    {                                                                          \
+        TCGv_i32 val32 = tcg_temp_new_i32();                                   \
+        tcg_gen_extrl_i64_i32(val32, linx_get_reg(a->SrcR));                   \
+        linx_atomic_order_before(a->rl);                                       \
+        if (ctx->scoped_scope >= 0) {                                          \
+            TCGv_i64 old = tcg_temp_new_i64();                                 \
+            TCGv_i64 value = tcg_temp_new_i64();                               \
+            tcg_gen_extu_i32_i64(value, val32);                                \
+            gen_helper_linx_scoped_rmw(                                        \
+                old, tcg_env, linx_get_reg(a->SrcL), value,                    \
+                linx_scoped_atomic_control(ctx, (SIZE), (OP), 0));             \
+        } else {                                                               \
+            gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL), val32);        \
+        }                                                                      \
+        return true;                                                           \
+    }
 
-#define LINX_DEFINE_STORE64(NAME, HELPER) \
-static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
-{ \
-    gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR)); \
-    return true; \
-}
+#define LINX_DEFINE_STORE64(NAME, HELPER, OP)                                  \
+    static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a)                 \
+    {                                                                          \
+        linx_atomic_order_before(a->rl);                                       \
+        if (ctx->scoped_scope >= 0) {                                          \
+            TCGv_i64 old = tcg_temp_new_i64();                                 \
+            gen_helper_linx_scoped_rmw(                                        \
+                old, tcg_env, linx_get_reg(a->SrcL), linx_get_reg(a->SrcR),    \
+                linx_scoped_atomic_control(ctx, 8, (OP), 0));                  \
+        } else {                                                               \
+            gen_helper_##HELPER(tcg_env, linx_get_reg(a->SrcL),                \
+                                linx_get_reg(a->SrcR));                        \
+        }                                                                      \
+        return true;                                                           \
+    }
 
-LINX_DEFINE_FETCH32(lw_and, linx_lw_and)
-LINX_DEFINE_FETCH32(lw_or, linx_lw_or)
-LINX_DEFINE_FETCH32(lw_xor, linx_lw_xor)
-LINX_DEFINE_FETCH32(lw_smax, linx_lw_smax)
-LINX_DEFINE_FETCH32(lw_smin, linx_lw_smin)
-LINX_DEFINE_FETCH32(lw_umax, linx_lw_umax)
-LINX_DEFINE_FETCH32(lw_umin, linx_lw_umin)
-LINX_DEFINE_FETCH64(ld_and, linx_ld_and)
-LINX_DEFINE_FETCH64(ld_or, linx_ld_or)
-LINX_DEFINE_FETCH64(ld_xor, linx_ld_xor)
-LINX_DEFINE_FETCH64(ld_smax, linx_ld_smax)
-LINX_DEFINE_FETCH64(ld_smin, linx_ld_smin)
-LINX_DEFINE_FETCH64(ld_umax, linx_ld_umax)
-LINX_DEFINE_FETCH64(ld_umin, linx_ld_umin)
-LINX_DEFINE_STORE32(sw_add, linx_sw_add)
-LINX_DEFINE_STORE32(sw_and, linx_sw_and)
-LINX_DEFINE_STORE32(sw_or, linx_sw_or)
-LINX_DEFINE_STORE32(sw_xor, linx_sw_xor)
-LINX_DEFINE_STORE32(sw_smax, linx_sw_smax)
-LINX_DEFINE_STORE32(sw_smin, linx_sw_smin)
-LINX_DEFINE_STORE32(sw_umax, linx_sw_umax)
-LINX_DEFINE_STORE32(sw_umin, linx_sw_umin)
-LINX_DEFINE_STORE64(sd_add, linx_sd_add)
-LINX_DEFINE_STORE64(sd_and, linx_sd_and)
-LINX_DEFINE_STORE64(sd_or, linx_sd_or)
-LINX_DEFINE_STORE64(sd_xor, linx_sd_xor)
-LINX_DEFINE_STORE64(sd_smax, linx_sd_smax)
-LINX_DEFINE_STORE64(sd_smin, linx_sd_smin)
-LINX_DEFINE_STORE64(sd_umax, linx_sd_umax)
-LINX_DEFINE_STORE64(sd_umin, linx_sd_umin)
-LINX_DEFINE_STORE32(sw_sub, linx_sw_sub)
-LINX_DEFINE_STORE64(sd_sub, linx_sd_sub)
-LINX_DEFINE_STORE32(sb_add, linx_sb_add)
-LINX_DEFINE_STORE32(sb_sub, linx_sb_sub)
-LINX_DEFINE_STORE32(sh_add, linx_sh_add)
-LINX_DEFINE_STORE32(sh_sub, linx_sh_sub)
+LINX_DEFINE_FETCH32(lw_and, linx_lw_and, LINX_SCOPED_AOP_AND)
+LINX_DEFINE_FETCH32(lw_or, linx_lw_or, LINX_SCOPED_AOP_OR)
+LINX_DEFINE_FETCH32(lw_xor, linx_lw_xor, LINX_SCOPED_AOP_XOR)
+LINX_DEFINE_FETCH32(lw_smax, linx_lw_smax, LINX_SCOPED_AOP_SMAX)
+LINX_DEFINE_FETCH32(lw_smin, linx_lw_smin, LINX_SCOPED_AOP_SMIN)
+LINX_DEFINE_FETCH32(lw_umax, linx_lw_umax, LINX_SCOPED_AOP_UMAX)
+LINX_DEFINE_FETCH32(lw_umin, linx_lw_umin, LINX_SCOPED_AOP_UMIN)
+LINX_DEFINE_FETCH64(ld_and, linx_ld_and, LINX_SCOPED_AOP_AND)
+LINX_DEFINE_FETCH64(ld_or, linx_ld_or, LINX_SCOPED_AOP_OR)
+LINX_DEFINE_FETCH64(ld_xor, linx_ld_xor, LINX_SCOPED_AOP_XOR)
+LINX_DEFINE_FETCH64(ld_smax, linx_ld_smax, LINX_SCOPED_AOP_SMAX)
+LINX_DEFINE_FETCH64(ld_smin, linx_ld_smin, LINX_SCOPED_AOP_SMIN)
+LINX_DEFINE_FETCH64(ld_umax, linx_ld_umax, LINX_SCOPED_AOP_UMAX)
+LINX_DEFINE_FETCH64(ld_umin, linx_ld_umin, LINX_SCOPED_AOP_UMIN)
+LINX_DEFINE_STORE32(sw_add, linx_sw_add, 4, LINX_SCOPED_AOP_ADD)
+LINX_DEFINE_STORE32(sw_and, linx_sw_and, 4, LINX_SCOPED_AOP_AND)
+LINX_DEFINE_STORE32(sw_or, linx_sw_or, 4, LINX_SCOPED_AOP_OR)
+LINX_DEFINE_STORE32(sw_xor, linx_sw_xor, 4, LINX_SCOPED_AOP_XOR)
+LINX_DEFINE_STORE32(sw_smax, linx_sw_smax, 4, LINX_SCOPED_AOP_SMAX)
+LINX_DEFINE_STORE32(sw_smin, linx_sw_smin, 4, LINX_SCOPED_AOP_SMIN)
+LINX_DEFINE_STORE32(sw_umax, linx_sw_umax, 4, LINX_SCOPED_AOP_UMAX)
+LINX_DEFINE_STORE32(sw_umin, linx_sw_umin, 4, LINX_SCOPED_AOP_UMIN)
+LINX_DEFINE_STORE64(sd_add, linx_sd_add, LINX_SCOPED_AOP_ADD)
+LINX_DEFINE_STORE64(sd_and, linx_sd_and, LINX_SCOPED_AOP_AND)
+LINX_DEFINE_STORE64(sd_or, linx_sd_or, LINX_SCOPED_AOP_OR)
+LINX_DEFINE_STORE64(sd_xor, linx_sd_xor, LINX_SCOPED_AOP_XOR)
+LINX_DEFINE_STORE64(sd_smax, linx_sd_smax, LINX_SCOPED_AOP_SMAX)
+LINX_DEFINE_STORE64(sd_smin, linx_sd_smin, LINX_SCOPED_AOP_SMIN)
+LINX_DEFINE_STORE64(sd_umax, linx_sd_umax, LINX_SCOPED_AOP_UMAX)
+LINX_DEFINE_STORE64(sd_umin, linx_sd_umin, LINX_SCOPED_AOP_UMIN)
+LINX_DEFINE_STORE32(sw_sub, linx_sw_sub, 4, LINX_SCOPED_AOP_SUB)
+LINX_DEFINE_STORE64(sd_sub, linx_sd_sub, LINX_SCOPED_AOP_SUB)
+LINX_DEFINE_STORE32(sb_add, linx_sb_add, 1, LINX_SCOPED_AOP_ADD)
+LINX_DEFINE_STORE32(sb_sub, linx_sb_sub, 1, LINX_SCOPED_AOP_SUB)
+LINX_DEFINE_STORE32(sh_add, linx_sh_add, 2, LINX_SCOPED_AOP_ADD)
+LINX_DEFINE_STORE32(sh_sub, linx_sh_sub, 2, LINX_SCOPED_AOP_SUB)
 
 #undef LINX_DEFINE_FETCH32
 #undef LINX_DEFINE_FETCH64
@@ -9067,7 +9318,15 @@ static bool trans_hl_casb(DisasContext *ctx, arg_hl_casb *a)
 
     tcg_gen_extrl_i64_i32(cmp32, cmp64);
     tcg_gen_extrl_i64_i32(new32, new64);
-    gen_helper_linx_casb(old, tcg_env, addr, cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_cas(
+            old, tcg_env, addr, cmp64, new64,
+            linx_scoped_atomic_control(ctx, 1, 0, a->far));
+    } else {
+        gen_helper_linx_casb(old, tcg_env, addr, cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -9083,7 +9342,15 @@ static bool trans_hl_cash(DisasContext *ctx, arg_hl_cash *a)
 
     tcg_gen_extrl_i64_i32(cmp32, cmp64);
     tcg_gen_extrl_i64_i32(new32, new64);
-    gen_helper_linx_cash(old, tcg_env, addr, cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_cas(
+            old, tcg_env, addr, cmp64, new64,
+            linx_scoped_atomic_control(ctx, 2, 0, a->far));
+    } else {
+        gen_helper_linx_cash(old, tcg_env, addr, cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -9099,7 +9366,15 @@ static bool trans_hl_casw(DisasContext *ctx, arg_hl_casw *a)
 
     tcg_gen_extrl_i64_i32(cmp32, cmp64);
     tcg_gen_extrl_i64_i32(new32, new64);
-    gen_helper_linx_casw(old, tcg_env, addr, cmp32, new32);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_cas(
+            old, tcg_env, addr, cmp64, new64,
+            linx_scoped_atomic_control(ctx, 4, 0, a->far));
+    } else {
+        gen_helper_linx_casw(old, tcg_env, addr, cmp32, new32);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
@@ -9111,10 +9386,20 @@ static bool trans_hl_casd(DisasContext *ctx, arg_hl_casd *a)
     TCGv_i64 newv = linx_get_reg(a->SrcD1);
     TCGv_i64 old = tcg_temp_new_i64();
 
-    gen_helper_linx_casd(old, tcg_env, addr, cmpv, newv);
+    linx_atomic_order_before(a->rl);
+    if (ctx->scoped_scope >= 0) {
+        gen_helper_linx_scoped_cas(
+            old, tcg_env, addr, cmpv, newv,
+            linx_scoped_atomic_control(ctx, 8, 0, a->far));
+    } else {
+        gen_helper_linx_casd(old, tcg_env, addr, cmpv, newv);
+    }
+    linx_atomic_order_after(a->aq);
     linx_set_dest(a->RegDst, old);
     return true;
 }
+
+#undef linx_set_dest
 
 static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 {
