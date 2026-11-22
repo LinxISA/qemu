@@ -153,5 +153,12 @@ bool linx_msgb_hscb_take_launch(LinxMsgbGuestState *state,
                                unsigned worker_endpoint,
                                uint64_t *kernel_pc, uint64_t *argument,
                                uint32_t *blocknum, uint32_t *blockid);
+bool linx_msgb_hscb_launch_pending(const LinxMsgbGuestState *state,
+                                  unsigned worker_endpoint,
+                                  uint64_t invocation,
+                                  uint64_t *kernel_pc);
+bool linx_msgb_hscb_geometry(const LinxMsgbGuestState *state,
+                             const LinxMsgbAccessContext *context,
+                             uint64_t *blocknum, uint64_t *blockid);
 
 #endif

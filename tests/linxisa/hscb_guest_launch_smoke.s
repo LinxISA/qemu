@@ -17,6 +17,9 @@ _start:
         hl.liu 4294967295, ->a1
         or a0, a1, ->a0
         bse a0
+        C.BSTOP
+        C.BSTART.SYS
+        ssrget 80, ->a2
         bwe zero
         C.BSTOP
         C.BSTART DIRECT, .Lidle

@@ -1180,6 +1180,7 @@ struct LinxCPUClass {
 void linx_translate_init(void);
 void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
+bool linx_cpu_is_legal_block_entry(CPULinxState *env, uint64_t pc);
 void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
                                  uint64_t fault_pc);
 void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,

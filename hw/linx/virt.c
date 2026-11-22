@@ -3588,6 +3588,11 @@ static void linx_virt_reset(void *opaque)
         env->gpr[LINX_REG_A2] = 0;
         env->pe_id = pe;
     }
+    if (s->hscb_auto_launch && s->hscb_worker_pe != 0) {
+        CPUState *worker = CPU(s->cpu[s->hscb_worker_pe]);
+        worker->halted = 0;
+        cpu_resume(worker);
+    }
 }
 
 static uint32_t linx_memwatch_pack_attrs(MemTxAttrs attrs)

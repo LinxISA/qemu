@@ -188,6 +188,8 @@ static void test_hscb_ready_launch_done(void)
     read_claim(&state, &worker, 0);
     uint64_t launch_source =
         state.bank[0].receive.snapshot.packet.message_id_hi;
+    g_assert_cmpuint((uint32_t)(launch_source >> 32), ==,
+                     LINX_MSGB_HSCB_ENDPOINT);
     state.bank[0].receive.snapshot.packet.message_id_hi &= UINT32_MAX;
     g_assert_false(linx_msgb_hscb_accept_launch(
         &state, 0, state.bank[0].receive.snapshot.token,
@@ -224,6 +226,9 @@ static void test_hscb_ready_launch_done(void)
     g_assert_false(state.bank[0].hscb_running);
     g_assert_cmphex(state.bank[0].hscb_return_value, ==, 0x6000);
     g_assert_true(state.last_done_valid);
+    uint64_t observed_blocknum, observed_blockid;
+    g_assert_false(linx_msgb_hscb_geometry(
+        &state, &worker, &observed_blocknum, &observed_blockid));
 }
 
 static void test_hscb_platform_take_launch(void)
@@ -252,6 +257,7 @@ static void test_hscb_slot1_auto_launch_sequence(void)
     LinxMsgbGuestState state;
     LinxMsgbAccessContext worker = context(2, 0, 0x9000, 12);
     uint64_t kernel_pc, argument;
+    uint64_t observed_blocknum, observed_blockid;
     uint32_t blocknum, blockid;
 
     linx_msgb_guest_reset(&state);
@@ -271,8 +277,62 @@ static void test_hscb_slot1_auto_launch_sequence(void)
                          state.auto_launch_dispatch_id, state.auto_launch_pc,
                          state.auto_launch_argument, state.auto_launch_blocknum,
                          state.auto_launch_blockid), ==, LINX_MSGB_OK);
+    g_assert_true(linx_msgb_hscb_geometry(
+        &state, &worker, &observed_blocknum, &observed_blockid));
+    g_assert_cmpuint(observed_blocknum, ==, 8);
+    g_assert_cmpuint(observed_blockid, ==, 3);
+    g_assert_true(linx_msgb_guest_select_thread(&state, 2, 0));
+    g_assert_false(linx_msgb_hscb_geometry(
+        &state, &worker, &observed_blocknum, &observed_blockid));
+    g_assert_true(linx_msgb_guest_select_thread(&state, 2, 1));
     g_assert_true(linx_msgb_hscb_take_launch(&state, 96, &kernel_pc,
                                              &argument, &blocknum, &blockid));
+}
+
+static void test_bwe_preserves_ordinary_receive_packet(void)
+{
+    LinxMsgbGuestState state;
+    LinxMsgbAccessContext target = context(0, 0, 0xa000, 13);
+    LinxMsgbAccessContext source = context(1, 0, 0xa004, 14);
+    uint64_t kernel_pc, argument, value;
+    uint32_t blocknum, blockid;
+
+    linx_msgb_guest_reset(&state);
+    configure(&state, 0);
+    configure(&state, 1);
+    linx_msgb_guest_write(&state, &source, MSGB_D1, 0x99);
+    g_assert_cmpuint(linx_msgb_guest_bse(
+                         &state, &source, (UINT64_C(1) << 32) | 0), ==,
+                     LINX_MSGB_OK);
+    LinxMsgbReceiveBank before = state.bank[0].receive;
+    linx_msgb_guest_bwe(&state, &target, 0x1234);
+    g_assert_false(state.bank[0].hscb_waiting);
+    g_assert_false(linx_msgb_hscb_take_launch(
+        &state, 0, &kernel_pc, &argument, &blocknum, &blockid));
+    g_assert_cmpmem(&state.bank[0].receive, sizeof(before),
+                    &before, sizeof(before));
+    linx_msgb_receive_claim(&state.bank[0].receive, 1, 1);
+    g_assert_true(linx_msgb_receive_read(&state.bank[0].receive, 1, 0,
+                                         &value));
+    g_assert_cmphex(value, ==, 0x99);
+}
+
+static void test_hscb_reserves_host_claim_for_outstanding_done(void)
+{
+    LinxMsgbGuestState state;
+
+    linx_msgb_guest_reset(&state);
+    configure(&state, 0);
+    state.bank[0].hscb_ready = true;
+    state.bank[16].hscb_running = true;
+    state.bank[LINX_MSGB_HSCB_BANK].receive.claim_sequence =
+        LINX_MSGB_CLAIM_SEQUENCE_MAX - 1;
+
+    g_assert_cmpuint(linx_msgb_hscb_issue_launch(
+                         &state, 0, 7, 0x4000, 0x5000, 1, 0), ==,
+                     LINX_MSGB_EXHAUSTED);
+    g_assert_false(state.bank[0].hscb_running);
+    g_assert_false(state.bank[0].receive.queued.valid);
 }
 
 int main(int argc, char **argv)
@@ -290,5 +350,9 @@ int main(int argc, char **argv)
                     test_hscb_platform_take_launch);
     g_test_add_func("/linx/msgb-guest/hscb-slot1-auto-launch",
                     test_hscb_slot1_auto_launch_sequence);
+    g_test_add_func("/linx/msgb-guest/bwe-preserves-ordinary-packet",
+                    test_bwe_preserves_ordinary_receive_packet);
+    g_test_add_func("/linx/msgb-guest/hscb-host-claim-reservation",
+                    test_hscb_reserves_host_claim_for_outstanding_done);
     return g_test_run();
 }

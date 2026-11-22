@@ -57,7 +57,7 @@ jobs:
           cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD= \
             -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA
-          cmake --build linx-llvm-build --target llvm-mc -j 3
+          cmake --build linx-llvm-build --target llvm-mc llvm-readobj -j 3
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-msgb-guest-smoke.sh

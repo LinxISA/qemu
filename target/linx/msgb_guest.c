@@ -502,6 +502,18 @@ static bool matching_done(const LinxMsgbGuestBank *source, uint64_t control)
            source->staging[1] == source->hscb_dispatch_id;
 }
 
+static unsigned hscb_outstanding_dispatch_count(
+    const LinxMsgbGuestState *state)
+{
+    unsigned outstanding = 0;
+
+    for (unsigned i = 0; i < LINX_MSGB_ENDPOINTS;
+         i += LINX_MSGB_ACR_COUNT) {
+        outstanding += state->bank[i].hscb_running;
+    }
+    return outstanding;
+}
+
 static LinxMsgbResult admit(LinxMsgbGuestState *state, unsigned source_index,
                             uint64_t control)
 {
@@ -533,11 +545,7 @@ static LinxMsgbResult admit(LinxMsgbGuestState *state, unsigned source_index,
     if (target_index == LINX_MSGB_HSCB_BANK) {
         uint64_t remaining = LINX_MSGB_CLAIM_SEQUENCE_MAX -
                              target->receive.claim_sequence;
-        unsigned outstanding = 0;
-        for (unsigned i = 0; i < LINX_MSGB_ENDPOINTS;
-             i += LINX_MSGB_ACR_COUNT) {
-            outstanding += state->bank[i].hscb_running;
-        }
+        unsigned outstanding = hscb_outstanding_dispatch_count(state);
         if (remaining == 0 || (!done && remaining <= outstanding)) {
             return LINX_MSGB_EXHAUSTED;
         }
@@ -636,7 +644,7 @@ void linx_msgb_guest_bwe(LinxMsgbGuestState *state,
     unsigned index = current_index(state, context);
     LinxMsgbGuestBank *bank = &state->bank[index];
     if (current_owner(state, context, bank)) {
-        bank->hscb_waiting = true;
+        bank->hscb_waiting = !bank->receive.queued.valid;
     }
 }
 
@@ -669,6 +677,11 @@ LinxMsgbResult linx_msgb_hscb_issue_launch(LinxMsgbGuestState *state,
     if (worker->hscb_issued_count == LINX_MSGB_RECEIPTS ||
         worker->transmit_sequence == UINT64_MAX ||
         worker->receive.claim_sequence == LINX_MSGB_CLAIM_SEQUENCE_MAX) {
+        return LINX_MSGB_EXHAUSTED;
+    }
+    uint64_t host_claims_left = LINX_MSGB_CLAIM_SEQUENCE_MAX -
+                                host->receive.claim_sequence;
+    if (host_claims_left <= hscb_outstanding_dispatch_count(state)) {
         return LINX_MSGB_EXHAUSTED;
     }
     for (unsigned i = 0; i < worker->hscb_issued_count; ++i) {
@@ -731,7 +744,7 @@ LinxMsgbResult linx_msgb_hscb_receive_worker(LinxMsgbGuestState *state)
                             packet.source_invocation) {
         return LINX_MSGB_NOT_OWNER;
     }
-    if (count == 1 && payload[0] == 1 && !worker->hscb_running) {
+    if (count == 1 && payload[0] == 1 && !worker->hscb_ready) {
         worker->hscb_ready = true;
     } else if (count == 3 && payload[0] == 3 && worker->hscb_running &&
                worker->hscb_dispatch_id == payload[1]) {
@@ -807,7 +820,9 @@ bool linx_msgb_hscb_take_launch(LinxMsgbGuestState *state,
                                uint64_t *kernel_pc, uint64_t *argument,
                                uint32_t *blocknum, uint32_t *blockid)
 {
-    if (worker_endpoint >= LINX_MSGB_ENDPOINTS) {
+    uint64_t pending_pc;
+    if (!linx_msgb_hscb_launch_pending(state, worker_endpoint,
+                                       state->invocation, &pending_pc)) {
         return false;
     }
     LinxMsgbGuestBank *worker = &state->bank[worker_endpoint];
@@ -835,4 +850,49 @@ bool linx_msgb_hscb_take_launch(LinxMsgbGuestState *state,
     }
     linx_msgb_receive_release(&worker->receive, state->invocation, token);
     return worker->receive.rx_result == LINX_MSGB_OK;
+}
+
+bool linx_msgb_hscb_launch_pending(const LinxMsgbGuestState *state,
+                                  unsigned worker_endpoint,
+                                  uint64_t invocation,
+                                  uint64_t *kernel_pc)
+{
+    if (worker_endpoint >= LINX_MSGB_ENDPOINTS ||
+        worker_endpoint % LINX_MSGB_ACR_COUNT != 0 || invocation == 0) {
+        return false;
+    }
+    const LinxMsgbGuestBank *worker = &state->bank[worker_endpoint];
+    const LinxMsgbQueuedMessage *queued = &worker->receive.queued;
+    if (!state->invocation_active || state->invocation != invocation ||
+        !worker->enabled || worker->bound_invocation != invocation ||
+        !worker->hscb_running || !queued->valid ||
+        queued->packet.destination_invocation != invocation ||
+        (uint32_t)(queued->packet.message_id_hi >> 32) !=
+            LINX_MSGB_HSCB_ENDPOINT ||
+        queued->packet.message_id_hi != worker->hscb_launch_message_id_hi ||
+        queued->packet.message_id_lo != worker->hscb_launch_message_id_lo ||
+        queued->packet.word_count != 4 || queued->packet.words[0] != 2 ||
+        queued->packet.words[1] != worker->hscb_dispatch_id ||
+        queued->packet.words[2] == 0 || (queued->packet.words[2] & 1)) {
+        return false;
+    }
+    *kernel_pc = queued->packet.words[2];
+    return true;
+}
+
+bool linx_msgb_hscb_geometry(const LinxMsgbGuestState *state,
+                             const LinxMsgbAccessContext *context,
+                             uint64_t *blocknum, uint64_t *blockid)
+{
+    if (context->pe >= LINX_MSGB_PE_COUNT || context->acr != 0) {
+        return false;
+    }
+    const LinxMsgbGuestBank *worker =
+        &state->bank[current_index(state, context)];
+    if (!current_owner(state, context, worker) || !worker->hscb_running) {
+        return false;
+    }
+    *blocknum = worker->hscb_blocknum;
+    *blockid = worker->hscb_blockid;
+    return true;
 }

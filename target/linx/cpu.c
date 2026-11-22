@@ -1062,6 +1062,11 @@ static bool linx_cpu_is_bstart_at_addr(CPUState *cs, uint64_t pc)
     return false;
 }
 
+bool linx_cpu_is_legal_block_entry(CPULinxState *env, uint64_t pc)
+{
+    return linx_cpu_is_bstart_at_addr(env_cpu(env), pc);
+}
+
 static uint64_t linx_containing_insn_start(CPUState *cs, uint64_t block_pc,
                                            uint64_t reported_pc)
 {
