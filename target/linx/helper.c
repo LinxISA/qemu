@@ -8267,16 +8267,6 @@ static inline void linx_atomic_probe_rw(CPULinxState *env, uint64_t addr,
     (void)probe_write(env, (vaddr)addr, size, mmu_idx, ra);
 }
 
-static inline void linx_atomic_probe_write(CPULinxState *env, uint64_t addr,
-                                           uint32_t size, uintptr_t ra)
-{
-    const int mmu_idx = linx_env_mmu_index(env);
-
-    linx_enter_atomic_context(env, ra);
-    linx_require_natural_alignment(env, addr, size, ra);
-    (void)probe_write(env, (vaddr)addr, size, mmu_idx, ra);
-}
-
 uint64_t HELPER(linx_lr_w)(CPULinxState *env, uint64_t addr)
 {
     const uintptr_t ra = GETPC();
@@ -8509,38 +8499,87 @@ static void linx_scoped_lr_invalidate_for_write(CPULinxState *env,
     }
 }
 
-static uint64_t linx_scoped_atomic_load(CPULinxState *env, uint64_t addr,
-                                        unsigned size)
+typedef struct LinxScopedAtomicHosts {
+    void *read;
+    void *write;
+} LinxScopedAtomicHosts;
+
+static G_NORETURN void linx_scoped_atomic_raise_access(CPULinxState *env,
+                                                       uint64_t addr,
+                                                       bool store, uintptr_t ra)
+{
+    CPUState *cs = env_cpu(env);
+
+    env->pending_trap_arg0 = addr;
+    env->pending_trap_cause = 0;
+    cs->exception_index =
+        store ? LINX_EXCP_STORE_ACCESS_FAULT : LINX_EXCP_LOAD_ACCESS_FAULT;
+    cpu_loop_exit_restore(cs, ra);
+}
+
+static void *linx_scoped_atomic_probe(CPULinxState *env, uint64_t addr,
+                                      unsigned size, bool store, uintptr_t ra)
+{
+    const int mmu_idx = linx_env_mmu_index(env);
+    const MMUAccessType access = store ? MMU_DATA_STORE : MMU_DATA_LOAD;
+    void *host;
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, size, ra);
+    host = probe_access(env, (vaddr)addr, size, access, mmu_idx, ra);
+    if (host == NULL) {
+        /* Atomic preflight must not invoke a device callback. */
+        linx_scoped_atomic_raise_access(env, addr, store, ra);
+    }
+    return host;
+}
+
+static LinxScopedAtomicHosts linx_scoped_atomic_probe_rw(CPULinxState *env,
+                                                         uint64_t addr,
+                                                         unsigned size,
+                                                         uintptr_t ra)
+{
+    LinxScopedAtomicHosts hosts;
+
+    hosts.read = linx_scoped_atomic_probe(env, addr, size, false, ra);
+    hosts.write = linx_scoped_atomic_probe(env, addr, size, true, ra);
+    if (hosts.read != hosts.write) {
+        /* The frozen PTO contract requires one translated memory location. */
+        linx_scoped_atomic_raise_access(env, addr, true, ra);
+    }
+    return hosts;
+}
+
+static uint64_t linx_scoped_atomic_load(const void *host, unsigned size)
 {
     switch (size) {
     case 1:
-        return cpu_ldub_data(env, (abi_ptr)addr);
+        return ldub_p(host);
     case 2:
-        return cpu_lduw_le_data(env, (abi_ptr)addr);
+        return lduw_le_p(host);
     case 4:
-        return cpu_ldl_le_data(env, (abi_ptr)addr);
+        return ldl_le_p(host);
     case 8:
-        return cpu_ldq_le_data(env, (abi_ptr)addr);
+        return ldq_le_p(host);
     default:
         g_assert_not_reached();
     }
 }
 
-static void linx_scoped_atomic_store(CPULinxState *env, uint64_t addr,
-                                     uint64_t value, unsigned size)
+static void linx_scoped_atomic_store(void *host, uint64_t value, unsigned size)
 {
     switch (size) {
     case 1:
-        cpu_stb_data(env, (abi_ptr)addr, value);
+        stb_p(host, value);
         break;
     case 2:
-        cpu_stw_le_data(env, (abi_ptr)addr, value);
+        stw_le_p(host, value);
         break;
     case 4:
-        cpu_stl_le_data(env, (abi_ptr)addr, value);
+        stl_le_p(host, value);
         break;
     case 8:
-        cpu_stq_le_data(env, (abi_ptr)addr, value);
+        stq_le_p(host, value);
         break;
     default:
         g_assert_not_reached();
@@ -8567,12 +8606,12 @@ uint64_t HELPER(linx_scoped_lr)(CPULinxState *env, uint64_t addr,
     const uintptr_t ra = GETPC();
     const unsigned size = linx_scoped_atomic_size(control);
     const unsigned scope = linx_scoped_atomic_scope(control);
+    void *host;
     uint64_t value;
 
     linx_scoped_atomic_validate(env, control);
-    linx_enter_atomic_context(env, ra);
-    linx_require_natural_alignment(env, addr, size, ra);
-    value = linx_scoped_atomic_load(env, addr, size);
+    host = linx_scoped_atomic_probe(env, addr, size, false, ra);
+    value = linx_scoped_atomic_load(host, size);
     env->lr_addr = addr;
     env->lr_size = size;
     env->lr_scope = scope;
@@ -8588,6 +8627,7 @@ uint64_t HELPER(linx_scoped_sc)(CPULinxState *env, uint64_t addr,
     const unsigned scope = linx_scoped_atomic_scope(control);
     const bool succeeds =
         linx_lr_matches_granule(env, addr) && env->lr_scope == scope;
+    void *host;
 
     linx_scoped_atomic_validate(env, control);
     linx_enter_atomic_context(env, ra);
@@ -8595,8 +8635,8 @@ uint64_t HELPER(linx_scoped_sc)(CPULinxState *env, uint64_t addr,
     if (!succeeds) {
         return 1;
     }
-    linx_atomic_probe_write(env, addr, size, ra);
-    linx_scoped_atomic_store(env, addr, value, size);
+    host = linx_scoped_atomic_probe(env, addr, size, true, ra);
+    linx_scoped_atomic_store(host, value, size);
     linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
     return 0;
 }
@@ -8608,16 +8648,17 @@ uint64_t HELPER(linx_scoped_rmw)(CPULinxState *env, uint64_t addr,
     const unsigned size = linx_scoped_atomic_size(control);
     const unsigned scope = linx_scoped_atomic_scope(control);
     const LinxAtomicOp op = linx_scoped_atomic_op(control);
+    LinxScopedAtomicHosts hosts;
     uint64_t old;
 
     linx_scoped_atomic_validate(env, control);
     if (op > LINX_AOP_UMIN) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
     }
-    linx_atomic_probe_rw(env, addr, size, ra);
-    old = linx_scoped_atomic_load(env, addr, size);
-    linx_scoped_atomic_store(env, addr, linx_atomic_apply(op, old, value, size),
-                             size);
+    hosts = linx_scoped_atomic_probe_rw(env, addr, size, ra);
+    old = linx_scoped_atomic_load(hosts.read, size);
+    linx_scoped_atomic_store(hosts.write,
+                             linx_atomic_apply(op, old, value, size), size);
     linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
     return linx_scoped_atomic_result(old, size);
 }
@@ -8630,13 +8671,14 @@ uint64_t HELPER(linx_scoped_cas)(CPULinxState *env, uint64_t addr,
     const unsigned scope = linx_scoped_atomic_scope(control);
     const uint64_t mask =
         size == 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
+    LinxScopedAtomicHosts hosts;
     uint64_t old;
 
     linx_scoped_atomic_validate(env, control);
-    linx_atomic_probe_rw(env, addr, size, ra);
-    old = linx_scoped_atomic_load(env, addr, size);
+    hosts = linx_scoped_atomic_probe_rw(env, addr, size, ra);
+    old = linx_scoped_atomic_load(hosts.read, size);
     if ((old & mask) == (cmpv & mask)) {
-        linx_scoped_atomic_store(env, addr, newv, size);
+        linx_scoped_atomic_store(hosts.write, newv, size);
         linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
     }
     return linx_scoped_atomic_result(old, size);

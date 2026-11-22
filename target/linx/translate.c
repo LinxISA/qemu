@@ -621,6 +621,15 @@ static void linx_set_dest(unsigned dst, TCGv_i64 v)
     }
 }
 
+static void linx_set_scoped_atomic_dest(DisasContext *ctx, unsigned dst,
+                                        TCGv_i64 value)
+{
+    if (ctx->scoped_scope >= 0 && dst >= 24u && dst < 30u) {
+        return;
+    }
+    linx_set_dest(dst, value);
+}
+
 static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
 {
     if (!linx_commit_trace_enabled) {
@@ -8179,6 +8188,10 @@ static void linx_atomic_order_after(unsigned acquire)
     }
 }
 
+/* Scoped memory destinations 24..29 are architectural discard encodings. */
+#define linx_set_dest(DST, VALUE)                                              \
+    linx_set_scoped_atomic_dest(ctx, (DST), (VALUE))
+
 static bool trans_lr_w(DisasContext *ctx, arg_lr_w *a)
 {
     TCGv_i64 addr = linx_get_reg(a->SrcL);
@@ -9376,6 +9389,8 @@ static bool trans_hl_casd(DisasContext *ctx, arg_hl_casd *a)
     linx_set_dest(a->RegDst, old);
     return true;
 }
+
+#undef linx_set_dest
 
 static void linx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
 {
