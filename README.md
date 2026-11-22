@@ -22,10 +22,9 @@ change only RX result diagnostics. Failed ACK attempts change only ACKSTAT and
 ACKID diagnostics. Queue, snapshot, read mask, claim sequence and the last
 successful token remain unchanged.
 
-This backend has no guest-visible register connection yet. Transport admission
-must supply a validated packet and active nonzero invocation. Later integration
-owns endpoint selection, configuration, permission and GM checks, and the
-`0x0830..0x084b` SSR helpers. BSE and BWE remain outside this receive slice.
+The PTO 0.59.1 guest candidate below connects this backend to endpoint
+selection, configuration, permission checks, BSE/BWE transport, and the
+`0x0830..0x084b` SSR helpers.
 
 ## PTO 0.59.1 scoped Scalar candidate
 

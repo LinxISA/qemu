@@ -3563,6 +3563,9 @@ static void linx_virt_reset(void *opaque)
         }
         worker = (s->hscb_worker_thread * LINX_MSGB_PE_COUNT +
                   s->hscb_worker_pe) * LINX_MSGB_ACR_COUNT;
+        linx_msgb_guest_select_thread(&s->core4.msgb,
+                                      s->hscb_worker_pe,
+                                      s->hscb_worker_thread);
         if (!linx_msgb_hscb_schedule_launch(
                 &s->core4.msgb, worker, s->hscb_dispatch_id,
                 s->hscb_entry, s->hscb_argument,

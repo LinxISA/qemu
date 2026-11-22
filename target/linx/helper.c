@@ -7615,6 +7615,7 @@ void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
     LinxCore4State *core4 = linx_msgb_core(env);
     LinxMsgbAccessContext context = linx_msgb_access_context(env);
     bool clear_geometry = false;
+    bool retire_invocation = false;
     unsigned clear_pe = 0;
     uint64_t clear_invocation = 0;
 
@@ -7651,6 +7652,19 @@ void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
             clear_invocation = core4->msgb.last_done_invocation;
             clear_geometry = true;
             core4->msgb.last_done_valid = false;
+            if (core4->msgb.auto_launch_managed) {
+                retire_invocation = true;
+                core4->msgb.auto_launch_managed = false;
+            }
+        }
+        if (retire_invocation) {
+            linx_msgb_guest_begin_drain(&core4->msgb,
+                                        clear_invocation);
+            if (!linx_msgb_guest_clear_invocation(&core4->msgb,
+                                                   clear_invocation)) {
+                qemu_mutex_unlock(&core4->lock);
+                helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+            }
         }
     }
     qemu_mutex_unlock(&core4->lock);

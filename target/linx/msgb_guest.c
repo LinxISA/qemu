@@ -138,9 +138,20 @@ void linx_msgb_guest_reset(LinxMsgbGuestState *state)
 bool linx_msgb_guest_state_live(const LinxMsgbGuestState *state)
 {
     if (state->control_epoch || state->draining || state->last_done_valid ||
-        state->auto_launch_valid ||
+        state->auto_launch_valid || state->auto_launch_managed ||
         state->invocation != 1 || !state->invocation_active) {
         return true;
+    }
+    for (unsigned pe = 0; pe < LINX_MSGB_PE_COUNT; ++pe) {
+        if (state->current_thread[pe] != 0) {
+            return true;
+        }
+        for (unsigned thread = 0; thread < LINX_MSGB_THREADS_PER_PE;
+             ++thread) {
+            if (state->config_selector[pe][thread] != 0) {
+                return true;
+            }
+        }
     }
     for (unsigned i = 0; i < LINX_MSGB_ENDPOINTS; ++i) {
         const LinxMsgbGuestBank *bank = &state->bank[i];
@@ -539,7 +550,9 @@ static LinxMsgbResult admit(LinxMsgbGuestState *state, unsigned source_index,
     }
     packet.source_invocation = source->bound_invocation;
     packet.destination_invocation = target->bound_invocation;
-    packet.message_id_hi = ((uint64_t)source_index << 32) |
+    uint32_t source_endpoint = source_index == LINX_MSGB_HSCB_BANK ?
+                               LINX_MSGB_HSCB_ENDPOINT : source_index;
+    packet.message_id_hi = ((uint64_t)source_endpoint << 32) |
                            source->source_epoch;
     packet.message_id_lo = source->transmit_sequence + 1;
     packet.control = control;
@@ -751,6 +764,8 @@ bool linx_msgb_hscb_accept_launch(LinxMsgbGuestState *state,
     LinxMsgbSnapshot *snapshot = &worker->receive.snapshot;
     if (!worker->hscb_running || !snapshot->valid || snapshot->acked ||
         snapshot->token != release_token ||
+        (uint32_t)(snapshot->packet.message_id_hi >> 32) !=
+            LINX_MSGB_HSCB_ENDPOINT ||
         snapshot->packet.message_id_hi != worker->hscb_launch_message_id_hi ||
         snapshot->packet.message_id_lo != worker->hscb_launch_message_id_lo ||
         snapshot->packet.word_count != 4 || snapshot->packet.words[0] != 2 ||
@@ -778,6 +793,7 @@ bool linx_msgb_hscb_schedule_launch(LinxMsgbGuestState *state,
         return false;
     }
     state->auto_launch_valid = true;
+    state->auto_launch_managed = true;
     state->auto_launch_worker = worker_endpoint;
     state->auto_launch_dispatch_id = dispatch_id;
     state->auto_launch_pc = kernel_pc;

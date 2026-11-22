@@ -78,6 +78,7 @@ typedef struct LinxMsgbGuestState {
     unsigned last_done_worker;
     uint64_t last_done_invocation;
     bool auto_launch_valid;
+    bool auto_launch_managed;
     unsigned auto_launch_worker;
     uint64_t auto_launch_dispatch_id;
     uint64_t auto_launch_pc;

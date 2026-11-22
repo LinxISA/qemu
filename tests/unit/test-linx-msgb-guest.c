@@ -41,6 +41,10 @@ static void test_guest_send_receive_replay(void)
 
     linx_msgb_guest_reset(&state);
     g_assert_false(linx_msgb_guest_state_live(&state));
+    g_assert_true(linx_msgb_guest_select_thread(&state, 3, 1));
+    g_assert_true(linx_msgb_guest_state_live(&state));
+    g_assert_true(linx_msgb_guest_select_thread(&state, 3, 0));
+    g_assert_false(linx_msgb_guest_state_live(&state));
     configure(&state, 0);
     g_assert_true(linx_msgb_guest_state_live(&state));
     configure(&state, 1);
@@ -107,6 +111,11 @@ static void test_slot_and_invocation_ownership(void)
     configure(&state, 0);
     g_assert_true(linx_msgb_guest_clear_invocation(&state, 1));
     g_assert_false(state.invocation_active);
+
+    linx_msgb_guest_reset(&state);
+    g_assert_true(linx_msgb_hscb_schedule_launch(&state, 0, 9, 0x4000,
+                                                 0x5000, 1, 0));
+    g_assert_true(linx_msgb_guest_state_live(&state));
 }
 
 static void test_control_requests_and_preflight(void)
@@ -175,6 +184,13 @@ static void test_hscb_ready_launch_done(void)
                                                  0x5000, 8, 3), ==,
                      LINX_MSGB_BAD_COMMAND);
     read_claim(&state, &worker, 0);
+    uint64_t launch_source =
+        state.bank[0].receive.snapshot.packet.message_id_hi;
+    state.bank[0].receive.snapshot.packet.message_id_hi &= UINT32_MAX;
+    g_assert_false(linx_msgb_hscb_accept_launch(
+        &state, 0, state.bank[0].receive.snapshot.token,
+        &kernel_pc, &argument, &blocknum, &blockid));
+    state.bank[0].receive.snapshot.packet.message_id_hi = launch_source;
     g_assert_false(linx_msgb_hscb_accept_launch(
         &state, 0, state.bank[0].receive.snapshot.token + 1,
         &kernel_pc, &argument, &blocknum, &blockid));
@@ -210,6 +226,55 @@ static void test_hscb_ready_launch_done(void)
     g_assert_true(state.last_done_valid);
 }
 
+static void test_hscb_platform_take_launch(void)
+{
+    LinxMsgbGuestState state;
+    uint64_t kernel_pc, argument;
+    uint32_t blocknum, blockid;
+
+    linx_msgb_guest_reset(&state);
+    configure(&state, 0);
+    state.bank[0].hscb_ready = true;
+    g_assert_cmpuint(linx_msgb_hscb_issue_launch(&state, 0, 81, 0x7000,
+                                                 0x8000, 4, 2), ==,
+                     LINX_MSGB_OK);
+    g_assert_true(linx_msgb_hscb_take_launch(&state, 0, &kernel_pc,
+                                             &argument, &blocknum, &blockid));
+    g_assert_cmphex(kernel_pc, ==, 0x7000);
+    g_assert_cmphex(argument, ==, 0x8000);
+    g_assert_cmpuint(blocknum, ==, 4);
+    g_assert_cmpuint(blockid, ==, 2);
+    g_assert_false(state.bank[0].receive.snapshot.valid);
+}
+
+static void test_hscb_slot1_auto_launch_sequence(void)
+{
+    LinxMsgbGuestState state;
+    LinxMsgbAccessContext worker = context(2, 0, 0x9000, 12);
+    uint64_t kernel_pc, argument;
+    uint32_t blocknum, blockid;
+
+    linx_msgb_guest_reset(&state);
+    g_assert_true(linx_msgb_guest_select_thread(&state, 2, 1));
+    configure(&state, 2);
+    g_assert_true(linx_msgb_hscb_schedule_launch(&state, 96, 91, 0xa000,
+                                                 0xb000, 8, 3));
+    linx_msgb_guest_write(&state, &worker, MSGB_D1, 1);
+    g_assert_cmpuint(linx_msgb_guest_bse(
+                         &state, &worker,
+                         (UINT64_C(1) << 32) | LINX_MSGB_HSCB_ENDPOINT), ==,
+                     LINX_MSGB_OK);
+    g_assert_cmpuint(linx_msgb_hscb_receive_worker(&state), ==, LINX_MSGB_OK);
+    g_assert_true(state.bank[96].hscb_ready);
+    g_assert_cmpuint(linx_msgb_hscb_issue_launch(
+                         &state, state.auto_launch_worker,
+                         state.auto_launch_dispatch_id, state.auto_launch_pc,
+                         state.auto_launch_argument, state.auto_launch_blocknum,
+                         state.auto_launch_blockid), ==, LINX_MSGB_OK);
+    g_assert_true(linx_msgb_hscb_take_launch(&state, 96, &kernel_pc,
+                                             &argument, &blocknum, &blockid));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -221,5 +286,9 @@ int main(int argc, char **argv)
                     test_slot_and_invocation_ownership);
     g_test_add_func("/linx/msgb-guest/hscb-ready-launch-done",
                     test_hscb_ready_launch_done);
+    g_test_add_func("/linx/msgb-guest/hscb-platform-take-launch",
+                    test_hscb_platform_take_launch);
+    g_test_add_func("/linx/msgb-guest/hscb-slot1-auto-launch",
+                    test_hscb_slot1_auto_launch_sequence);
     return g_test_run();
 }

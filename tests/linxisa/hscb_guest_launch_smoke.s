@@ -19,7 +19,7 @@ _start:
         bse a0
         bwe zero
         C.BSTOP
-        C.BSTART DIRECT, .Lfail
+        C.BSTART DIRECT, .Lidle
         C.BSTOP
 
 hscb_worker_entry:
@@ -63,6 +63,12 @@ hscb_worker_entry:
         C.BSTOP
         C.BSTART COND, .Lfail
         C.BSTOP
+        C.BSTART.SYS
+        ssrget 0x84a, ->a4
+        setc.ne a4, zero
+        C.BSTOP
+        C.BSTART COND, .Lfail
+        C.BSTOP
 
         C.BSTART
         hl.liu 21845, ->a0
@@ -74,4 +80,7 @@ hscb_worker_entry:
         hl.liu 13107, ->a0
         hl.liu 268472320, ->t
         swi a0, [t#1, 0]
+        C.BSTOP
+.Lidle:
+        C.BSTART DIRECT, .Lidle
         C.BSTOP

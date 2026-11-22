@@ -26,10 +26,10 @@ if not match:
     raise SystemExit("missing hscb_worker_entry")
 print(int(match.group(1), 16) + 0x10000)
 ')
-machine="virt,hscb-auto-launch=1,hscb-worker-pe=0,hscb-worker-thread=0"
+machine="virt,hscb-auto-launch=1,hscb-worker-pe=2,hscb-worker-thread=1"
 machine+=",hscb-dispatch-id=77,hscb-entry=$worker_offset"
 machine+=",hscb-argument=305419896,hscb-blocknum=8,hscb-blockid=3"
 LINX_VIRT_TEST_FINISHER=1 "$QEMU_BIN" -nographic -monitor none \
   -machine "$machine" \
-  -smp 1 -bios none -kernel "$TMP/hscb.o"
+  -smp 4 -accel tcg,thread=single -bios none -kernel "$TMP/hscb.o"
 echo "ok: READY, LAUNCH, worker entry, geometry, DONE, and drain"
