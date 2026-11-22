@@ -81,6 +81,28 @@ The HSCB dispatcher owns calls at LAUNCH, DONE and teardown boundaries. Obsolete
 aliases `0x0052` through `0x0055`, high-address aliases, and all writes to the
 two read-only registers raise the existing QEMU illegal-instruction trap.
 
+## PTO 0.59.1 MSGB/HSCB guest candidate
+
+The shared Core4 owner contains two slot-qualified endpoint sets for four PE
+identities and all sixteen ACRs. The direct-boot kernel starts as invocation
+one. A trusted platform owner may select the active slot or bind and clear a
+later invocation. Guest SSR access at `0x0830` through `0x084b` enforces ACR0
+configuration, invocation ownership, atomic/far rejection, exact claim tokens,
+immutable snapshots, complete-read ACK and illegal SSRSWAP.
+
+Decoded BSE snapshots staged data, allocates transport identity, records the
+invocation/ACR/dynamic-occurrence/TPC replay receipt, and atomically enqueues a
+message. Disabled BSE and BWE publish their exact nonblocking control request.
+The HSCB owner accepts READY and matching DONE packets and can issue one
+LAUNCH packet through `linx_hscb_issue_launch_for_cpu`; an acknowledged launch
+binds `BLOCKNUM` and `BLOCKID` before release.
+
+QEMU currently models one architectural Core with four PE identities. Remote
+Core endpoints are rejected. Scalar memory completes synchronously, so there
+is no older outstanding GM obligation at the BSE arrival point. The platform
+API still owns worker kernel entry and invocation teardown. Active MSGB state
+is rejected by migration because the shared bank array is not serialized.
+
 ## LinxISA Integration Touchpoints
 - Runtime AVS in `/Users/zhoubot/linx-isa/avs/qemu`
 - Linux boot and musl smoke flows (`kernel/linux`, `avs/qemu/run_musl_smoke.py`)

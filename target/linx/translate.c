@@ -8345,14 +8345,14 @@ static bool trans_assert(DisasContext *ctx, arg_assert *a)
 static bool trans_bse(DisasContext *ctx, arg_bse *a)
 {
     (void)ctx;
-    (void)a;
+    gen_helper_linx_bse(tcg_env, linx_get_reg(a->SrcL));
     return true;
 }
 
 static bool trans_bwe(DisasContext *ctx, arg_bwe *a)
 {
     (void)ctx;
-    (void)a;
+    gen_helper_linx_bwe(tcg_env, linx_get_reg(a->SrcL));
     return true;
 }
 

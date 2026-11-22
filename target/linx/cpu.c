@@ -3807,6 +3807,7 @@ void linx_core4_reset(LinxCore4State *core4)
     core4->collective_size_code = 0;
     memset(core4->collective_resume_pc, 0,
            sizeof(core4->collective_resume_pc));
+    linx_msgb_guest_reset(&core4->msgb);
     for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
         if (core4->cpu[pe] == NULL) {
             continue;
@@ -4016,6 +4017,7 @@ static bool linx_core4_migration_state_live(LinxCore4State *core4)
         }
     }
     live |= core4->collective_arrived != 0u;
+    live |= linx_msgb_guest_state_live(&core4->msgb);
     for (unsigned pe = 0; !live && pe < LINX_CORE4_PE_COUNT; pe++) {
         if (core4->cpu[pe] != NULL &&
             linx_core4_cpu_binder_live(core4->cpu[pe])) {

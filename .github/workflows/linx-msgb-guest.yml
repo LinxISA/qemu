@@ -1,0 +1,61 @@
+name: Linx MSGB guest execution
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linx-msgb-guest.yml'
+      - 'target/linx/msgb_guest.*'
+      - 'target/linx/msgb_receive.*'
+      - 'target/linx/hscb_geometry.*'
+      - 'target/linx/cpu.[ch]'
+      - 'target/linx/helper.[ch]'
+      - 'target/linx/translate.c'
+      - 'tests/unit/test-linx-msgb-guest.c'
+      - 'tests/linxisa/msgb_guest_smoke.s'
+      - 'scripts/linxisa/run-msgb-guest-smoke.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  msgb-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          repository: LinxISA/llvm-project
+          ref: a6f54a40339e7d613e14d21a2b0398dda46a4c38
+          path: linx-llvm
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libpixman-1-dev python3-venv
+          python3 -m venv "$RUNNER_TEMP/linx-qemu-tools"
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --no-index --find-links python/wheels meson==1.10.0 pycotap==1.3.1
+          "$RUNNER_TEMP/linx-qemu-tools/bin/python3" -m pip install \
+            --only-binary=:all: ninja==1.13.0
+      - name: Build QEMU and MSGB unit test
+        run: |
+          tools="$RUNNER_TEMP/linx-qemu-tools/bin"
+          ./configure --target-list=linx64-softmmu --disable-docs \
+            --disable-werror --without-default-features --enable-gio \
+            --python="$tools/python3"
+          "$tools/ninja" -C build -j 3 qemu-system-linx64 \
+            tests/unit/test-linx-msgb-guest
+          build/pyvenv/bin/meson test -C build --print-errorlogs \
+            test-linx-msgb-guest
+      - name: Build assembler and run decoded guest
+        run: |
+          cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD= \
+            -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA
+          cmake --build linx-llvm-build --target llvm-mc -j 3
+          LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
+          QEMU_BIN="$PWD/build/qemu-system-linx64" \
+            scripts/linxisa/run-msgb-guest-smoke.sh
