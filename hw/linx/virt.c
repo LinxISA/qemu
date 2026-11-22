@@ -1977,9 +1977,10 @@ static bool linx_is_scoped_pcr_relocation(uint32_t type)
 }
 
 static bool linx_patch_scoped_pcr(uint8_t *ram, size_t ram_size,
-                                  hwaddr section_base, uint64_t section_size,
-                                  uint64_t offset, hwaddr target, int64_t addend,
-                                  uint32_t type, bool scoped_elf, Error **errp)
+                                 hwaddr section_base, uint64_t section_size,
+                                 uint64_t offset, hwaddr target,
+                                 int64_t addend, uint32_t type,
+                                 bool scoped_elf, Error **errp)
 {
     const bool hl = type >= R_LINX_SCOPED_HL_PCR29_LOAD;
     const bool store = type == R_LINX_SCOPED_PCR17_STORE ||
@@ -2012,8 +2013,8 @@ static bool linx_patch_scoped_pcr(uint8_t *ram, size_t ram_size,
     /* P names the outer carrier. The architectural PCR base is word aligned. */
     delta = target + (uint64_t)addend - (place & ~UINT64_C(3));
     if ((delta & 3) || (uint64_t)sextract64(delta, 0, width + 2) != delta) {
-        error_setg(errp, "scoped PCR target is unaligned or out of signed %u-bit "
-                   "range at 0x%" HWADDR_PRIx, width, place);
+        error_setg(errp, "scoped PCR target is unaligned or out of "
+                   "signed %u-bit range at 0x%" HWADDR_PRIx, width, place);
         return false;
     }
     imm = delta >> 2;
@@ -3616,8 +3617,8 @@ static bool linx_load_elf(const char *filename,
 
 #if TARGET_LONG_BITS == 32
     if (len >= sizeof(Elf32_Ehdr) && ((const Elf32_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf32_rel(buf, len, ram, ram_size, env, scoped_elf, load_base,
-                                 entry, image_end, errp);
+        ok = linx_load_elf32_rel(buf, len, ram, ram_size, env, scoped_elf,
+                                load_base, entry, image_end, errp);
     } else {
         linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf32_exec(buf, len, ram, ram_size, load_base,
@@ -3625,8 +3626,8 @@ static bool linx_load_elf(const char *filename,
     }
 #else
     if (len >= sizeof(Elf64_Ehdr) && ((const Elf64_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf64_rel(buf, len, ram, ram_size, env, scoped_elf, load_base,
-                                 entry, image_end, errp);
+        ok = linx_load_elf64_rel(buf, len, ram, ram_size, env, scoped_elf,
+                                load_base, entry, image_end, errp);
     } else {
         linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf64_exec(buf, len, ram, ram_size, load_base,

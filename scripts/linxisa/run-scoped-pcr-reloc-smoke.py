@@ -68,12 +68,16 @@ def main():
                      "-Ttext=0x10000", "-e", "_start", "-o", elf, obj],
                     check=True, timeout=10,
                 )
-                check_pass(boot(args.qemu, elf, linked_trace, env), linked_trace)
+                linked_result = boot(args.qemu, elf, linked_trace, env)
+                check_pass(linked_result, linked_trace)
             elif (
-                not result.returncode or "scoped PCR target is unaligned" not in result.stderr
+                not result.returncode
+                or "scoped PCR target is unaligned" not in result.stderr
             ):
-                raise SystemExit(f"loader did not reject unaligned PCR: {result.stderr}")
-    print(f"ok: ELF{args.xlen} direct and LLD-linked boots cover all four layouts")
+                raise SystemExit(
+                    f"loader did not reject unaligned PCR: {result.stderr}"
+                )
+    print(f"ok: ELF{args.xlen} direct and linked boots cover all four layouts")
 
 
 if __name__ == "__main__":
