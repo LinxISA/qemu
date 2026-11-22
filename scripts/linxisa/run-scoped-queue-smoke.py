@@ -22,7 +22,7 @@ def main():
     }
     with tempfile.TemporaryDirectory(prefix="linx-scoped-queue-") as tmp:
         for kind, address, expected in (
-            (0, 0x20040, struct.pack("<3q", *([-0x7FFFFFFB] * 3))),
+            (0, 0x20040, struct.pack("<q", -0x7FFFFFFB) * 3),
             (1, 0x20000, struct.pack("<Q", 0x1122)),
             (2, 0x20000, struct.pack("<Q", 0x1122)),
         ):
@@ -33,16 +33,20 @@ def main():
                  "-filetype=obj", f"--defsym=FAULT={kind}", source, "-o", obj],
                 check=True, timeout=10,
             )
-            machine = (f"virt,cross-model-dump={output},cross-model-address={address},"
-                       f"cross-model-size={len(expected)}")
+            machine = (
+                f"virt,cross-model-dump={output},cross-model-address={address},"
+                f"cross-model-size={len(expected)}"
+            )
             subprocess.run(
-                [args.qemu, "-nographic", "-monitor", "none", "-machine", machine,
-                 "-smp", "1", "-bios", "none", "-kernel", obj],
+                [args.qemu, "-nographic", "-monitor", "none", "-machine",
+                 machine, "-smp", "1", "-bios", "none", "-kernel", obj],
                 env=env, check=True, timeout=10,
             )
             actual = output.read_bytes()
             if actual != expected:
-                raise SystemExit(f"queue case {kind}: {actual.hex()} != {expected.hex()}")
+                raise SystemExit(
+                    f"queue case {kind}: {actual.hex()} != {expected.hex()}"
+                )
     print("ok: all 12 compressed carriers and both empty-queue faults matched")
 
 

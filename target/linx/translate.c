@@ -9752,7 +9752,8 @@ void linx_translate_init(void)
                                            uq_names[i]);
     }
     cpu_scalar_queue_valid = tcg_global_mem_new_i32(
-        tcg_env, offsetof(CPULinxState, scalar_queue_valid), "scalar_queue_valid");
+        tcg_env, offsetof(CPULinxState, scalar_queue_valid),
+        "scalar_queue_valid");
     cpu_bpc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, bpc), "bpc");
     cpu_tgt = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, tgt), "tgt");
     cpu_cond = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, cond), "cond");

@@ -66,7 +66,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/scoped-scalar/released-forms", test_scope_forms);
-    g_test_add_func("/linx/scoped-scalar/queue-sources", test_scope_queue_sources);
+    g_test_add_func("/linx/scoped-scalar/queue-sources",
+                    test_scope_queue_sources);
     g_test_add_func("/linx/scoped-scalar/illegal-carriers", test_scope_invalid);
     return g_test_run();
 }

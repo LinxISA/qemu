@@ -99,7 +99,7 @@ def render(data):
 
     if runtime_forms != 177:
         raise ValueError(
-            f"expected 177 single, paired and compressed runtime forms, got {runtime_forms}"
+            f"expected 177 runtime forms, got {runtime_forms}"
         )
     return ("\n".join(rows) + "\n", "\n".join(witnesses) + "\n")
 
