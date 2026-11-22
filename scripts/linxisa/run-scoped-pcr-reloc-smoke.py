@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--llvm-mc", required=True, type=Path)
     parser.add_argument("--ld-lld", required=True, type=Path)
     parser.add_argument("--qemu", required=True, type=Path)
+    parser.add_argument("--xlen", type=int, choices=(32, 64), default=64)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     source = (root / "tests/linxisa/scoped_scalar_pcr_reloc.s").read_text()
@@ -51,7 +52,8 @@ def main():
             obj = directory / f"{label}.o"
             commits = directory / f"{label}.jsonl"
             subprocess.run(
-                [args.llvm_mc, "-triple=linx64", "-mattr=+pto-v0591-scoped",
+                [args.llvm_mc, f"-triple=linx{args.xlen}",
+                 "-mattr=+pto-v0591-scoped",
                  "-filetype=obj", "-o", obj],
                 input=assembly, text=True, check=True, timeout=10,
             )
@@ -61,7 +63,8 @@ def main():
                 elf = directory / "linked.elf"
                 linked_trace = directory / "linked.jsonl"
                 subprocess.run(
-                    [args.ld_lld, "-m", "elf64linx", "--linx-pto-v0591-scoped",
+                    [args.ld_lld, "-m", f"elf{args.xlen}linx",
+                     "--linx-pto-v0591-scoped",
                      "-Ttext=0x10000", "-e", "_start", "-o", elf, obj],
                     check=True, timeout=10,
                 )
@@ -70,7 +73,7 @@ def main():
                 not result.returncode or "scoped PCR target is unaligned" not in result.stderr
             ):
                 raise SystemExit(f"loader did not reject unaligned PCR: {result.stderr}")
-    print("ok: direct and LLD-linked boots cover all four scoped PCR layouts")
+    print(f"ok: ELF{args.xlen} direct and LLD-linked boots cover all four layouts")
 
 
 if __name__ == "__main__":

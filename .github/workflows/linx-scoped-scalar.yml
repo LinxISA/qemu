@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: LinxISA/llvm-project
-          ref: b30b2dcf3c539ecb34b853ec40cdd9c05e50e796
+          ref: e5748ac8eafc56e2557f64756f432c8651a69705
           path: linx-llvm
           persist-credentials: false
       - name: Install build dependencies
@@ -61,9 +61,11 @@ jobs:
       - name: Build Linx QEMU and test decoder
         run: |
           tools="$RUNNER_TEMP/linx-qemu-tools/bin"
-          ./configure --target-list=linx64-softmmu --disable-docs --disable-werror \
+          ./configure --target-list=linx64-softmmu,linx32-softmmu \
+            --disable-docs --disable-werror \
             --without-default-features --enable-gio --python="$tools/python3"
-          "$tools/ninja" -C build -j 3 qemu-system-linx64 tests/unit/test-linx-scoped-scalar
+          "$tools/ninja" -C build -j 3 qemu-system-linx64 qemu-system-linx32 \
+            tests/unit/test-linx-scoped-scalar
           build/pyvenv/bin/meson test -C build --print-errorlogs test-linx-scoped-scalar
       - name: Build MC and LLD and run scoped runtime
         run: |
@@ -84,7 +86,10 @@ jobs:
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-scoped-atomic-core4-contract.sh
-          python3 scripts/linxisa/run-scoped-pcr-reloc-smoke.py \
-            --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
-            --ld-lld "$PWD/linx-llvm-build/bin/ld.lld" \
-            --qemu "$PWD/build/qemu-system-linx64"
+          for xlen in 32 64; do
+            python3 scripts/linxisa/run-scoped-pcr-reloc-smoke.py \
+              --xlen "$xlen" \
+              --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
+              --ld-lld "$PWD/linx-llvm-build/bin/ld.lld" \
+              --qemu "$PWD/build/qemu-system-linx$xlen"
+          done
