@@ -37,14 +37,17 @@ together with the address, size and outer TPC.
 Successful carriers retire eight bytes. Faults and rejected carriers retain the
 outer TPC and suppress destination and memory publication.
 
-This candidate is restricted to `-smp 1`. The access helper completes the
-memory request synchronously before instruction retirement, so no GM obligation
-or captured scope remains after the helper returns. In this single-agent model,
-Private, IntraCore and InterCore use the same coherent RAM backend while their
-typed scope remains observable through `linx_scoped_scalar_access`. The default
-v0.58 execution path remains active when the environment switch is absent.
-The loader admits the exact locked PTO 0.59.1 ELF identity with this switch and
-`-smp 1`. It rejects mixed identities and incorrect projection hashes.
+The candidate supports `-smp 1` and Core4 (`-smp 4`, one thread per PE).
+Each scoped access completes synchronously through the serialized GM path.
+The shared coherent RAM supplies an execution for scope-conforming accesses.
+Private scope is local to a PE, and Core4 supplies a single Core domain for
+IntraCore communication. The `linx_scoped_scalar_access` trace records scope and
+PE identity. The Core4 smoke checks cross-PE publication and final memory on
+single-threaded and multi-threaded TCG.
+
+The runtime switch also admits the exact locked PTO 0.59.1 ELF identity on
+these topologies. The loader rejects mixed identities and incorrect projection
+hashes. The default v0.58 path remains active without the switch.
 
 ## Canonical Build and Test Commands
 Run from `/Users/zhoubot/linx-isa`.
