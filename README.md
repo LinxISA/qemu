@@ -32,8 +32,9 @@ owns endpoint selection, configuration, permission and GM checks, and the
 Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1
 immediate, PC-relative and register-offset single accesses, including their
 pre-index and post-index writeback forms, paired RAM accesses, and compressed
-C.LWI, C.LDI, C.SWI, and C.SDI. The candidate accepts 177 base forms and all
-three scope codes. Each memory helper receives
+C.LWI, C.LDI, C.SWI, and C.SDI. Scoped LR/SC, compare-and-swap, and atomic
+read-modify-write complete the 235 base forms and all 705 carriers.
+Each memory helper receives
 the carrier's scope together with the address, size and outer TPC. Paired
 accesses check both addresses before effects and publish load destinations
 after both reads. A pair targeting device memory raises a data access fault

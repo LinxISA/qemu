@@ -4260,6 +4260,9 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->hscb_blockid = 0;
     }
     if (version_id < 25) {
+        env->lr_scope = 0;
+    }
+    if (version_id < 26) {
         env->scalar_queue_valid = 0;
         env->scalar_queue_scoped_mode = false;
     }
@@ -4447,7 +4450,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 25,
+    .version_id = 26,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4571,6 +4574,7 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT64(env.lr_addr, LinxCPU),
         VMSTATE_UINT32(env.lr_size, LinxCPU),
         VMSTATE_UINT32(env.lr_valid, LinxCPU),
+        VMSTATE_UINT8_V(env.lr_scope, LinxCPU, 25),
         VMSTATE_UINT8_ARRAY_V(env.tile_reg_layout, LinxCPU,
                               LINX_TILE_SLOT_COUNT, 19),
         VMSTATE_UINT16_ARRAY_V(env.tile_reg_cube_k_repeat, LinxCPU,
@@ -4581,8 +4585,8 @@ static const VMStateDescription vmstate_linx_cpu = {
                                LINX_TILE_SLOT_COUNT, 22),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_cube_storage_bytes, LinxCPU,
                                LINX_TILE_SLOT_COUNT, 22),
-        VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 25),
-        VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 25),
+        VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 26),
+        VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 26),
         VMSTATE_END_OF_LIST(),
     },
 };

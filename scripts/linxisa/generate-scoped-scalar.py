@@ -36,6 +36,7 @@ def render(data):
     bases = {row["form_id"]: row for row in data["forms"]}
     carriers = {}
     runtime_forms = 0
+    amo_forms = 0
     for row in data["scoped_forms"]:
         carriers.setdefault(row["base_form_id"], []).append(row)
     if len(carriers) != 235 or len(data["scoped_forms"]) != 705:
@@ -48,10 +49,14 @@ def render(data):
         address_kind = agu.get("address_kind")
         store = action in {"Store", "StorePair"}
         load = action in {"Load", "LoadPair"}
-        runtime = (load or store) and address_kind in {
-            "Immediate", "PCRelative", "Register", "Compressed"
-        }
+        amo = base.get("semantic_family") == "AMO"
+        runtime = amo or (
+            (load or store) and address_kind in {
+                "Immediate", "PCRelative", "Register", "Compressed"
+            }
+        )
         runtime_forms += int(runtime)
+        amo_forms += int(amo)
         store_shift = -1
         if store and address_kind == "Register":
             store_shift = agu["offset_scale"]
@@ -97,10 +102,10 @@ def render(data):
                 raise ValueError(f"invalid carrier {row['form_id']}")
             witnesses.append(f'{{ 0x{full_match:016x}, {scope}, {length // 8}, "{form_id}" }},')
 
-    if runtime_forms != 177:
-        raise ValueError(
-            f"expected 177 runtime forms, got {runtime_forms}"
-        )
+    if amo_forms != 58:
+        raise ValueError(f"expected 58 scoped AMO forms, got {amo_forms}")
+    if runtime_forms != 235:
+        raise ValueError(f"expected 235 runtime forms, got {runtime_forms}")
     return ("\n".join(rows) + "\n", "\n".join(witnesses) + "\n")
 
 

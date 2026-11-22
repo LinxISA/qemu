@@ -26,7 +26,7 @@ static void test_scope_forms(void)
         g_assert_cmpuint(decoded.inner_word, ==, witnesses[i].word >> 16);
         runtime_forms += decoded.runtime_eligible;
     }
-    g_assert_cmpuint(runtime_forms, ==, 531);
+    g_assert_cmpuint(runtime_forms, ==, 705);
 }
 
 static void test_scope_queue_sources(void)

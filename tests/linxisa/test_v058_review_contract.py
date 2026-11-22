@@ -29,7 +29,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn(".mttcg_supported = true", self.cpu)
 
     def test_vmstate_v19_does_not_claim_backward_compatibility(self) -> None:
-        self.assertIn(".version_id = 25", self.cpu)
+        self.assertIn(".version_id = 26", self.cpu)
         self.assertIn(".minimum_version_id = 19", self.cpu)
         vmstate = self.cpu[
             self.cpu.index("static const VMStateDescription vmstate_linx_cpu") :
@@ -68,10 +68,10 @@ class V058ReviewContractTests(unittest.TestCase):
             self.cpu,
         )
         self.assertIn(
-            "VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 25)", self.cpu
+            "VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 26)", self.cpu
         )
         self.assertIn(
-            "VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 25)", self.cpu
+            "VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 26)", self.cpu
         )
 
     def test_fpatr_is_consumed_and_inactive_acr_migration_is_rejected(self) -> None:
@@ -84,6 +84,7 @@ class V058ReviewContractTests(unittest.TestCase):
         pre_save = pre_save.split("static bool linx_cpu_post_load", 1)[0]
         self.assertIn("acr_block_state[acr].tile_fpatr_valid", pre_save)
         vmstate = self.cpu.split("static const VMStateDescription vmstate_linx_cpu", 1)[1]
+        self.assertIn("VMSTATE_UINT8_V(env.lr_scope, LinxCPU, 25)", vmstate)
         self.assertIn("VMSTATE_UINT32_V(env.tile_fpatr_raw, LinxCPU, 20)", vmstate)
 
     def test_fpatr_position_is_fail_closed_and_executable(self) -> None:
