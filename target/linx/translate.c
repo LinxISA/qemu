@@ -4320,8 +4320,7 @@ static TCGv_i64 linx_addr_add_reg(DisasContext *ctx, unsigned base,
     return addr;
 }
 
-static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
-                              MemOp mop)
+static TCGv_i64 linx_load_value(DisasContext *ctx, TCGv addr, MemOp mop)
 {
     const vaddr pc = ctx->base.pc_next - ctx->cur_insn_len;
     TCGv_i64 out = tcg_temp_new_i64();
@@ -4394,7 +4393,13 @@ static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
         tcg_gen_movi_i32(cpu_trace_mem_size, (int32_t)memop_size(mop));
     }
 
-    linx_set_dest(dst, out);
+    return out;
+}
+
+static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
+                              MemOp mop)
+{
+    linx_set_dest(dst, linx_load_value(ctx, addr, mop));
     return true;
 }
 
@@ -4556,6 +4561,33 @@ static inline int64_t linx_scale_simm(int64_t simm, unsigned shift, bool unscale
     return simm * (1ll << shift);
 }
 
+static void linx_check_scoped_pair(DisasContext *ctx, TCGv_i64 first,
+                                    unsigned size, bool store)
+{
+    gen_helper_linx_scoped_pair_check(
+        tcg_env, first, tcg_constant_i32(size), tcg_constant_i32(store),
+        tcg_constant_i32(!!(ctx->base.tb->flags & LINX_TB_FLAG_DBG_ACTIVE)),
+        tcg_constant_i64(ctx->base.pc_next - ctx->cur_insn_len));
+}
+
+static bool linx_load_pair_to_dests(DisasContext *ctx, int dst0, int dst1,
+                                     TCGv_i64 addr0, TCGv_i64 addr1, MemOp mop)
+{
+    if (ctx->scoped_scope >= 0) {
+        linx_check_scoped_pair(ctx, addr0, memop_size(mop), false);
+        TCGv_i64 first = linx_load_value(ctx, linx_addr_from_i64(addr0), mop);
+        TCGv_i64 second = linx_load_value(ctx, linx_addr_from_i64(addr1), mop);
+
+        linx_set_dest(dst0, first);
+        linx_set_dest(dst1, second);
+        return true;
+    }
+    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
+        return false;
+    }
+    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+}
+
 static bool linx_hl_load_pair_imm(DisasContext *ctx, int dst0, int dst1, int src_base,
                                   int64_t simm, unsigned shift, bool unscaled,
                                   MemOp mop, int elem_bytes)
@@ -4573,10 +4605,7 @@ static bool linx_hl_load_pair_imm(DisasContext *ctx, int dst0, int dst1, int src
     }
     tcg_gen_addi_i64(addr1, addr0, elem_bytes);
 
-    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
-        return false;
-    }
-    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+    return linx_load_pair_to_dests(ctx, dst0, dst1, addr0, addr1, mop);
 }
 
 static bool linx_hl_load_imm(DisasContext *ctx, int dst, int src_base,
@@ -4617,10 +4646,7 @@ static bool linx_hl_load_pair_reg(DisasContext *ctx, int dst0, int dst1,
     TCGv_i64 addr1 = tcg_temp_new_i64();
     tcg_gen_addi_i64(addr1, addr0, elem_bytes);
 
-    if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
-        return false;
-    }
-    return linx_load_to_dest(ctx, dst1, linx_addr_from_i64(addr1), mop);
+    return linx_load_pair_to_dests(ctx, dst0, dst1, addr0, addr1, mop);
 }
 
 static bool linx_hl_load_writeback_reg(DisasContext *ctx, int dst_val, int dst_wb,
@@ -4652,6 +4678,9 @@ static bool linx_hl_store_pair_imm(DisasContext *ctx, int src0, int src1, int sr
     TCGv_i64 addr1 = tcg_temp_new_i64();
     tcg_gen_addi_i64(addr1, addr0, elem_bytes);
 
+    if (ctx->scoped_scope >= 0) {
+        linx_check_scoped_pair(ctx, addr0, elem_bytes, true);
+    }
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr0), linx_get_reg(src0), mop)) {
         return false;
     }
@@ -4675,6 +4704,9 @@ static bool linx_hl_store_pair_reg(DisasContext *ctx, int src0, int src1,
     TCGv_i64 addr1 = tcg_temp_new_i64();
     tcg_gen_addi_i64(addr1, addr0, elem_bytes);
 
+    if (ctx->scoped_scope >= 0) {
+        linx_check_scoped_pair(ctx, addr0, elem_bytes, true);
+    }
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr0), linx_get_reg(src0), mop)) {
         return false;
     }
