@@ -247,11 +247,10 @@ bool linx_msgb_guest_abort_invocation(LinxMsgbGuestState *state,
     return true;
 }
 
-static LinxMsgbAccessResult read_operational(LinxMsgbGuestState *state,
-                                            const LinxMsgbAccessContext *context,
-                                            uint32_t address,
-                                            LinxMsgbGuestBank *bank,
-                                            unsigned index)
+static LinxMsgbAccessResult
+read_operational(LinxMsgbGuestState *state,
+                 const LinxMsgbAccessContext *context, uint32_t address,
+                 LinxMsgbGuestBank *bank, unsigned index)
 {
     uint64_t invocation = state->invocation;
     uint64_t value;

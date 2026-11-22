@@ -62,12 +62,14 @@ static void test_guest_send_receive_replay(void)
     g_assert_cmpuint(linx_msgb_guest_bse(&state, &source,
                                         (UINT64_C(1) << 32) | 16), ==,
                      LINX_MSGB_DUPLICATE);
-    g_assert_false(linx_msgb_guest_write(&state, &target, MSGB_RXCLAIM, 1).fault);
+    g_assert_false(linx_msgb_guest_write(&state, &target, MSGB_RXCLAIM,
+                                         1).fault);
     token = linx_msgb_receive_token(&state.bank[16].receive, 1);
     g_assert_true(linx_msgb_receive_read(&state.bank[16].receive, 1, 0,
                                          &value));
     g_assert_cmphex(value, ==, UINT64_C(0x123456789abcdef0));
-    g_assert_false(linx_msgb_guest_write(&state, &target, MSGB_ACK, token).fault);
+    g_assert_false(linx_msgb_guest_write(&state, &target, MSGB_ACK,
+                                         token).fault);
     g_assert_false(linx_msgb_guest_write(&state, &target, MSGB_RXRELEASE,
                                          token).fault);
 
@@ -194,16 +196,14 @@ static void test_hscb_ready_launch_done(void)
     g_assert_false(linx_msgb_hscb_accept_launch(
         &state, 0, state.bank[0].receive.snapshot.token + 1,
         &kernel_pc, &argument, &blocknum, &blockid));
-    g_assert_true(linx_msgb_hscb_accept_launch(&state, 0,
-                                               state.bank[0].receive.snapshot.token,
-                                               &kernel_pc,
-                                               &argument, &blocknum,
-                                               &blockid));
+    uint64_t launch_token = state.bank[0].receive.snapshot.token;
+    g_assert_true(linx_msgb_hscb_accept_launch(
+        &state, 0, launch_token, &kernel_pc, &argument, &blocknum, &blockid));
     g_assert_cmphex(kernel_pc, ==, 0x4000);
     g_assert_cmphex(argument, ==, 0x5000);
     g_assert_cmpuint(blocknum, ==, 8);
     g_assert_cmpuint(blockid, ==, 3);
-    uint64_t launch_token = linx_msgb_receive_token(&state.bank[0].receive, 1);
+    launch_token = linx_msgb_receive_token(&state.bank[0].receive, 1);
     linx_msgb_receive_ack(&state.bank[0].receive, 1, launch_token);
     linx_msgb_receive_release(&state.bank[0].receive, 1, launch_token);
 
