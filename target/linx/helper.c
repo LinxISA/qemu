@@ -6960,6 +6960,99 @@ static G_NORETURN void linx_raise_ssr_illegal(CPULinxState *env,
     cpu_loop_exit_restore(cs, ra);
 }
 
+static bool linx_msgb_ssr_address(uint32_t idx)
+{
+    return idx >= 0x830u && idx <= 0x84bu;
+}
+
+static LinxMsgbAccessContext linx_msgb_access_context(CPULinxState *env)
+{
+    return (LinxMsgbAccessContext) {
+        .pe = env->pe_id,
+        .acr = env->acr & 0xfu,
+        .tpc = env->pc,
+        /* QEMU has no outstanding asynchronous scalar GM request. */
+        .execution_domain = env->insn_count,
+        .atomic = (env->tile_attr_raw & (1u << 19)) != 0,
+        .far = (env->tile_attr_raw & (1u << 20)) != 0,
+    };
+}
+
+static LinxCore4State *linx_msgb_core(CPULinxState *env)
+{
+    return env_archcpu(env)->core4;
+}
+
+static LinxMsgbAccessResult linx_msgb_ssr_read(CPULinxState *env,
+                                               uint32_t ssrid)
+{
+    LinxMsgbAccessResult access = { 0 };
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    uint32_t idx = linx_ssr_low12(ssrid);
+
+    if (!linx_msgb_ssr_address(idx)) {
+        return access;
+    }
+    if (ssrid != idx || core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    access = linx_msgb_guest_read(&core4->msgb, &context, idx);
+    qemu_mutex_unlock(&core4->lock);
+    if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    return access;
+}
+
+static bool linx_msgb_hscb_geometry_read(CPULinxState *env,
+                                         uint64_t *blocknum,
+                                         uint64_t *blockid)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    bool live = false;
+
+    if (core4 != NULL) {
+        qemu_mutex_lock(&core4->lock);
+        live = linx_msgb_hscb_geometry(&core4->msgb, &context,
+                                       blocknum, blockid);
+        qemu_mutex_unlock(&core4->lock);
+    }
+    return live;
+}
+
+static LinxMsgbAccessResult linx_msgb_ssr_write(CPULinxState *env,
+                                                uint32_t ssrid,
+                                                uint64_t value)
+{
+    LinxMsgbAccessResult access = { 0 };
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    uint32_t idx = linx_ssr_low12(ssrid);
+
+    if (!linx_msgb_ssr_address(idx)) {
+        return access;
+    }
+    if (ssrid != idx || core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    access = linx_msgb_guest_write(&core4->msgb, &context, idx, value);
+    qemu_mutex_unlock(&core4->lock);
+    if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    return access;
+}
+
 static inline bool linx_legacy_trapsave_alias_read(CPULinxState *env, uint32_t idx,
                                                    uint32_t bank, uint64_t *value)
 {
@@ -7008,19 +7101,36 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? linx_ssr_manager_bank(env, ssrid) : 0u;
     uint64_t value;
+    uint64_t hscb_blocknum;
+    uint64_t hscb_blockid;
+    LinxMsgbAccessResult msgb = linx_msgb_ssr_read(env, ssrid);
+
+    if (msgb.handled) {
+        return msgb.value;
+    }
 
     switch (idx) {
     case LINX_SSR_BLOCKNUM:
         if (ssrid != LINX_SSR_BLOCKNUM) {
             linx_raise_ssr_illegal(env, GETPC());
         }
-        value = linx_hscb_geometry_blocknum(env);
+        if (linx_msgb_hscb_geometry_read(env, &hscb_blocknum,
+                                         &hscb_blockid)) {
+            value = hscb_blocknum;
+        } else {
+            value = linx_hscb_geometry_blocknum(env);
+        }
         break;
     case LINX_SSR_BLOCKID:
         if (ssrid != LINX_SSR_BLOCKID) {
             linx_raise_ssr_illegal(env, GETPC());
         }
-        value = linx_hscb_geometry_blockid(env);
+        if (linx_msgb_hscb_geometry_read(env, &hscb_blocknum,
+                                         &hscb_blockid)) {
+            value = hscb_blockid;
+        } else {
+            value = linx_hscb_geometry_blockid(env);
+        }
         break;
     case LINX_SSR_BLOCK_ALIAS_FIRST ... LINX_SSR_BLOCK_ALIAS_LAST:
         linx_raise_ssr_illegal(env, GETPC());
@@ -7145,6 +7255,13 @@ uint64_t HELPER(linx_scalar_addi)(CPULinxState *env, uint32_t code, uint64_t imm
     return HELPER(linx_scalar_read_reg)(env, code) + imm;
 }
 
+void HELPER(linx_scoped_check_queues)(CPULinxState *env, uint32_t sources)
+{
+    if ((env->scalar_queue_valid & sources) != sources) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+}
+
 void HELPER(linx_tq_push)(CPULinxState *env, uint64_t value)
 {
     if (linx_debug_local_enabled_p()) {
@@ -7157,6 +7274,11 @@ void HELPER(linx_tq_push)(CPULinxState *env, uint64_t value)
     env->tq[2] = env->tq[1];
     env->tq[1] = env->tq[0];
     env->tq[0] = value;
+    if (linx_scoped_scalar_runtime_requested()) {
+        env->scalar_queue_valid =
+            deposit32(env->scalar_queue_valid, 0, 4,
+                      (env->scalar_queue_valid << 1) | 1);
+    }
     if (linx_debug_local_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx tq push after  pc=0x%" PRIx64
@@ -7177,6 +7299,11 @@ void HELPER(linx_uq_push)(CPULinxState *env, uint64_t value)
     env->uq[2] = env->uq[1];
     env->uq[1] = env->uq[0];
     env->uq[0] = value;
+    if (linx_scoped_scalar_runtime_requested()) {
+        env->scalar_queue_valid =
+            deposit32(env->scalar_queue_valid, 4, 4,
+                      (env->scalar_queue_valid >> 3) | 1);
+    }
     if (linx_debug_local_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx uq push after  pc=0x%" PRIx64
@@ -7190,6 +7317,11 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
     uint32_t idx = linx_ssr_low12(ssrid);
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? linx_ssr_manager_bank(env, ssrid) : 0u;
+    LinxMsgbAccessResult msgb = linx_msgb_ssr_write(env, ssrid, value);
+
+    if (msgb.handled) {
+        return;
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10c40) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7482,6 +7614,9 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
     if (idx >= LINX_SSR_BLOCKNUM && idx <= LINX_SSR_BLOCK_ALIAS_LAST) {
         linx_raise_ssr_illegal(env, GETPC());
     }
+    if (linx_msgb_ssr_address(idx)) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10be8) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010be8ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7501,6 +7636,138 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
     linx_tp_trace_emit(env, "ssr_swap", ssrid, bank, old, value);
     HELPER(linx_ssr_write)(env, ssrid, value);
     return old;
+}
+
+void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    bool retire_invocation = false;
+    uint64_t clear_invocation = 0;
+
+    if (core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    if (linx_msgb_guest_enabled_for_context(&core4->msgb, &context) &&
+        (context.atomic || context.far)) {
+        qemu_mutex_unlock(&core4->lock);
+        helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+    }
+    LinxMsgbResult status = linx_msgb_guest_bse(&core4->msgb,
+                                                &context, control);
+    if (status == LINX_MSGB_OK && (uint32_t)control ==
+                                  LINX_MSGB_HSCB_ENDPOINT) {
+        status = linx_msgb_hscb_receive_worker(&core4->msgb);
+        if (status == LINX_MSGB_OK && core4->msgb.auto_launch_valid &&
+            core4->msgb.auto_launch_worker < LINX_MSGB_ENDPOINTS &&
+            core4->msgb.bank[core4->msgb.auto_launch_worker].hscb_ready) {
+            status = linx_msgb_hscb_issue_launch(
+                &core4->msgb, core4->msgb.auto_launch_worker,
+                core4->msgb.auto_launch_dispatch_id,
+                core4->msgb.auto_launch_pc,
+                core4->msgb.auto_launch_argument,
+                core4->msgb.auto_launch_blocknum,
+                core4->msgb.auto_launch_blockid);
+            if (status == LINX_MSGB_OK) {
+                core4->msgb.auto_launch_valid = false;
+            }
+        }
+        if (core4->msgb.last_done_valid) {
+            clear_invocation = core4->msgb.last_done_invocation;
+            core4->msgb.last_done_valid = false;
+            if (core4->msgb.auto_launch_managed) {
+                retire_invocation = true;
+                core4->msgb.auto_launch_managed = false;
+            }
+        }
+        if (retire_invocation) {
+            linx_msgb_guest_begin_drain(&core4->msgb,
+                                        clear_invocation);
+            if (!linx_msgb_guest_clear_invocation(&core4->msgb,
+                                                   clear_invocation)) {
+                qemu_mutex_unlock(&core4->lock);
+                helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+            }
+        }
+    }
+    qemu_mutex_unlock(&core4->lock);
+}
+
+uint64_t HELPER(linx_bwe)(CPULinxState *env, uint64_t operand)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+
+    if (core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    uint64_t kernel_pc = 0;
+    uint64_t argument = 0;
+    uint32_t blocknum = 0;
+    uint32_t blockid = 0;
+    unsigned thread;
+    unsigned worker;
+    uint64_t invocation;
+
+    qemu_mutex_lock(&core4->lock);
+    linx_msgb_guest_bwe(&core4->msgb, &context, operand);
+    thread = core4->msgb.current_thread[env->pe_id];
+    worker = (thread * LINX_MSGB_PE_COUNT + env->pe_id) *
+             LINX_MSGB_ACR_COUNT + context.acr;
+    invocation = core4->msgb.invocation;
+    uint64_t pending_pc = 0;
+    bool pending = context.acr == 0 && !context.atomic && !context.far &&
+                   linx_msgb_hscb_launch_pending(
+                       &core4->msgb, worker, invocation, &pending_pc);
+    qemu_mutex_unlock(&core4->lock);
+
+    if (!pending || !linx_cpu_is_legal_block_entry(env, pending_pc)) {
+        return 0;
+    }
+
+    bool launch = false;
+    uint64_t rechecked_pc = 0;
+    qemu_mutex_lock(&core4->lock);
+    if (linx_msgb_hscb_launch_pending(&core4->msgb, worker, invocation,
+                                      &rechecked_pc) &&
+        rechecked_pc == pending_pc) {
+        launch = linx_msgb_hscb_take_launch(
+            &core4->msgb, worker, &kernel_pc, &argument,
+            &blocknum, &blockid);
+    }
+    qemu_mutex_unlock(&core4->lock);
+    if (!launch) {
+        return 0;
+    }
+    linx_acr_reset_block_state_for_header(env, env->acr & 0xfu, kernel_pc);
+    linx_acr_restore_block_state(env, env->acr & 0xfu);
+    env->gpr[LINX_REG_A0] = argument;
+    return kernel_pc;
+}
+
+LinxMsgbResult linx_hscb_issue_launch_for_cpu(CPULinxState *env,
+                                              unsigned thread,
+                                              uint64_t dispatch_id,
+                                              uint64_t kernel_pc,
+                                              uint64_t argument,
+                                              uint32_t blocknum,
+                                              uint32_t blockid)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbResult status;
+
+    if (core4 == NULL || thread >= LINX_MSGB_THREADS_PER_PE) {
+        return LINX_MSGB_BAD_COMMAND;
+    }
+    unsigned endpoint = (thread * LINX_MSGB_PE_COUNT + env->pe_id) *
+                        LINX_MSGB_ACR_COUNT;
+    qemu_mutex_lock(&core4->lock);
+    status = linx_msgb_hscb_issue_launch(&core4->msgb, endpoint,
+                                         dispatch_id, kernel_pc, argument,
+                                         blocknum, blockid);
+    qemu_mutex_unlock(&core4->lock);
+    return status;
 }
 
 void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)
@@ -7885,6 +8152,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     /* v0.2 ACRE(RRA) behavior: DEFAULT resets BSTATE; RESTORE uses EBARG snapshot. */
     if (rra_type == 0) {
         int i;
+        env->scalar_queue_valid = 0;
         for (i = 0; i < 4; i++) {
             env->tq[i] = 0;
             env->uq[i] = 0;
@@ -8033,6 +8301,7 @@ static inline void linx_lr_set(CPULinxState *env, uint64_t addr, uint32_t size)
 {
     env->lr_addr = addr;
     env->lr_size = size;
+    env->lr_scope = 0;
     qatomic_set(&env->lr_valid, 1);
 }
 
@@ -8117,6 +8386,10 @@ void HELPER(linx_lr_invalidate_write)(CPULinxState *env, uint64_t addr,
 {
     linx_lr_invalidate_for_write(env, addr, size);
 }
+
+static void linx_scoped_lr_invalidate_for_write(CPULinxState *env,
+                                                uint64_t addr, uint32_t size,
+                                                unsigned scope);
 
 static G_NORETURN void linx_raise_data_alignment(CPULinxState *env,
                                                  uint64_t addr,
@@ -8218,6 +8491,7 @@ void HELPER(linx_scoped_store)(CPULinxState *env, uint64_t addr,
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
     }
+    linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
 }
 
 void HELPER(linx_scoped_pair_check)(CPULinxState *env, uint64_t first,
@@ -8378,8 +8652,16 @@ uint64_t HELPER(linx_sc_d)(CPULinxState *env, uint64_t addr, uint64_t value)
  * threaded through the helper macros so the fallback matches the atomic path.
  */
 typedef enum LinxAtomicOp {
-    LINX_AOP_ADD, LINX_AOP_AND, LINX_AOP_OR, LINX_AOP_XOR,
-    LINX_AOP_SMAX, LINX_AOP_SMIN, LINX_AOP_UMAX, LINX_AOP_UMIN,
+    LINX_AOP_SWAP,
+    LINX_AOP_ADD,
+    LINX_AOP_SUB,
+    LINX_AOP_AND,
+    LINX_AOP_OR,
+    LINX_AOP_XOR,
+    LINX_AOP_SMAX,
+    LINX_AOP_SMIN,
+    LINX_AOP_UMAX,
+    LINX_AOP_UMIN,
 } LinxAtomicOp;
 
 static inline uint64_t linx_atomic_apply(LinxAtomicOp op, uint64_t a, uint64_t b,
@@ -8390,7 +8672,11 @@ static inline uint64_t linx_atomic_apply(LinxAtomicOp op, uint64_t a, uint64_t b
     a &= mask;
     b &= mask;
     switch (op) {
+    case LINX_AOP_SWAP:
+        return b;
     case LINX_AOP_ADD: return (a + b) & mask;
+    case LINX_AOP_SUB:
+        return (a - b) & mask;
     case LINX_AOP_AND: return a & b;
     case LINX_AOP_OR:  return a | b;
     case LINX_AOP_XOR: return a ^ b;
@@ -8407,6 +8693,263 @@ static inline uint64_t linx_atomic_apply(LinxAtomicOp op, uint64_t a, uint64_t b
     case LINX_AOP_UMIN: return (a < b) ? a : b;
     }
     return a;
+}
+
+#define LINX_SCOPED_ATOMIC_SIZE_MASK 0xfu
+#define LINX_SCOPED_ATOMIC_OP_SHIFT 4u
+#define LINX_SCOPED_ATOMIC_SCOPE_SHIFT 8u
+#define LINX_SCOPED_ATOMIC_FAR (1u << 10)
+
+static inline unsigned linx_scoped_atomic_size(uint32_t control)
+{
+    return control & LINX_SCOPED_ATOMIC_SIZE_MASK;
+}
+
+static inline LinxAtomicOp linx_scoped_atomic_op(uint32_t control)
+{
+    return (control >> LINX_SCOPED_ATOMIC_OP_SHIFT) & 0xfu;
+}
+
+static inline unsigned linx_scoped_atomic_scope(uint32_t control)
+{
+    return (control >> LINX_SCOPED_ATOMIC_SCOPE_SHIFT) & 0x3u;
+}
+
+static void linx_scoped_atomic_validate(CPULinxState *env, uint32_t control)
+{
+    const unsigned size = linx_scoped_atomic_size(control);
+    const unsigned scope = linx_scoped_atomic_scope(control);
+
+    if ((size != 1 && size != 2 && size != 4 && size != 8) || scope > 2 ||
+        (control & ~(LINX_SCOPED_ATOMIC_SIZE_MASK | (0xfu << 4) |
+                     (0x3u << LINX_SCOPED_ATOMIC_SCOPE_SHIFT) |
+                     LINX_SCOPED_ATOMIC_FAR)) != 0 ||
+        !current_machine ||
+        !linx_scoped_scalar_topology_supported(current_machine->smp.cpus)) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+}
+
+static inline bool linx_scoped_reservation_domain_matches(
+    const CPULinxState *writer, const CPULinxState *reservation, unsigned scope)
+{
+    if (reservation->lr_scope != scope) {
+        return false;
+    }
+    if (scope == 0) {
+        return writer == reservation;
+    }
+    /* A Core4 machine is one core: intra-core and inter-core span all PEs. */
+    return true;
+}
+
+static void linx_scoped_lr_invalidate_for_write(CPULinxState *env,
+                                                uint64_t addr, uint32_t size,
+                                                unsigned scope)
+{
+    LinxCPU *cpu = env_archcpu(env);
+
+    if (cpu->core4 == NULL) {
+        if (linx_scoped_reservation_domain_matches(env, env, scope)) {
+            linx_lr_invalidate_one_for_write(env, addr, size);
+        }
+        return;
+    }
+    for (unsigned pe = 0; pe < LINX_CORE4_PE_COUNT; pe++) {
+        if (cpu->core4->cpu[pe] != NULL) {
+            CPULinxState *reservation = &cpu->core4->cpu[pe]->env;
+
+            if (linx_scoped_reservation_domain_matches(env, reservation,
+                                                       scope)) {
+                linx_lr_invalidate_one_for_write(reservation, addr, size);
+            }
+        }
+    }
+}
+
+typedef struct LinxScopedAtomicHosts {
+    void *read;
+    void *write;
+} LinxScopedAtomicHosts;
+
+static G_NORETURN void linx_scoped_atomic_raise_access(CPULinxState *env,
+                                                       uint64_t addr,
+                                                       bool store, uintptr_t ra)
+{
+    CPUState *cs = env_cpu(env);
+
+    env->pending_trap_arg0 = addr;
+    env->pending_trap_cause = 0;
+    cs->exception_index =
+        store ? LINX_EXCP_STORE_ACCESS_FAULT : LINX_EXCP_LOAD_ACCESS_FAULT;
+    cpu_loop_exit_restore(cs, ra);
+}
+
+static void *linx_scoped_atomic_probe(CPULinxState *env, uint64_t addr,
+                                      unsigned size, bool store, uintptr_t ra)
+{
+    const int mmu_idx = linx_env_mmu_index(env);
+    const MMUAccessType access = store ? MMU_DATA_STORE : MMU_DATA_LOAD;
+    void *host;
+
+    linx_enter_atomic_context(env, ra);
+    linx_require_natural_alignment(env, addr, size, ra);
+    host = probe_access(env, (vaddr)addr, size, access, mmu_idx, ra);
+    if (host == NULL) {
+        /* Atomic preflight must not invoke a device callback. */
+        linx_scoped_atomic_raise_access(env, addr, store, ra);
+    }
+    return host;
+}
+
+static LinxScopedAtomicHosts linx_scoped_atomic_probe_rw(CPULinxState *env,
+                                                         uint64_t addr,
+                                                         unsigned size,
+                                                         uintptr_t ra)
+{
+    LinxScopedAtomicHosts hosts;
+
+    hosts.read = linx_scoped_atomic_probe(env, addr, size, false, ra);
+    hosts.write = linx_scoped_atomic_probe(env, addr, size, true, ra);
+    if (hosts.read != hosts.write) {
+        /* The frozen PTO contract requires one translated memory location. */
+        linx_scoped_atomic_raise_access(env, addr, true, ra);
+    }
+    return hosts;
+}
+
+static uint64_t linx_scoped_atomic_load(const void *host, unsigned size)
+{
+    switch (size) {
+    case 1:
+        return ldub_p(host);
+    case 2:
+        return lduw_le_p(host);
+    case 4:
+        return ldl_le_p(host);
+    case 8:
+        return ldq_le_p(host);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void linx_scoped_atomic_store(void *host, uint64_t value, unsigned size)
+{
+    switch (size) {
+    case 1:
+        stb_p(host, value);
+        break;
+    case 2:
+        stw_le_p(host, value);
+        break;
+    case 4:
+        stl_le_p(host, value);
+        break;
+    case 8:
+        stq_le_p(host, value);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static uint64_t linx_scoped_atomic_result(uint64_t value, unsigned size)
+{
+    if (size == 4) {
+        return (uint64_t)(int64_t)(int32_t)value;
+    }
+    if (size == 1) {
+        return (uint8_t)value;
+    }
+    if (size == 2) {
+        return (uint16_t)value;
+    }
+    return value;
+}
+
+uint64_t HELPER(linx_scoped_lr)(CPULinxState *env, uint64_t addr,
+                                uint32_t control)
+{
+    const uintptr_t ra = GETPC();
+    const unsigned size = linx_scoped_atomic_size(control);
+    const unsigned scope = linx_scoped_atomic_scope(control);
+    void *host;
+    uint64_t value;
+
+    linx_scoped_atomic_validate(env, control);
+    host = linx_scoped_atomic_probe(env, addr, size, false, ra);
+    value = linx_scoped_atomic_load(host, size);
+    env->lr_addr = addr;
+    env->lr_size = size;
+    env->lr_scope = scope;
+    qatomic_set(&env->lr_valid, 1);
+    return linx_scoped_atomic_result(value, size);
+}
+
+uint64_t HELPER(linx_scoped_sc)(CPULinxState *env, uint64_t addr,
+                                uint64_t value, uint32_t control)
+{
+    const uintptr_t ra = GETPC();
+    const unsigned size = linx_scoped_atomic_size(control);
+    const unsigned scope = linx_scoped_atomic_scope(control);
+    const bool succeeds =
+        linx_lr_matches_granule(env, addr) && env->lr_scope == scope;
+    void *host;
+
+    linx_scoped_atomic_validate(env, control);
+    linx_enter_atomic_context(env, ra);
+    linx_lr_clear(env);
+    if (!succeeds) {
+        return 1;
+    }
+    host = linx_scoped_atomic_probe(env, addr, size, true, ra);
+    linx_scoped_atomic_store(host, value, size);
+    linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
+    return 0;
+}
+
+uint64_t HELPER(linx_scoped_rmw)(CPULinxState *env, uint64_t addr,
+                                 uint64_t value, uint32_t control)
+{
+    const uintptr_t ra = GETPC();
+    const unsigned size = linx_scoped_atomic_size(control);
+    const unsigned scope = linx_scoped_atomic_scope(control);
+    const LinxAtomicOp op = linx_scoped_atomic_op(control);
+    LinxScopedAtomicHosts hosts;
+    uint64_t old;
+
+    linx_scoped_atomic_validate(env, control);
+    if (op > LINX_AOP_UMIN) {
+        helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+    hosts = linx_scoped_atomic_probe_rw(env, addr, size, ra);
+    old = linx_scoped_atomic_load(hosts.read, size);
+    linx_scoped_atomic_store(hosts.write,
+                             linx_atomic_apply(op, old, value, size), size);
+    linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
+    return linx_scoped_atomic_result(old, size);
+}
+
+uint64_t HELPER(linx_scoped_cas)(CPULinxState *env, uint64_t addr,
+                                 uint64_t cmpv, uint64_t newv, uint32_t control)
+{
+    const uintptr_t ra = GETPC();
+    const unsigned size = linx_scoped_atomic_size(control);
+    const unsigned scope = linx_scoped_atomic_scope(control);
+    const uint64_t mask =
+        size == 8 ? UINT64_MAX : (UINT64_C(1) << (size * 8)) - 1;
+    LinxScopedAtomicHosts hosts;
+    uint64_t old;
+
+    linx_scoped_atomic_validate(env, control);
+    hosts = linx_scoped_atomic_probe_rw(env, addr, size, ra);
+    old = linx_scoped_atomic_load(hosts.read, size);
+    if ((old & mask) == (cmpv & mask)) {
+        linx_scoped_atomic_store(hosts.write, newv, size);
+        linx_scoped_lr_invalidate_for_write(env, addr, size, scope);
+    }
+    return linx_scoped_atomic_result(old, size);
 }
 
 uint64_t HELPER(linx_swapw)(CPULinxState *env, uint64_t addr, uint32_t value)

@@ -16,6 +16,7 @@ PTO_LOCK_SHA256 = (
     "a526f6dbbddfe67d349640f19e904c1148a24178b0ec697f4dc360ddac624f34"
 )
 LENGTHS = {16: 0, 32: 1, 48: 2}
+REG5_SOURCES = {"SrcL", "SrcR", "SrcD", "SrcD1"}
 
 
 def packed_encoding(parts):
@@ -35,6 +36,7 @@ def render(data):
     bases = {row["form_id"]: row for row in data["forms"]}
     carriers = {}
     runtime_forms = 0
+    amo_forms = 0
     for row in data["scoped_forms"]:
         carriers.setdefault(row["base_form_id"], []).append(row)
     if len(carriers) != 235 or len(data["scoped_forms"]) != 705:
@@ -47,14 +49,26 @@ def render(data):
         address_kind = agu.get("address_kind")
         store = action in {"Store", "StorePair"}
         load = action in {"Load", "LoadPair"}
-        runtime = (load or store) and address_kind in {
-            "Immediate", "PCRelative", "Register"
-        }
+        amo = base.get("semantic_family") == "AMO"
+        runtime = amo or (
+            (load or store) and address_kind in {
+                "Immediate", "PCRelative", "Register", "Compressed"
+            }
+        )
         runtime_forms += int(runtime)
+        amo_forms += int(amo)
         store_shift = -1
         if store and address_kind == "Register":
             store_shift = agu["offset_scale"]
         length, mask, match = packed_encoding(base["encoding"])
+        source_fields = 0
+        for field in base["fields"]:
+            if field["name"] in REG5_SOURCES:
+                piece, = field["pieces"]
+                if piece["width"] != 5 or piece["value_lsb"] != 0:
+                    raise ValueError(f"noncontiguous Reg5 source in {form_id}")
+                source_fields |= 1 << piece["instruction_lsb"]
+        implicit_t = store and address_kind == "Compressed"
         reserved_mask = 0
         if base["constraints"]:
             constraint, = base["constraints"]
@@ -67,7 +81,8 @@ def render(data):
                 raise ValueError(f"unsupported SrcRType layout for {form_id}")
         rows.append(
             f'{{ 0x{mask:012x}, 0x{match:012x}, 0x{reserved_mask:012x}, '
-            f"{length // 8}, {str(runtime).lower()}, {store_shift}, "
+            f"0x{source_fields:012x}, {length // 8}, {str(runtime).lower()}, "
+            f"{store_shift}, {str(implicit_t).lower()}, "
             f'"{form_id}" }},'
         )
         if len(variants) != 3 or {item["scope_code"] for item in variants} != {0, 1, 2}:
@@ -87,10 +102,10 @@ def render(data):
                 raise ValueError(f"invalid carrier {row['form_id']}")
             witnesses.append(f'{{ 0x{full_match:016x}, {scope}, {length // 8}, "{form_id}" }},')
 
-    if runtime_forms != 173:
-        raise ValueError(
-            f"expected 173 single and paired runtime forms, got {runtime_forms}"
-        )
+    if amo_forms != 58:
+        raise ValueError(f"expected 58 scoped AMO forms, got {amo_forms}")
+    if runtime_forms != 235:
+        raise ValueError(f"expected 235 runtime forms, got {runtime_forms}")
     return ("\n".join(rows) + "\n", "\n".join(witnesses) + "\n")
 
 

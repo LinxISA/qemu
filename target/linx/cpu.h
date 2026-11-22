@@ -17,6 +17,7 @@
 #include "fpu/softfloat.h"
 #include "hw/core/resettable.h"
 #include "qemu/thread.h"
+#include "msgb_guest.h"
 
 #ifdef CONFIG_USER_ONLY
 #error "LinxISA does not support user mode emulation"
@@ -110,6 +111,8 @@ typedef struct LinxCore4State {
     uint8_t collective_pe_mask;
     uint8_t collective_size_code;
     uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
+    /* PTO MSGB/HSCB owner shared by all PE identities in this Core. */
+    LinxMsgbGuestState msgb;
 } LinxCore4State;
 
 void linx_core4_reset(LinxCore4State *core4);
@@ -334,6 +337,7 @@ typedef enum LinxTemplateKind {
 typedef struct LinxAcrBlockState {
     uint64_t tq[4];
     uint64_t uq[4];
+    uint32_t scalar_queue_valid;
     uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
@@ -436,6 +440,8 @@ typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
     uint64_t uq[4];
+    uint32_t scalar_queue_valid;
+    uint8_t scalar_queue_scoped_mode;
     uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
@@ -664,6 +670,7 @@ typedef struct CPUArchState {
     uint64_t lr_addr;
     uint32_t lr_size;
     uint32_t lr_valid;
+    uint8_t lr_scope;
 
     /* Direct-mapped hot-path cache for bstart target validation. */
     uint64_t bstart_cache_tag[LINX_BSTART_CACHE_SIZE];
@@ -857,6 +864,14 @@ typedef struct CPUArchState {
     struct QEMUTimer *timer;
 } CPULinxState;
 
+LinxMsgbResult linx_hscb_issue_launch_for_cpu(CPULinxState *env,
+                                              unsigned thread,
+                                              uint64_t dispatch_id,
+                                              uint64_t kernel_pc,
+                                              uint64_t argument,
+                                              uint32_t blocknum,
+                                              uint32_t blockid);
+
 static inline bool linx_ebarg_stack_push(CPULinxState *env, uint32_t acr)
 {
     uint32_t d;
@@ -910,6 +925,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->tq[i] = env->tq[i];
         s->uq[i] = env->uq[i];
     }
+    s->scalar_queue_valid = env->scalar_queue_valid;
     for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         s->vtq[i] = env->vtq[i];
         s->vuq[i] = env->vuq[i];
@@ -1043,6 +1059,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->tq[i] = s->tq[i];
         env->uq[i] = s->uq[i];
     }
+    env->scalar_queue_valid = s->scalar_queue_valid;
     for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = s->vtq[i];
         env->vuq[i] = s->vuq[i];
@@ -1169,6 +1186,7 @@ struct LinxCPUClass {
 void linx_translate_init(void);
 void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
+bool linx_cpu_is_legal_block_entry(CPULinxState *env, uint64_t pc);
 void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
                                  uint64_t fault_pc);
 void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,

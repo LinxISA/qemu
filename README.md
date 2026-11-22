@@ -22,21 +22,25 @@ change only RX result diagnostics. Failed ACK attempts change only ACKSTAT and
 ACKID diagnostics. Queue, snapshot, read mask, claim sequence and the last
 successful token remain unchanged.
 
-This backend has no guest-visible register connection yet. Transport admission
-must supply a validated packet and active nonzero invocation. Later integration
-owns endpoint selection, configuration, permission and GM checks, and the
-`0x0830..0x084b` SSR helpers. BSE and BWE remain outside this receive slice.
+The PTO 0.59.1 guest candidate below connects this backend to endpoint
+selection, configuration, permission checks, BSE/BWE transport, and the
+`0x0830..0x084b` SSR helpers.
 
 ## PTO 0.59.1 scoped Scalar candidate
 
 Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1
 immediate, PC-relative and register-offset single accesses, including their
-pre-index and post-index writeback forms, and paired RAM accesses. The candidate
-accepts 173 base forms and all three scope codes. Each memory helper receives
+pre-index and post-index writeback forms, paired RAM accesses, and compressed
+C.LWI, C.LDI, C.SWI, and C.SDI. Scoped LR/SC, compare-and-swap, and atomic
+read-modify-write complete the 235 base forms and all 705 carriers.
+Each memory helper receives
 the carrier's scope together with the address, size and outer TPC. Paired
 accesses check both addresses before effects and publish load destinations
 after both reads. A pair targeting device memory raises a data access fault
 before guest data effects.
+Scoped Reg5 sources check T/U validity before the access. Compressed loads
+push T, and compressed stores use the existing T#1 value without consuming it.
+Both ends of CPU migration must use the same scoped runtime setting.
 Successful carriers retire eight bytes. Faults and rejected carriers retain the
 outer TPC and suppress destination and memory publication.
 
@@ -86,6 +90,31 @@ migration state.
 The HSCB dispatcher owns calls at LAUNCH, DONE and teardown boundaries. Obsolete
 aliases `0x0052` through `0x0055`, high-address aliases, and all writes to the
 two read-only registers raise the existing QEMU illegal-instruction trap.
+
+## PTO 0.59.1 MSGB/HSCB guest candidate
+
+The shared Core4 owner contains two slot-qualified endpoint sets for four PE
+identities and all sixteen ACRs. The direct-boot kernel starts as invocation
+one. A trusted platform owner may select the active slot or bind and clear a
+later invocation. Guest SSR access at `0x0830` through `0x084b` enforces ACR0
+configuration, invocation ownership, atomic/far rejection, exact claim tokens,
+immutable snapshots, complete-read ACK and illegal SSRSWAP.
+
+Decoded BSE snapshots staged data, allocates transport identity, records the
+invocation/ACR/dynamic-occurrence/TPC replay receipt, and atomically enqueues a
+message. Disabled BSE and BWE publish their exact nonblocking control request.
+The HSCB owner accepts READY and matching DONE packets and can issue one
+LAUNCH packet through `linx_hscb_issue_launch_for_cpu`. The `virt` machine can
+also schedule one launch with the `hscb-*` properties. After READY, BWE claims
+and reads the LAUNCH packet, validates and acknowledges it, binds `BLOCKNUM`
+and `BLOCKID`, then retires BWE before entering the configured worker PC with
+the launch argument in `a0`.
+
+QEMU currently models one architectural Core with four PE identities. Remote
+Core endpoints are rejected. Scalar memory completes synchronously, so there
+is no older outstanding GM obligation at the BSE arrival point. The platform
+API still owns invocation teardown. Active MSGB state is rejected by migration
+because the shared bank array is not serialized.
 
 ## LinxISA Integration Touchpoints
 - Runtime AVS in `/Users/zhoubot/linx-isa/avs/qemu`
