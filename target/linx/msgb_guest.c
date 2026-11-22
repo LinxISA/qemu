@@ -36,6 +36,15 @@ static LinxMsgbAccessResult result(bool fault, uint64_t value)
     };
 }
 
+static LinxMsgbAccessResult bundle_fault(void)
+{
+    return (LinxMsgbAccessResult) {
+        .handled = true,
+        .fault = true,
+        .bundle_fault = true,
+    };
+}
+
 static unsigned current_index(const LinxMsgbGuestState *state,
                               const LinxMsgbAccessContext *context)
 {
@@ -177,6 +186,17 @@ bool linx_msgb_guest_select_thread(LinxMsgbGuestState *state,
     return true;
 }
 
+bool linx_msgb_guest_enabled_for_context(
+    const LinxMsgbGuestState *state, const LinxMsgbAccessContext *context)
+{
+    if (context->pe >= LINX_MSGB_PE_COUNT ||
+        context->acr >= LINX_MSGB_ACR_COUNT) {
+        return false;
+    }
+    return current_owner(state, context,
+                         &state->bank[current_index(state, context)]);
+}
+
 bool linx_msgb_guest_bind_invocation(LinxMsgbGuestState *state,
                                     uint64_t invocation)
 {
@@ -255,8 +275,11 @@ read_operational(LinxMsgbGuestState *state,
     uint64_t invocation = state->invocation;
     uint64_t value;
 
-    if (!effect_permitted(state, context, bank, true)) {
+    if (!current_owner(state, context, bank)) {
         return result(true, 0);
+    }
+    if (context->atomic || context->far) {
+        return bundle_fault();
     }
     if (address == MSGB_ENDPOINT) {
         return result(false, index);
@@ -401,9 +424,11 @@ LinxMsgbAccessResult linx_msgb_guest_write(LinxMsgbGuestState *state,
         return (LinxMsgbAccessResult) { 0 };
     }
     if (config_address(address)) {
-        if (context->acr != 0 || context->atomic || context->far ||
-            !state->invocation_active) {
+        if (context->acr != 0 || !state->invocation_active) {
             return result(true, 0);
+        }
+        if (context->atomic || context->far) {
+            return bundle_fault();
         }
         if (address == MSGB_CFGSEL) {
             unsigned thread = state->current_thread[context->pe];
@@ -428,8 +453,11 @@ LinxMsgbAccessResult linx_msgb_guest_write(LinxMsgbGuestState *state,
     }
     index = current_index(state, context);
     bank = &state->bank[index];
-    if (!effect_permitted(state, context, bank, true)) {
+    if (!current_owner(state, context, bank)) {
         return result(true, 0);
+    }
+    if (context->atomic || context->far) {
+        return bundle_fault();
     }
     if (data_address(address)) {
         bank->staging[address - MSGB_D1] = value;

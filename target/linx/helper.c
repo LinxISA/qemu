@@ -7001,6 +7001,9 @@ static LinxMsgbAccessResult linx_msgb_ssr_read(CPULinxState *env,
     access = linx_msgb_guest_read(&core4->msgb, &context, idx);
     qemu_mutex_unlock(&core4->lock);
     if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
         linx_raise_ssr_illegal(env, GETPC());
     }
     return access;
@@ -7042,6 +7045,9 @@ static LinxMsgbAccessResult linx_msgb_ssr_write(CPULinxState *env,
     access = linx_msgb_guest_write(&core4->msgb, &context, idx, value);
     qemu_mutex_unlock(&core4->lock);
     if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
         linx_raise_ssr_illegal(env, GETPC());
     }
     return access;
@@ -7625,10 +7631,12 @@ void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
     if (core4 == NULL) {
         linx_raise_ssr_illegal(env, GETPC());
     }
-    if (context.atomic || context.far) {
+    qemu_mutex_lock(&core4->lock);
+    if (linx_msgb_guest_enabled_for_context(&core4->msgb, &context) &&
+        (context.atomic || context.far)) {
+        qemu_mutex_unlock(&core4->lock);
         helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
     }
-    qemu_mutex_lock(&core4->lock);
     LinxMsgbResult status = linx_msgb_guest_bse(&core4->msgb,
                                                 &context, control);
     if (status == LINX_MSGB_OK && (uint32_t)control ==

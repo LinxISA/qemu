@@ -99,6 +99,7 @@ typedef struct LinxMsgbAccessContext {
 typedef struct LinxMsgbAccessResult {
     bool handled;
     bool fault;
+    bool bundle_fault;
     uint64_t value;
 } LinxMsgbAccessResult;
 
@@ -106,6 +107,8 @@ void linx_msgb_guest_reset(LinxMsgbGuestState *state);
 bool linx_msgb_guest_state_live(const LinxMsgbGuestState *state);
 bool linx_msgb_guest_select_thread(LinxMsgbGuestState *state,
                                   unsigned pe, unsigned thread);
+bool linx_msgb_guest_enabled_for_context(
+    const LinxMsgbGuestState *state, const LinxMsgbAccessContext *context);
 bool linx_msgb_guest_bind_invocation(LinxMsgbGuestState *state,
                                     uint64_t invocation);
 bool linx_msgb_guest_clear_invocation(LinxMsgbGuestState *state,

@@ -7,6 +7,7 @@
 #define MSGB_RXCLAIM 0x83bu
 #define MSGB_RXRELEASE 0x841u
 #define MSGB_ACK 0x842u
+#define MSGB_TXSTAT 0x847u
 #define MSGB_CFG 0x84au
 #define MSGB_DOMAIN 0x84bu
 
@@ -131,19 +132,46 @@ static void test_control_requests_and_preflight(void)
     g_assert_cmpuint(state.control_request, ==, LINX_MSGB_CONTROL_SEND_EVENT);
     g_assert_cmphex(state.control_operand, ==, 0x55);
     g_assert_cmpuint(state.control_epoch, ==, 1);
+    ctx.atomic = true;
+    g_assert_cmpuint(linx_msgb_guest_bse(&state, &ctx, 0x66), ==,
+                     LINX_MSGB_NONE);
+    g_assert_cmpuint(state.control_request, ==, LINX_MSGB_CONTROL_SEND_EVENT);
+    g_assert_cmphex(state.control_operand, ==, 0x66);
+    g_assert_cmpuint(state.control_epoch, ==, 2);
+    ctx.atomic = false;
     linx_msgb_guest_bwe(&state, &ctx, 0xaa);
     g_assert_cmpuint(state.control_request, ==, LINX_MSGB_CONTROL_WAIT_EVENT);
     g_assert_cmphex(state.control_operand, ==, 0xaa);
-    g_assert_cmpuint(state.control_epoch, ==, 2);
+    g_assert_cmpuint(state.control_epoch, ==, 3);
 
     configure(&state, 0);
     ctx.atomic = true;
-    g_assert_true(linx_msgb_guest_write(&state, &ctx, MSGB_D1, 1).fault);
+    LinxMsgbAccessResult access =
+        linx_msgb_guest_write(&state, &ctx, MSGB_D1, 1);
+    g_assert_true(access.fault);
+    g_assert_true(access.bundle_fault);
+    access = linx_msgb_guest_write(&state, &ctx, MSGB_CFG, 1);
+    g_assert_true(access.fault);
+    g_assert_true(access.bundle_fault);
+    access = linx_msgb_guest_read(&state, &ctx, MSGB_TXSTAT);
+    g_assert_true(access.fault);
+    g_assert_true(access.bundle_fault);
+    access = linx_msgb_guest_read(&state, &ctx, MSGB_CFG);
+    g_assert_false(access.fault);
     g_assert_cmpuint(linx_msgb_guest_bse(&state, &ctx, 0), ==,
                      LINX_MSGB_BAD_COMMAND);
+    g_assert_cmpuint(state.control_epoch, ==, 3);
+    g_assert_cmphex(state.bank[0].staging[0], ==, 0);
+    g_assert_cmpuint(state.bank[0].transmit_sequence, ==, 0);
+    g_assert_false(state.bank[0].tx_result_valid);
     ctx.atomic = false;
     ctx.acr = 1;
-    g_assert_true(linx_msgb_guest_write(&state, &ctx, MSGB_DOMAIN, 1).fault);
+    access = linx_msgb_guest_write(&state, &ctx, MSGB_D1, 1);
+    g_assert_true(access.fault);
+    g_assert_false(access.bundle_fault);
+    access = linx_msgb_guest_write(&state, &ctx, MSGB_DOMAIN, 1);
+    g_assert_true(access.fault);
+    g_assert_false(access.bundle_fault);
     g_assert_true(linx_msgb_guest_swap(&state, &ctx, MSGB_D1, 1).fault);
 }
 
