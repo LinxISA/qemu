@@ -136,18 +136,16 @@ static void test_control_requests_and_preflight(void)
     g_assert_true(linx_msgb_guest_swap(&state, &ctx, MSGB_D1, 1).fault);
 }
 
-static void read_ack_release(LinxMsgbGuestState *state,
-                             LinxMsgbAccessContext *ctx, unsigned bank)
+static void read_claim(LinxMsgbGuestState *state,
+                       LinxMsgbAccessContext *ctx, unsigned bank)
 {
     uint64_t ignored;
     linx_msgb_guest_write(state, ctx, MSGB_RXCLAIM, 1);
-    uint64_t token = linx_msgb_receive_token(&state->bank[bank].receive, 1);
     unsigned count = state->bank[bank].receive.snapshot.packet.word_count;
     for (unsigned i = 0; i < count; ++i) {
         g_assert_true(linx_msgb_receive_read(&state->bank[bank].receive, 1,
                                              i, &ignored));
     }
-    linx_msgb_receive_ack(&state->bank[bank].receive, 1, token);
 }
 
 static void test_hscb_ready_launch_done(void)
@@ -176,7 +174,7 @@ static void test_hscb_ready_launch_done(void)
     g_assert_cmpuint(linx_msgb_hscb_issue_launch(&state, 0, 78, 0x4000,
                                                  0x5000, 8, 3), ==,
                      LINX_MSGB_BAD_COMMAND);
-    read_ack_release(&state, &worker, 0);
+    read_claim(&state, &worker, 0);
     g_assert_false(linx_msgb_hscb_accept_launch(
         &state, 0, state.bank[0].receive.snapshot.token + 1,
         &kernel_pc, &argument, &blocknum, &blockid));
@@ -190,6 +188,7 @@ static void test_hscb_ready_launch_done(void)
     g_assert_cmpuint(blocknum, ==, 8);
     g_assert_cmpuint(blockid, ==, 3);
     uint64_t launch_token = linx_msgb_receive_token(&state.bank[0].receive, 1);
+    linx_msgb_receive_ack(&state.bank[0].receive, 1, launch_token);
     linx_msgb_receive_release(&state.bank[0].receive, 1, launch_token);
 
     worker.tpc += 4;

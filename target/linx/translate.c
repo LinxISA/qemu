@@ -8351,8 +8351,17 @@ static bool trans_bse(DisasContext *ctx, arg_bse *a)
 
 static bool trans_bwe(DisasContext *ctx, arg_bwe *a)
 {
-    (void)ctx;
-    gen_helper_linx_bwe(tcg_env, linx_get_reg(a->SrcL));
+    TCGv_i64 target = tcg_temp_new_i64();
+    TCGv_i64 fallthrough = tcg_constant_i64(ctx->base.pc_next);
+
+    gen_helper_linx_bwe(target, tcg_env, linx_get_reg(a->SrcL));
+    if (linx_commit_trace_enabled) {
+        gen_helper_linx_commit_trace(tcg_env, fallthrough);
+    }
+    tcg_gen_movcond_i64(TCG_COND_NE, cpu_pc, target,
+                        tcg_constant_i64(0), target, fallthrough);
+    tcg_gen_exit_tb(NULL, 0);
+    ctx->base.is_jmp = DISAS_NORETURN;
     return true;
 }
 

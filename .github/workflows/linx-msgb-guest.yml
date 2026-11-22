@@ -12,6 +12,7 @@ on:
       - 'target/linx/translate.c'
       - 'tests/unit/test-linx-msgb-guest.c'
       - 'tests/linxisa/msgb_guest_smoke.s'
+      - 'tests/linxisa/hscb_guest_launch_smoke.s'
       - 'scripts/linxisa/run-msgb-guest-smoke.sh'
 
 permissions:

@@ -77,6 +77,13 @@ typedef struct LinxMsgbGuestState {
     bool last_done_valid;
     unsigned last_done_worker;
     uint64_t last_done_invocation;
+    bool auto_launch_valid;
+    unsigned auto_launch_worker;
+    uint64_t auto_launch_dispatch_id;
+    uint64_t auto_launch_pc;
+    uint64_t auto_launch_argument;
+    uint32_t auto_launch_blocknum;
+    uint32_t auto_launch_blockid;
 } LinxMsgbGuestState;
 
 typedef struct LinxMsgbAccessContext {
@@ -134,5 +141,16 @@ bool linx_msgb_hscb_accept_launch(LinxMsgbGuestState *state,
                                  uint64_t release_token,
                                  uint64_t *kernel_pc, uint64_t *argument,
                                  uint32_t *blocknum, uint32_t *blockid);
+bool linx_msgb_hscb_schedule_launch(LinxMsgbGuestState *state,
+                                   unsigned worker_endpoint,
+                                   uint64_t dispatch_id,
+                                   uint64_t kernel_pc,
+                                   uint64_t argument,
+                                   uint32_t blocknum,
+                                   uint32_t blockid);
+bool linx_msgb_hscb_take_launch(LinxMsgbGuestState *state,
+                               unsigned worker_endpoint,
+                               uint64_t *kernel_pc, uint64_t *argument,
+                               uint32_t *blocknum, uint32_t *blockid);
 
 #endif

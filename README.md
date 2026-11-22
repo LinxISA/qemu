@@ -94,14 +94,17 @@ Decoded BSE snapshots staged data, allocates transport identity, records the
 invocation/ACR/dynamic-occurrence/TPC replay receipt, and atomically enqueues a
 message. Disabled BSE and BWE publish their exact nonblocking control request.
 The HSCB owner accepts READY and matching DONE packets and can issue one
-LAUNCH packet through `linx_hscb_issue_launch_for_cpu`; an acknowledged launch
-binds `BLOCKNUM` and `BLOCKID` before release.
+LAUNCH packet through `linx_hscb_issue_launch_for_cpu`. The `virt` machine can
+also schedule one launch with the `hscb-*` properties. After READY, BWE claims
+and reads the LAUNCH packet, validates and acknowledges it, binds `BLOCKNUM`
+and `BLOCKID`, then retires BWE before entering the configured worker PC with
+the launch argument in `a0`.
 
 QEMU currently models one architectural Core with four PE identities. Remote
 Core endpoints are rejected. Scalar memory completes synchronously, so there
 is no older outstanding GM obligation at the BSE arrival point. The platform
-API still owns worker kernel entry and invocation teardown. Active MSGB state
-is rejected by migration because the shared bank array is not serialized.
+API still owns invocation teardown. Active MSGB state is rejected by migration
+because the shared bank array is not serialized.
 
 ## LinxISA Integration Touchpoints
 - Runtime AVS in `/Users/zhoubot/linx-isa/avs/qemu`

@@ -138,6 +138,7 @@ void linx_msgb_guest_reset(LinxMsgbGuestState *state)
 bool linx_msgb_guest_state_live(const LinxMsgbGuestState *state)
 {
     if (state->control_epoch || state->draining || state->last_done_valid ||
+        state->auto_launch_valid ||
         state->invocation != 1 || !state->invocation_active) {
         return true;
     }
@@ -748,7 +749,7 @@ bool linx_msgb_hscb_accept_launch(LinxMsgbGuestState *state,
     }
     LinxMsgbGuestBank *worker = &state->bank[worker_endpoint];
     LinxMsgbSnapshot *snapshot = &worker->receive.snapshot;
-    if (!worker->hscb_running || !snapshot->valid || !snapshot->acked ||
+    if (!worker->hscb_running || !snapshot->valid || snapshot->acked ||
         snapshot->token != release_token ||
         snapshot->packet.message_id_hi != worker->hscb_launch_message_id_hi ||
         snapshot->packet.message_id_lo != worker->hscb_launch_message_id_lo ||
@@ -761,4 +762,62 @@ bool linx_msgb_hscb_accept_launch(LinxMsgbGuestState *state,
     *blocknum = worker->hscb_blocknum;
     *blockid = worker->hscb_blockid;
     return true;
+}
+
+bool linx_msgb_hscb_schedule_launch(LinxMsgbGuestState *state,
+                                   unsigned worker_endpoint,
+                                   uint64_t dispatch_id,
+                                   uint64_t kernel_pc,
+                                   uint64_t argument,
+                                   uint32_t blocknum,
+                                   uint32_t blockid)
+{
+    if (state->auto_launch_valid || worker_endpoint >= LINX_MSGB_ENDPOINTS ||
+        worker_endpoint % LINX_MSGB_ACR_COUNT != 0 || kernel_pc == 0 ||
+        (kernel_pc & 1) || blocknum == 0 || blockid >= blocknum) {
+        return false;
+    }
+    state->auto_launch_valid = true;
+    state->auto_launch_worker = worker_endpoint;
+    state->auto_launch_dispatch_id = dispatch_id;
+    state->auto_launch_pc = kernel_pc;
+    state->auto_launch_argument = argument;
+    state->auto_launch_blocknum = blocknum;
+    state->auto_launch_blockid = blockid;
+    return true;
+}
+
+bool linx_msgb_hscb_take_launch(LinxMsgbGuestState *state,
+                               unsigned worker_endpoint,
+                               uint64_t *kernel_pc, uint64_t *argument,
+                               uint32_t *blocknum, uint32_t *blockid)
+{
+    if (worker_endpoint >= LINX_MSGB_ENDPOINTS) {
+        return false;
+    }
+    LinxMsgbGuestBank *worker = &state->bank[worker_endpoint];
+    linx_msgb_receive_claim(&worker->receive, state->invocation, 1);
+    if (worker->receive.rx_result != LINX_MSGB_OK) {
+        return false;
+    }
+    uint64_t token = linx_msgb_receive_token(&worker->receive,
+                                             state->invocation);
+    uint64_t ignored;
+    unsigned count = worker->receive.snapshot.packet.word_count;
+    for (unsigned i = 0; i < count; ++i) {
+        if (!linx_msgb_receive_read(&worker->receive, state->invocation,
+                                    i, &ignored)) {
+            return false;
+        }
+    }
+    if (!linx_msgb_hscb_accept_launch(state, worker_endpoint, token,
+                                      kernel_pc, argument, blocknum, blockid)) {
+        return false;
+    }
+    linx_msgb_receive_ack(&worker->receive, state->invocation, token);
+    if (worker->receive.ack_result != LINX_MSGB_OK) {
+        return false;
+    }
+    linx_msgb_receive_release(&worker->receive, state->invocation, token);
+    return worker->receive.rx_result == LINX_MSGB_OK;
 }

@@ -672,6 +672,15 @@ typedef struct LinxVirtMachineState {
     uint32_t cross_model_size;
     bool cross_model_dump_pending;
     Notifier cross_model_shutdown_notifier;
+
+    uint32_t hscb_auto_launch;
+    uint32_t hscb_worker_pe;
+    uint32_t hscb_worker_thread;
+    uint64_t hscb_dispatch_id;
+    uint64_t hscb_entry;
+    uint64_t hscb_argument;
+    uint32_t hscb_blocknum;
+    uint32_t hscb_blockid;
 } LinxVirtMachineState;
 
 static hwaddr linx_align_up(hwaddr v, hwaddr align)
@@ -3544,6 +3553,24 @@ static void linx_virt_reset(void *opaque)
     //               s->entry, s->initial_sp);
 
     linx_core4_reset(&s->core4);
+    if (s->hscb_auto_launch) {
+        unsigned worker;
+
+        if (s->hscb_worker_pe >= s->pe_count ||
+            s->hscb_worker_thread >= LINX_MSGB_THREADS_PER_PE) {
+            error_report("linx virt: invalid HSCB worker PE/thread");
+            exit(1);
+        }
+        worker = (s->hscb_worker_thread * LINX_MSGB_PE_COUNT +
+                  s->hscb_worker_pe) * LINX_MSGB_ACR_COUNT;
+        if (!linx_msgb_hscb_schedule_launch(
+                &s->core4.msgb, worker, s->hscb_dispatch_id,
+                s->hscb_entry, s->hscb_argument,
+                s->hscb_blocknum, s->hscb_blockid)) {
+            error_report("linx virt: invalid HSCB auto-launch configuration");
+            exit(1);
+        }
+    }
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         CPULinxState *env = &s->cpu[pe]->env;
 
@@ -3872,6 +3899,14 @@ static void linx_virt_instance_init(Object *obj)
     s->cross_model_address = 0;
     s->cross_model_size = 0;
     s->cross_model_dump_pending = false;
+    s->hscb_auto_launch = 0;
+    s->hscb_worker_pe = 0;
+    s->hscb_worker_thread = 0;
+    s->hscb_dispatch_id = 1;
+    s->hscb_entry = 0;
+    s->hscb_argument = 0;
+    s->hscb_blocknum = 1;
+    s->hscb_blockid = 0;
 
     object_property_add_uint64_ptr(obj, "dfx-memwatch-addr",
                                    &s->dfx_memwatch_addr,
@@ -3914,6 +3949,31 @@ static void linx_virt_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_set_description(obj, "cross-model-size",
                                     "Size in bytes of the cross-model result");
+
+    object_property_add_uint32_ptr(obj, "hscb-auto-launch",
+                                   &s->hscb_auto_launch,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "hscb-worker-pe",
+                                   &s->hscb_worker_pe,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "hscb-worker-thread",
+                                   &s->hscb_worker_thread,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "hscb-dispatch-id",
+                                   &s->hscb_dispatch_id,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "hscb-entry",
+                                   &s->hscb_entry,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "hscb-argument",
+                                   &s->hscb_argument,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "hscb-blocknum",
+                                   &s->hscb_blocknum,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "hscb-blockid",
+                                   &s->hscb_blockid,
+                                   OBJ_PROP_FLAG_READWRITE);
 }
 
 static void linx_virt_init(MachineState *machine)

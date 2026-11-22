@@ -7629,6 +7629,20 @@ void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
     if (status == LINX_MSGB_OK && (uint32_t)control ==
                                   LINX_MSGB_HSCB_ENDPOINT) {
         (void)linx_msgb_hscb_receive_worker(&core4->msgb);
+        if (core4->msgb.auto_launch_valid &&
+            core4->msgb.auto_launch_worker < LINX_MSGB_ENDPOINTS &&
+            core4->msgb.bank[core4->msgb.auto_launch_worker].hscb_ready) {
+            status = linx_msgb_hscb_issue_launch(
+                &core4->msgb, core4->msgb.auto_launch_worker,
+                core4->msgb.auto_launch_dispatch_id,
+                core4->msgb.auto_launch_pc,
+                core4->msgb.auto_launch_argument,
+                core4->msgb.auto_launch_blocknum,
+                core4->msgb.auto_launch_blockid);
+            if (status == LINX_MSGB_OK) {
+                core4->msgb.auto_launch_valid = false;
+            }
+        }
         if (core4->msgb.last_done_valid) {
             unsigned worker = core4->msgb.last_done_worker /
                               LINX_MSGB_ACR_COUNT;
@@ -7646,7 +7660,7 @@ void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
     }
 }
 
-void HELPER(linx_bwe)(CPULinxState *env, uint64_t operand)
+uint64_t HELPER(linx_bwe)(CPULinxState *env, uint64_t operand)
 {
     LinxCore4State *core4 = linx_msgb_core(env);
     LinxMsgbAccessContext context = linx_msgb_access_context(env);
@@ -7654,9 +7668,33 @@ void HELPER(linx_bwe)(CPULinxState *env, uint64_t operand)
     if (core4 == NULL) {
         linx_raise_ssr_illegal(env, GETPC());
     }
+    uint64_t kernel_pc = 0;
+    uint64_t argument = 0;
+    uint32_t blocknum = 0;
+    uint32_t blockid = 0;
+    unsigned thread;
+    unsigned worker;
+    uint64_t invocation;
+
     qemu_mutex_lock(&core4->lock);
     linx_msgb_guest_bwe(&core4->msgb, &context, operand);
+    thread = core4->msgb.current_thread[env->pe_id];
+    worker = (thread * LINX_MSGB_PE_COUNT + env->pe_id) *
+             LINX_MSGB_ACR_COUNT;
+    invocation = core4->msgb.invocation;
+    bool launch = linx_msgb_hscb_take_launch(
+        &core4->msgb, worker, &kernel_pc, &argument, &blocknum, &blockid);
     qemu_mutex_unlock(&core4->lock);
+    if (!launch) {
+        return 0;
+    }
+    if (!linx_hscb_geometry_bind(env, 0, invocation, blocknum, blockid)) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    linx_acr_reset_block_state_for_header(env, env->acr & 0xfu, kernel_pc);
+    linx_acr_restore_block_state(env, env->acr & 0xfu);
+    env->gpr[LINX_REG_A0] = argument;
+    return kernel_pc;
 }
 
 LinxMsgbResult linx_hscb_issue_launch_for_cpu(CPULinxState *env,
