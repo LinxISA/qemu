@@ -6,6 +6,7 @@ on:
       - '.github/workflows/linx-scoped-scalar.yml'
       - 'scripts/linxisa/generate-scoped-scalar.py'
       - 'scripts/linxisa/run-scoped-scalar-runtime-smoke.sh'
+      - 'scripts/linxisa/run-scoped-pair-smoke.py'
       - 'target/linx/**'
       - 'hw/linx/**'
       - 'tests/linxisa/scoped_scalar_runtime_*.s'
@@ -67,3 +68,6 @@ jobs:
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-scoped-scalar-runtime-smoke.sh
+          python3 scripts/linxisa/run-scoped-pair-smoke.py \
+            --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
+            --qemu "$PWD/build/qemu-system-linx64"
