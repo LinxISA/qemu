@@ -26,7 +26,19 @@ static void test_scope_forms(void)
         g_assert_cmpuint(decoded.inner_word, ==, witnesses[i].word >> 16);
         runtime_forms += decoded.runtime_eligible;
     }
-    g_assert_cmpuint(runtime_forms, ==, 519);
+    g_assert_cmpuint(runtime_forms, ==, 531);
+}
+
+static void test_scope_queue_sources(void)
+{
+    LinxScopedScalar decoded;
+
+    /* C.SWI reads its explicit U#3 base and implicit T#1 value. */
+    g_assert_true(linx_scoped_scalar_decode(0x07aa001f, &decoded));
+    g_assert_cmpuint(decoded.queue_sources, ==, (1u << 6) | 1u);
+    /* C.LDI reads its explicit T#4 base. */
+    g_assert_true(linx_scoped_scalar_decode(0x06da011f, &decoded));
+    g_assert_cmpuint(decoded.queue_sources, ==, 1u << 3);
 }
 
 static void test_scope_invalid(void)
@@ -54,6 +66,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/linx/scoped-scalar/released-forms", test_scope_forms);
+    g_test_add_func("/linx/scoped-scalar/queue-sources", test_scope_queue_sources);
     g_test_add_func("/linx/scoped-scalar/illegal-carriers", test_scope_invalid);
     return g_test_run();
 }

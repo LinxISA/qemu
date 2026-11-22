@@ -61,6 +61,7 @@ enum {
 static TCGv_i64 cpu_gpr[LINX_GPR_COUNT];
 static TCGv_i64 cpu_tq[4];
 static TCGv_i64 cpu_uq[4];
+static TCGv_i32 cpu_scalar_queue_valid;
 static TCGv_i64 cpu_bpc;
 static TCGv_i64 cpu_tgt;
 static TCGv_i32 cpu_cond;
@@ -546,6 +547,19 @@ static TCGv_i64 linx_get_reg(unsigned code)
     return tmp;
 }
 
+static void linx_mark_queue_push(unsigned offset)
+{
+    if (linx_scoped_scalar_runtime_enabled) {
+        TCGv_i32 queue = tcg_temp_new_i32();
+
+        tcg_gen_shri_i32(queue, cpu_scalar_queue_valid, offset);
+        tcg_gen_shli_i32(queue, queue, 1);
+        tcg_gen_ori_i32(queue, queue, 1);
+        tcg_gen_deposit_i32(cpu_scalar_queue_valid, cpu_scalar_queue_valid,
+                            queue, offset, 4);
+    }
+}
+
 static void linx_push_t(TCGv_i64 v)
 {
     if (linx_debug_local_enabled_p()) {
@@ -559,6 +573,7 @@ static void linx_push_t(TCGv_i64 v)
     tcg_gen_mov_i64(cpu_tq[2], cpu_tq[1]);
     tcg_gen_mov_i64(cpu_tq[1], cpu_tq[0]);
     tcg_gen_mov_i64(cpu_tq[0], value);
+    linx_mark_queue_push(0);
 }
 
 static void linx_push_u(TCGv_i64 v)
@@ -574,6 +589,7 @@ static void linx_push_u(TCGv_i64 v)
     tcg_gen_mov_i64(cpu_uq[2], cpu_uq[1]);
     tcg_gen_mov_i64(cpu_uq[1], cpu_uq[0]);
     tcg_gen_mov_i64(cpu_uq[0], value);
+    linx_mark_queue_push(4);
 }
 
 static void linx_trace_wb_dest(unsigned dst, TCGv_i64 v)
@@ -621,6 +637,14 @@ static void linx_set_dest(unsigned dst, TCGv_i64 v)
     }
 }
 
+static void linx_set_mem_dest(DisasContext *ctx, unsigned dst, TCGv_i64 value)
+{
+    if (ctx->scoped_scope >= 0 && dst >= 24 && dst < 30) {
+        return;
+    }
+    linx_set_dest(dst, value);
+}
+
 static inline void linx_trace_begin(vaddr pc, uint64_t insn_raw, unsigned len)
 {
     if (!linx_commit_trace_enabled) {
@@ -657,6 +681,9 @@ static void linx_block_begin_common(DisasContext *ctx, uint8_t brtype,
     int i;
     tcg_gen_movi_i64(cpu_bpc, block_pc);
     if (!preserve_scalar_queues) {
+        if (linx_scoped_scalar_runtime_enabled) {
+            tcg_gen_movi_i32(cpu_scalar_queue_valid, 0);
+        }
         for (i = 0; i < 4; i++) {
             tcg_gen_movi_i64(cpu_tq[i], 0);
             tcg_gen_movi_i64(cpu_uq[i], 0);
@@ -4399,7 +4426,7 @@ static TCGv_i64 linx_load_value(DisasContext *ctx, TCGv addr, MemOp mop)
 static bool linx_load_to_dest(DisasContext *ctx, unsigned dst, TCGv addr,
                               MemOp mop)
 {
-    linx_set_dest(dst, linx_load_value(ctx, addr, mop));
+    linx_set_mem_dest(ctx, dst, linx_load_value(ctx, addr, mop));
     return true;
 }
 
@@ -4578,8 +4605,8 @@ static bool linx_load_pair_to_dests(DisasContext *ctx, int dst0, int dst1,
         TCGv_i64 first = linx_load_value(ctx, linx_addr_from_i64(addr0), mop);
         TCGv_i64 second = linx_load_value(ctx, linx_addr_from_i64(addr1), mop);
 
-        linx_set_dest(dst0, first);
-        linx_set_dest(dst1, second);
+        linx_set_mem_dest(ctx, dst0, first);
+        linx_set_mem_dest(ctx, dst1, second);
         return true;
     }
     if (!linx_load_to_dest(ctx, dst0, linx_addr_from_i64(addr0), mop)) {
@@ -4634,7 +4661,7 @@ static bool linx_hl_load_writeback(DisasContext *ctx, int dst_val, int dst_wb, i
     if (!linx_load_to_dest(ctx, dst_val, linx_addr_from_i64(addr), mop)) {
         return false;
     }
-    linx_set_dest(dst_wb, wb);
+    linx_set_mem_dest(ctx, dst_wb, wb);
     return true;
 }
 
@@ -4665,7 +4692,7 @@ static bool linx_hl_load_writeback_reg(DisasContext *ctx, int dst_val, int dst_w
     if (!linx_load_to_dest(ctx, dst_val, linx_addr_from_i64(addr), mop)) {
         return false;
     }
-    linx_set_dest(dst_wb, wb);
+    linx_set_mem_dest(ctx, dst_wb, wb);
     return true;
 }
 
@@ -4729,7 +4756,7 @@ static bool linx_hl_store_writeback_reg(DisasContext *ctx, int dst_wb, int src_d
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(src_data), mop)) {
         return false;
     }
-    linx_set_dest(dst_wb, wb);
+    linx_set_mem_dest(ctx, dst_wb, wb);
     return true;
 }
 
@@ -4749,7 +4776,7 @@ static bool linx_hl_swi_writeback(DisasContext *ctx, int dst_wb, int src_data, i
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(src_data), MO_UL)) {
         return false;
     }
-    linx_set_dest(dst_wb, wb);
+    linx_set_mem_dest(ctx, dst_wb, wb);
     return true;
 }
 
@@ -4769,7 +4796,7 @@ static bool linx_hl_sdi_writeback(DisasContext *ctx, int dst_wb, int src_data, i
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(src_data), MO_UQ)) {
         return false;
     }
-    linx_set_dest(dst_wb, wb);
+    linx_set_mem_dest(ctx, dst_wb, wb);
     return true;
 }
 
@@ -4834,7 +4861,7 @@ static bool trans_##NAME(DisasContext *ctx, arg_##NAME *a) \
     if (!linx_store_from_reg(ctx, linx_addr_from_i64(addr), linx_get_reg(a->SrcD), MOP)) { \
         return false; \
     } \
-    linx_set_dest(a->RegDst1, wb); \
+    linx_set_mem_dest(ctx, a->RegDst1, wb); \
     return true; \
 }
 
@@ -9491,6 +9518,10 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
                 scoped.runtime_eligible) {
                 ctx->scoped_scope = scoped.scope;
                 ctx->scoped_reg_store_shift = scoped.reg_store_shift;
+                if (scoped.queue_sources) {
+                    gen_helper_linx_scoped_check_queues(
+                        tcg_env, tcg_constant_i32(scoped.queue_sources));
+                }
                 switch (scoped.inner_bytes) {
                 case 2:
                     decoded = decode_insn16(ctx, scoped.inner_word);
@@ -9720,6 +9751,8 @@ void linx_translate_init(void)
                                            offsetof(CPULinxState, uq[i]),
                                            uq_names[i]);
     }
+    cpu_scalar_queue_valid = tcg_global_mem_new_i32(
+        tcg_env, offsetof(CPULinxState, scalar_queue_valid), "scalar_queue_valid");
     cpu_bpc = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, bpc), "bpc");
     cpu_tgt = tcg_global_mem_new_i64(tcg_env, offsetof(CPULinxState, tgt), "tgt");
     cpu_cond = tcg_global_mem_new_i32(tcg_env, offsetof(CPULinxState, cond), "cond");

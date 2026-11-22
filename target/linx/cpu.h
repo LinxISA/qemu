@@ -334,6 +334,7 @@ typedef enum LinxTemplateKind {
 typedef struct LinxAcrBlockState {
     uint64_t tq[4];
     uint64_t uq[4];
+    uint32_t scalar_queue_valid;
     uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
@@ -436,6 +437,7 @@ typedef struct CPUArchState {
     uint64_t gpr[LINX_GPR_COUNT];
     uint64_t tq[4];
     uint64_t uq[4];
+    uint32_t scalar_queue_valid;
     uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
@@ -910,6 +912,7 @@ static inline void linx_acr_save_block_state(CPULinxState *env, uint32_t acr)
         s->tq[i] = env->tq[i];
         s->uq[i] = env->uq[i];
     }
+    s->scalar_queue_valid = env->scalar_queue_valid;
     for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         s->vtq[i] = env->vtq[i];
         s->vuq[i] = env->vuq[i];
@@ -1043,6 +1046,7 @@ static inline void linx_acr_restore_block_state(CPULinxState *env, uint32_t acr)
         env->tq[i] = s->tq[i];
         env->uq[i] = s->uq[i];
     }
+    env->scalar_queue_valid = s->scalar_queue_valid;
     for (i = 0; i < LINX_VEC_QUEUE_DEPTH; i++) {
         env->vtq[i] = s->vtq[i];
         env->vuq[i] = s->vuq[i];

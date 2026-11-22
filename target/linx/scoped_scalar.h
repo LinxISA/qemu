@@ -19,6 +19,7 @@ typedef struct LinxScopedScalar {
     unsigned inner_bytes;
     bool runtime_eligible;
     int reg_store_shift;
+    uint8_t queue_sources; /* T#1..T#4 in bits 0..3, U#1..U#4 in 4..7. */
 } LinxScopedScalar;
 
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded);

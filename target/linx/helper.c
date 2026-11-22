@@ -7145,6 +7145,13 @@ uint64_t HELPER(linx_scalar_addi)(CPULinxState *env, uint32_t code, uint64_t imm
     return HELPER(linx_scalar_read_reg)(env, code) + imm;
 }
 
+void HELPER(linx_scoped_check_queues)(CPULinxState *env, uint32_t sources)
+{
+    if ((env->scalar_queue_valid & sources) != sources) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+}
+
 void HELPER(linx_tq_push)(CPULinxState *env, uint64_t value)
 {
     if (linx_debug_local_enabled_p()) {
@@ -7157,6 +7164,11 @@ void HELPER(linx_tq_push)(CPULinxState *env, uint64_t value)
     env->tq[2] = env->tq[1];
     env->tq[1] = env->tq[0];
     env->tq[0] = value;
+    if (linx_scoped_scalar_runtime_requested()) {
+        env->scalar_queue_valid =
+            deposit32(env->scalar_queue_valid, 0, 4,
+                      (env->scalar_queue_valid << 1) | 1);
+    }
     if (linx_debug_local_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx tq push after  pc=0x%" PRIx64
@@ -7177,6 +7189,11 @@ void HELPER(linx_uq_push)(CPULinxState *env, uint64_t value)
     env->uq[2] = env->uq[1];
     env->uq[1] = env->uq[0];
     env->uq[0] = value;
+    if (linx_scoped_scalar_runtime_requested()) {
+        env->scalar_queue_valid =
+            deposit32(env->scalar_queue_valid, 4, 4,
+                      (env->scalar_queue_valid >> 3) | 1);
+    }
     if (linx_debug_local_enabled_p()) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Linx uq push after  pc=0x%" PRIx64
@@ -7885,6 +7902,7 @@ void HELPER(linx_acr_enter)(CPULinxState *env, uint32_t rra_type)
     /* v0.2 ACRE(RRA) behavior: DEFAULT resets BSTATE; RESTORE uses EBARG snapshot. */
     if (rra_type == 0) {
         int i;
+        env->scalar_queue_valid = 0;
         for (i = 0; i < 4; i++) {
             env->tq[i] = 0;
             env->uq[i] = 0;

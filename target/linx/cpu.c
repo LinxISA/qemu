@@ -4044,6 +4044,9 @@ static int linx_cpu_pre_save(void *opaque)
     }
 
     for (unsigned acr = 0; acr < LINX_ACR_COUNT; acr++) {
+        if (env->acr_block_state[acr].scalar_queue_valid) {
+            return -EINVAL;
+        }
         if (acr != (env->acr & 0xfu) &&
             (env->acr_block_state[acr].tile_iot_valid ||
              env->acr_block_state[acr].tile_iot_count ||
@@ -4253,6 +4256,13 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
         env->hscb_blocknum = 0;
         env->hscb_blockid = 0;
     }
+    if (version_id < 25) {
+        env->scalar_queue_valid = 0;
+    }
+    if (env->scalar_queue_valid & ~0xffu) {
+        error_setg(errp, "linx: invalid migrated scalar queue validity mask");
+        return false;
+    }
     if (env->tile_ior_count > LINX_TILE_MAX_IOR ||
         env->vec_ri_count > LINX_VEC_RI_MAX ||
         env->tile_iot_count > LINX_TILE_MAX_IOT) {
@@ -4429,7 +4439,7 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
 
 static const VMStateDescription vmstate_linx_cpu = {
     .name = "linx_cpu",
-    .version_id = 24,
+    .version_id = 25,
     .minimum_version_id = 19,
     .pre_save = linx_cpu_pre_save,
     .post_load_errp = linx_cpu_post_load,
@@ -4563,6 +4573,7 @@ static const VMStateDescription vmstate_linx_cpu = {
                                LINX_TILE_SLOT_COUNT, 22),
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_cube_storage_bytes, LinxCPU,
                                LINX_TILE_SLOT_COUNT, 22),
+        VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 25),
         VMSTATE_END_OF_LIST(),
     },
 };
