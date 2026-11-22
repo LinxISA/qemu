@@ -9454,7 +9454,8 @@ static void linx_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 
             if (valid_scoped &&
                 linx_scoped_scalar_runtime_enabled &&
-                current_machine && current_machine->smp.cpus == 1 &&
+                current_machine && linx_scoped_scalar_topology_supported(
+                    current_machine->smp.cpus) &&
                 scoped.runtime_eligible) {
                 ctx->scoped_scope = scoped.scope;
                 ctx->scoped_reg_store_shift = scoped.reg_store_shift;

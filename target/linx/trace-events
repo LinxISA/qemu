@@ -6,7 +6,7 @@ linx_insn_exec(uint64_t pc, uint32_t insn, unsigned len, const char *name) "PC=0
 linx_insn_decode_fail(uint64_t pc, uint32_t insn, unsigned len) "PC=0x%" PRIx64 " insn=0x%08" PRIx32 " len=%u (decode failed)"
 linx_insn_decode_fail_raw(uint64_t pc, uint64_t insn, unsigned len) "PC=0x%" PRIx64 " insn=0x%016" PRIx64 " len=%u (decode failed)"
 linx_insn_decode48(uint64_t pc, uint64_t insn48, uint64_t key) "PC=0x%" PRIx64 " insn48=0x%012" PRIx64 " key=0x%016" PRIx64
-linx_scoped_scalar_access(uint64_t pc, uint32_t scope, uint64_t addr, uint32_t size, bool store) "PC=0x%" PRIx64 " scope=%u addr=0x%" PRIx64 " size=%u store=%u"
+linx_scoped_scalar_access(uint64_t pc, uint32_t scope, uint64_t addr, uint32_t size, bool store, uint32_t pe) "PC=0x%" PRIx64 " scope=%u addr=0x%" PRIx64 " size=%u store=%u pe=%u"
 
 # mmu / traps / debug
 linx_tlb_fill(uint64_t va, int access, int mmu_idx, int probe, uint64_t tcr, uint32_t acr) "va=0x%" PRIx64 " access=%d mmu=%d probe=%d tcr=0x%" PRIx64 " acr=%u"

@@ -27,6 +27,11 @@ bool linx_scoped_scalar_runtime_requested(void)
     return flag && flag[0] && strcmp(flag, "0") != 0;
 }
 
+bool linx_scoped_scalar_topology_supported(unsigned pe_count)
+{
+    return pe_count == 1 || pe_count == 4;
+}
+
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded)
 {
     unsigned scope = (word >> 8) & 3;

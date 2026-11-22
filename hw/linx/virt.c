@@ -4052,7 +4052,7 @@ static void linx_virt_init(MachineState *machine)
     }
 
     ram = s->dfx_ram_ptr;
-    bool allow_scoped = s->pe_count == 1 &&
+    bool allow_scoped = linx_scoped_scalar_topology_supported(s->pe_count) &&
                         linx_scoped_scalar_runtime_requested();
     for (unsigned pe = 0; pe < s->pe_count; pe++) {
         hwaddr pe_entry = 0;
