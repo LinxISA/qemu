@@ -664,6 +664,7 @@ typedef struct CPUArchState {
     uint64_t lr_addr;
     uint32_t lr_size;
     uint32_t lr_valid;
+    uint8_t lr_scope;
 
     /* Direct-mapped hot-path cache for bstart target validation. */
     uint64_t bstart_cache_tag[LINX_BSTART_CACHE_SIZE];
