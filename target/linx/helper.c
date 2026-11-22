@@ -7621,7 +7621,7 @@ void HELPER(linx_dbg_check_pc)(CPULinxState *env, uint64_t pc)
 
 static inline void linx_dbg_check_mem(CPULinxState *env, uint64_t pc,
                                       uint64_t addr, uint32_t size,
-                                      bool is_store)
+                                      bool is_store, uintptr_t ra)
 {
     CPUState *cs = env_cpu(env);
     const uint32_t acr = env->acr & 0xFu;
@@ -7669,18 +7669,18 @@ static inline void linx_dbg_check_mem(CPULinxState *env, uint64_t pc,
         trace_linx_debug_watchpoint_hit(pc, addr,
                                         is_store ? BP_MEM_WRITE : BP_MEM_READ);
         cs->exception_index = LINX_EXCP_HW_WATCHPOINT;
-        cpu_loop_exit_restore(cs, GETPC());
+        cpu_loop_exit_restore(cs, ra);
     }
 }
 
 void HELPER(linx_dbg_check_load)(CPULinxState *env, uint64_t pc, uint64_t addr, uint32_t size)
 {
-    linx_dbg_check_mem(env, pc, addr, size, false);
+    linx_dbg_check_mem(env, pc, addr, size, false, GETPC());
 }
 
 void HELPER(linx_dbg_check_store)(CPULinxState *env, uint64_t pc, uint64_t addr, uint32_t size)
 {
-    linx_dbg_check_mem(env, pc, addr, size, true);
+    linx_dbg_check_mem(env, pc, addr, size, true, GETPC());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -8217,6 +8217,36 @@ void HELPER(linx_scoped_store)(CPULinxState *env, uint64_t addr,
         break;
     default:
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
+    }
+}
+
+void HELPER(linx_scoped_pair_check)(CPULinxState *env, uint64_t first,
+                                    uint32_t size, uint32_t store,
+                                    uint32_t debug, uint64_t pc)
+{
+    const uintptr_t ra = GETPC();
+    const MMUAccessType access = store ? MMU_DATA_STORE : MMU_DATA_LOAD;
+    const int mmu_idx = linx_env_mmu_index(env);
+
+    linx_enter_atomic_context(env, ra);
+    /* Both checks precede guest data effects and destination publication. */
+    for (unsigned i = 0; i != 2; i++) {
+        const vaddr addr = (vaddr)(first + i * size);
+
+        if (debug) {
+            linx_dbg_check_mem(env, pc, addr, size, store, ra);
+        }
+        linx_require_natural_alignment(env, addr, size, ra);
+        if (!probe_access(env, addr, size, access, mmu_idx, ra)) {
+            /* Device callbacks cannot preflight both accesses. */
+            CPUState *cs = env_cpu(env);
+
+            env->pending_trap_arg0 = addr;
+            env->pending_trap_cause = 0;
+            cs->exception_index = store ? LINX_EXCP_STORE_ACCESS_FAULT :
+                                         LINX_EXCP_LOAD_ACCESS_FAULT;
+            cpu_loop_exit_restore(cs, ra);
+        }
     }
 }
 

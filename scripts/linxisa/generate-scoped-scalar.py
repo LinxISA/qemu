@@ -45,12 +45,14 @@ def render(data):
         agu = base.get("agu", {})
         action = agu.get("action")
         address_kind = agu.get("address_kind")
-        runtime = action in {"Load", "Store"} and address_kind in {
+        store = action in {"Store", "StorePair"}
+        load = action in {"Load", "LoadPair"}
+        runtime = (load or store) and address_kind in {
             "Immediate", "PCRelative", "Register"
         }
         runtime_forms += int(runtime)
         store_shift = -1
-        if runtime and action == "Store" and address_kind == "Register":
+        if store and address_kind == "Register":
             store_shift = agu["offset_scale"]
         length, mask, match = packed_encoding(base["encoding"])
         reserved_mask = 0
@@ -85,9 +87,9 @@ def render(data):
                 raise ValueError(f"invalid carrier {row['form_id']}")
             witnesses.append(f'{{ 0x{full_match:016x}, {scope}, {length // 8}, "{form_id}" }},')
 
-    if runtime_forms != 140:
+    if runtime_forms != 173:
         raise ValueError(
-            f"expected 140 single-access runtime forms, got {runtime_forms}"
+            f"expected 173 single and paired runtime forms, got {runtime_forms}"
         )
     return ("\n".join(rows) + "\n", "\n".join(witnesses) + "\n")
 
