@@ -40,6 +40,7 @@ after both reads. A pair targeting device memory raises a data access fault
 before guest data effects.
 Scoped Reg5 sources check T/U validity before the access. Compressed loads
 push T, and compressed stores use the existing T#1 value without consuming it.
+Both ends of CPU migration must use the same scoped runtime setting.
 Successful carriers retire eight bytes. Faults and rejected carriers retain the
 outer TPC and suppress destination and memory publication.
 

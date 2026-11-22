@@ -10,6 +10,7 @@
 #include "cpu.h"
 #include "first_use.h"
 #include "hscb_geometry.h"
+#include "scoped_scalar.h"
 #include "trace.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -4031,6 +4032,8 @@ static int linx_cpu_pre_save(void *opaque)
     LinxCPU *cpu = opaque;
     CPULinxState *env = &cpu->env;
 
+    env->scalar_queue_scoped_mode = linx_scoped_scalar_runtime_requested();
+
     /* Raw spill records are compiler-private shadow state and are not part of
      * the architectural migration contract.  Invalidate them on migration so
      * a post-load TLOAD cannot consume stale metadata. */
@@ -4258,6 +4261,11 @@ static bool linx_cpu_post_load(void *opaque, int version_id, Error **errp)
     }
     if (version_id < 25) {
         env->scalar_queue_valid = 0;
+        env->scalar_queue_scoped_mode = false;
+    }
+    if (env->scalar_queue_scoped_mode != linx_scoped_scalar_runtime_requested()) {
+        error_setg(errp, "linx: scoped Scalar mode differs from migration source");
+        return false;
     }
     if (env->scalar_queue_valid & ~0xffu) {
         error_setg(errp, "linx: invalid migrated scalar queue validity mask");
@@ -4574,6 +4582,7 @@ static const VMStateDescription vmstate_linx_cpu = {
         VMSTATE_UINT32_ARRAY_V(env.tile_reg_cube_storage_bytes, LinxCPU,
                                LINX_TILE_SLOT_COUNT, 22),
         VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 25),
+        VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 25),
         VMSTATE_END_OF_LIST(),
     },
 };

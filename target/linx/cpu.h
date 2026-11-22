@@ -438,6 +438,7 @@ typedef struct CPUArchState {
     uint64_t tq[4];
     uint64_t uq[4];
     uint32_t scalar_queue_valid;
+    uint8_t scalar_queue_scoped_mode;
     uint64_t vtq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vuq[LINX_VEC_QUEUE_DEPTH];
     uint64_t vmq[LINX_VEC_QUEUE_DEPTH];
