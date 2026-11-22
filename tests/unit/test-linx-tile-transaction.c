@@ -225,6 +225,149 @@ static void test_v058_source_binding_preserves_producer_age(void)
     g_assert_true((live[0] & LINX_TILE_HAND_BIT(order[0][1])) != 0u);
 }
 
+static void test_biot_source_lifetime_flags(void)
+{
+    LinxTileIOTDesc desc = { 0 };
+
+    desc.flags = 0u;
+    g_assert_false((desc.flags & LINX_IOT_S0_REUSE) != 0u);
+    g_assert_false((desc.flags & LINX_IOT_S1_REUSE) != 0u);
+
+    desc.flags = LINX_IOT_S0_REUSE;
+    g_assert_true((desc.flags & LINX_IOT_S0_REUSE) != 0u);
+    g_assert_false((desc.flags & LINX_IOT_S1_REUSE) != 0u);
+
+    desc.flags = LINX_IOT_S1_REUSE;
+    g_assert_false((desc.flags & LINX_IOT_S0_REUSE) != 0u);
+    g_assert_true((desc.flags & LINX_IOT_S1_REUSE) != 0u);
+
+    desc.flags = LINX_IOT_S0_REUSE | LINX_IOT_S1_REUSE;
+    g_assert_true((desc.flags & LINX_IOT_S0_REUSE) != 0u);
+    g_assert_true((desc.flags & LINX_IOT_S1_REUSE) != 0u);
+}
+
+static void test_biot_source_arity_ignores_lifetime_flags(void)
+{
+    LinxTileIOTDesc desc = { 0 };
+
+    desc.flags = LINX_IOT_S1V | LINX_IOT_S0_REUSE;
+    g_assert_cmpuint(desc.flags & LINX_IOT_ABSENT_MASK, ==, LINX_IOT_S1V);
+
+    desc.flags = LINX_IOT_S0_REUSE | LINX_IOT_S1_REUSE;
+    g_assert_cmpuint(desc.flags & LINX_IOT_ABSENT_MASK, ==, 0u);
+}
+
+typedef struct SourceLifetimeState {
+    uint64_t descriptors[LINX_TILE_MAX_IOT];
+    uint8_t source_valid[LINX_TILE_MAX_IOT];
+    uint8_t source_phys[LINX_TILE_MAX_IOT][2];
+    uint8_t output_valid[LINX_TILE_MAX_IOT];
+    uint8_t output_phys[LINX_TILE_MAX_IOT];
+    uint32_t tile_data[LINX_TILE_SLOT_COUNT][LINX_TILE_MAX_WORDS];
+    uint32_t tile_bytes[LINX_TILE_SLOT_COUNT];
+    uint32_t tile_capacity[LINX_TILE_SLOT_COUNT];
+} SourceLifetimeState;
+
+static bool apply_source_lifetimes(void *opaque)
+{
+    SourceLifetimeState *state = opaque;
+
+    linx_tile_apply_source_lifetimes(
+        true, state->descriptors, 2u, state->source_valid, state->source_phys,
+        state->output_valid, state->output_phys,
+        state->tile_data, state->tile_bytes, state->tile_capacity);
+    return true;
+}
+
+static void init_source_lifetime_state(SourceLifetimeState *state,
+                                       uint32_t second_flags)
+{
+    memset(state, 0, sizeof(*state));
+    state->descriptors[0] = UINT64_C(0);
+    state->descriptors[1] =
+        (uint64_t)second_flags << LINX_TILE_IOT_FLAGS_SHIFT;
+    state->source_valid[0] = 1u;
+    state->source_valid[1] = 1u;
+    state->source_phys[0][0] = 3u;
+    state->source_phys[1][0] = 3u;
+    state->tile_data[3][0] = UINT32_C(0x11223344);
+    state->tile_bytes[3] = 128u;
+    state->tile_capacity[3] = 128u;
+}
+
+static void test_biot_duplicate_reuse_is_retain_dominant(void)
+{
+    SourceLifetimeState *state = g_new0(SourceLifetimeState, 1);
+
+    init_source_lifetime_state(state, LINX_IOT_S0_REUSE);
+    g_assert_true(apply_source_lifetimes(state));
+    g_assert_cmphex(state->tile_data[3][0], ==, UINT32_C(0x11223344));
+    g_assert_cmpuint(state->tile_bytes[3], ==, 128u);
+    g_assert_cmpuint(state->tile_capacity[3], ==, 128u);
+    g_free(state);
+}
+
+static void test_biot_all_last_use_clears_payload_after_success(void)
+{
+    SourceLifetimeState *state = g_new0(SourceLifetimeState, 1);
+
+    init_source_lifetime_state(state, 0u);
+    g_assert_true(apply_source_lifetimes(state));
+    g_assert_cmphex(state->tile_data[3][0], ==, 0u);
+    g_assert_cmpuint(state->tile_bytes[3], ==, 0u);
+    g_assert_cmpuint(state->tile_capacity[3], ==, 0u);
+    g_free(state);
+}
+
+static void test_biot_predicate_last_use_and_output_protection(void)
+{
+    SourceLifetimeState *state = g_new0(SourceLifetimeState, 1);
+
+    /* Predicate-producing T.CMP/T.CMPS sources use the same LAST contract. */
+    init_source_lifetime_state(state, 0u);
+    g_assert_true(apply_source_lifetimes(state));
+    g_assert_cmpuint(state->tile_bytes[3], ==, 0u);
+    g_assert_cmphex(state->tile_data[3][0], ==, 0u);
+
+    init_source_lifetime_state(state, 0u);
+    state->output_valid[0] = 1u;
+    state->output_phys[0] = 3u;
+    g_assert_true(apply_source_lifetimes(state));
+    g_assert_cmpuint(state->tile_bytes[3], ==, 128u);
+    g_assert_cmphex(state->tile_data[3][0], ==, UINT32_C(0x11223344));
+    g_free(state);
+}
+
+static void test_biot_fault_does_not_clear_last_use_payload(void)
+{
+    const LinxTileTxnGate rejected = { true, false, true };
+    SourceLifetimeState *state = g_new0(SourceLifetimeState, 1);
+
+    init_source_lifetime_state(state, 0u);
+    g_assert_cmpint(linx_tile_txn_guarded_apply(
+                        &rejected, apply_source_lifetimes, state), ==,
+                    LINX_TILE_TXN_ILLEGAL);
+    g_assert_cmphex(state->tile_data[3][0], ==, UINT32_C(0x11223344));
+    g_assert_cmpuint(state->tile_bytes[3], ==, 128u);
+    g_assert_cmpuint(state->tile_capacity[3], ==, 128u);
+    g_free(state);
+}
+
+static void test_biot_unselected_peer_does_not_clear_payload(void)
+{
+    SourceLifetimeState *state = g_new0(SourceLifetimeState, 1);
+
+    init_source_lifetime_state(state, 0u);
+    linx_tile_apply_source_lifetimes(
+        false, state->descriptors, 2u, state->source_valid,
+        state->source_phys, state->output_valid, state->output_phys,
+        state->tile_data, state->tile_bytes, state->tile_capacity);
+    g_assert_cmphex(state->tile_data[3][0], ==, UINT32_C(0x11223344));
+    g_assert_cmpuint(state->tile_bytes[3], ==, 128u);
+    g_assert_cmpuint(state->tile_capacity[3], ==, 128u);
+    g_free(state);
+}
+
 static void test_invalid_cube_operand_is_atomic(void)
 {
     const LinxTileTxnGate gate = { true, false, true };
@@ -603,6 +746,20 @@ int main(int argc, char **argv)
                     test_datr_must_zero_pad_is_unconsumed);
     g_test_add_func("/linx/tile-transaction/v058-source-lifetime",
                     test_v058_source_binding_preserves_producer_age);
+    g_test_add_func("/linx/tile-transaction/biot-source-lifetime-flags",
+                    test_biot_source_lifetime_flags);
+    g_test_add_func("/linx/tile-transaction/biot-source-arity",
+                    test_biot_source_arity_ignores_lifetime_flags);
+    g_test_add_func("/linx/tile-transaction/biot-duplicate-retain-dominant",
+                    test_biot_duplicate_reuse_is_retain_dominant);
+    g_test_add_func("/linx/tile-transaction/biot-all-last-clears",
+                    test_biot_all_last_use_clears_payload_after_success);
+    g_test_add_func("/linx/tile-transaction/biot-predicate-last-output-protected",
+                    test_biot_predicate_last_use_and_output_protection);
+    g_test_add_func("/linx/tile-transaction/biot-fault-no-clear",
+                    test_biot_fault_does_not_clear_last_use_payload);
+    g_test_add_func("/linx/tile-transaction/biot-unselected-peer-no-clear",
+                    test_biot_unselected_peer_does_not_clear_payload);
     g_test_add_func("/linx/tile-transaction/invalid-cube-operand",
                     test_invalid_cube_operand_is_atomic);
     g_test_add_func("/linx/tile-transaction/allocation-failure",

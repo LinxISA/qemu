@@ -79,6 +79,15 @@ class PtoV0583ContractTests(unittest.TestCase):
         self.assertIn("0x0u, 0x1u, 0x2u, 0x4u, 0x8u, 0x3u, 0x7u, 0xfu", self.translate)
         self.assertIn("a->size_code > 12u", self.translate)
         self.assertIn("has_size && size_code > 10u", self.translate)
+        for function in ("func=2", "func=3", "func=7"):
+            matching = [
+                line for line in self.decode.splitlines()
+                if line.strip().startswith("b_iot") and function in line
+            ]
+            self.assertTrue(matching)
+            self.assertTrue(all("unsupported=0" in line for line in matching))
+        self.assertIn("reuse0=1 reuse1=0", self.decode)
+        self.assertIn("reuse0=0 reuse1=1", self.decode)
 
     def test_fpatr_carries_shared_transpose_bits(self) -> None:
         self.assertIn("%FP_TransA 7:1", self.decode)

@@ -18829,12 +18829,9 @@ static void linx_tile_consume_bound_sources(
     uint8_t *carrier_valid, uint8_t *carrier)
 {
     /*
-     * PTO v0.58 B.IOT has no source-reuse fields.  A completed reader drops
-     * its bundle binding, but the producer remains addressable through its
-     * architectural hand/rank name until the producer-age window retires it.
-     * Treating descriptor flag bits as the retired v4 reuse controls removes
-     * an older producer too early (for example TLOAD, TMATMUL -> T, then a
-     * later t#2 reference) and turns the valid reference into a trap loop.
+     * B.IOT completion never removes the generation from relative hand order.
+     * The successful commit applies reuse/last-use to payload backing only,
+     * after every operation has consumed its frozen source bindings.
      */
     for (unsigned source = 0; source < 2; source++) {
         unsigned tile;
@@ -20294,7 +20291,8 @@ void HELPER(linx_tile_append_iot)(CPULinxState *env, uint64_t packed)
      * source-only B.IOT remains distinct from a real output descriptor. */
     const bool legacy_cube_source_only =
         env->blocktype == LINX_BLOCK_CUBE && !desc.last && desc.has_size &&
-        desc.dst == 0u && desc.flags == 0u;
+        desc.dst == 0u &&
+        (desc.flags & LINX_IOT_ABSENT_MASK) == 0u;
     if (legacy_cube_source_only) {
         desc.has_size = false;
         desc.size = 0u;
@@ -20967,7 +20965,8 @@ static bool linx_tile_group_gmov_profile(
 
     desc = linx_tile_decode_iot(env->tile_iot_desc[0]);
     if (desc.last == 0u || !desc.has_size || desc.reg == 0u ||
-        desc.reg > 0xfu || desc.flags != LINX_IOT_S1V ||
+        desc.reg > 0xfu ||
+        (desc.flags & LINX_IOT_ABSENT_MASK) != LINX_IOT_S1V ||
         !linx_tile_size_code_valid(desc.size & 0x1fu) ||
         linx_tile_resolve_ior(env, 1u, &peer_reg)) {
         return false;
@@ -21078,6 +21077,11 @@ static bool linx_tile_group_gmov_single_pe_commit(
     env->tile_acc_carrier_valid = carrier_valid;
     env->tile_acc_carrier = carrier;
     env->tile_acc_sources_valid = acc_sources_valid;
+    linx_tile_apply_source_lifetimes(
+        true, env->tile_iot_desc, env->tile_iot_count,
+        env->tile_iot_src_valid, env->tile_iot_src_phys,
+        env->tile_iot_output_valid, env->tile_iot_output_phys,
+        env->tile_reg, env->tile_reg_bytes, env->tile_reg_capacity);
     linx_tile_group_reset_block(env);
     return true;
 }
@@ -22127,6 +22131,12 @@ static bool linx_tile_group_mma_commit(CPULinxState *env, uint64_t resume_pc)
         peer->tile_acc_carrier_valid = carrier_valid;
         peer->tile_acc_carrier = carrier;
         peer->tile_acc_sources_valid = acc_sources_valid;
+        linx_tile_apply_source_lifetimes(
+            true, peer->tile_iot_desc, peer->tile_iot_count,
+            peer->tile_iot_src_valid, peer->tile_iot_src_phys,
+            peer->tile_iot_output_valid, peer->tile_iot_output_phys,
+            peer->tile_reg, peer->tile_reg_bytes,
+            peer->tile_reg_capacity);
         linx_tile_group_reset_block(peer);
     }
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
@@ -22319,6 +22329,13 @@ static bool linx_tile_group_gmov_commit(CPULinxState *env,
         peer_env->tile_acc_carrier_valid = carrier_valid;
         peer_env->tile_acc_carrier = carrier;
         peer_env->tile_acc_sources_valid = acc_sources_valid;
+        linx_tile_apply_source_lifetimes(
+            (pe_mask & linx_tile_shared_current_pe_bit(peer_env)) != 0u,
+            peer_env->tile_iot_desc, peer_env->tile_iot_count,
+            peer_env->tile_iot_src_valid, peer_env->tile_iot_src_phys,
+            peer_env->tile_iot_output_valid, peer_env->tile_iot_output_phys,
+            peer_env->tile_reg, peer_env->tile_reg_bytes,
+            peer_env->tile_reg_capacity);
         linx_tile_group_reset_block(peer_env);
     }
     for (unsigned i = 0; i < LINX_CORE4_PE_COUNT; i++) {
@@ -23161,6 +23178,12 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
         break;
     }
 
+    linx_tile_apply_source_lifetimes(
+        true, env->tile_iot_desc, env->tile_iot_count,
+        env->tile_iot_src_valid, env->tile_iot_src_phys,
+        env->tile_iot_output_valid, env->tile_iot_output_phys,
+        env->tile_reg, env->tile_reg_bytes, env->tile_reg_capacity);
+
     memcpy(env->tile_hand_live, live, sizeof(live));
     memcpy(env->tile_hand_reserved, reserved, sizeof(reserved));
     memcpy(env->tile_hand_order, order, sizeof(order));
@@ -23540,6 +23563,11 @@ static void linx_tile_commit_vector_bindings(CPULinxState *env)
     memcpy(env->tile_hand_reserved, reserved, sizeof(reserved));
     memcpy(env->tile_hand_order, order, sizeof(order));
     memcpy(env->tile_hand_count, count_by_hand, sizeof(count_by_hand));
+    linx_tile_apply_source_lifetimes(
+        true, env->tile_iot_desc, env->tile_iot_count,
+        env->tile_iot_src_valid, env->tile_iot_src_phys,
+        env->tile_iot_output_valid, env->tile_iot_output_phys,
+        env->tile_reg, env->tile_reg_bytes, env->tile_reg_capacity);
     linx_tile_unpin_bindings(env);
     env->tile_iot_valid = 0;
     env->tile_iot_flags = 0;
