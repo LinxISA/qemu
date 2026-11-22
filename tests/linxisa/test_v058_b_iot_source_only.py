@@ -64,6 +64,42 @@ class V058BIOTSourceOnlyTest(unittest.TestCase):
         self.assertIn("retained[LINX_TILE_SLOT_COUNT]", table)
         self.assertIn("tile_bytes[tile] = 0u", table)
 
+    def test_arity_ignores_lifetime_and_early_reset_paths_finalize(self) -> None:
+        text = HELPER.read_text(encoding="utf-8")
+        self.assertIn(
+            "(desc.flags & LINX_IOT_ABSENT_MASK) != LINX_IOT_S1V", text
+        )
+        self.assertIn(
+            "(desc.flags & LINX_IOT_ABSENT_MASK) == 0u", text
+        )
+
+        single_gmov = text.split(
+            "static bool linx_tile_group_gmov_single_pe_commit", 1
+        )[1].split("static bool linx_tile_materialize_planned_outputs", 1)[0]
+        group_mma = text.split(
+            "static bool linx_tile_group_mma_commit", 1
+        )[1].split("static bool linx_tile_group_gmov_commit", 1)[0]
+        group_gmov = text.split(
+            "static bool linx_tile_group_gmov_commit", 1
+        )[1].split("static bool linx_tile_commit_writes_gm", 1)[0]
+        vector = text.split(
+            "static void linx_tile_commit_vector_bindings", 1
+        )[1].split("static uint64_t linx_vec_read_reg", 1)[0]
+
+        for success_path in (single_gmov, group_mma, group_gmov):
+            self.assertLess(
+                success_path.rindex("linx_tile_apply_source_lifetimes("),
+                success_path.rindex("linx_tile_group_reset_block("),
+            )
+        self.assertLess(
+            vector.index("linx_tile_apply_source_lifetimes("),
+            vector.index("linx_tile_unpin_bindings("),
+        )
+        self.assertIn(
+            "(pe_mask & linx_tile_shared_current_pe_bit(peer_env)) != 0u",
+            group_gmov,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

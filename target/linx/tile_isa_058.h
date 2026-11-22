@@ -12,6 +12,7 @@ enum {
     LINX_IOT_S1V = 1u << 1,
     LINX_IOT_S0_REUSE = 1u << 2,
     LINX_IOT_S1_REUSE = 1u << 3,
+    LINX_IOT_ABSENT_MASK = LINX_IOT_S0V | LINX_IOT_S1V,
 };
 
 enum {
@@ -52,7 +53,8 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
 }
 
 static inline void linx_tile_apply_source_lifetimes(
-    const uint64_t descriptors[LINX_TILE_MAX_IOT], unsigned descriptor_count,
+    bool selected, const uint64_t descriptors[LINX_TILE_MAX_IOT],
+    unsigned descriptor_count,
     const uint8_t source_valid[LINX_TILE_MAX_IOT],
     const uint8_t source_phys[LINX_TILE_MAX_IOT][2],
     const uint8_t output_valid[LINX_TILE_MAX_IOT],
@@ -63,6 +65,10 @@ static inline void linx_tile_apply_source_lifetimes(
 {
     bool last_use[LINX_TILE_SLOT_COUNT] = { false };
     bool retained[LINX_TILE_SLOT_COUNT] = { false };
+
+    if (!selected) {
+        return;
+    }
 
     for (unsigned binding = 0; binding < descriptor_count; binding++) {
         if (output_valid[binding] != 0u &&
