@@ -75,7 +75,7 @@ class ScopedAtomicContractTest(unittest.TestCase):
         self.assertNotIn("cpu_st", probe)
 
     def test_scoped_atomic_discard_destinations_do_not_touch_queues(self) -> None:
-        discard = function(self.translate, "linx_set_scoped_atomic_dest")
+        discard = function(self.translate, "linx_set_mem_dest")
         self.assertIn("dst >= 24u && dst < 30u", discard)
         self.assertIn("#define linx_set_dest(DST, VALUE)", self.translate)
         self.assertIn("#undef linx_set_dest", self.translate)

@@ -29,7 +29,7 @@ class V058ReviewContractTests(unittest.TestCase):
         self.assertIn(".mttcg_supported = true", self.cpu)
 
     def test_vmstate_v19_does_not_claim_backward_compatibility(self) -> None:
-        self.assertIn(".version_id = 25", self.cpu)
+        self.assertIn(".version_id = 26", self.cpu)
         self.assertIn(".minimum_version_id = 19", self.cpu)
         vmstate = self.cpu[
             self.cpu.index("static const VMStateDescription vmstate_linx_cpu") :
@@ -57,6 +57,22 @@ class V058ReviewContractTests(unittest.TestCase):
             vmstate,
         )
         self.assertNotIn("if (version_id < 19)", self.cpu)
+
+    def test_scoped_queue_migration_checks_runtime_mode(self) -> None:
+        self.assertIn(
+            "env->scalar_queue_scoped_mode = linx_scoped_scalar_runtime_requested()",
+            self.cpu,
+        )
+        self.assertIn(
+            "env->scalar_queue_scoped_mode != linx_scoped_scalar_runtime_requested()",
+            self.cpu,
+        )
+        self.assertIn(
+            "VMSTATE_UINT8_V(env.scalar_queue_scoped_mode, LinxCPU, 26)", self.cpu
+        )
+        self.assertIn(
+            "VMSTATE_UINT32_V(env.scalar_queue_valid, LinxCPU, 26)", self.cpu
+        )
 
     def test_fpatr_is_consumed_and_inactive_acr_migration_is_rejected(self) -> None:
         cube = (TARGET / "tile_cube_058.c").read_text(encoding="utf-8")

@@ -4,15 +4,18 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "scoped_scalar.h"
 
 typedef struct LinxScopedScalarForm {
     uint64_t mask;
     uint64_t match;
     uint64_t reserved_mask; /* The all-ones SrcRType value, if present. */
+    uint64_t source_fields; /* One bit per Reg5 source field start. */
     unsigned inner_bytes;
     bool runtime_eligible;
     int reg_store_shift;
+    bool implicit_t_source;
     const char *base_form_id;
 } LinxScopedScalarForm;
 
@@ -51,6 +54,17 @@ bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded)
             (inner_word & form->mask) == form->match &&
             (!form->reserved_mask ||
              (inner_word & form->reserved_mask) != form->reserved_mask)) {
+            uint8_t queue_sources = form->implicit_t_source ? 1 : 0;
+            uint64_t fields = form->source_fields;
+
+            while (fields) {
+                unsigned reg = (inner_word >> ctz64(fields)) & 31;
+
+                if (reg >= 24) {
+                    queue_sources |= 1u << (reg - 24);
+                }
+                fields &= fields - 1;
+            }
             *decoded = (LinxScopedScalar) {
                 .inner_word = inner_word,
                 .base_form_id = form->base_form_id,
@@ -58,6 +72,7 @@ bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded)
                 .inner_bytes = inner_bytes,
                 .runtime_eligible = form->runtime_eligible,
                 .reg_store_shift = form->reg_store_shift,
+                .queue_sources = queue_sources,
             };
             return true;
         }

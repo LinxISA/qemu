@@ -7,6 +7,7 @@ on:
       - 'scripts/linxisa/generate-scoped-scalar.py'
       - 'scripts/linxisa/run-scoped-scalar-runtime-smoke.sh'
       - 'scripts/linxisa/run-scoped-pair-smoke.py'
+      - 'scripts/linxisa/run-scoped-queue-smoke.py'
       - 'scripts/linxisa/run-scoped-atomic-core4-contract.sh'
       - 'target/linx/**'
       - 'hw/linx/**'
@@ -71,6 +72,9 @@ jobs:
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-scoped-scalar-runtime-smoke.sh
           python3 scripts/linxisa/run-scoped-pair-smoke.py \
+            --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
+            --qemu "$PWD/build/qemu-system-linx64"
+          python3 scripts/linxisa/run-scoped-queue-smoke.py \
             --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
             --qemu "$PWD/build/qemu-system-linx64"
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \

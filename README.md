@@ -30,12 +30,17 @@ selection, configuration, permission checks, BSE/BWE transport, and the
 
 Set `LINX_QEMU_SCOPED_SCALAR_RUNTIME=1` to execute the locked PTO 0.59.1
 immediate, PC-relative and register-offset single accesses, including their
-pre-index and post-index writeback forms, and paired RAM accesses. The candidate
-accepts 173 base forms and all three scope codes. Each memory helper receives
+pre-index and post-index writeback forms, paired RAM accesses, and compressed
+C.LWI, C.LDI, C.SWI, and C.SDI. Scoped LR/SC, compare-and-swap, and atomic
+read-modify-write complete the 235 base forms and all 705 carriers.
+Each memory helper receives
 the carrier's scope together with the address, size and outer TPC. Paired
 accesses check both addresses before effects and publish load destinations
 after both reads. A pair targeting device memory raises a data access fault
 before guest data effects.
+Scoped Reg5 sources check T/U validity before the access. Compressed loads
+push T, and compressed stores use the existing T#1 value without consuming it.
+Both ends of CPU migration must use the same scoped runtime setting.
 Successful carriers retire eight bytes. Faults and rejected carriers retain the
 outer TPC and suppress destination and memory publication.
 
