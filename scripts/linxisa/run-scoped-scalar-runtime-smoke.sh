@@ -12,6 +12,7 @@ OBJ="$TMP/scoped-scalar-runtime.o"
 SCOPED_OBJ="$TMP/scoped-scalar-v0591-runtime.o"
 FAULT_OBJ="$TMP/scoped-scalar-runtime-fault.o"
 INDEXED_OBJ="$TMP/scoped-scalar-runtime-indexed.o"
+CORE4_OBJ="$TMP/scoped-scalar-runtime-core4.o"
 TRACE="$TMP/scoped-scalar-runtime.trace"
 COMMIT="$TMP/scoped-scalar-runtime.jsonl"
 
@@ -23,6 +24,8 @@ COMMIT="$TMP/scoped-scalar-runtime.jsonl"
   "$ROOT/tests/linxisa/scoped_scalar_runtime_fault.s" -o "$FAULT_OBJ"
 "$LLVM_MC" -triple=linx64 -mattr=+pto-v0591-scoped -filetype=obj \
   "$ROOT/tests/linxisa/scoped_scalar_runtime_indexed.s" -o "$INDEXED_OBJ"
+"$LLVM_MC" -triple=linx64 -mattr=+pto-v0591-scoped -filetype=obj \
+  "$ROOT/tests/linxisa/scoped_scalar_runtime_core4.s" -o "$CORE4_OBJ"
 
 LINX_QEMU_SCOPED_SCALAR_RUNTIME=1 \
 LINX_VIRT_TEST_FINISHER=1 \
@@ -117,7 +120,7 @@ subprocess.run(
 cases = [
     (obj, "1", "1", True),
     (obj, "1", "0", False),
-    (obj, "4", "1", False),
+    (obj, "4", "0", False),
     (tampered, "1", "1", False),
     (mixed, "1", "1", False),
 ]
@@ -137,7 +140,32 @@ for image, smp, enabled, should_boot in cases:
             raise SystemExit(f"canonical scoped ELF failed: {run.stderr}")
     elif run.returncode == 0 or "one consistent PTO ISA" not in run.stderr:
         raise SystemExit(f"unexpected admission for {image.name}: {run.stderr}")
-print("ok: exact PTO 0.59.1 ELF identity admitted only on the opt-in single PE")
+print("ok: exact PTO 0.59.1 ELF identity requires opt-in")
+PY
+
+QEMU_BIN="$QEMU_BIN" CORE4_OBJ="$CORE4_OBJ" TMP="$TMP" python3 - <<'PY'
+import os
+from pathlib import Path
+import struct
+import subprocess
+
+expected = struct.pack("<8I", 0x2345, 1, 0x6789, 1, 0x6789, 1, 0x4321, 0x4321)
+for thread in ("single", "multi"):
+    result = Path(os.environ["TMP"]) / f"core4-{thread}.bin"
+    machine = (f"virt,cross-model-dump={result},cross-model-address=131072,"
+               f"cross-model-size={len(expected)}")
+    subprocess.run(
+        [os.environ["QEMU_BIN"], "-nographic", "-monitor", "none",
+         "-accel", f"tcg,thread={thread}", "-machine", machine, "-smp", "4",
+         "-bios", "none", "-kernel", os.environ["CORE4_OBJ"]],
+        env=os.environ | {"LINX_QEMU_SCOPED_SCALAR_RUNTIME": "1",
+                          "LINX_VIRT_TEST_FINISHER": "1"},
+        check=True, timeout=10,
+    )
+    actual = result.read_bytes()
+    if actual != expected:
+        raise SystemExit(f"Core4 {thread}: {actual.hex()} != {expected.hex()}")
+print("ok: Core4 scoped communication matched golden memory on both TCG modes")
 PY
 
 QEMU_BIN="$QEMU_BIN" OBJ="$OBJ" TMP="$TMP" python3 - <<'PY'
@@ -149,13 +177,12 @@ import subprocess
 qemu = os.environ["QEMU_BIN"]
 obj = os.environ["OBJ"]
 tmp = pathlib.Path(os.environ["TMP"])
-for name, smp, enabled in (("disabled", "1", False), ("smp4", "4", True)):
+for name, smp in (("disabled", "1"), ("disabled-core4", "4")):
     log = tmp / f"{name}.log"
     commit = tmp / f"{name}.jsonl"
     env = os.environ.copy()
     env["LINX_COMMIT_TRACE"] = str(commit)
-    if enabled:
-        env["LINX_QEMU_SCOPED_SCALAR_RUNTIME"] = "1"
+    env["LINX_QEMU_SCOPED_SCALAR_RUNTIME"] = "0"
     command = [
         qemu, "-nographic", "-monitor", "none", "-machine", "virt",
         "-smp", smp, "-bios", "none", "-kernel", obj,
@@ -183,7 +210,7 @@ for name, smp, enabled in (("disabled", "1", False), ("smp4", "4", True)):
         for row in traps
     ):
         raise SystemExit(f"{name}: imprecise carrier rejection: {traps[:2]}")
-print("ok: disabled and SMP configurations reject at the outer TPC "
+print("ok: disabled execution rejects at the outer TPC on both topologies "
       "without effects")
 PY
 

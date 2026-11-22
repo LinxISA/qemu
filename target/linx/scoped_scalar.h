@@ -23,5 +23,6 @@ typedef struct LinxScopedScalar {
 
 bool linx_scoped_scalar_decode(uint64_t word, LinxScopedScalar *decoded);
 bool linx_scoped_scalar_runtime_requested(void);
+bool linx_scoped_scalar_topology_supported(unsigned pe_count);
 
 #endif

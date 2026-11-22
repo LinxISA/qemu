@@ -18,6 +18,7 @@ enum {
 #include "cpu.h"
 #include "first_use.h"
 #include "hscb_geometry.h"
+#include "scoped_scalar.h"
 #include "tile_transaction.h"
 #include "tile_operation_preflight.h"
 #include "trace.h"
@@ -8146,10 +8147,13 @@ uint64_t HELPER(linx_scoped_load)(CPULinxState *env, uint64_t addr,
     uint64_t value;
     unsigned size = memop_size(mop);
 
-    if (scope > 2 || !current_machine || current_machine->smp.cpus != 1) {
+    if (scope > 2 || !current_machine || !linx_scoped_scalar_topology_supported(
+            current_machine->smp.cpus)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
     }
-    trace_linx_scoped_scalar_access(pc, scope, addr, size, false);
+    /* Use the same serial memory path as GM stores and LR/SC. */
+    linx_enter_atomic_context(env, ra);
+    trace_linx_scoped_scalar_access(pc, scope, addr, size, false, env->pe_id);
     linx_require_natural_alignment(env, addr, size, ra);
     switch (size) {
     case 1:
@@ -8192,10 +8196,11 @@ void HELPER(linx_scoped_store)(CPULinxState *env, uint64_t addr,
     uintptr_t ra = GETPC();
     unsigned size = memop_size(mop);
 
-    if (scope > 2 || !current_machine || current_machine->smp.cpus != 1) {
+    if (scope > 2 || !current_machine || !linx_scoped_scalar_topology_supported(
+            current_machine->smp.cpus)) {
         helper_raise_exception(env, LINX_EXCP_ILLEGAL_INST);
     }
-    trace_linx_scoped_scalar_access(pc, scope, addr, size, true);
+    trace_linx_scoped_scalar_access(pc, scope, addr, size, true, env->pe_id);
     linx_require_natural_alignment(env, addr, size, ra);
     switch (size) {
     case 1:
