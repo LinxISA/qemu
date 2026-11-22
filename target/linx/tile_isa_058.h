@@ -10,6 +10,8 @@
 enum {
     LINX_IOT_S0V = 1u << 0,
     LINX_IOT_S1V = 1u << 1,
+    LINX_IOT_S0_REUSE = 1u << 2,
+    LINX_IOT_S1_REUSE = 1u << 3,
 };
 
 enum {
@@ -47,6 +49,57 @@ static inline LinxTileIOTDesc linx_tile_decode_iot(uint64_t packed)
     d.size = (packed >> LINX_TILE_IOT_SIZE_SHIFT) & 0x1fu;
     d.has_size = ((packed >> LINX_TILE_IOT_HAS_SIZE_SHIFT) & 0x1u) != 0;
     return d;
+}
+
+static inline void linx_tile_apply_source_lifetimes(
+    const uint64_t descriptors[LINX_TILE_MAX_IOT], unsigned descriptor_count,
+    const uint8_t source_valid[LINX_TILE_MAX_IOT],
+    const uint8_t source_phys[LINX_TILE_MAX_IOT][2],
+    const uint8_t output_valid[LINX_TILE_MAX_IOT],
+    const uint8_t output_phys[LINX_TILE_MAX_IOT],
+    uint32_t tile_data[LINX_TILE_SLOT_COUNT][LINX_TILE_MAX_WORDS],
+    uint32_t tile_bytes[LINX_TILE_SLOT_COUNT],
+    uint32_t tile_capacity[LINX_TILE_SLOT_COUNT])
+{
+    bool last_use[LINX_TILE_SLOT_COUNT] = { false };
+    bool retained[LINX_TILE_SLOT_COUNT] = { false };
+
+    for (unsigned binding = 0; binding < descriptor_count; binding++) {
+        if (output_valid[binding] != 0u &&
+            output_phys[binding] < LINX_TILE_SLOT_COUNT) {
+            retained[output_phys[binding]] = true;
+        }
+    }
+    for (unsigned binding = 0; binding < descriptor_count; binding++) {
+        const LinxTileIOTDesc desc =
+            linx_tile_decode_iot(descriptors[binding]);
+        for (unsigned source = 0; source < 2; source++) {
+            const unsigned absent = source == 0 ? LINX_IOT_S0V : LINX_IOT_S1V;
+            const unsigned reuse = source == 0
+                ? LINX_IOT_S0_REUSE : LINX_IOT_S1_REUSE;
+            const unsigned tile = source_phys[binding][source];
+
+            if ((desc.flags & absent) != 0u ||
+                (source_valid[binding] & (1u << source)) == 0u ||
+                tile >= LINX_TILE_SLOT_COUNT) {
+                continue;
+            }
+            if ((desc.flags & reuse) != 0u) {
+                retained[tile] = true;
+            } else {
+                last_use[tile] = true;
+            }
+        }
+    }
+
+    for (unsigned tile = 0; tile < LINX_TILE_SLOT_COUNT; tile++) {
+        if (!last_use[tile] || retained[tile]) {
+            continue;
+        }
+        memset(tile_data[tile], 0, sizeof(tile_data[tile]));
+        tile_bytes[tile] = 0u;
+        tile_capacity[tile] = 0u;
+    }
 }
 
 static inline bool linx_tile_shared_allocation_compatible(

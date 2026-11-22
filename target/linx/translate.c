@@ -2843,7 +2843,8 @@ static bool trans_b_dim_lb2(DisasContext *ctx, arg_b_dim_lb2 *a)
 
 static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                              uint32_t last, uint32_t size_code,
-                             uint32_t src0, uint32_t src1, uint32_t pe_mode)
+                             uint32_t src0, uint32_t src1, uint32_t pe_mode,
+                             uint32_t reuse0, uint32_t reuse1)
 {
     const bool has_size = size_code != 0u;
     /* PTO ISA 0.58.6: Local destination forms accept SizeCode 1..10;
@@ -2865,12 +2866,14 @@ static bool linx_trans_b_iot(DisasContext *ctx, uint32_t func, uint32_t dst,
                                 LINX_BLOCKFMT_FAMILY_IOT);
     }
 
-    if (func < 4u || func > 6u) {
+    if (func < 2u || func > 7u) {
         return linx_illegal(ctx);
     }
-    const uint32_t flags = func == 4u ? 0u
-                           : func == 5u ? LINX_IOT_S1V
-                                       : LINX_IOT_S0V | LINX_IOT_S1V;
+    uint32_t flags = func == 5u ? LINX_IOT_S1V
+                     : func == 6u ? LINX_IOT_S0V | LINX_IOT_S1V
+                                  : 0u;
+    flags |= reuse0 ? LINX_IOT_S0_REUSE : 0u;
+    flags |= reuse1 ? LINX_IOT_S1_REUSE : 0u;
     /* SizeCode is the per-PE Local Tile capacity; the expanded PEMode mask
      * selects participants. */
     const uint32_t local_size_code = size_code == 0u ? 0u : size_code + 2u;
@@ -2885,7 +2888,8 @@ static bool trans_b_iot(DisasContext *ctx, arg_b_iot *a)
         return linx_illegal(ctx);
     }
     return linx_trans_b_iot(ctx, a->func, a->dst, a->l, a->size_code,
-                            a->src0, a->src1, a->pe_mode);
+                            a->src0, a->src1, a->pe_mode,
+                            a->reuse0, a->reuse1);
 }
 
 static bool trans_b_text(DisasContext *ctx, arg_b_text *a)

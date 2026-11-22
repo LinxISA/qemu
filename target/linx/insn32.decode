@@ -272,19 +272,19 @@ bstart_mpar 0000 0..0 0000 0000 0001 0001 1000 0001 mode=%Mode
 {
   b_ios        0000 00.. .... 0... .001 ...0 0001 0011 shared=%SharedTID size_code=%SizeCode pe_mode=%PEMode unsupported=0
   b_ios        0000 01.. .... 0000 0001 ...0 0001 0011 shared=%SharedTID size_code=0 pe_mode=%PEMode unsupported=1
-  b_iot        0000 00.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 unsupported=0
-  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 unsupported=0
-  b_iot        .... .... .... .000 0100 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=4 unsupported=0
-  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4 unsupported=0
-  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=6 unsupported=0
-  b_iot        .... .... .... .000 0010 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=2 unsupported=1
-  b_iot        .... .... .... .000 0011 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=3 unsupported=1
-  b_iot        .... .... .... .000 0111 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=7 unsupported=1
-  b_iot        .... .... .... .... .010 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=2 unsupported=1
-  b_iot        .... .... .... .... .011 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=3 unsupported=1
-  b_iot        .... .... .... .... .111 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=7 unsupported=1
-  b_iot        0000 01.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 unsupported=1
-  b_iot        0000 01.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 unsupported=1
+  b_iot        0000 00.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 reuse0=1 reuse1=0 unsupported=0
+  b_iot        0000 00.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 reuse0=1 reuse1=0 unsupported=0
+  b_iot        .... .... .... .000 0100 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=4 reuse0=1 reuse1=1 unsupported=0
+  b_iot        .... .... .... .... .100 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=4 reuse0=1 reuse1=1 unsupported=0
+  b_iot        0000 0000 0000 .... .110 .... .001 0011 src0=0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=6 reuse0=0 reuse1=0 unsupported=0
+  b_iot        .... .... .... .000 0010 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=2 reuse0=0 reuse1=0 unsupported=0
+  b_iot        .... .... .... .000 0011 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=3 reuse0=1 reuse1=0 unsupported=0
+  b_iot        .... .... .... .000 0111 ...0 0001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=7 reuse0=0 reuse1=1 unsupported=0
+  b_iot        .... .... .... .... .010 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=2 reuse0=0 reuse1=0 unsupported=0
+  b_iot        .... .... .... .... .011 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=3 reuse0=1 reuse1=0 unsupported=0
+  b_iot        .... .... .... .... .111 .... .001 0011 src0=%IOTV5Src0 src1=%IOTV5Src1 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=7 reuse0=0 reuse1=1 unsupported=0
+  b_iot        0000 01.. .... .000 0101 ...0 0001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=0 pe_mode=%IOTV5PEMode dst=0 func=5 reuse0=0 reuse1=0 unsupported=0
+  b_iot        0000 01.. .... .... .101 .... .001 0011 src0=%IOTV5Src0 src1=0 l=%IOTV5Last size_code=%IOTV5SizeCode pe_mode=%IOTV5PEMode dst=%IOTV5Dst func=5 reuse0=0 reuse1=0 unsupported=0
   b_ior        .... ..0. .... .... .000 .... .001 0011 %RegDst %SrcL %SrcR %SrcD exec_mask_present=%ExecMaskPresent
 }
 

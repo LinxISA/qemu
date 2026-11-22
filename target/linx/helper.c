@@ -18829,12 +18829,9 @@ static void linx_tile_consume_bound_sources(
     uint8_t *carrier_valid, uint8_t *carrier)
 {
     /*
-     * PTO v0.58 B.IOT has no source-reuse fields.  A completed reader drops
-     * its bundle binding, but the producer remains addressable through its
-     * architectural hand/rank name until the producer-age window retires it.
-     * Treating descriptor flag bits as the retired v4 reuse controls removes
-     * an older producer too early (for example TLOAD, TMATMUL -> T, then a
-     * later t#2 reference) and turns the valid reference into a trap loop.
+     * B.IOT completion never removes the generation from relative hand order.
+     * The successful commit applies reuse/last-use to payload backing only,
+     * after every operation has consumed its frozen source bindings.
      */
     for (unsigned source = 0; source < 2; source++) {
         unsigned tile;
@@ -23160,6 +23157,12 @@ void HELPER(linx_tile_commit)(CPULinxState *env, uint64_t resume_pc)
         /* Non-tile blocks: nothing to do. */
         break;
     }
+
+    linx_tile_apply_source_lifetimes(
+        env->tile_iot_desc, env->tile_iot_count,
+        env->tile_iot_src_valid, env->tile_iot_src_phys,
+        env->tile_iot_output_valid, env->tile_iot_output_phys,
+        env->tile_reg, env->tile_reg_bytes, env->tile_reg_capacity);
 
     memcpy(env->tile_hand_live, live, sizeof(live));
     memcpy(env->tile_hand_reserved, reserved, sizeof(reserved));
