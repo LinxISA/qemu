@@ -6960,6 +6960,99 @@ static G_NORETURN void linx_raise_ssr_illegal(CPULinxState *env,
     cpu_loop_exit_restore(cs, ra);
 }
 
+static bool linx_msgb_ssr_address(uint32_t idx)
+{
+    return idx >= 0x830u && idx <= 0x84bu;
+}
+
+static LinxMsgbAccessContext linx_msgb_access_context(CPULinxState *env)
+{
+    return (LinxMsgbAccessContext) {
+        .pe = env->pe_id,
+        .acr = env->acr & 0xfu,
+        .tpc = env->pc,
+        /* QEMU has no outstanding asynchronous scalar GM request. */
+        .execution_domain = env->insn_count,
+        .atomic = (env->tile_attr_raw & (1u << 19)) != 0,
+        .far = (env->tile_attr_raw & (1u << 20)) != 0,
+    };
+}
+
+static LinxCore4State *linx_msgb_core(CPULinxState *env)
+{
+    return env_archcpu(env)->core4;
+}
+
+static LinxMsgbAccessResult linx_msgb_ssr_read(CPULinxState *env,
+                                               uint32_t ssrid)
+{
+    LinxMsgbAccessResult access = { 0 };
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    uint32_t idx = linx_ssr_low12(ssrid);
+
+    if (!linx_msgb_ssr_address(idx)) {
+        return access;
+    }
+    if (ssrid != idx || core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    access = linx_msgb_guest_read(&core4->msgb, &context, idx);
+    qemu_mutex_unlock(&core4->lock);
+    if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    return access;
+}
+
+static bool linx_msgb_hscb_geometry_read(CPULinxState *env,
+                                         uint64_t *blocknum,
+                                         uint64_t *blockid)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    bool live = false;
+
+    if (core4 != NULL) {
+        qemu_mutex_lock(&core4->lock);
+        live = linx_msgb_hscb_geometry(&core4->msgb, &context,
+                                       blocknum, blockid);
+        qemu_mutex_unlock(&core4->lock);
+    }
+    return live;
+}
+
+static LinxMsgbAccessResult linx_msgb_ssr_write(CPULinxState *env,
+                                                uint32_t ssrid,
+                                                uint64_t value)
+{
+    LinxMsgbAccessResult access = { 0 };
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    uint32_t idx = linx_ssr_low12(ssrid);
+
+    if (!linx_msgb_ssr_address(idx)) {
+        return access;
+    }
+    if (ssrid != idx || core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    access = linx_msgb_guest_write(&core4->msgb, &context, idx, value);
+    qemu_mutex_unlock(&core4->lock);
+    if (access.fault) {
+        if (access.bundle_fault) {
+            helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+        }
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    return access;
+}
+
 static inline bool linx_legacy_trapsave_alias_read(CPULinxState *env, uint32_t idx,
                                                    uint32_t bank, uint64_t *value)
 {
@@ -7008,19 +7101,36 @@ uint64_t HELPER(linx_ssr_read)(CPULinxState *env, uint32_t ssrid)
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? linx_ssr_manager_bank(env, ssrid) : 0u;
     uint64_t value;
+    uint64_t hscb_blocknum;
+    uint64_t hscb_blockid;
+    LinxMsgbAccessResult msgb = linx_msgb_ssr_read(env, ssrid);
+
+    if (msgb.handled) {
+        return msgb.value;
+    }
 
     switch (idx) {
     case LINX_SSR_BLOCKNUM:
         if (ssrid != LINX_SSR_BLOCKNUM) {
             linx_raise_ssr_illegal(env, GETPC());
         }
-        value = linx_hscb_geometry_blocknum(env);
+        if (linx_msgb_hscb_geometry_read(env, &hscb_blocknum,
+                                         &hscb_blockid)) {
+            value = hscb_blocknum;
+        } else {
+            value = linx_hscb_geometry_blocknum(env);
+        }
         break;
     case LINX_SSR_BLOCKID:
         if (ssrid != LINX_SSR_BLOCKID) {
             linx_raise_ssr_illegal(env, GETPC());
         }
-        value = linx_hscb_geometry_blockid(env);
+        if (linx_msgb_hscb_geometry_read(env, &hscb_blocknum,
+                                         &hscb_blockid)) {
+            value = hscb_blockid;
+        } else {
+            value = linx_hscb_geometry_blockid(env);
+        }
         break;
     case LINX_SSR_BLOCK_ALIAS_FIRST ... LINX_SSR_BLOCK_ALIAS_LAST:
         linx_raise_ssr_illegal(env, GETPC());
@@ -7190,6 +7300,11 @@ void HELPER(linx_ssr_write)(CPULinxState *env, uint32_t ssrid, uint64_t value)
     uint32_t idx = linx_ssr_low12(ssrid);
     const bool is_manager = linx_ssr_is_manager_idx(idx);
     const uint32_t bank = is_manager ? linx_ssr_manager_bank(env, ssrid) : 0u;
+    LinxMsgbAccessResult msgb = linx_msgb_ssr_write(env, ssrid, value);
+
+    if (msgb.handled) {
+        return;
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10c40) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010c40ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7482,6 +7597,9 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
     if (idx >= LINX_SSR_BLOCKNUM && idx <= LINX_SSR_BLOCK_ALIAS_LAST) {
         linx_raise_ssr_illegal(env, GETPC());
     }
+    if (linx_msgb_ssr_address(idx)) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
     if ((env->pc >= 0x10bc0 && env->pc < 0x10be8) ||
         (env->pc >= 0xffffffff80010bc0ULL && env->pc < 0xffffffff80010be8ULL)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7501,6 +7619,138 @@ uint64_t HELPER(linx_ssr_swap)(CPULinxState *env, uint32_t ssrid, uint64_t value
     linx_tp_trace_emit(env, "ssr_swap", ssrid, bank, old, value);
     HELPER(linx_ssr_write)(env, ssrid, value);
     return old;
+}
+
+void HELPER(linx_bse)(CPULinxState *env, uint64_t control)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+    bool retire_invocation = false;
+    uint64_t clear_invocation = 0;
+
+    if (core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    qemu_mutex_lock(&core4->lock);
+    if (linx_msgb_guest_enabled_for_context(&core4->msgb, &context) &&
+        (context.atomic || context.far)) {
+        qemu_mutex_unlock(&core4->lock);
+        helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+    }
+    LinxMsgbResult status = linx_msgb_guest_bse(&core4->msgb,
+                                                &context, control);
+    if (status == LINX_MSGB_OK && (uint32_t)control ==
+                                  LINX_MSGB_HSCB_ENDPOINT) {
+        status = linx_msgb_hscb_receive_worker(&core4->msgb);
+        if (status == LINX_MSGB_OK && core4->msgb.auto_launch_valid &&
+            core4->msgb.auto_launch_worker < LINX_MSGB_ENDPOINTS &&
+            core4->msgb.bank[core4->msgb.auto_launch_worker].hscb_ready) {
+            status = linx_msgb_hscb_issue_launch(
+                &core4->msgb, core4->msgb.auto_launch_worker,
+                core4->msgb.auto_launch_dispatch_id,
+                core4->msgb.auto_launch_pc,
+                core4->msgb.auto_launch_argument,
+                core4->msgb.auto_launch_blocknum,
+                core4->msgb.auto_launch_blockid);
+            if (status == LINX_MSGB_OK) {
+                core4->msgb.auto_launch_valid = false;
+            }
+        }
+        if (core4->msgb.last_done_valid) {
+            clear_invocation = core4->msgb.last_done_invocation;
+            core4->msgb.last_done_valid = false;
+            if (core4->msgb.auto_launch_managed) {
+                retire_invocation = true;
+                core4->msgb.auto_launch_managed = false;
+            }
+        }
+        if (retire_invocation) {
+            linx_msgb_guest_begin_drain(&core4->msgb,
+                                        clear_invocation);
+            if (!linx_msgb_guest_clear_invocation(&core4->msgb,
+                                                   clear_invocation)) {
+                qemu_mutex_unlock(&core4->lock);
+                helper_raise_exception(env, LINX_EXCP_BLOCK_FAULT);
+            }
+        }
+    }
+    qemu_mutex_unlock(&core4->lock);
+}
+
+uint64_t HELPER(linx_bwe)(CPULinxState *env, uint64_t operand)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbAccessContext context = linx_msgb_access_context(env);
+
+    if (core4 == NULL) {
+        linx_raise_ssr_illegal(env, GETPC());
+    }
+    uint64_t kernel_pc = 0;
+    uint64_t argument = 0;
+    uint32_t blocknum = 0;
+    uint32_t blockid = 0;
+    unsigned thread;
+    unsigned worker;
+    uint64_t invocation;
+
+    qemu_mutex_lock(&core4->lock);
+    linx_msgb_guest_bwe(&core4->msgb, &context, operand);
+    thread = core4->msgb.current_thread[env->pe_id];
+    worker = (thread * LINX_MSGB_PE_COUNT + env->pe_id) *
+             LINX_MSGB_ACR_COUNT + context.acr;
+    invocation = core4->msgb.invocation;
+    uint64_t pending_pc = 0;
+    bool pending = context.acr == 0 && !context.atomic && !context.far &&
+                   linx_msgb_hscb_launch_pending(
+                       &core4->msgb, worker, invocation, &pending_pc);
+    qemu_mutex_unlock(&core4->lock);
+
+    if (!pending || !linx_cpu_is_legal_block_entry(env, pending_pc)) {
+        return 0;
+    }
+
+    bool launch = false;
+    uint64_t rechecked_pc = 0;
+    qemu_mutex_lock(&core4->lock);
+    if (linx_msgb_hscb_launch_pending(&core4->msgb, worker, invocation,
+                                      &rechecked_pc) &&
+        rechecked_pc == pending_pc) {
+        launch = linx_msgb_hscb_take_launch(
+            &core4->msgb, worker, &kernel_pc, &argument,
+            &blocknum, &blockid);
+    }
+    qemu_mutex_unlock(&core4->lock);
+    if (!launch) {
+        return 0;
+    }
+    linx_acr_reset_block_state_for_header(env, env->acr & 0xfu, kernel_pc);
+    linx_acr_restore_block_state(env, env->acr & 0xfu);
+    env->gpr[LINX_REG_A0] = argument;
+    return kernel_pc;
+}
+
+LinxMsgbResult linx_hscb_issue_launch_for_cpu(CPULinxState *env,
+                                              unsigned thread,
+                                              uint64_t dispatch_id,
+                                              uint64_t kernel_pc,
+                                              uint64_t argument,
+                                              uint32_t blocknum,
+                                              uint32_t blockid)
+{
+    LinxCore4State *core4 = linx_msgb_core(env);
+    LinxMsgbResult status;
+
+    if (core4 == NULL || thread >= LINX_MSGB_THREADS_PER_PE) {
+        return LINX_MSGB_BAD_COMMAND;
+    }
+    unsigned endpoint = (thread * LINX_MSGB_PE_COUNT + env->pe_id) *
+                        LINX_MSGB_ACR_COUNT;
+    qemu_mutex_lock(&core4->lock);
+    status = linx_msgb_hscb_issue_launch(&core4->msgb, endpoint,
+                                         dispatch_id, kernel_pc, argument,
+                                         blocknum, blockid);
+    qemu_mutex_unlock(&core4->lock);
+    return status;
 }
 
 void HELPER(linx_tlb_iall)(CPULinxState *env, uint64_t pc)

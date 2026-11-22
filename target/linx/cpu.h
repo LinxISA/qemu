@@ -17,6 +17,7 @@
 #include "fpu/softfloat.h"
 #include "hw/core/resettable.h"
 #include "qemu/thread.h"
+#include "msgb_guest.h"
 
 #ifdef CONFIG_USER_ONLY
 #error "LinxISA does not support user mode emulation"
@@ -110,6 +111,8 @@ typedef struct LinxCore4State {
     uint8_t collective_pe_mask;
     uint8_t collective_size_code;
     uint64_t collective_resume_pc[LINX_CORE4_PE_COUNT];
+    /* PTO MSGB/HSCB owner shared by all PE identities in this Core. */
+    LinxMsgbGuestState msgb;
 } LinxCore4State;
 
 void linx_core4_reset(LinxCore4State *core4);
@@ -858,6 +861,14 @@ typedef struct CPUArchState {
     struct QEMUTimer *timer;
 } CPULinxState;
 
+LinxMsgbResult linx_hscb_issue_launch_for_cpu(CPULinxState *env,
+                                              unsigned thread,
+                                              uint64_t dispatch_id,
+                                              uint64_t kernel_pc,
+                                              uint64_t argument,
+                                              uint32_t blocknum,
+                                              uint32_t blockid);
+
 static inline bool linx_ebarg_stack_push(CPULinxState *env, uint32_t acr)
 {
     uint32_t d;
@@ -1170,6 +1181,7 @@ struct LinxCPUClass {
 void linx_translate_init(void);
 void linx_translate_code(CPUState *cs, TranslationBlock *tb,
                          int *max_insns, vaddr pc, void *host_pc);
+bool linx_cpu_is_legal_block_entry(CPULinxState *env, uint64_t pc);
 void linx_call_trace_dump_recent(CPULinxState *env, const char *reason,
                                  uint64_t fault_pc);
 void linx_debug_pc_watch_dump_recent(CPULinxState *env, const char *reason,
