@@ -9,10 +9,12 @@ on:
       - 'scripts/linxisa/run-scoped-pair-smoke.py'
       - 'scripts/linxisa/run-scoped-queue-smoke.py'
       - 'scripts/linxisa/run-scoped-atomic-core4-contract.sh'
+      - 'scripts/linxisa/run-scoped-pcr-reloc-smoke.py'
       - 'target/linx/**'
       - 'hw/linx/**'
       - 'tests/linxisa/scoped_scalar_runtime_*.s'
       - 'tests/linxisa/scoped_atomic_*.s'
+      - 'tests/linxisa/scoped_scalar_pcr_reloc.s'
       - 'tests/unit/*linx*scoped*'
       - 'tests/unit/meson.build'
 
@@ -22,7 +24,7 @@ permissions:
 jobs:
   scoped-scalar-decode:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out QEMU
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -41,11 +43,11 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Check generated decoder and witnesses
         run: python3 scripts/linxisa/generate-scoped-scalar.py linx-catalog --check
-      - name: Check out qualified Linx LLVM MC
+      - name: Check out Linx LLVM and LLD
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: LinxISA/llvm-project
-          ref: 4aee6e952487d9201b42a8f2fc59c57529d01b30
+          ref: e5748ac8eafc56e2557f64756f432c8651a69705
           path: linx-llvm
           persist-credentials: false
       - name: Install build dependencies
@@ -59,15 +61,19 @@ jobs:
       - name: Build Linx QEMU and test decoder
         run: |
           tools="$RUNNER_TEMP/linx-qemu-tools/bin"
-          ./configure --target-list=linx64-softmmu --disable-docs --disable-werror \
+          ./configure --target-list=linx64-softmmu,linx32-softmmu \
+            --disable-docs --disable-werror \
             --without-default-features --enable-gio --python="$tools/python3"
-          "$tools/ninja" -C build -j 3 qemu-system-linx64 tests/unit/test-linx-scoped-scalar
+          "$tools/ninja" -C build -j 3 qemu-system-linx64 qemu-system-linx32 \
+            tests/unit/test-linx-scoped-scalar
           build/pyvenv/bin/meson test -C build --print-errorlogs test-linx-scoped-scalar
-      - name: Build MC assembler and run scoped runtime
+      - name: Build MC and LLD and run scoped runtime
         run: |
           cmake -S linx-llvm/llvm -B linx-llvm-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_TARGETS_TO_BUILD= -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA
-          cmake --build linx-llvm-build --target llvm-mc -j 3
+            -DCMAKE_C_FLAGS_RELEASE='-O1 -DNDEBUG' -DCMAKE_CXX_FLAGS_RELEASE='-O1 -DNDEBUG' \
+            -DLLVM_TARGETS_TO_BUILD= -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD=LinxISA \
+            -DLLVM_ENABLE_PROJECTS=lld
+          cmake --build linx-llvm-build --target llvm-mc lld -j 3
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-scoped-scalar-runtime-smoke.sh
@@ -80,3 +86,10 @@ jobs:
           LLVM_MC="$PWD/linx-llvm-build/bin/llvm-mc" \
           QEMU_BIN="$PWD/build/qemu-system-linx64" \
             scripts/linxisa/run-scoped-atomic-core4-contract.sh
+          for xlen in 32 64; do
+            python3 scripts/linxisa/run-scoped-pcr-reloc-smoke.py \
+              --xlen "$xlen" \
+              --llvm-mc "$PWD/linx-llvm-build/bin/llvm-mc" \
+              --ld-lld "$PWD/linx-llvm-build/bin/ld.lld" \
+              --qemu "$PWD/build/qemu-system-linx$xlen"
+          done

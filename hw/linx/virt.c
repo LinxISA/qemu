@@ -5,6 +5,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "qemu/error-report.h"
 #include "qemu/guest-random.h"
 #include "qemu/log.h"
@@ -174,6 +175,10 @@ static const char *linx_elf64_sym_name(const uint8_t *buf, size_t len,
 #define R_LINX_TLS_TPREL64 30
 #define R_LINX_TLSDESC 31
 #define R_LINX_IRELATIVE 32
+#define R_LINX_SCOPED_PCR17_LOAD 33
+#define R_LINX_SCOPED_PCR17_STORE 34
+#define R_LINX_SCOPED_HL_PCR29_LOAD 35
+#define R_LINX_SCOPED_HL_PCR29_STORE 36
 
 #define PTO_NT_ISA_IDENTITY 1
 static const char linx_pto_isa_identity[] =
@@ -282,6 +287,7 @@ static void linx_validate_pto_note_bytes(const uint8_t *notes, size_t size,
 
 static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                                            bool allow_scoped,
+                                           LinxPtoIdentity *image_identity,
                                            Error **errp)
 {
     LinxPtoIdentity identity = LINX_PTO_IDENTITY_NONE;
@@ -371,6 +377,7 @@ static bool linx_validate_pto_isa_identity(const uint8_t *buf, size_t len,
                    allow_scoped ? "0.58.7 or 0.59.1" : "0.58.7");
         return false;
     }
+    *image_identity = identity;
     return true;
 }
 
@@ -1963,6 +1970,73 @@ static bool linx_reloc_uses_instruction_fallback(uint32_t rtype)
     }
 }
 
+static bool linx_is_scoped_pcr_relocation(uint32_t type)
+{
+    return type >= R_LINX_SCOPED_PCR17_LOAD &&
+           type <= R_LINX_SCOPED_HL_PCR29_STORE;
+}
+
+static bool linx_patch_scoped_pcr(uint8_t *ram, size_t ram_size,
+                                 hwaddr section_base, uint64_t section_size,
+                                 uint64_t offset, hwaddr target,
+                                 int64_t addend, uint32_t type,
+                                 bool scoped_elf, Error **errp)
+{
+    const bool hl = type >= R_LINX_SCOPED_HL_PCR29_LOAD;
+    const bool store = type == R_LINX_SCOPED_PCR17_STORE ||
+                       type == R_LINX_SCOPED_HL_PCR29_STORE;
+    const unsigned width = hl ? 29 : 17;
+    LinxScopedScalar scoped;
+    uint64_t carrier, inner, delta, imm;
+    hwaddr place;
+
+    if (!scoped_elf) {
+        error_setg(errp, "scoped PCR relocation requires a PTO 0.59.1 ELF");
+        return false;
+    }
+    if (section_base == 0 || offset > UINT64_MAX - section_base ||
+        offset > section_size || 8 > section_size - offset ||
+        !linx_file_range_valid(section_base + offset, 8, ram_size)) {
+        error_setg(errp, "scoped PCR relocation extends beyond its section");
+        return false;
+    }
+    place = section_base + offset;
+    carrier = ldq_le_p(ram + place);
+    if ((place & 1) || !linx_scoped_scalar_decode(carrier, &scoped) ||
+        scoped.inner_bytes != (hl ? 6 : 4) ||
+        extract64(scoped.inner_word, hl ? 16 : 0, 7) != (store ? 0x69 : 0x39)) {
+        error_setg(errp, "scoped PCR relocation does not match the carrier at "
+                   "0x%" HWADDR_PRIx, place);
+        return false;
+    }
+
+    /* P names the outer carrier. The architectural PCR base is word aligned. */
+    delta = target + (uint64_t)addend - (place & ~UINT64_C(3));
+    if ((delta & 3) || (uint64_t)sextract64(delta, 0, width + 2) != delta) {
+        error_setg(errp, "scoped PCR target is unaligned or out of "
+                   "signed %u-bit range at 0x%" HWADDR_PRIx, width, place);
+        return false;
+    }
+    imm = delta >> 2;
+    inner = scoped.inner_word;
+    if (hl) {
+        inner = deposit64(inner, 4, 12, imm >> 17);
+        if (store) {
+            inner = deposit64(inner, 23, 5, imm >> 12);
+            inner = deposit64(inner, 36, 12, imm);
+        } else {
+            inner = deposit64(inner, 31, 17, imm);
+        }
+    } else if (store) {
+        inner = deposit64(inner, 7, 5, imm >> 12);
+        inner = deposit64(inner, 20, 12, imm);
+    } else {
+        inner = deposit64(inner, 15, 17, imm);
+    }
+    stq_le_p(ram + place, (inner << 16) | (carrier & 0xffff));
+    return true;
+}
+
 #if TARGET_LONG_BITS == 32
 static void linx_collect_body_ranges_elf32(const uint8_t *buf, size_t len,
                                            const Elf32_Shdr *strtab_sh,
@@ -2054,6 +2128,7 @@ static void linx_collect_body_ranges_elf32(const uint8_t *buf, size_t len,
 static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
                                 CPULinxState *env,
+                                bool scoped_elf,
                                 hwaddr load_base,
                                 hwaddr *entry, hwaddr *image_end,
                                 Error **errp)
@@ -2342,6 +2417,17 @@ static bool linx_load_elf32_rel(const uint8_t *buf, size_t len,
 
             target = sym_addr[symidx];
             patch_addr = base + rela[j].r_offset;
+
+            if (linx_is_scoped_pcr_relocation(rtype)) {
+                if (!linx_patch_scoped_pcr(ram, ram_size, base,
+                                           shdrs[relsh->sh_info].sh_size,
+                                           rela[j].r_offset, target,
+                                           rela[j].r_addend, rtype, scoped_elf,
+                                           errp)) {
+                    goto fail;
+                }
+                continue;
+            }
 
             if (rtype == R_LINX_32) {
                 if (patch_addr + 4 > ram_size) {
@@ -2820,6 +2906,7 @@ static void linx_collect_body_ranges_elf64(const uint8_t *buf, size_t len,
 static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
                                 uint8_t *ram, size_t ram_size,
                                 CPULinxState *env,
+                                bool scoped_elf,
                                 hwaddr load_base,
                                 hwaddr *entry, hwaddr *image_end,
                                 Error **errp)
@@ -3101,6 +3188,17 @@ static bool linx_load_elf64_rel(const uint8_t *buf, size_t len,
 
             target = sym_addr[symidx];
             patch_addr = base + rela[j].r_offset;
+
+            if (linx_is_scoped_pcr_relocation(rtype)) {
+                if (!linx_patch_scoped_pcr(ram, ram_size, base,
+                                           shdrs[relsh->sh_info].sh_size,
+                                           rela[j].r_offset, target,
+                                           rela[j].r_addend, rtype, scoped_elf,
+                                           errp)) {
+                    goto fail;
+                }
+                continue;
+            }
 
             if (rtype == R_LINX_64) {
                 if (patch_addr + 8 > ram_size) {
@@ -3501,6 +3599,7 @@ static bool linx_load_elf(const char *filename,
     uint8_t *buf = NULL;
     gsize len = 0;
     bool ok = false;
+    LinxPtoIdentity identity;
 
     if (!g_file_get_contents(filename, (gchar **)&buf, &len, &gerr)) {
         error_setg(errp, "unable to read %s: %s", filename, gerr->message);
@@ -3508,15 +3607,18 @@ static bool linx_load_elf(const char *filename,
         return false;
     }
 
-    if (!linx_validate_pto_isa_identity(buf, len, allow_scoped, errp)) {
+    if (!linx_validate_pto_isa_identity(buf, len, allow_scoped, &identity,
+                                         errp)) {
         g_free(buf);
         return false;
     }
 
+    const bool scoped_elf = identity == LINX_PTO_IDENTITY_V0591;
+
 #if TARGET_LONG_BITS == 32
     if (len >= sizeof(Elf32_Ehdr) && ((const Elf32_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf32_rel(buf, len, ram, ram_size, env, load_base,
-                                 entry, image_end, errp);
+        ok = linx_load_elf32_rel(buf, len, ram, ram_size, env, scoped_elf,
+                                load_base, entry, image_end, errp);
     } else {
         linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf32_exec(buf, len, ram, ram_size, load_base,
@@ -3524,8 +3626,8 @@ static bool linx_load_elf(const char *filename,
     }
 #else
     if (len >= sizeof(Elf64_Ehdr) && ((const Elf64_Ehdr *)buf)->e_type == ET_REL) {
-        ok = linx_load_elf64_rel(buf, len, ram, ram_size, env, load_base,
-                                 entry, image_end, errp);
+        ok = linx_load_elf64_rel(buf, len, ram, ram_size, env, scoped_elf,
+                                load_base, entry, image_end, errp);
     } else {
         linx_set_body_ranges(env, NULL, 0);
         ok = linx_load_elf64_exec(buf, len, ram, ram_size, load_base,
